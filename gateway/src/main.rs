@@ -7,6 +7,8 @@
 //!   duowave version           print the version
 //!   duowave station …         the gateway on the station itself: install, point the voice, status, remove
 //!                             (`duowave station help`)
+//!   duowave panel setup       the panel's first password, from stdin, to this device's own gateway over loopback
+//!                             (`duowave panel help`)
 //!   duowave plugin …          the workshop in a terminal: new (from a template or OpenAPI), test, install
 //!
 //! The developer's commands (src/tools):
@@ -72,6 +74,13 @@ fn main() -> anyhow::Result<()> {
             let args: Vec<String> = std::env::args().skip(2).collect();
             std::process::exit(duowave::placement::cli::command(&args));
         }
+        "panel" => {
+            let args: Vec<String> = std::env::args().skip(2).collect();
+            // On a station, its installed gateway's port: the program knows the station's files, access does not.
+            let station = duowave::placement::station_fs::StationFs::real();
+            let here = duowave::access::cli::Here { station_port: station.is_station().then(|| station.port()) };
+            std::process::exit(duowave::access::cli::command(&args, here));
+        }
         "plugin" => {
             let args: Vec<String> = std::env::args().skip(2).collect();
             std::process::exit(duowave::plugins::workshop::cli::command(&args));
@@ -82,7 +91,7 @@ fn main() -> anyhow::Result<()> {
         }
         other => {
             eprintln!(
-                "duowave: unknown command {other:?} (serve, health, update, version, station, plugin, {})",
+                "duowave: unknown command {other:?} (serve, health, update, version, station, panel, plugin, {})",
                 duowave::tools::COMMANDS.join(", ")
             );
             std::process::exit(2);

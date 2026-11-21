@@ -1,8 +1,9 @@
 // Роль пульта (docs/plans/desk.md): «Шлюз» — пульт центра дома (обычно самой колонки), «Помощник» — DuoWave на
-// компьютере-Турбо, когда центр работает на колонке: его окно уходит к центру (`?via=`, app.tsx). Роль пульт знает
-// сам, по /health. Рамкой она больше не видна: пульт один (docs/plans/home-and-devices.md, этап 1).
+// компьютере-Турбо, когда центр работает на колонке или на другом компьютере (по связи): его окно уходит к центру
+// (`?via=`, app.tsx). Роль пульт знает сам, по /health. Рамкой она больше не видна: пульт один
+// (docs/plans/home-and-devices.md, этап 1).
 
-import type { Away, HelperBrief, Health, PlacedStation, PlacementHealth } from '../api';
+import type { Away, HelperBrief, Health, LinkCentre, PlacedStation, PlacementHealth } from '../api';
 
 export type Role = 'gateway' | 'helper';
 
@@ -10,6 +11,11 @@ export interface RoleInfo {
     role: Role;
     /** Колонка помощника: её шлюз работает на ней самой. */
     station?: PlacedStation;
+    /**
+     * Центр дома — другой компьютер или сервер, а этот компьютер — его Турбо по связи (этап 7 плана home-setup-flow):
+     * окно пульта уходит к центру тем же `?via=`, по ключу прохода. Колонки у такого помощника нет — `station` пуст.
+     */
+    centre?: LinkCentre;
     /** Шлюз на колонке и компьютер помогает ей (слух, голос, модель): размещение «колонка + компьютер». */
     helping: boolean;
     /**
@@ -49,8 +55,9 @@ export function helperOf(placement: PlacementHealth): RoleInfo['helper'] {
 }
 
 /**
- * Кто этот пульт. Компьютер, у выбранной колонки которого шлюз на ней самой, — помощник; всё остальное — шлюз:
- * колонка со своим шлюзом, компьютер, который отвечает колонке сам, и шлюз постарше без размещения.
+ * Кто этот пульт. Компьютер, у выбранной колонки которого шлюз на ней самой, — помощник; компьютер — Турбо дома, чей
+ * центр другой компьютер или сервер (по связи), — тоже; всё остальное — шлюз: колонка со своим шлюзом, компьютер,
+ * который отвечает колонке сам, и шлюз постарше без размещения.
  */
 export function roleOf(health: Health | null, device?: string | null): RoleInfo {
     const placement = health?.placement;
@@ -58,7 +65,17 @@ export function roleOf(health: Health | null, device?: string | null): RoleInfo 
     if (placement.role === 'station') return { role: 'gateway', helping: placement.placement === 'stationServer', helper: helperOf(placement) };
     const placed = (device ? placement.stations?.find((entry) => entry.device === device) : undefined) ?? placement.station;
     if (placed && placed.placement !== 'pc') return { role: 'helper', station: placed, helping: placed.placement === 'stationServer' };
+    if (placement.centre) return { role: 'helper', centre: placement.centre, helping: true };
     return { role: 'gateway', helping: false };
+}
+
+/**
+ * Куда уходит окно помощника (`?via=`): к колонке — всегда (пока её нет на связи, компьютер показывает копии), к центру
+ * по связи — пока связь есть: копий там нет, и пульт центра без него не откроется. Свой стол — `?local` и меню.
+ */
+export function homeWindowKey(role: RoleInfo): string | undefined {
+    if (role.role !== 'helper') return undefined;
+    return role.station?.key ?? (role.centre?.online ? role.centre.key : undefined);
 }
 
 /**
@@ -74,11 +91,13 @@ export function helpsSomeone(stations: Pick<PlacedStation, 'placement'>[], linke
 const FIRST_NAME = 'Колонка';
 
 /**
- * Имя колонки, о которой этот пульт, когда его знает шлюз: у помощника — из записи компьютера, у шлюза на колонке —
- * из её /health (перенос приносит имя из записи компьютера). Иначе — undefined, и пульт берёт выбранную колонку:
- * выбор хранится в браузере, общий у страницы помощника и окна колонки, и мог указывать не на неё.
+ * Имя колонки, о которой этот пульт, когда его знает шлюз: у помощника — из записи компьютера (у Турбо центра по связи —
+ * имя дома), у шлюза на колонке — из её /health (перенос приносит имя из записи компьютера). Иначе — undefined, и пульт
+ * берёт выбранную колонку: выбор хранится в браузере, общий у страницы помощника и окна колонки, и мог указывать не на
+ * неё.
  */
 export function ownName(health: Health | null | undefined, role: RoleInfo): string | undefined {
-    const name = role.role === 'helper' ? role.station?.name : health?.placement?.role === 'station' ? health.placement.name : undefined;
+    const name =
+        role.role === 'helper' ? (role.station?.name ?? role.centre?.name) : health?.placement?.role === 'station' ? health.placement.name : undefined;
     return name && name !== FIRST_NAME ? name : undefined;
 }

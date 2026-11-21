@@ -18,10 +18,15 @@
 //! - **The bridge**: the gateway's own clients — hearing, voice, «Мозг», apps, history, the catalog — keep asking a
 //!   plain URL, `http://127.0.0.1:<port>/via/<entry>/home/v1/…`, with a per-start token; the bridge hands each request
 //!   to the link. Nothing new listens on the station.
+//! - **Up** (stage 7 of docs/plans/home-setup-flow.md): the helper's own requests to the gateway over the same socket —
+//!   a Turbo whose home's centre is this gateway opens the home's panel through it, for the person signed in at the
+//!   Turbo. `up` with an id above `UP_BIT` (the gateway's stay below it), its body in the same binary pieces, answered
+//!   with `up-res` and pieces, `up-error` after a broken body, `up-cancel` from the helper. Only a gateway whose upgrade
+//!   said `UP_HEADER` is asked; one from before `up` passes the new kinds and ids by as unknown.
 
 use std::collections::HashMap;
 use std::io;
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
@@ -29,8 +34,8 @@ use std::task::{Context, Poll};
 use std::time::Duration;
 
 use axum::body::{Body, Bytes};
-use axum::extract::{Request, State};
-use axum::http::{header, HeaderMap, HeaderName, HeaderValue, StatusCode};
+use axum::extract::{ConnectInfo, Request, State};
+use axum::http::{header, HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use axum::Router;
 use base64::Engine;
@@ -54,12 +59,13 @@ use tokio_tungstenite::tungstenite::protocol::{CloseFrame, WebSocketConfig};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
 use tokio_util::sync::CancellationToken;
+use tower::ServiceExt;
 
 use super::contract::{HelperIdentity, HelperStatus};
 use super::remote::Me;
 use crate::app::App;
 use crate::core::identity::home::clean_name;
-use crate::platform::http::{ApiError, Caller, Zone};
+use crate::platform::http::{ApiError, Caller, UpOrigin, Zone};
 use crate::settings::definitions::HelperPin;
 use crate::utils::time::now_iso;
 
@@ -107,6 +113,23 @@ const SAFETY: Duration = Duration::from_secs(600);
 const NAME_SENT: usize = 60;
 /// The link key's form: `dwl1_<12 hex id>_<64 hex>`.
 const LINK_KEY_PREFIX: &str = "dwl1";
+/// The top bit of a stream's id marks the helper's own requests (`up`): the gateway numbers its streams below it, the
+/// helper above it, so a body piece always finds its own stream — and a gateway from before `up` passes the helper's
+/// pieces by as an unknown stream's.
+pub const UP_BIT: u32 = 1 << 31;
+/// A gateway's upgrade says it takes its helper's own requests (`up`) — while the entry is a helper at home: a helper
+/// asks only a gateway that said so.
+pub const UP_HEADER: &str = "x-duowave-link-up";
+/// The helper's own requests in flight on one link at the helper; running and open (with the places of refused bodies)
+/// at the gateway — the helper's own limits for the gateway's requests (link_serve.rs).
+const UP_IN_FLIGHT: usize = 32;
+const UP_RUNNING: usize = 32;
+const UP_OPEN: usize = 64;
+/// The bodies of a link's running `up` requests at the gateway, held until each request ends; a body silent this long,
+/// or still coming this long after its request began, is given up.
+const UP_BODIES: usize = 32 * 1024 * 1024;
+const UP_BODY_SILENCE: Duration = Duration::from_secs(30);
+const UP_BODY_WHOLE: Duration = Duration::from_secs(5 * 60);
 
 fn locked<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -836,6 +859,119 @@ pub fn headers_from(value: &Value, keep: impl Fn(&str) -> bool) -> HeaderMap {
     headers
 }
 
+/// A frame's stream id; none for what names none.
+fn frame_id(value: &Value) -> Option<u32> {
+    value.get("id").and_then(Value::as_u64).and_then(|id| u32::try_from(id).ok())
+}
+
+// ── Up: the helper's own requests to the gateway ──
+
+/// Which way a socket's requests go: the gateway's to its helper (`req`, its answer `res`, a failure after it `error`,
+/// given up `cancel`), or the helper's own to the gateway (`up`, `up-res`, `up-error`, `up-cancel`) — in the ids above
+/// `UP_BIT`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Way {
+    Req,
+    Up,
+}
+
+impl Way {
+    pub fn ask(self) -> &'static str {
+        match self {
+            Way::Req => "req",
+            Way::Up => "up",
+        }
+    }
+
+    pub fn answer(self) -> &'static str {
+        match self {
+            Way::Req => "res",
+            Way::Up => "up-res",
+        }
+    }
+
+    pub fn failure(self) -> &'static str {
+        match self {
+            Way::Req => "error",
+            Way::Up => "up-error",
+        }
+    }
+
+    pub fn cancel(self) -> &'static str {
+        match self {
+            Way::Req => "cancel",
+            Way::Up => "up-cancel",
+        }
+    }
+
+    /// A stream's id in this way's space: the gateway's below `UP_BIT`, the helper's above it.
+    fn id(self, number: u32) -> u32 {
+        match self {
+            Way::Req => number & !UP_BIT,
+            Way::Up => number | UP_BIT,
+        }
+    }
+
+    fn in_flight(self) -> usize {
+        match self {
+            Way::Req => IN_FLIGHT,
+            Way::Up => UP_IN_FLIGHT,
+        }
+    }
+
+    /// The headers a request carries: what its answer depends on — the helper's own a range too (a recording played
+    /// from the middle) —, never `authorization`.
+    fn carried(self, name: &str) -> bool {
+        CARRIED.contains(&name) || (self == Way::Up && name == "range")
+    }
+}
+
+/// A body piece of the helper's own requests (`up`): its stream's id has the top bit.
+pub fn up_piece(frame: &Bytes) -> bool {
+    frame.first().is_some_and(|byte| byte & 0x80 != 0)
+}
+
+/// The person a helper's own request is asked for (a request's extension at the helper, link_serve.rs's pass): who is
+/// signed in there — their name, their role there, their id. It travels in the `up` frame, never as a header.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpPerson {
+    pub name: String,
+    pub role: String,
+    pub id: String,
+}
+
+/// A gateway's door for its helper's own requests (`up`), given with the link (helpers/mod.rs, `EntryDoor`): whether
+/// this entry may send them now — the trust rule is `Helpers::takes_up` —, this gateway's routes, and a request's origin
+/// as they read it: the person its frame names (`caller::up_origin`; none when it names nobody).
+pub trait UpDoor: Send + Sync {
+    fn open(&self) -> bool;
+    fn router(&self) -> Option<Router>;
+    fn origin(&self, person: &Value) -> Option<UpOrigin>;
+}
+
+/// A path that stays where it says, before a whitelist reads it (`rest`: without its leading slash): no empty segment,
+/// no «.» or «..» — nor their percent-encoded forms or the same with spaces around, which an address reads as the
+/// same — and no backslash, query, fragment, control character or encoded slash hidden in a segment (a router decodes
+/// the path once: `..%2F` comes as `../`). The pass checks the address made of it against its whitelist once more.
+pub fn plain_path(rest: &str) -> bool {
+    !rest.contains(|c: char| matches!(c, '\\' | '?' | '#') || c.is_control())
+        && rest.split('/').all(|segment| {
+            let segment = segment.to_ascii_lowercase();
+            let dotted = segment.trim().replace("%2e", ".");
+            !matches!(dotted.as_str(), "" | "." | "..") && !segment.contains("%2f") && !segment.contains("%5c")
+        })
+}
+
+/// What a helper may ask this gateway over its link (`up`): the panel's API, and the health for a reading — the panel
+/// reads it through the pass —; never `/home/v1` (the help a helper gives, not takes), a station's pass (`/station/…`),
+/// the bridge, the debug routes or anything else. Every segment plain (`plain_path`); the query is the router's.
+pub fn up_path(path: &str, method: &Method) -> bool {
+    let path = path.split('?').next().unwrap_or("");
+    let Some(rest) = path.strip_prefix('/') else { return false };
+    let reading = matches!(*method, Method::GET | Method::HEAD);
+    plain_path(rest) && (rest.starts_with("api/v1/") || (reading && rest == "health"))
+}
+
 // ── The first meeting ──
 
 /// What a pairing gave: the helper as it named itself, its link key (none for a probe), the pin, its status as this
@@ -1103,6 +1239,8 @@ pub struct LinkSetup {
     pub helper_id: String,
     /// This gateway and its home as they are named now: read at each connect.
     pub me: Arc<dyn Fn() -> Me + Send + Sync>,
+    /// The door for the helper's own requests (`up`); none: this gateway takes none of them.
+    pub up: Option<Arc<dyn UpDoor>>,
 }
 
 /// Who hears what a link tells: its entry's id and the news.
@@ -1378,13 +1516,17 @@ impl Link {
             HeaderValue::from_bytes(value.as_bytes()).map(|_| value.trim().to_string()).unwrap_or_default()
         };
         let (gateway, home) = (said(&me.gateway.id), said(&me.home.id));
-        let headers = vec![
+        let mut headers = vec![
             (LINK_ID_HEADER, link_id.clone()),
             (VERSION_HEADER, VERSION.to_string()),
             (GATEWAY_HEADER, gateway.clone()),
             (GATEWAY_NAME_HEADER, name),
             (HOME_HEADER, home.clone()),
         ];
+        // This gateway takes the helper's own requests while the entry is a helper at home: only then is it asked.
+        if self.setup.up.as_ref().is_some_and(|door| door.open()) {
+            headers.push((UP_HEADER, "1".to_string()));
+        }
         let mut socket =
             dial(&target, config, headers, FRAME_MAX, &self.timing, pinned.as_deref()).await.map_err(|error| {
                 match error {
@@ -1490,9 +1632,11 @@ struct Slot {
     room: Arc<Notify>,
 }
 
-/// A connected socket's requests: the way out, the streams open, what their readers have not read yet.
+/// A connected socket's requests one way (`Way`): the way out, the streams open, what their readers have not read yet.
+/// The gateway's own to its helper (the link's session), or the helper's own to its gateway (`up`, link_serve.rs).
 pub(crate) struct Session {
     out: Out,
+    way: Way,
     streams: Mutex<HashMap<u32, Slot>>,
     next: AtomicU32,
     queued: Arc<AtomicUsize>,
@@ -1500,17 +1644,28 @@ pub(crate) struct Session {
 }
 
 impl Session {
-    /// The writer started over the socket's sink.
+    /// The writer started over the socket's sink: the gateway's requests.
     pub(crate) fn start(sink: WireSink) -> Arc<Session> {
-        let out = Out::start(sink);
+        Session::over(Out::start(sink), Way::Req)
+    }
+
+    /// Requests over a way out already running: the helper's own (`Way::Up`) share its link's writer.
+    pub(crate) fn over(out: Out, way: Way) -> Arc<Session> {
         let gone = out.gone.clone();
         Arc::new(Session {
             out,
+            way,
             streams: Mutex::new(HashMap::new()),
             next: AtomicU32::new(1),
             queued: Arc::new(AtomicUsize::new(0)),
             gone,
         })
+    }
+
+    /// The requests open now (the helper side's tests).
+    #[cfg(all(test, feature = "pc"))]
+    pub(crate) fn open_streams(&self) -> usize {
+        locked(&self.streams).len()
     }
 
     /// A control frame (`cancel`, a ping): never waits.
@@ -1527,7 +1682,7 @@ impl Session {
         self.out.close(code);
     }
 
-    /// A stream given up: `cancel` sent, its reader told.
+    /// A stream given up: `cancel` (`up-cancel`) sent, its reader told.
     fn cancel(self: &Arc<Self>, id: u32, why: &str) {
         if let Some(slot) = locked(&self.streams).remove(&id) {
             self.release(&slot);
@@ -1537,7 +1692,7 @@ impl Session {
             if let Some(body) = slot.body {
                 let _ = body.send(Err(io::Error::other(why.to_string())));
             }
-            self.control(Wire::json(&json!({ "t": "cancel", "id": id })));
+            self.control(Wire::json(&json!({ "t": self.way.cancel(), "id": id })));
         }
     }
 
@@ -1546,7 +1701,7 @@ impl Session {
     }
 
     /// The socket is gone: every request still waiting fails, every body still streaming ends in an error.
-    fn fail_all(&self, why: &str) {
+    pub(crate) fn fail_all(&self, why: &str) {
         self.gone.cancel();
         for (_, slot) in locked(&self.streams).drain() {
             self.release(&slot);
@@ -1560,11 +1715,13 @@ impl Session {
     }
 
     /// Reads the socket until it ends: answers and their bodies to their requests, the helper's status to the link;
-    /// a ping every `ping`, the end after `silence` of nothing.
+    /// a ping every `ping`, the end after `silence` of nothing. The helper's own requests (`up`) run beside them.
     async fn serve(self: &Arc<Self>, mut stream: WireStream, link: &Link) -> End {
         let timing = &link.timing;
         let mut last = Instant::now();
         let mut ping = tokio::time::interval_at(Instant::now() + timing.ping, timing.ping);
+        let (done, mut finished) = mpsc::unbounded_channel();
+        let mut up = Up::new(self.out.clone(), link.setup.up.clone(), done);
         loop {
             tokio::select! {
                 frame = stream.next() => {
@@ -1572,12 +1729,14 @@ impl Session {
                     last = Instant::now();
                     match frame {
                         Wire::Text(text) => {
-                            if let Some(end) = self.on_text(&text, link) {
+                            if let Some(end) = self.on_text(&text, link, &mut up) {
                                 return end;
                             }
                         }
                         Wire::Binary(bytes) => {
-                            if !self.on_chunk(&bytes).await {
+                            // The helper's own requests' bodies to their handlers here; the answers' to their callers.
+                            let fed = if up_piece(&bytes) { up.feed(&bytes) } else { self.on_chunk(&bytes).await };
+                            if !fed {
                                 self.close(PROTOCOL);
                                 return End::Protocol;
                             }
@@ -1593,12 +1752,14 @@ impl Session {
                         Wire::Ping(_) | Wire::Pong(_) => {}
                     }
                 }
+                Some(id) = finished.recv() => up.finished(id),
                 _ = ping.tick() => {
                     if last.elapsed() >= timing.silence {
                         self.close(SILENT);
                         return End::Silent;
                     }
                     self.control(Wire::Ping(Bytes::new()));
+                    up.give_up_late_bodies(UP_BODY_SILENCE, UP_BODY_WHOLE);
                 }
                 _ = link.stop.cancelled() => {
                     if link.bye.load(Ordering::SeqCst) {
@@ -1617,45 +1778,20 @@ impl Session {
         }
     }
 
-    /// A text frame: an answer's head, a body's error, the helper's news; unknown kinds passed by. Some(end) when the
-    /// link must end (another helper).
-    fn on_text(self: &Arc<Self>, text: &str, link: &Link) -> Option<End> {
+    /// A text frame: an answer's head, a body's error, the helper's news, the helper's own request or its cancel; unknown
+    /// kinds passed by. Some(end) when the link must end (another helper, an `up` that breaks the protocol).
+    fn on_text(self: &Arc<Self>, text: &str, link: &Link, up: &mut Up) -> Option<End> {
         let (kind, value) = read_text(text)?;
-        let id = value.get("id").and_then(Value::as_u64).and_then(|id| u32::try_from(id).ok());
-        match (kind.as_str(), id) {
-            ("res", Some(id)) => {
-                let head = Head {
-                    status: value
-                        .get("status")
-                        .and_then(Value::as_u64)
-                        .and_then(|s| u16::try_from(s).ok())
-                        .unwrap_or(502),
-                    headers: headers_from(&value["headers"], carried_back),
-                    body: value.get("body").and_then(Value::as_bool).unwrap_or(false),
-                };
-                let mut streams = locked(&self.streams);
-                let body = head.body;
-                if let Some(slot) = streams.get_mut(&id) {
-                    if let Some(sender) = slot.head.take() {
-                        let _ = sender.send(Ok(head));
-                    }
-                    if !body {
-                        streams.remove(&id);
-                    }
+        match (kind.as_str(), frame_id(&value)) {
+            ("res", Some(_)) => self.on_answer(&value),
+            ("error", Some(_)) => self.on_failure(&value),
+            ("up", Some(_)) => {
+                if let Err(code) = up.request(&value) {
+                    self.close(code);
+                    return Some(End::Protocol);
                 }
             }
-            ("error", Some(id)) => {
-                let message = value.get("message").and_then(Value::as_str).unwrap_or("").to_string();
-                if let Some(slot) = locked(&self.streams).remove(&id) {
-                    self.release(&slot);
-                    if let Some(head) = slot.head {
-                        let _ = head.send(Err(message.clone()));
-                    }
-                    if let Some(body) = slot.body {
-                        let _ = body.send(Err(io::Error::other(message)));
-                    }
-                }
-            }
+            ("up-cancel", Some(id)) => up.drop_stream(id),
             ("event", _) if value.get("name").and_then(Value::as_str) == Some("status") => {
                 let status = value.get("data").cloned().unwrap_or(Value::Null);
                 if !link.same_helper(&status) {
@@ -1671,10 +1807,45 @@ impl Session {
         None
     }
 
+    /// An answer's head (`res`, `up-res`) to its request; its body, when one comes, streams to it.
+    pub(crate) fn on_answer(&self, value: &Value) {
+        let Some(id) = frame_id(value) else { return };
+        let head = Head {
+            status: value.get("status").and_then(Value::as_u64).and_then(|s| u16::try_from(s).ok()).unwrap_or(502),
+            headers: headers_from(&value["headers"], carried_back),
+            body: value.get("body").and_then(Value::as_bool).unwrap_or(false),
+        };
+        let mut streams = locked(&self.streams);
+        let body = head.body;
+        if let Some(slot) = streams.get_mut(&id) {
+            if let Some(sender) = slot.head.take() {
+                let _ = sender.send(Ok(head));
+            }
+            if !body {
+                streams.remove(&id);
+            }
+        }
+    }
+
+    /// A request that failed at the other end (`error`, `up-error`): its waiter, or its body's reader, told.
+    pub(crate) fn on_failure(&self, value: &Value) {
+        let Some(id) = frame_id(value) else { return };
+        let message = value.get("message").and_then(Value::as_str).unwrap_or("").to_string();
+        if let Some(slot) = locked(&self.streams).remove(&id) {
+            self.release(&slot);
+            if let Some(head) = slot.head {
+                let _ = head.send(Err(message.clone()));
+            }
+            if let Some(body) = slot.body {
+                let _ = body.send(Err(io::Error::other(message)));
+            }
+        }
+    }
+
     /// A body piece to its reader. Its stream's reader may leave at most `STREAM_QUEUE` unread — past `STALL` of it
     /// the stream is cancelled and the others go on —, the link's at most `LINK_QUEUE` — past it the newest stream
     /// is cancelled. False on a malformed piece: a protocol error.
-    async fn on_chunk(self: &Arc<Self>, frame: &Bytes) -> bool {
+    pub(crate) async fn on_chunk(self: &Arc<Self>, frame: &Bytes) -> bool {
         let Some((id, end, data)) = decode_chunk(frame) else { return false };
         let room = {
             let streams = locked(&self.streams);
@@ -1724,6 +1895,12 @@ impl Session {
 
     /// A request over this socket: its head, its body in pieces, then its answer, streamed as it comes.
     async fn call(self: &Arc<Self>, request: Request) -> Result<Response, LinkError> {
+        self.call_within(request, SAFETY).await
+    }
+
+    /// A request over this socket, its answer's head awaited at most `wait`: past it the request is given up (its
+    /// `cancel` sent) — so a gateway that never answers the helper's own request leaves nothing behind.
+    pub(crate) async fn call_within(self: &Arc<Self>, request: Request, wait: Duration) -> Result<Response, LinkError> {
         if self.gone.is_cancelled() {
             return Err(LinkError::Away);
         }
@@ -1732,30 +1909,35 @@ impl Session {
         let (queued, room) = (Arc::new(AtomicUsize::new(0)), Arc::new(Notify::new()));
         let id = {
             let mut streams = locked(&self.streams);
-            if streams.len() >= IN_FLIGHT {
+            if streams.len() >= self.way.in_flight() {
                 return Err(LinkError::Busy);
             }
-            let id = self.next.fetch_add(1, Ordering::SeqCst);
+            let id = self.way.id(self.next.fetch_add(1, Ordering::SeqCst));
             let slot = Slot { head: Some(head_tx), body: Some(body_tx), queued: queued.clone(), room: room.clone() };
             streams.insert(id, slot);
             id
         };
-        // Until its answer is handed out, a request dropped by its caller is cancelled at the helper.
+        // Until its answer is handed out, a request dropped by its caller is cancelled at the other end.
         let mut guard = Cancel { id, session: Arc::downgrade(self), armed: true };
         let (parts, body) = request.into_parts();
         let path = parts.uri.path_and_query().map(|path| path.as_str().to_string()).unwrap_or_else(|| "/".into());
         let has_body = !axum::body::HttpBody::is_end_stream(&body);
-        let head = json!({
-            "t": "req", "id": id, "method": parts.method.as_str(), "path": path,
-            "headers": headers_json(&parts.headers, |name| CARRIED.contains(&name)), "body": has_body,
+        let way = self.way;
+        let mut head = json!({
+            "t": way.ask(), "id": id, "method": parts.method.as_str(), "path": path,
+            "headers": headers_json(&parts.headers, |name| way.carried(name)), "body": has_body,
         });
+        // The helper's own request names the person it is asked for — in the frame, never as a header.
+        if let Some(person) = parts.extensions.get::<UpPerson>().filter(|_| way == Way::Up) {
+            head["person"] = json!({ "name": person.name, "role": person.role, "id": person.id });
+        }
         if !self.send(Wire::json(&head)).await {
             return Err(LinkError::Away);
         }
         if has_body {
             tokio::spawn(pump(self.clone(), id, body));
         }
-        let head = match tokio::time::timeout(SAFETY, head_rx).await {
+        let head = match tokio::time::timeout(wait, head_rx).await {
             Ok(Ok(Ok(head))) => head,
             Ok(Ok(Err(why))) => return Err(LinkError::Broken(why)),
             Ok(Err(_)) => return Err(LinkError::Broken(crate::core::tx(super::AWAY))),
@@ -1996,6 +2178,269 @@ async fn write(mut sink: WireSink, mut queue: mpsc::Receiver<Wire>, gone: Cancel
     gone.cancel();
     queue.close();
     let _ = tokio::time::timeout(Duration::from_secs(1), sink.close()).await;
+}
+
+/// One request's answer over a link, on either side: its head (`res`; `up-res` for the helper's own request), then its
+/// body in pieces of at most `CHUNK`, the end marked; a body that breaks midway ends in an `error` (`up-error`), never
+/// as a short whole one. `done` hears its id at the end.
+pub(crate) async fn answer(
+    router: Router,
+    request: Request,
+    id: u32,
+    out: Out,
+    answered: Arc<AtomicBool>,
+    done: mpsc::UnboundedSender<u32>,
+    way: Way,
+) {
+    let send = |wire: Wire| {
+        let out = out.clone();
+        async move { out.send(wire).await }
+    };
+    let response = router.oneshot(request).await.unwrap_or_else(|never| match never {});
+    let (parts, body) = response.into_parts();
+    let has_body = !axum::body::HttpBody::is_end_stream(&body);
+    let head = json!({
+        "t": way.answer(), "id": id, "status": parts.status.as_u16(),
+        "headers": headers_json(&parts.headers, carried_back), "body": has_body,
+    });
+    if !send(Wire::json(&head)).await {
+        return;
+    }
+    answered.store(true, Ordering::SeqCst);
+    if has_body {
+        let mut pieces = body.into_data_stream();
+        while let Some(piece) = pieces.next().await {
+            match piece {
+                Ok(piece) => {
+                    for part in piece.chunks(CHUNK) {
+                        if !send(Wire::Binary(encode_chunk(id, false, part))).await {
+                            return;
+                        }
+                    }
+                }
+                Err(error) => {
+                    let _ =
+                        send(Wire::json(&json!({ "t": way.failure(), "id": id, "message": error.to_string() }))).await;
+                    let _ = done.send(id);
+                    return;
+                }
+            }
+        }
+        if !send(Wire::Binary(encode_chunk(id, true, &[]))).await {
+            return;
+        }
+    }
+    let _ = done.send(id);
+}
+
+/// One of the helper's own requests running at this gateway: its body's queue while it comes, the bytes of it held
+/// (until the request ends: its handler may hold them whole), when it began and last brought something, whether its
+/// answer has begun, its task (none: a refused body's place, kept until that body's end).
+struct UpRunning {
+    body: Option<mpsc::UnboundedSender<Result<Bytes, io::Error>>>,
+    held: usize,
+    started: Instant,
+    last: Instant,
+    answered: Arc<AtomicBool>,
+    task: Option<tokio::task::AbortHandle>,
+}
+
+/// The helper's own requests at this gateway on one socket (`up`, stage 7 of docs/plans/home-setup-flow.md): the
+/// panel's requests of the person signed in at a Turbo of this home. Each one runs through this gateway's routes as
+/// that person — the door (`UpDoor`) decides at each request whether this helper may ask at all —, its answer streamed
+/// back. The routes are made at the socket's first such request and go with it. The limits are the helper's own for
+/// the gateway's requests (link_serve.rs): so many running and open, `BODY_MAX` a body, `UP_BODIES` of bodies, a body
+/// that falls silent or keeps trickling given up.
+struct Up {
+    out: Out,
+    door: Option<Arc<dyn UpDoor>>,
+    router: Option<Router>,
+    running: HashMap<u32, UpRunning>,
+    held: usize,
+    done: mpsc::UnboundedSender<u32>,
+}
+
+impl Drop for Up {
+    /// The socket is gone: what still runs for it stops.
+    fn drop(&mut self) {
+        for running in self.running.values() {
+            if let Some(task) = &running.task {
+                task.abort();
+            }
+        }
+    }
+}
+
+impl Up {
+    fn new(out: Out, door: Option<Arc<dyn UpDoor>>, done: mpsc::UnboundedSender<u32>) -> Up {
+        Up { out, door, router: None, running: HashMap::new(), held: 0, done }
+    }
+
+    /// An `up` frame: run through this gateway's routes as the person it names — unless it is a flood or not of the
+    /// helper's ids (a protocol error, the link closed), more than may run (503), a gateway that takes none (404), a
+    /// helper this home does not let in now (403), a path it may not ask (404), or it names nobody (403).
+    fn request(&mut self, value: &Value) -> Result<(), u16> {
+        let id = frame_id(value).filter(|id| id & UP_BIT != 0).ok_or(PROTOCOL)?;
+        if self.running.contains_key(&id) || self.running.len() >= UP_OPEN {
+            return Err(PROTOCOL);
+        }
+        let has_body = value.get("body").and_then(Value::as_bool).unwrap_or(false);
+        let path = value.get("path").and_then(Value::as_str).unwrap_or("");
+        let method = value.get("method").and_then(Value::as_str).and_then(|method| method.parse::<Method>().ok());
+        let running = self.running.values().filter(|running| running.task.is_some()).count();
+        // Who may ask is the door's to say, at each request: the entry is a Turbo of this home at home now
+        // (`Helpers::takes_up`). What it may ask is the panel's API only; as whom — the person its pass names.
+        let door = self.door.clone();
+        let open = door.as_ref().filter(|door| door.open());
+        let uri = path.parse::<Uri>().ok();
+        let refused = if running >= UP_RUNNING {
+            Some(StatusCode::SERVICE_UNAVAILABLE)
+        } else if door.is_none() {
+            Some(StatusCode::NOT_FOUND)
+        } else if open.is_none() {
+            Some(StatusCode::FORBIDDEN)
+        } else if uri.is_none() || !method.as_ref().is_some_and(|method| up_path(path, method)) {
+            Some(StatusCode::NOT_FOUND)
+        } else {
+            None
+        };
+        // Nobody named: refused, never let in as the helper itself or a key.
+        let origin = open.filter(|_| refused.is_none()).and_then(|door| door.origin(&value["person"]));
+        let refused = refused.or_else(|| origin.is_none().then_some(StatusCode::FORBIDDEN));
+        let (None, Some(door), Some(method), Some(origin), Some(uri)) = (refused, open, method, origin, uri) else {
+            self.refuse(id, refused.unwrap_or(StatusCode::FORBIDDEN), has_body);
+            return Ok(());
+        };
+        if self.router.is_none() {
+            self.router = door.router();
+        }
+        let Some(router) = self.router.clone() else {
+            self.refuse(id, StatusCode::SERVICE_UNAVAILABLE, has_body);
+            return Ok(());
+        };
+        let (body, sender) = if has_body {
+            let (sender, pieces) = mpsc::unbounded_channel();
+            (Body::from_stream(tokio_stream::wrappers::UnboundedReceiverStream::new(pieces)), Some(sender))
+        } else {
+            (Body::empty(), None)
+        };
+        let mut request = Request::new(body);
+        *request.method_mut() = method;
+        *request.uri_mut() = uri;
+        *request.headers_mut() = headers_from(&value["headers"], |name| Way::Up.carried(name));
+        // No socket of its own here: an address that is neither this computer nor the home, for the routes that read
+        // the socket's; the caller is the origin's (`Caller`: at home, the person, whatever the request carries).
+        request.extensions_mut().insert(ConnectInfo(SocketAddr::from(([0, 0, 0, 0], 0))));
+        request.extensions_mut().insert(origin);
+        let answered = Arc::new(AtomicBool::new(false));
+        let task =
+            tokio::spawn(answer(router, request, id, self.out.clone(), answered.clone(), self.done.clone(), Way::Up));
+        let now = Instant::now();
+        self.running.insert(
+            id,
+            UpRunning { body: sender, held: 0, started: now, last: now, answered, task: Some(task.abort_handle()) },
+        );
+        Ok(())
+    }
+
+    /// A body piece to its request: at most `BODY_MAX` for one (413); the bodies of the running requests at most
+    /// `UP_BODIES` (503), counted until each request ends. False on a malformed piece.
+    fn feed(&mut self, frame: &Bytes) -> bool {
+        let Some((id, end, data)) = decode_chunk(frame) else { return false };
+        let Some(running) = self.running.get_mut(&id) else { return true };
+        if !data.is_empty() || end {
+            running.last = Instant::now();
+        }
+        // A refused body's place: passed by, let go at its end.
+        if running.task.is_none() {
+            if end {
+                self.running.remove(&id);
+            }
+            return true;
+        }
+        if running.body.is_none() {
+            return true;
+        }
+        if !data.is_empty() {
+            if running.held + data.len() > BODY_MAX {
+                self.refuse(id, StatusCode::PAYLOAD_TOO_LARGE, !end);
+                return true;
+            }
+            if self.held + data.len() > UP_BODIES {
+                self.refuse(id, StatusCode::SERVICE_UNAVAILABLE, !end);
+                return true;
+            }
+            running.held += data.len();
+            self.held += data.len();
+            if let Some(body) = &running.body {
+                let _ = body.send(Ok(data));
+            }
+        }
+        if end {
+            if let Some(running) = self.running.get_mut(&id) {
+                running.body = None;
+            }
+        }
+        true
+    }
+
+    /// A stream given up (`up-cancel`, a refusal): its task stopped, its body's bytes given back.
+    fn drop_stream(&mut self, id: u32) {
+        if let Some(running) = self.running.remove(&id) {
+            if let Some(task) = &running.task {
+                task.abort();
+            }
+            self.held = self.held.saturating_sub(running.held);
+        }
+    }
+
+    /// A request's answer is out: its place and its body's bytes given back.
+    fn finished(&mut self, id: u32) {
+        if self.running.get(&id).is_some_and(|running| running.task.is_some()) {
+            self.drop_stream(id);
+        }
+    }
+
+    /// A request refused or given up while it runs: before its answer an `up-res` with the status, after it an
+    /// `up-error`. While its body is still coming, a place with no task is kept for it until that body's end.
+    fn refuse(&mut self, id: u32, status: StatusCode, body_coming: bool) {
+        let answered = self.running.get(&id).is_some_and(|running| running.answered.load(Ordering::SeqCst));
+        let started = self.running.get(&id).map_or_else(Instant::now, |running| running.started);
+        self.drop_stream(id);
+        if body_coming {
+            let place = UpRunning {
+                body: None,
+                held: 0,
+                started,
+                last: Instant::now(),
+                answered: Arc::new(AtomicBool::new(true)),
+                task: None,
+            };
+            self.running.insert(id, place);
+        }
+        let frame = if answered {
+            json!({ "t": Way::Up.failure(), "id": id, "message": status.canonical_reason().unwrap_or("") })
+        } else {
+            json!({ "t": Way::Up.answer(), "id": id, "status": status.as_u16(), "headers": {}, "body": false })
+        };
+        self.out.control(Wire::json(&frame));
+    }
+
+    /// Bodies that stopped coming for `silence`, or still come `whole` after their request began, are given up (408); a
+    /// refused body's place, already answered, is let go as quietly.
+    fn give_up_late_bodies(&mut self, silence: Duration, whole: Duration) {
+        let late = |running: &UpRunning| running.last.elapsed() >= silence || running.started.elapsed() >= whole;
+        self.running.retain(|_, running| running.task.is_some() || !late(running));
+        let given_up: Vec<u32> = self
+            .running
+            .iter()
+            .filter(|(_, running)| running.body.is_some() && late(running))
+            .map(|(id, _)| *id)
+            .collect();
+        for id in given_up {
+            self.refuse(id, StatusCode::REQUEST_TIMEOUT, true);
+        }
+    }
 }
 
 // ── The bridge ──

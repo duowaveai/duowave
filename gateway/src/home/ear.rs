@@ -403,7 +403,27 @@ struct Join {
 async fn join(State(app): State<Arc<App>>, caller: Caller, Body(body): Body<Value>) -> ApiResult<Value> {
     caller.permitted(crate::core::identity::permissions::STATIONS_MANAGE)?;
     let wanted: Join = serde_json::from_value(body).map_err(|_| ApiError::bad_request("{station}".to_string()))?;
-    let centre = super::devices::centre_elsewhere(&app)
+    join_station(&app, &wanted.station).await?;
+    Ok(ok(json!({ "joined": wanted.station })))
+}
+
+/// The centre this computer is the Turbo of, as an ear dials it: its address, port, pair key and name.
+#[cfg(feature = "pc")]
+pub fn centre_for_ear(app: &App) -> Result<(String, u16, String, Option<String>), ApiError> {
+    let centre = super::devices::centre_elsewhere(app)
+        .ok_or_else(|| ApiError::conflict(crate::tr!("Центр дома не на колонке: подключать ухом не к чему.")))?;
+    let record = centre
+        .record()
+        .ok_or_else(|| ApiError::conflict(crate::tr!("Центр дома не на колонке: подключать ухом не к чему.")))?;
+    let key = centre.pair_key().ok_or_else(|| ApiError::conflict(crate::tr!("Нет ключа пары центра.")))?;
+    Ok((record.address, record.port, key, centre.name()))
+}
+
+/// A station this computer knows (its pair key) becomes the centre's ear: the centre's address and key handed to it.
+#[cfg(feature = "pc")]
+pub async fn join_station(app: &App, station: &str) -> Result<(), ApiError> {
+    let wanted = Join { station: station.to_string() };
+    let centre = super::devices::centre_elsewhere(app)
         .ok_or_else(|| ApiError::conflict(crate::tr!("Центр дома не на колонке: подключать ухом не к чему.")))?;
     if centre.key() == wanted.station {
         return Err(ApiError::conflict(crate::tr!("Это и есть центр дома.")));
@@ -426,7 +446,7 @@ async fn join(State(app): State<Arc<App>>, caller: Caller, Body(body): Body<Valu
     let body = json!({ "address": record.address, "port": record.port, "key": key, "name": centre.name() });
     station.put("/api/v1/home/ear", body).await.map_err(ApiError::unavailable)?;
     app.events.emit(GatewayEvent::HomeDevicesChanged { reason: "join".into() });
-    Ok(ok(json!({ "joined": wanted.station })))
+    Ok(())
 }
 
 #[cfg(not(feature = "pc"))]

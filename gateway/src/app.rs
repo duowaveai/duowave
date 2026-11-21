@@ -185,6 +185,8 @@ pub struct App {
     /// The station link (src/gateway/mode, src/gateway/uniproxy): the station's mode, and its live sessions.
     pub modes: Arc<ModeService>,
     pub sessions: Arc<SessionRegistry>,
+    /// The requests into the home by a code, while this gateway is its centre (src/home/join.rs).
+    pub joins: Arc<crate::home::join::Joins>,
     /// When this gateway started: uptime, and the stations' «reconnecting».
     pub started: Instant,
     pub started_at: String,
@@ -209,6 +211,10 @@ impl App {
         crate::models::home_voice::watch_follow(self);
         crate::home::telegram::watch(self);
         crate::home::copy::watch(self);
+        // «Поиск дома» (docs/plans/home-setup-flow.md, stage 6): this computer or server says what it is on the home
+        // network — a centre, a Turbo, an ear — so another computer finds its home on any port.
+        #[cfg(feature = "pc")]
+        crate::home::announce::start(self.clone());
         // The apps' faces here, their code on the Турбо (stage 5б).
         crate::home::apps::watch(self);
         // A second station as the centre's ear: its copy of the home (stage 4).
@@ -224,6 +230,9 @@ impl App {
         #[cfg(feature = "pc")]
         self.builtin.start();
         self.helpers.start();
+        // A Turbo at home that moved to another address is found again by its announcement (stage 6).
+        #[cfg(feature = "pc")]
+        self.helpers.search_moved();
         #[cfg(feature = "pc")]
         self.station_gateway.start();
         // The live channel of each station whose gateway runs on it, relayed to this gateway's panels.
@@ -1727,6 +1736,7 @@ impl App {
             moves,
             modes: mode_service,
             sessions: station_sessions,
+            joins: Arc::new(crate::home::join::Joins::new()),
             started: Instant::now(),
             started_at: now_iso(),
         });
@@ -1736,11 +1746,23 @@ impl App {
         // What needs the whole app joins here (stage 6: the built-in helper; stage 7: the link).
         #[cfg(feature = "pc")]
         app.link.attach(Arc::downgrade(&app));
+        // A linked helper's own requests (`up`) go into this gateway's routes (stage 7 of home-setup-flow).
+        app.helpers.attach(Arc::downgrade(&app));
+        // The home this computer is the Turbo of over the link, for /health's `placement.centre`.
+        #[cfg(feature = "pc")]
+        {
+            let weak = Arc::downgrade(&app);
+            app.placement
+                .set_centre(Arc::new(move || weak.upgrade().and_then(|app| crate::home::devices::link_centre(&app))));
+        }
         Ok(app)
     }
 
     /// Stops what runs beside the HTTP server: MCP connections and their programs, the skills' tasks.
     pub async fn shutdown(&self) {
+        // Goodbye to the home network's caches: this gateway is not there to be found any more.
+        #[cfg(feature = "pc")]
+        crate::home::announce::stop().await;
         // The helpers' looks end: an engine started again in its process leaves no tick behind; the links close.
         self.helpers.stop();
         // Who this computer helped, and when it last saw them.

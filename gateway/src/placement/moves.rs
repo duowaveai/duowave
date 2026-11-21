@@ -34,7 +34,7 @@ use crate::core::events::{Actor, EventBus, GatewayEvent};
 use crate::platform::http::ApiError;
 use crate::secrets::SecretsService;
 use crate::settings::definitions::{
-    SettingsHome, StationLink, StationPlacement, StationSelf, STATION_LINKS, VOICE_PROVIDER,
+    SettingsHome, StationLink, StationPlacement, StationSelf, HOME_IDENTITY, STATION_LINKS, VOICE_PROVIDER,
 };
 use crate::settings::SettingsService;
 use crate::stations::connect::quasar_config::{
@@ -80,6 +80,9 @@ pub enum MoveTo {
     Pc,
     /// «Вернуть как было»: the station as before any gateway.
     Yandex,
+    /// «Ещё колонка» (stage 5 of docs/plans/home-setup-flow.md): DuoWave onto a second station straight as the
+    /// centre's ear — no settings of this computer go there; it takes the home's copy from the centre.
+    Ear,
 }
 
 impl MoveTo {
@@ -89,6 +92,7 @@ impl MoveTo {
             MoveTo::StationServer => "stationServer",
             MoveTo::Pc => "pc",
             MoveTo::Yandex => "yandex",
+            MoveTo::Ear => "ear",
         }
     }
 }
@@ -149,6 +153,10 @@ pub struct MoveJob {
     /// What the household should know as it goes: the port taken, the restart to come.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
+    /// Why it stopped, for the panel to offer the way on: `homeOnStation` — the station keeps a home of its own, and
+    /// «Заменить дом на колонке» moves anyway (`MoveRequest::replace_home`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
     pub started_at: String,
 }
 
@@ -162,6 +170,21 @@ pub struct MoveRequest {
     pub settings_home: SettingsHome,
     /// To the computer: take the station's gateway off it (its data kept), not only stop it.
     pub remove: bool,
+    /// The centre an ear move joins the station to: its address, port, pair key and name (MoveTo::Ear).
+    pub ear_of: Option<EarTarget>,
+    /// «Заменить дом на колонке»: the station's own home — its people, characters and settings — gives way to this
+    /// computer's. Without it a move onto a station with another home stops at the check, nothing changed (stage 0 of
+    /// docs/plans/home-setup-flow.md: «Это новый дом» had covered a station's home with this computer's settings).
+    pub replace_home: bool,
+}
+
+/// The home's centre, as a new ear dials it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EarTarget {
+    pub address: String,
+    pub port: u16,
+    pub key: String,
+    pub name: Option<String>,
 }
 
 /// How long things may take.
@@ -233,13 +256,16 @@ impl MovesService {
         if matches!(request.to, MoveTo::Pc | MoveTo::StationServer) && request.gateway.is_none() {
             return Err(ApiError::bad_request(crate::tr!("Нужен адрес этого компьютера, как его видит колонка.")));
         }
-        if matches!(request.to, MoveTo::Station | MoveTo::StationServer)
+        if request.to == MoveTo::Ear && request.ear_of.is_none() {
+            return Err(ApiError::conflict(crate::tr!("Центр дома не на колонке: подключать ухом не к чему.")));
+        }
+        if matches!(request.to, MoveTo::Station | MoveTo::StationServer | MoveTo::Ear)
             && payload::info(&self.deps.config).source == payload::PayloadSource::None
         {
             return Err(ApiError::conflict(payload::info(&self.deps.config).note));
         }
         let steps: &[MoveStep] = match request.to {
-            MoveTo::Station | MoveTo::StationServer => &[
+            MoveTo::Station | MoveTo::StationServer | MoveTo::Ear => &[
                 MoveStep::Check,
                 MoveStep::Copy,
                 MoveStep::Install,
@@ -263,6 +289,7 @@ impl MovesService {
                 steps: steps.iter().map(|id| Step { id: *id, state: StepState::Pending }).collect(),
                 error: None,
                 note: None,
+                code: None,
                 started_at: now_iso(),
             };
             let now = crate::utils::time::now_ms();
@@ -315,7 +342,9 @@ impl MovesService {
     async fn run(self: Arc<Self>, id: String, request: MoveRequest, actor: Option<Actor>) {
         let mut shell: Option<Box<dyn StationShell>> = None;
         let outcome = match request.to {
-            MoveTo::Station | MoveTo::StationServer => self.to_station(&id, &request, actor.clone(), &mut shell).await,
+            MoveTo::Station | MoveTo::StationServer | MoveTo::Ear => {
+                self.to_station(&id, &request, actor.clone(), &mut shell).await
+            }
             MoveTo::Pc => self.to_pc(&id, &request, actor.clone(), &mut shell).await,
             MoveTo::Yandex => self.to_yandex(&id, &request, actor.clone(), &mut shell).await,
         };
@@ -332,12 +361,14 @@ impl MovesService {
             }
             Err(error) => {
                 let problem = problem_of(&error);
+                let code = error.downcast_ref::<HomeOnStation>().map(|_| "homeOnStation".to_string());
                 if let Some(job) = self.jobs().get_mut(&id) {
                     if let Some(running) = job.steps.iter_mut().find(|step| step.state == StepState::Running) {
                         running.state = StepState::Failed;
                     }
                     job.status = MoveStatus::Failed;
                     job.error = Some(problem.clone());
+                    job.code = code;
                 }
                 tracing::warn!("placement: the move to {} failed: {problem}", request.to.as_str());
                 self.audit(&id, "failed", actor);
@@ -479,6 +510,9 @@ impl MovesService {
         let payload = (self.deps.payload)(self.deps.config.clone()).await.map_err(|error| anyhow::anyhow!(error))?;
         let program = payload.program().map_err(|error| anyhow::anyhow!(error))?;
         let now = self.check(shell.as_deref().unwrap(), true, program.len() as u64).await?;
+        if !request.replace_home {
+            self.no_other_home(address, shell.as_deref().unwrap()).await?;
+        }
         self.step(id, MoveStep::Check, StepState::Done);
 
         // The way back, before anything changes: what the firmware's own file says (under our copy, when one is
@@ -549,6 +583,24 @@ impl MovesService {
             );
         }
         self.step(id, MoveStep::Install, StepState::Done);
+
+        // An ear: no settings of this computer go there — it starts as it is and takes the home's copy from the centre.
+        if let Some(centre) = request.ear_of.as_ref().filter(|_| request.to == MoveTo::Ear) {
+            self.step(id, MoveStep::Settings, StepState::Running);
+            self.run_ok(shell_ref, &format!("{SERVICE_COMMAND} start"), None).await?;
+            let client = PeerClient::new(address, port, &key);
+            self.wait(self.deps.timing.start_ms, || async { client.health().await.is_ok() })
+                .await
+                .ok_or_else(|| anyhow::anyhow!(crate::tr!("DuoWave на колонке не запустился: duowave station log.")))?;
+            let body =
+                json!({ "address": centre.address, "port": centre.port, "key": centre.key, "name": centre.name });
+            client
+                .put("/api/v1/home/ear", body)
+                .await
+                .map_err(|error| anyhow::anyhow!(crate::tr!("Колонка не стала ухом центра: {error}", error = error)))?;
+            self.step(id, MoveStep::Settings, StepState::Done);
+            return self.point_and_arrive(id, request, actor, shell, address, port, &key, &watch, None).await;
+        }
 
         // The settings go before its first start: it starts on them.
         self.step(id, MoveStep::Settings, StepState::Running);
@@ -661,6 +713,25 @@ impl MovesService {
         }
         self.step(id, MoveStep::Settings, StepState::Done);
 
+        self.point_and_arrive(id, request, actor, shell, address, port, &key, &watch, home.map(|(_, _, id)| id)).await
+    }
+
+    /// The station's voice to its new gateway, the reboot, and the wait for it to come back talking to it — the end
+    /// of every move onto a station, an ear's too.
+    #[allow(clippy::too_many_arguments)]
+    async fn point_and_arrive(
+        &self,
+        id: &str,
+        request: &MoveRequest,
+        actor: Option<Actor>,
+        shell: &mut Option<Box<dyn StationShell>>,
+        address: &str,
+        port: u16,
+        key: &str,
+        watch: &StationGateway,
+        home_key_id: Option<String>,
+    ) -> anyhow::Result<bool> {
+        let shell_ref = shell.as_deref().ok_or_else(|| anyhow::anyhow!("the station's shell is closed"))?;
         self.step(id, MoveStep::Point, StepState::Running);
         self.run_ok(shell_ref, &format!("{BIN} station point local --reboot"), None).await?;
         if let Some(shell) = shell.take() {
@@ -669,6 +740,7 @@ impl MovesService {
         self.step(id, MoveStep::Point, StepState::Done);
 
         self.step(id, MoveStep::Arrive, StepState::Running);
+        let client = PeerClient::new(address, port, key);
         let record = StationPlacement {
             placement: if request.to == MoveTo::StationServer { Placement::StationServer } else { Placement::Station },
             address: address.to_string(),
@@ -677,7 +749,7 @@ impl MovesService {
             settings_home: request.settings_home,
             auto_update: false,
             managed: true,
-            home_key_id: home.map(|(_, _, id)| id),
+            home_key_id,
             moved_at: Some(now_iso()),
         };
         watch.set_record(Some(&record), actor).map_err(|error| anyhow::anyhow!(error.message))?;
@@ -884,6 +956,39 @@ impl MovesService {
 
     /// This computer's choice of voice when it gives a voice of its own (`own`, `mixed`), as it speaks now: what the
     /// station speaks with while this computer is its server. None: Alice's here — the station keeps its own choice.
+    /// A station that keeps a home of its own is not this computer's to cover: the move goes on only onto a station
+    /// without one, or whose home is this computer's (a move made from here before). Read, changes nothing: its
+    /// gateway's own /health (the home's id) and /api/v1/auth/state (people) at the port its status names, else at
+    /// 8790 — a gateway put there another way (a package) answers too.
+    async fn no_other_home(&self, address: &str, shell: &dyn StationShell) -> anyhow::Result<()> {
+        let status = shell
+            .run(&format!("{BIN} station status --json 2>/dev/null"), None)
+            .await
+            .ok()
+            .filter(|result| result.code == 0)
+            .and_then(|result| serde_json::from_str::<Value>(&result.stdout).ok());
+        let installed =
+            status.as_ref().and_then(|status| status.get("installed")).and_then(Value::as_bool) == Some(true);
+        let port = status
+            .as_ref()
+            .and_then(|status| status.get("port"))
+            .and_then(Value::as_u64)
+            .and_then(|port| u16::try_from(port).ok())
+            .unwrap_or(super::station_fs::DEFAULT_PORT);
+        let ours = self.deps.settings.get(&HOME_IDENTITY, None).map(|home| home.id);
+        // The home this computer moved onto the station before: its record says so.
+        let moved_here = self.watch_for(address).record().is_some_and(|record| record.managed);
+        match home_at(address, port).await {
+            Some(found) if found.home.is_some() && found.home == ours => Ok(()),
+            Some(found) if !found.people => Ok(()),
+            // A gateway from before the home's id: the record is all there is to go by.
+            Some(found) if found.home.is_none() && moved_here => Ok(()),
+            Some(_) => Err(HomeOnStation { silent: false }.into()),
+            None if !installed || moved_here => Ok(()),
+            None => Err(HomeOnStation { silent: true }.into()),
+        }
+    }
+
     fn voice_given(&self) -> Option<TtsProvider> {
         let stored = self.deps.settings.get(&VOICE_PROVIDER, None).and_then(|provider| TtsProvider::parse(&provider));
         let provider = crate::speech::voice_service::provider_at_start(&self.deps.config.gateway.tts, stored);
@@ -1060,6 +1165,51 @@ impl MovesService {
     }
 }
 
+/// The station keeps a home of its own: the move stopped at the check, nothing changed. `silent` — its gateway is
+/// there and does not answer, so whether it keeps one cannot be told.
+#[derive(Debug)]
+pub struct HomeOnStation {
+    pub silent: bool,
+}
+
+impl std::fmt::Display for HomeOnStation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&if self.silent {
+            crate::tr!("На колонке стоит DuoWave, но он не отвечает: не видно, есть ли там свой дом. Перенос заменит всё, что на колонке, домом этого компьютера. Заменить можно только явно: «Заменить дом на колонке».")
+        } else {
+            crate::tr!("На колонке свой дом DuoWave: его люди, персонажи и настройки. Перенос заменит его домом этого компьютера — они пропадут. Чтобы этот компьютер помогал тому дому, подключите его Турбо; заменить дом можно только явно: «Заменить дом на колонке».")
+        })
+    }
+}
+
+impl std::error::Error for HomeOnStation {}
+
+/// What a station's gateway says of its home: its id (none from a gateway before the home's id) and whether people
+/// are in it. None — nothing answers there as a gateway of ours.
+struct HomeThere {
+    home: Option<String>,
+    people: bool,
+}
+
+async fn home_at(address: &str, port: u16) -> Option<HomeThere> {
+    let client = crate::utils::http::client();
+    let read = |path: &str| {
+        let request = client.get(format!("http://{address}:{port}{path}")).timeout(Duration::from_secs(5));
+        async move {
+            let answer: Value = request.send().await.ok()?.json().await.ok()?;
+            // The API's envelope ({code, message}); a gateway from before it answered bare.
+            Some(answer.get("message").filter(|message| message.is_object()).cloned().unwrap_or(answer))
+        }
+    };
+    let health = read("/health").await?;
+    health.pointer("/build/version")?;
+    let state = read("/api/v1/auth/state").await?;
+    Some(HomeThere {
+        home: health.pointer("/home/id").and_then(Value::as_str).map(str::to_string),
+        people: state.get("configured").and_then(Value::as_bool)?,
+    })
+}
+
 /// The program the station's service names, and `program-missing` when it is not there; nothing without the service.
 fn program_look() -> String {
     format!(
@@ -1150,6 +1300,11 @@ mod tests {
         received: Mutex<Option<String>>,
         /// What its gateway's /api/v1/home-server/link was sent.
         links: Mutex<Vec<Value>>,
+        /// Its gateway's home: people in it, and its id (none from a gateway before the home's id).
+        people: AtomicBool,
+        home: Mutex<Option<String>>,
+        /// What its gateway's /api/v1/home/ear was told: the centre it is the ear of.
+        ears: Mutex<Vec<Value>>,
     }
 
     impl Station {
@@ -1403,16 +1558,38 @@ mod tests {
                         if !station.started.load(Ordering::Relaxed) {
                             return Err(axum::http::StatusCode::SERVICE_UNAVAILABLE);
                         }
+                        let home = station.home.lock().unwrap().clone().map(|id| json!({ "id": id }));
                         Ok(axum::Json(json!({"message": {
                             "status": "ok",
                             "build": {"version": crate::VERSION, "peerApi": crate::core::build::PEER_API},
                             "station": {"connected": station.connected.load(Ordering::Relaxed), "lastSeenAt": now_iso()},
-                            "placement": {"role": "station", "settingsRevision": 1}
+                            "placement": {"role": "station", "settingsRevision": 1},
+                            "home": home,
                         }})))
                     }
                 }),
             )
+            .route("/api/v1/auth/state", {
+                let station = station.clone();
+                get(move || {
+                    let station = station.clone();
+                    async move {
+                        if !station.started.load(Ordering::Relaxed) {
+                            return Err(axum::http::StatusCode::SERVICE_UNAVAILABLE);
+                        }
+                        let configured = station.people.load(Ordering::Relaxed);
+                        Ok(axum::Json(json!({"message": { "configured": configured, "accounts": usize::from(configured) }})))
+                    }
+                })
+            })
             .route("/api/v1/placement/settings-home", post(|| async { axum::Json(json!({"message": {}})) }))
+            .route("/api/v1/home/ear", {
+                let station = station.clone();
+                axum::routing::put(move |axum::Json(body): axum::Json<Value>| {
+                    station.ears.lock().unwrap().push(body);
+                    async { axum::Json(json!({"message": {}})) }
+                })
+            })
             .route(
                 "/api/v1/home-server/link",
                 post(move |axum::Json(body): axum::Json<Value>| {
@@ -1448,6 +1625,7 @@ mod tests {
     struct Computer {
         moves: Arc<MovesService>,
         watch: Arc<StationGateway>,
+        settings: Arc<SettingsService>,
         secrets: Arc<SecretsService>,
         events: EventBus,
         restarts: Arc<AtomicUsize>,
@@ -1484,6 +1662,9 @@ mod tests {
             commands: Mutex::new(Vec::new()),
             received: Mutex::new(None),
             links: Mutex::new(Vec::new()),
+            people: AtomicBool::new(false),
+            home: Mutex::new(None),
+            ears: Mutex::new(Vec::new()),
         });
         tokio::spawn(gateway(station.clone(), listener));
 
@@ -1529,7 +1710,7 @@ mod tests {
             timing: MoveTiming { start_ms: 3000, arrival_ms: 3000, poll_ms: 20 },
             payload: pretend_build(),
         });
-        (Computer { moves, watch, secrets, events, restarts, _state: state }, station)
+        (Computer { moves, watch, settings, secrets, events, restarts, _state: state }, station)
     }
 
     async fn finished(moves: &MovesService, id: &str) -> MoveJob {
@@ -1564,6 +1745,8 @@ mod tests {
                     gateway,
                     settings_home: SettingsHome::Station,
                     remove: false,
+                    replace_home: false,
+                    ear_of: None,
                 },
                 None,
             )
@@ -1611,6 +1794,8 @@ mod tests {
                     gateway: None,
                     settings_home: SettingsHome::Station,
                     remove: false,
+                    replace_home: false,
+                    ear_of: None,
                 },
                 None,
             )
@@ -1638,6 +1823,8 @@ mod tests {
                     gateway,
                     settings_home: SettingsHome::Station,
                     remove: false,
+                    replace_home: false,
+                    ear_of: None,
                 },
                 None,
             )
@@ -1664,6 +1851,8 @@ mod tests {
                     gateway: None,
                     settings_home: SettingsHome::Station,
                     remove: false,
+                    replace_home: false,
+                    ear_of: None,
                 },
                 None,
             )
@@ -1697,6 +1886,8 @@ mod tests {
                     gateway: crate::stations::connect::quasar_config::parse_gateway_host("192.0.2.10:3000"),
                     settings_home: SettingsHome::Station,
                     remove: true,
+                    replace_home: false,
+                    ear_of: None,
                 },
                 None,
             )
@@ -1727,6 +1918,8 @@ mod tests {
             gateway: gateway.and_then(crate::stations::connect::quasar_config::parse_gateway_host),
             settings_home,
             remove: false,
+            replace_home: false,
+            ear_of: None,
         }
     }
 
@@ -1784,6 +1977,8 @@ mod tests {
                     gateway: crate::stations::connect::quasar_config::parse_gateway_host("192.0.2.10:3000"),
                     settings_home,
                     remove: false,
+                    replace_home: false,
+                    ear_of: None,
                 },
                 None,
             )
@@ -2005,6 +2200,8 @@ mod tests {
                     gateway: None,
                     settings_home: SettingsHome::Station,
                     remove: false,
+                    replace_home: false,
+                    ear_of: None,
                 },
                 None,
             )
@@ -2016,6 +2213,8 @@ mod tests {
             gateway: None,
             settings_home: SettingsHome::Station,
             remove: false,
+            replace_home: false,
+            ear_of: None,
         };
         let first = computer.moves.start(request.clone(), None).unwrap();
         assert_eq!(computer.moves.start(request, None).unwrap_err().status.as_u16(), 409);
@@ -2029,6 +2228,127 @@ mod tests {
         let _ = Target::Yandex;
     }
 
+    fn onto_station(replace_home: bool) -> MoveRequest {
+        MoveRequest {
+            to: MoveTo::Station,
+            address: "127.0.0.1".into(),
+            gateway: None,
+            settings_home: SettingsHome::Station,
+            remove: false,
+            replace_home,
+            ear_of: None,
+        }
+    }
+
+    /// Stage 5 of docs/plans/home-setup-flow.md: a second station without DuoWave becomes the centre's ear in one go —
+    /// DuoWave put there over SSH, no settings of this computer sent, the centre's address and key handed to it, its
+    /// voice to its own gateway. Without a centre to join, the move is refused before it starts.
+    #[cfg(unix)] // the pretend station runs the station's own voice.sh under sh; Windows has no sh
+    #[tokio::test]
+    async fn a_second_station_becomes_the_centres_ear_without_this_computers_settings() {
+        let (computer, station) = setup().await;
+        let mut request = onto_station(false);
+        request.to = MoveTo::Ear;
+        let refused = computer.moves.start(request.clone(), None).unwrap_err();
+        assert_eq!(refused.status.as_u16(), 409, "{}", refused.message);
+
+        request.ear_of = Some(EarTarget {
+            address: "192.0.2.7".into(),
+            port: 8790,
+            key: "the-centres-pair-key-0123456789".into(),
+            name: Some("Кухня".into()),
+        });
+        let job = computer.moves.start(request, None).unwrap();
+        let job = finished(&computer.moves, &job.id).await;
+        assert_eq!(job.status, MoveStatus::Done, "{:?}", job.error);
+        assert!(station.received.lock().unwrap().is_none(), "no settings of this computer went there");
+        let ears = station.ears.lock().unwrap().clone();
+        assert_eq!(ears.len(), 1, "{ears:?}");
+        assert_eq!(
+            (ears[0]["address"].as_str(), ears[0]["key"].as_str()),
+            (Some("192.0.2.7"), Some("the-centres-pair-key-0123456789"))
+        );
+        assert!(station.fs.status(&station.system).local, "its voice to its own gateway, the ear");
+        assert_eq!(computer.watch.record().map(|record| record.placement), Some(Placement::Station));
+    }
+
+    /// Stage 0 of docs/plans/home-setup-flow.md: «Это новый дом» moved this computer's home over a station's own — its
+    /// people, characters and settings gone (test 21.11). A station whose gateway keeps another home with people, or
+    /// whose gateway is there and silent, now stops the move at the check: nothing sent, nothing pointed, the panel
+    /// told by `homeOnStation`. «Заменить дом на колонке» moves as before.
+    #[cfg(unix)] // the replacing move runs the station's own voice.sh under sh; Windows has no sh
+    #[tokio::test]
+    async fn a_station_with_a_home_of_its_own_refuses_the_move_unless_asked_to_replace_it() {
+        let (computer, station) = setup().await;
+        // DuoWave there already, as a terminal install leaves it: its own home, people in it, no record here.
+        let first = computer.moves.start(onto_station(false), None).unwrap();
+        assert_eq!(finished(&computer.moves, &first.id).await.status, MoveStatus::Done, "a station without DuoWave");
+        computer.watch.set_record(None, None).unwrap();
+        *station.home.lock().unwrap() = Some("the-stations-own-home".into());
+        station.people.store(true, Ordering::Relaxed);
+        *station.received.lock().unwrap() = None;
+        let commands = station.commands.lock().unwrap().len();
+
+        let refused = computer.moves.start(onto_station(false), None).unwrap();
+        let refused = finished(&computer.moves, &refused.id).await;
+        assert_eq!((refused.status, refused.code.as_deref()), (MoveStatus::Failed, Some("homeOnStation")));
+        assert!(
+            refused.error.as_deref().unwrap_or_default().contains("Заменить дом на колонке"),
+            "{:?}",
+            refused.error
+        );
+        assert_eq!(states(&refused)[0], (MoveStep::Check, StepState::Failed));
+        let sent: Vec<String> = station.commands.lock().unwrap()[commands..].to_vec();
+        assert!(
+            !sent.iter().any(|command| command.contains("receive-settings") || command.contains(" point ")),
+            "nothing sent or pointed: {sent:?}"
+        );
+        assert!(station.received.lock().unwrap().is_none() && computer.watch.record().is_none());
+
+        // Its gateway there and silent: whether it keeps a home cannot be told — refused the same way.
+        station.started.store(false, Ordering::Relaxed);
+        let silent = computer.moves.start(onto_station(false), None).unwrap();
+        let silent = finished(&computer.moves, &silent.id).await;
+        assert_eq!((silent.status, silent.code.as_deref()), (MoveStatus::Failed, Some("homeOnStation")));
+        assert!(silent.error.as_deref().unwrap_or_default().contains("не отвечает"), "{:?}", silent.error);
+        station.started.store(true, Ordering::Relaxed);
+
+        let replaced = computer.moves.start(onto_station(true), None).unwrap();
+        let replaced = finished(&computer.moves, &replaced.id).await;
+        assert_eq!((replaced.status, replaced.code), (MoveStatus::Done, None), "{:?}", replaced.error);
+        assert!(station.received.lock().unwrap().is_some(), "this computer's home went there");
+    }
+
+    /// The home this computer moved onto the station is its own: the same home's id there, or the record of the move
+    /// for a gateway from before the home's id — a move again goes on without asking; so does a station whose gateway
+    /// has nobody in it.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_computers_own_home_on_the_station_and_an_empty_one_move_again_without_asking() {
+        let (computer, station) = setup().await;
+        let first = computer.moves.start(onto_station(false), None).unwrap();
+        assert_eq!(finished(&computer.moves, &first.id).await.status, MoveStatus::Done);
+        station.people.store(true, Ordering::Relaxed);
+        // A gateway from before the home's id, moved there from here: the record says it is this home.
+        let again = computer.moves.start(onto_station(false), None).unwrap();
+        assert_eq!(finished(&computer.moves, &again.id).await.status, MoveStatus::Done, "the record");
+
+        computer.watch.set_record(None, None).unwrap();
+        let ours = crate::settings::definitions::HomeIdentity { id: "this-home".into(), name: None };
+        computer.settings.set(&HOME_IDENTITY, &ours, None).unwrap();
+        *station.home.lock().unwrap() = Some("this-home".into());
+        let same = computer.moves.start(onto_station(false), None).unwrap();
+        let same = finished(&computer.moves, &same.id).await;
+        assert_eq!(same.status, MoveStatus::Done, "the same home's id: {:?}", same.error);
+
+        computer.watch.set_record(None, None).unwrap();
+        *station.home.lock().unwrap() = Some("a-home-nobody-is-in".into());
+        station.people.store(false, Ordering::Relaxed);
+        let empty = computer.moves.start(onto_station(false), None).unwrap();
+        let empty = finished(&computer.moves, &empty.id).await;
+        assert_eq!(empty.status, MoveStatus::Done, "nobody there: {:?}", empty.error);
+    }
+
     /// Live 16.11: 26 MB free in /data and an earlier move's 23 MB program in place — the move refused it as «нужно
     /// 33 МБ», though the program it replaces gives its room back. It counts now; without one, short room still refuses.
     #[tokio::test]
@@ -2039,6 +2359,8 @@ mod tests {
             gateway: None,
             settings_home: SettingsHome::Station,
             remove: false,
+            replace_home: false,
+            ear_of: None,
         };
         let (computer, station) = setup().await;
         std::fs::write(station.fs.path("/data/free-kb"), "6000").unwrap();
@@ -2069,6 +2391,8 @@ mod tests {
                     gateway: None,
                     settings_home: SettingsHome::Station,
                     remove: false,
+                    replace_home: false,
+                    ear_of: None,
                 },
                 None,
             )
@@ -2107,6 +2431,8 @@ mod tests {
                     gateway: None,
                     settings_home: SettingsHome::Station,
                     remove: false,
+                    replace_home: false,
+                    ear_of: None,
                 },
                 None,
             )

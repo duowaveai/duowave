@@ -27,6 +27,16 @@ const STATION_PORT = 8790;
 /** «Подождать ещё»: столько ещё ждём колонку после 3 минут шлюза. */
 const WAIT_MORE_MS = 3 * 60_000;
 
+/**
+ * Колонки в другом доме: «Это новый дом» в первых шагах (этап 0 плана home-setup-flow) — шаг «Колонка» их не берёт и
+ * не показывает: ни подключения мастера, ни переноса на них, их дом остаётся как был.
+ */
+const elsewhere = new Set<string>();
+export function avoidStations(addresses: string[]): void {
+    addresses.forEach((address) => elsewhere.add(address));
+}
+const ours = (stations: FoundStation[]): FoundStation[] => stations.filter((station) => !elsewhere.has(station.address));
+
 // ─── Подключение и перенос: живут вне экрана ──────────────────────────
 
 type Phase = 'connecting' | 'moving' | 'waiting' | 'timeout' | 'failed' | 'restoring' | 'restored' | 'done';
@@ -676,9 +686,10 @@ export function SpeakerStep() {
                 if (!alive) return;
                 const gw = gateway || result.gateway?.[0] || '';
                 setGateway(gw);
-                setFound(result.stations);
+                const stations = ours(result.stations);
+                setFound(stations);
                 setWhyNone(result.whyNone ?? null);
-                const first = result.stations.find((station) => station.ssh) ?? result.stations[0];
+                const first = stations.find((station) => station.ssh) ?? stations[0];
                 if (first) void read(first.address, gw);
             } catch {
                 if (alive) setFound([]);
@@ -694,9 +705,10 @@ export function SpeakerStep() {
         if (address) return read(address);
         try {
             const result = await api.discoverStations();
-            setFound(result.stations);
+            const stations = ours(result.stations);
+            setFound(stations);
             setWhyNone(result.whyNone ?? null);
-            const first = result.stations.find((entry) => entry.ssh) ?? result.stations[0];
+            const first = stations.find((entry) => entry.ssh) ?? stations[0];
             if (first) void read(first.address);
         } catch {
             // Поиск не ответил — остаётся адрес руками.

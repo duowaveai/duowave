@@ -16,6 +16,12 @@ const params = (() => {
 /** Колонка, на которую смотрит этот пульт через проход помощника; null — пульт своего шлюза. */
 export const VIA: string | null = params.get('via')?.trim() || null;
 
+/**
+ * Окно дома, чей центр — другой компьютер или сервер, а этот компьютер его Турбо по связи (ключ `link:…`, этап 7 плана
+ * home-setup-flow): проход тот же, но центр — не колонка.
+ */
+export const VIA_LINK: boolean = !!VIA && VIA.startsWith('link:');
+
 /** Раздел, который окно помощника открыло. */
 export const WINDOW: string | null = params.get('window')?.trim() || null;
 
@@ -54,9 +60,9 @@ export function gw(path: string): string {
     return BASE && path.startsWith('/') && !path.startsWith('//') ? `${BASE}${path}` : path;
 }
 
-/** Подпись кнопки сохранения: в окне колонки — «Сохранить на колонке». */
+/** Подпись кнопки сохранения: в окне колонки — «Сохранить на колонке»; в окне центра-компьютера — как есть. */
 export function saveLabel(label = tr.core.saveLabel): string {
-    return VIA ? tr.core.saveOnStation(label) : label;
+    return VIA && !VIA_LINK ? tr.core.saveOnStation(label) : label;
 }
 
 // Копия вместо ответа: колонка не на связи, шлюз компьютера показывает, что помнит.

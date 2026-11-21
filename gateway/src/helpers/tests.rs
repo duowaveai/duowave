@@ -1388,6 +1388,7 @@ fn idle_link(station: &Station, id: &str, key: &str, pin: HelperPin) -> Arc<link
         key: key.into(),
         helper_id: entry.helper_id.clone().unwrap_or_default(),
         me: Arc::new(remote::Me::default_for_tests),
+        up: None,
     };
     let held = link::Link::idle(setup, LinkTiming::default(), Arc::new(|_: &str, _: LinkNews| {}));
     remote.hold_link(held.clone());

@@ -27,6 +27,7 @@ use tauri::{
 use tauri_plugin_autostart::MacosLauncher;
 use tauri_plugin_autostart::ManagerExt as _;
 use tauri_plugin_dialog::DialogExt;
+use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_opener::OpenerExt;
 
 /// Passed by the login item: the app starts in the tray, without the window.
@@ -158,6 +159,39 @@ fn main() {
                     .flatten();
                     picked.and_then(|path| path.into_path().ok())
                 })
+            }));
+            // Into the home by a code (docs/plans/home-setup-flow.md, stage 2): this computer is the home's centre and
+            // a Turbo or an ear asks in — the code in a notification, and the window comes up with the request's card
+            // (the panel reads it on `home.join`), «Разрешить» there.
+            let shower = handle.clone();
+            duowave::home::join_say::set_shower(Arc::new(move |shown: duowave::home::join_say::ShownCode| {
+                let app = shower.clone();
+                let code = duowave::home::join_say::shown(&shown.code);
+                let _ = shower.run_on_main_thread(move || {
+                    show_window(&app);
+                    let told = app
+                        .notification()
+                        .builder()
+                        .title(t(
+                            &format!("Код подключения: {code}"),
+                            &format!("Connection code: {code}"),
+                        ))
+                        .body(t(
+                            &format!(
+                                "«{}» просится в дом. Введите код на нём или нажмите «Разрешить» в пульте.",
+                                shown.name
+                            ),
+                            &format!(
+                                "“{}” asks to join the home. Type the code there or press “Allow” in the panel.",
+                                shown.name
+                            ),
+                        ))
+                        .show();
+                    if let Err(error) = told {
+                        app.state::<Arc<Gateway>>()
+                            .note(&format!("join code notification: {error}"));
+                    }
+                });
             }));
             let listener = handle.clone();
             gateway.on_change(move |status| status_changed(&listener, status.clone()));

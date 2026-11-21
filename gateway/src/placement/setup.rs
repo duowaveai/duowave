@@ -5,11 +5,13 @@
 //! points the station's voice at it and waits for it to come back after the reboot. The computer is not needed after.
 //!
 //! The same steps as the panel's move to the station (moves.rs), without the computer's own gateway: no settings to
-//! take along, no home server — the station's gateway starts fresh and its own panel asks for a password.
+//! take along, no home server — the station's gateway starts fresh. At the end the person makes up the panel's
+//! password here, and the station sets it itself (`duowave panel setup`); without one its panel asks for it, with the
+//! first-run code this prints.
 //! Nothing changes on the station before the person's «да», and other mods are only turned off by their own switch,
 //! each after its own «да».
 
-use std::io::{BufRead, Write};
+use std::io::{BufRead, IsTerminal as _, Write};
 use std::time::Duration;
 
 use serde_json::Value;
@@ -17,6 +19,7 @@ use serde_json::Value;
 use super::moves::{NEEDED_KB, NEEDED_MEMORY_KB};
 use super::payload;
 use super::station_fs::{BIN, DATA, DEFAULT_PORT, DIR, SERVICE_COMMAND};
+use crate::access::passwords::password_problem;
 use crate::config::Config;
 use crate::stations::connect::discovery::{discover_stations, NoBanner, Unreached};
 use crate::stations::connect::neighbours::{self, Neighbour, Severity};
@@ -126,7 +129,15 @@ async fn run(args: &[String]) -> Result<(), Stop> {
     let port = result?;
     if let Some(port) = port {
         if arrive(&address, port).await {
-            setup_code(&address, port, &opener, options).await;
+            // The panel's password is asked of a person at the terminal only: `--yes` asks nothing, and a stdin that is
+            // not a terminal (a script) has nobody to type it — the first-run code then, as before.
+            let asking = !yes && std::io::stdin().is_terminal();
+            let mut ask = |question: &str| if asking { rpassword::prompt_password(question).ok() } else { None };
+            let panel = panel_password(&address, port, &opener, options, &mut ask).await;
+            println!();
+            for line in ending(&address, port, &panel) {
+                println!("{line}");
+            }
         }
     }
     Ok(())
@@ -347,15 +358,7 @@ async fn arrive(address: &str, port: u16) -> bool {
     .await;
     if came {
         done();
-        println!(
-            "\n{}",
-            crate::tr!(
-                "Готово: DuoWave на колонке. Панель — http://{address}:{port}/ — задайте пароль и выберите, кто отвечает.",
-                address = address,
-                port = port
-            )
-        );
-        println!("{}", crate::tr!("Компьютер больше не нужен."));
+        println!("\n{}", crate::tr!("Готово: DuoWave на колонке."));
         true
     } else {
         println!();
@@ -372,39 +375,149 @@ async fn arrive(address: &str, port: u16) -> bool {
     }
 }
 
-/// The panel's first-run code (test 19.11, remark 19): the speaker's panel asks it of anyone not on the speaker itself,
-/// and it lives only in the speaker's log — a person without SSH could not get it. The gateway makes a new one at every
-/// start, so it is read after the reboot, from the same SSH; a panel with its password set already asks none.
-async fn setup_code(address: &str, port: u16, opener: &RusshOpener, options: ShellOptions) {
-    let state = async {
-        let client = reqwest::Client::builder().timeout(Duration::from_secs(3)).build().ok()?;
-        let body: Value =
-            client.get(format!("http://{address}:{port}/api/v1/auth/state")).send().await.ok()?.json().await.ok()?;
-        body.pointer("/message/configured").and_then(Value::as_bool)
-    };
-    if state.await != Some(false) {
-        return;
+/// What became of the panel's password at the end of the setup.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Panel {
+    /// Made up here and set on the station: the panel opens with it.
+    Set,
+    /// The panel had its password already (DuoWave was there, with its data).
+    Had,
+    /// The panel asks for a password itself, with the first-run code: read from the station's log, or where it is.
+    Code(Option<String>),
+    /// The panel asks for a password itself; whether it has none was not heard, so nothing is said of a code.
+    Asks,
+}
+
+/// How many times a panel password is made up before the setup leaves it to the panel.
+const PANEL_TRIES: usize = 3;
+
+/// The panel's password, once the station is back (docs/plans/home-setup-flow.md, stage 1). Test 21.11: a tester
+/// needed four secrets, and the panel's first-run code lived only in the station's log (test 19.11, remark 19). Made
+/// up here — asked twice, with no echo — and given to the station's own `duowave panel setup` over SSH, the way in the
+/// install found (`options`, root's password too): into the command's stdin, never its command line. The station's
+/// gateway takes it from loopback, with no code. No password (an empty answer, no terminal, `--yes`) — the first-run
+/// code from the station's log, as before: the gateway makes a new one at every start, so it is read after the reboot.
+/// A panel that has its password already is asked nothing.
+async fn panel_password(
+    address: &str,
+    port: u16,
+    opener: &dyn ShellOpener,
+    options: ShellOptions,
+    ask: &mut dyn FnMut(&str) -> Option<String>,
+) -> Panel {
+    let configured = configured(address, port).await;
+    if configured == Some(true) {
+        return Panel::Had;
     }
-    let read = async {
-        let shell = opener.open(address, options).await.ok()?;
-        let line = shell.run(&format!("grep 'первая настройка пульта' {DATA}/gateway.log | tail -n 1"), None).await;
-        shell.close().await;
-        code_in(&line.ok()?.stdout)
-    };
-    match read.await {
-        Some(code) => println!(
-            "{}",
-            crate::tr!("Код первой настройки панели: {code} — панель спросит его вместе с паролем.", code = code)
-        ),
-        None => println!(
-            "{}",
-            crate::tr!(
-                "Панель спросит код первой настройки — он в журнале колонки: ssh -p 2222 root@{address} \"grep 'первая настройка' {log} | tail -n 1\"",
-                address = address,
-                log = format!("{DATA}/gateway.log")
-            )
-        ),
+    let unset = configured == Some(false);
+    match opener.open(address, options).await {
+        Ok(shell) => {
+            let panel = on_station(shell.as_ref(), unset, ask).await;
+            shell.close().await;
+            panel
+        }
+        Err(_) if unset => Panel::Code(None),
+        Err(_) => Panel::Asks,
     }
+}
+
+/// Whether the station's panel has its password, as it tells the home network; None — no answer.
+async fn configured(address: &str, port: u16) -> Option<bool> {
+    let client = reqwest::Client::builder().timeout(Duration::from_secs(3)).build().ok()?;
+    let body: Value =
+        client.get(format!("http://{address}:{port}/api/v1/auth/state")).send().await.ok()?.json().await.ok()?;
+    body.pointer("/message/configured").and_then(Value::as_bool)
+}
+
+/// In the station's shell: the password made up here, set by the station's own `duowave panel setup` — else the
+/// first-run code from its log. `unset`: the panel said it has none, so the log's last code is this start's.
+async fn on_station(shell: &dyn StationShell, unset: bool, ask: &mut dyn FnMut(&str) -> Option<String>) -> Panel {
+    if let Some(password) = choose_password(ask) {
+        step(&crate::tr!("Задаю пароль пульта"));
+        let input = crate::access::cli::input("", &password);
+        match shell.run(&panel_command(), Some(&input)).await {
+            Ok(result) if result.code == crate::access::cli::ALREADY_SET_UP => {
+                println!();
+                return Panel::Had;
+            }
+            result => match result.and_then(finished) {
+                Ok(_) => {
+                    done();
+                    return Panel::Set;
+                }
+                Err(why) => {
+                    println!();
+                    println!("  {}", crate::tr!("Пароль пульта не задался: {why}", why = why));
+                }
+            },
+        }
+    }
+    if !unset {
+        return Panel::Asks;
+    }
+    let line = shell.run(&format!("grep 'первая настройка пульта' {DATA}/gateway.log | tail -n 1"), None).await;
+    Panel::Code(line.ok().and_then(|line| code_in(&line.stdout)))
+}
+
+/// The panel's password, made up at the terminal: typed twice, the same both times and long enough for the panel —
+/// three tries. None: no answer (an empty one, or nobody to ask) — the panel asks for one itself.
+fn choose_password(ask: &mut dyn FnMut(&str) -> Option<String>) -> Option<String> {
+    let mut question = crate::tr!("Придумайте пароль пульта (символы не видны; пусто — задать потом в пульте): ");
+    for _ in 0..PANEL_TRIES {
+        let typed = ask(&question)?.trim_end_matches(['\r', '\n']).to_string();
+        if typed.is_empty() {
+            return None;
+        }
+        if let Some(problem) = password_problem(Some(&Value::String(typed.clone()))) {
+            question = format!("{problem} {}", crate::tr!("Придумайте другой (пусто — задать потом в пульте): "));
+            continue;
+        }
+        let again =
+            ask(&crate::tr!("Повторите пароль: ")).map(|again| again.trim_end_matches(['\r', '\n']).to_string());
+        if again.as_deref() == Some(typed.as_str()) {
+            return Some(typed);
+        }
+        question = crate::tr!("Пароли не совпали. Придумайте пароль ещё раз (пусто — задать потом в пульте): ");
+    }
+    println!("{}", crate::tr!("Пароль пульта не задан: задайте его в пульте."));
+    None
+}
+
+/// The station's own `duowave panel setup`, in this terminal's language.
+fn panel_command() -> String {
+    match crate::locale::text::household_now().as_deref().and_then(crate::locale::normalize) {
+        Some(language) => format!("{BIN} panel setup --lang {language}"),
+        None => format!("{BIN} panel setup"),
+    }
+}
+
+/// The last words: the panel's address and how it is signed in to, then what the computer is for now.
+fn ending(address: &str, port: u16, panel: &Panel) -> Vec<String> {
+    let url = format!("http://{address}:{port}/");
+    let mut lines = vec![match panel {
+        Panel::Set => crate::tr!("Пульт — {url} — вход с этим паролем. Там же выберите, кто отвечает.", url = url),
+        Panel::Had => crate::tr!("Пульт — {url} — у него уже есть пароль: входите с ним.", url = url),
+        Panel::Code(_) | Panel::Asks => {
+            crate::tr!("Пульт — {url} — задайте в нём пароль и выберите, кто отвечает.", url = url)
+        }
+    }];
+    match panel {
+        Panel::Code(Some(code)) => lines.push(crate::tr!(
+            "Код первой настройки пульта: {code} — пульт спросит его вместе с паролем.",
+            code = code
+        )),
+        Panel::Code(None) => lines.push(crate::tr!(
+            "Пульт спросит код первой настройки — он в журнале колонки: ssh -p 2222 root@{address} \"grep 'первая настройка' {log} | tail -n 1\"",
+            address = address,
+            log = format!("{DATA}/gateway.log")
+        )),
+        _ => {}
+    }
+    lines.push(crate::tr!("Компьютер больше не нужен."));
+    lines.push(crate::tr!(
+        "Чтобы компьютер помогал колонке, откройте приложение DuoWave: оно найдёт дом и попросит код подключения."
+    ));
+    lines
 }
 
 /// The code `1234-5678` in a log line, if there is one.
@@ -632,7 +745,7 @@ mod tests {
         assert_eq!(*station.0.lock().unwrap(), ["", "wrong", "secret"]);
         assert_eq!(asked.len(), 2);
         assert!(asked[1].starts_with("Пароль не подошёл"), "{asked:?}");
-        // The password goes on to the setup code's SSH.
+        // The password goes on to the SSH of the panel's password, after the reboot.
         assert_eq!(options.password, "secret");
     }
 
@@ -655,6 +768,149 @@ mod tests {
         let result = open_asking(&station, "192.0.2.1", &mut options(), &mut |_| Some("nope".into())).await;
         assert!(result.is_err());
         assert_eq!(station.0.lock().unwrap().len(), 1 + PASSWORD_TRIES);
+    }
+
+    /// A station's shell after the install: it keeps each command and what went into its stdin. Its own
+    /// `duowave panel setup` ends with `panel`; the grep of its log finds `log`.
+    struct Recording {
+        given: std::sync::Mutex<Vec<(String, Option<String>)>>,
+        panel: i32,
+        log: String,
+    }
+
+    impl Recording {
+        fn new(panel: i32, log: &str) -> Recording {
+            Recording { given: Default::default(), panel, log: log.into() }
+        }
+
+        fn given(&self) -> Vec<(String, Option<String>)> {
+            self.given.lock().unwrap().clone()
+        }
+    }
+
+    impl StationShell for Recording {
+        fn run<'a>(&'a self, command: &'a str, input: Option<&'a str>) -> BoxFuture<'a, anyhow::Result<ShellResult>> {
+            self.given.lock().unwrap().push((command.to_string(), input.map(str::to_string)));
+            let result = if command.contains(" panel setup") {
+                let stderr = if self.panel == 0 {
+                    ""
+                } else {
+                    "DuoWave на колонке не отвечает на порту 8790."
+                };
+                ShellResult { code: self.panel, stdout: String::new(), stderr: stderr.into() }
+            } else if command.starts_with("grep ") {
+                ShellResult { code: 0, stdout: self.log.clone(), stderr: String::new() }
+            } else {
+                ShellResult { code: 127, stdout: String::new(), stderr: "not here".into() }
+            };
+            Box::pin(async move { Ok(result) })
+        }
+        fn fingerprint(&self) -> &str {
+            "SHA256:test"
+        }
+        fn close(&self) -> BoxFuture<'_, ()> {
+            Box::pin(async {})
+        }
+    }
+
+    /// The station gateway's log line of this start, while the panel has no password.
+    const LOG: &str =
+        "2026-11-21T10:00:00Z WARN первая настройка пульта: с этого компьютера — без кода, с другого устройства — код 4821-0937\n";
+
+    #[tokio::test]
+    async fn the_panel_password_goes_only_into_the_stdin_of_panel_setup_never_into_its_command_line() {
+        let station = Recording::new(0, LOG);
+        let mut answers = ["my panel pass", "my panel pass"].map(String::from).into_iter();
+        let mut asked = Vec::new();
+        let panel = on_station(&station, true, &mut |question| {
+            asked.push(question.to_string());
+            answers.next()
+        })
+        .await;
+        assert_eq!(panel, Panel::Set);
+        assert_eq!(asked.len(), 2, "made up, then repeated: {asked:?}");
+        assert!(asked[0].starts_with("Придумайте пароль пульта (символы не видны"), "{asked:?}");
+        let given = station.given();
+        assert_eq!(given.len(), 1, "no code to read: {given:?}");
+        let (command, input) = &given[0];
+        assert!(command.starts_with(&format!("{BIN} panel setup")), "{command}");
+        assert!(!command.contains("my panel pass"), "{command}");
+        assert_eq!(input.as_deref(), Some("\nmy panel pass\n"), "an empty name: the gateway's «admin»");
+        let said = ending("192.0.2.1", 8790, &panel).join("\n");
+        assert!(said.starts_with("Пульт — http://192.0.2.1:8790/ — вход с этим паролем."), "{said}");
+        assert!(!said.contains("my panel pass") && !said.contains("4821-0937"), "{said}");
+        assert!(said.ends_with("откройте приложение DuoWave: оно найдёт дом и попросит код подключения."), "{said}");
+    }
+
+    #[tokio::test]
+    async fn an_empty_answer_or_nobody_at_the_terminal_prints_the_first_run_code_as_before() {
+        for answer in [Some(String::new()), None] {
+            let station = Recording::new(0, LOG);
+            let mut asked = 0;
+            let panel = on_station(&station, true, &mut |_| {
+                asked += 1;
+                answer.clone()
+            })
+            .await;
+            assert_eq!(panel, Panel::Code(Some("4821-0937".into())), "{answer:?}");
+            assert_eq!(asked, 1);
+            let given = station.given();
+            assert_eq!(given.len(), 1, "{given:?}");
+            assert!(given[0].0.starts_with("grep 'первая настройка пульта'") && given[0].1.is_none(), "{given:?}");
+            let said = ending("192.0.2.1", 8790, &panel).join("\n");
+            assert!(said.starts_with("Пульт — http://192.0.2.1:8790/ — задайте в нём пароль"), "{said}");
+            assert!(said.contains("\nКод первой настройки пульта: 4821-0937 — пульт спросит его"), "{said}");
+        }
+        // A log without the code: where it is.
+        let station = Recording::new(0, "");
+        let panel = on_station(&station, true, &mut |_| None).await;
+        assert_eq!(panel, Panel::Code(None));
+        assert!(ending("192.0.2.1", 8790, &panel).join("\n").contains("ssh -p 2222 root@192.0.2.1"));
+        // The panel's state not heard: nothing said of a code, as before.
+        let station = Recording::new(0, LOG);
+        assert_eq!(on_station(&station, false, &mut |_| None).await, Panel::Asks);
+        assert!(station.given().is_empty());
+        assert!(!ending("192.0.2.1", 8790, &Panel::Asks).join("\n").contains("Код первой настройки"));
+    }
+
+    #[tokio::test]
+    async fn a_short_password_or_two_that_differ_are_made_up_again_and_three_misses_leave_it_to_the_panel() {
+        let station = Recording::new(0, LOG);
+        let mut answers =
+            ["short", "long-enough-1", "long-enough-2", "long-enough-1", "long-enough-1"].map(String::from).into_iter();
+        let mut asked = Vec::new();
+        let panel = on_station(&station, true, &mut |question| {
+            asked.push(question.to_string());
+            answers.next()
+        })
+        .await;
+        assert_eq!(panel, Panel::Set);
+        assert!(asked[1].starts_with("Пароль — хотя бы 8 символов. Придумайте другой"), "{asked:?}");
+        assert!(asked[3].starts_with("Пароли не совпали."), "{asked:?}");
+        assert_eq!(station.given()[0].1.as_deref(), Some("\nlong-enough-1\n"));
+
+        let station = Recording::new(0, LOG);
+        let mut answers = ["one-password", "another-one"].iter().cycle().map(|answer| answer.to_string());
+        let panel = on_station(&station, true, &mut |_| answers.next()).await;
+        assert_eq!(panel, Panel::Code(Some("4821-0937".into())));
+        assert!(station.given().iter().all(|(command, input)| !command.contains("panel setup") && input.is_none()));
+    }
+
+    #[tokio::test]
+    async fn a_station_that_has_its_password_or_cannot_set_it_is_said_so() {
+        let typed = || {
+            let mut answers = vec!["panel-password".to_string(); 2].into_iter();
+            move |_: &str| answers.next()
+        };
+        let station = Recording::new(crate::access::cli::ALREADY_SET_UP, LOG);
+        assert_eq!(on_station(&station, true, &mut typed()).await, Panel::Had);
+        assert!(ending("192.0.2.1", 8790, &Panel::Had).join("\n").contains("у него уже есть пароль: входите с ним"));
+        // Not set (its gateway does not answer there): the first-run code, from the same shell.
+        let station = Recording::new(1, LOG);
+        assert_eq!(on_station(&station, true, &mut typed()).await, Panel::Code(Some("4821-0937".into())));
+        let commands: Vec<String> = station.given().into_iter().map(|(command, _)| command).collect();
+        assert_eq!(commands.len(), 2, "{commands:?}");
+        assert!(commands[0].contains(" panel setup") && commands[1].starts_with("grep "), "{commands:?}");
     }
 
     #[test]

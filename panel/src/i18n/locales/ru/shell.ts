@@ -16,6 +16,9 @@ export default {
     look: 'Оформление',
     peopleAccess: 'Люди и доступ',
     signOut: 'Выйти',
+    // Турбо (этап 7 плана home-setup-flow): свой стол компьютера — отсюда, а не вместо пульта дома.
+    ownDesk: 'Стол этого компьютера',
+    homeDesk: 'Пульт дома',
     // search
     closeSearch: 'Закрыть поиск',
     searchPanel: 'Поиск по пульту',

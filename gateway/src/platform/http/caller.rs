@@ -56,6 +56,27 @@ impl LinkOrigin {
     }
 }
 
+/// A request a helper at home sent this gateway over its link — its own request, `up` (src/helpers/link.rs; stage 7 of
+/// docs/plans/home-setup-flow.md): its entry, and the person at the helper as its pass names them. Only the link's
+/// `up` inserts it, as an extension — never a header —; a caller with it is at home (never this computer) and is that
+/// person alone, whatever the request carries.
+#[derive(Clone, Debug)]
+pub struct UpOrigin {
+    pub entry: String,
+    pub principal: Principal,
+}
+
+/// The origin of a helper's own request (`up`) of the entry `entry`: the person its frame names, as a pass names them
+/// (`person_principal`) — their role there (an unknown one is a guest's: never above an admin), their name, their id
+/// when this home knows it. None when it names nobody (no role): such a request is refused, never let in as the helper
+/// or as a key.
+pub(crate) fn up_origin(app: &App, entry: &str, person: &serde_json::Value) -> Option<UpOrigin> {
+    let field = |name: &str| person.get(name).and_then(serde_json::Value::as_str);
+    let role = field("role").map(str::trim).filter(|role| !role.is_empty())?;
+    let principal = person_principal(app, field("name"), Some(role), field("id"));
+    Some(UpOrigin { entry: entry.to_string(), principal })
+}
+
 pub struct Caller {
     app: Arc<App>,
     pub zone: Zone,
@@ -67,6 +88,8 @@ pub struct Caller {
     authorization: Option<String>,
     /// A home's request over the link.
     link: Option<LinkOrigin>,
+    /// A helper's own request over its link (`up`).
+    up: Option<UpOrigin>,
     /// Who signed, checked once: nobody, somebody, or a check that failed.
     principal: OnceLock<Result<Option<Principal>, ApiError>>,
 }
@@ -77,23 +100,49 @@ impl FromRequestParts<Arc<App>> for Caller {
     async fn from_request_parts(parts: &mut Parts, app: &Arc<App>) -> Result<Self, Self::Rejection> {
         let peer = parts.extensions.get::<ConnectInfo<SocketAddr>>().map(|info| info.0);
         let link = parts.extensions.get::<LinkOrigin>().cloned();
-        // A home over the link is outside, whatever socket the link came by (a proxy on this computer).
+        let up = parts.extensions.get::<UpOrigin>().cloned();
+        // A home over the link is outside, whatever socket the link came by (a proxy on this computer). A helper's own
+        // request is at home: its door lets in only a helper at home, whose pass serves only its home network.
         let zone = if link.is_some() {
             Zone::Remote
+        } else if up.is_some() {
+            Zone::Home
         } else {
             zone_of(&parts.headers, peer, &app.config.gateway.debug_api_allow)
+        };
+        // A helper's own request has no socket of its own here: it counts by its entry, and no key it carries counts.
+        let (source, peer, authorization) = match &up {
+            Some(up) => (format!("up:{}", up.entry), None, None),
+            None => (
+                client_address(&parts.headers, peer),
+                peer,
+                parts.headers.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()).map(str::to_string),
+            ),
         };
         Ok(Caller {
             app: app.clone(),
             zone,
-            source: client_address(&parts.headers, peer),
+            source,
             peer,
             headers: parts.headers.clone(),
-            authorization: parts.headers.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()).map(str::to_string),
+            authorization,
             link,
+            up,
             principal: OnceLock::new(),
         })
     }
+}
+
+/// The person a pass names — the computer's to a station with the pair's key, or a helper's own request over its link
+/// (`up`) —: `helper_principal`, by their id only when this home knows it.
+fn person_principal(app: &App, person: Option<&str>, role: Option<&str>, id: Option<&str>) -> Principal {
+    let known = id.map(str::trim).filter(|id| {
+        !id.is_empty()
+            && id.len() <= 64
+            && id.bytes().all(|byte| byte.is_ascii_graphic())
+            && crate::access::users_repository::UsersRepository::new(app.db.clone()).by_id(id).ok().flatten().is_some()
+    });
+    helper_principal(person, role, known)
 }
 
 /// «Помощник» — the computer's gateway with the pair's key, named with the person at the computer when the pass says
@@ -130,6 +179,7 @@ impl Caller {
             headers: HeaderMap::new(),
             authorization: None,
             link: None,
+            up: None,
             principal: cell,
         }
     }
@@ -163,25 +213,21 @@ impl Caller {
             if let Some(link) = &self.link {
                 return Ok(Some(link.principal()));
             }
+            // A helper at home asking for its person (`up`): that person, as its pass names them.
+            if let Some(up) = &self.up {
+                return Ok(Some(up.principal.clone()));
+            }
             // The pair's key from the home network: the helper — the computer's gateway passing its panel's requests
             // to this station (src/placement/proxy.rs) — acts here with the rights of the role of who is at the
             // computer, under their name. Both headers count only beside the key. A name comes as UTF-8 («Мама»).
             if crate::placement::peer::from_peer(self, self.app.placement.peer_key()) {
                 let header =
                     |name: &str| self.headers.get(name).and_then(|value| std::str::from_utf8(value.as_bytes()).ok());
-                return Ok(Some(helper_principal(
+                return Ok(Some(person_principal(
+                    &self.app,
                     header(crate::placement::peer::HELPER_PERSON),
                     header(crate::placement::peer::HELPER_ROLE),
-                    header(crate::placement::peer::HELPER_PERSON_ID).map(str::trim).filter(|id| {
-                        !id.is_empty()
-                            && id.len() <= 64
-                            && id.bytes().all(|byte| byte.is_ascii_graphic())
-                            && crate::access::users_repository::UsersRepository::new(self.app.db.clone())
-                                .by_id(id)
-                                .ok()
-                                .flatten()
-                                .is_some()
-                    }),
+                    header(crate::placement::peer::HELPER_PERSON_ID),
                 )));
             }
             self.app.access.try_authenticate(self.authorization.as_deref())

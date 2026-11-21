@@ -415,6 +415,13 @@ events! {
     HomeDevicesChanged = "home.devices.changed" {
         reason: String,
     }
+    /// A request into the home by a code moved (src/home/join.rs): `asked`, `wrong`, `joined`, `denied`, `closed`. The
+    /// admins' panels read the requests again — the code only through that, never in the event.
+    HomeJoin = "home.join" {
+        id: String,
+        change: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")] actor: Option<Actor>,
+    }
     /// A helper answers again (its look).
     HelperUp = "helpers.up" {
         id: String,

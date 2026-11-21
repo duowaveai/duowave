@@ -20,9 +20,11 @@ import { SearchPalette, SearchPlace, searchPlaces, useSearchKey, useTalkKey } fr
 import { timeAgo } from './time';
 import { SectionDef, useSections } from './shell/sections';
 import { Nav, NavEntry, OpenWindow, TopLine } from './shell/shell';
-import { ownName, roleOf, RoleInfo } from './shell/role';
+import { homeWindowKey, ownName, roleOf, RoleInfo } from './shell/role';
 import { HomeBar } from './shell/home-bar';
 import { noteHomeDevicesNews } from './home-devices';
+import { noteHomeJoinNews } from './home-join';
+import { JoinRequests } from './screens/home-join';
 import { useHomeStationName } from './station-name';
 import { shellFor } from './shell/shells';
 import { Boundary, Slot } from './shell/slot';
@@ -64,7 +66,8 @@ import { ViaNotice } from './shell/station-window';
 
 /**
  * Пульт колонки во всё окно (этап 4) смотрит, помогает ли ей ещё этот компьютер: его /health — напрямую, без прохода.
- * Перестал (шлюз вернулся на компьютер, помощь выключили) — окно снова пульт компьютера.
+ * Перестал (шлюз вернулся на компьютер, помощь выключили) — окно снова пульт компьютера. Окно центра по связи (этап 7
+ * плана home-setup-flow) остаётся, пока компьютер помнит этот центр, и когда связь ненадолго пропала.
  */
 function useLeaveWhenNotHelping(): void {
     useEffect(() => {
@@ -78,6 +81,7 @@ function useLeaveWhenNotHelping(): void {
                 if (!placement) return;
                 const placed = placement.stations?.find((entry) => entry.key === VIA) ?? (placement.station?.key === VIA ? placement.station : undefined);
                 if (placement.role === 'pc' && placed && placed.placement !== 'pc') return;
+                if (placement.role === 'pc' && placement.centre?.key === VIA) return;
                 location.replace(`${location.pathname}${location.hash}`);
             } catch {
                 // компьютер не ответил — ничего не решаем
@@ -286,6 +290,8 @@ export function App() {
         noteHelpersNews(name);
         // Устройства дома: строка вверху, «Устройства», сцена стола перечитывают список (home-devices.ts).
         noteHomeDevicesNews(name);
+        // Просятся в дом по коду: карточка «Разрешить» у администратора перечитывает список (home-join.ts).
+        noteHomeJoinNews(name);
         // Черновики мастерской: плитка на столе, «Готово» на полосе, «Примерка» по просьбе колонки (voice/drafts.ts).
         if (name === 'workshop.changed' || name === 'hello') noteWorkshopChange(subject, change);
         // Работы разговора: «Готово…» на полосе и голосом компьютера, заметки на плитке (voice/works.ts).
@@ -592,13 +598,15 @@ export function App() {
     // Пока идут «Первые шаги» — открыты или не дошли до конца, — пульт остаётся здесь: компьютер становится помощником
     // посреди шага «Колонка» (перенос записал колонку), а шаги дальше («Кто отвечает», персонаж) ведёт этот пульт и
     // пишет на колонку сам (screens/onb/*). Закончили или закрыли — тогда в окно колонки.
+    // Турбо центра-компьютера по связи (этап 7 плана home-setup-flow) — так же, в окно центра, пока связь с ним есть.
+    const windowKey = homeWindowKey(role);
     useEffect(() => {
-        if (VIA || OWN_PAGE || LOCAL || auth !== 'ok' || role.role !== 'helper' || !role.station?.key) return;
+        if (VIA || OWN_PAGE || LOCAL || auth !== 'ok' || !windowKey) return;
         if (onboardingOpen || onboardingPending()) return;
         // Сначала память пульта: «шаги пройдены» только что записаны и ещё ждут отправки (shell/memory.ts).
-        const station = encodeURIComponent(role.station.key);
+        const station = encodeURIComponent(windowKey);
         void flushPanelMemory().then(() => location.replace(`${location.pathname}?via=${station}${location.hash}`));
-    }, [auth, role.role, role.station?.key, onboardingOpen]);
+    }, [auth, windowKey, onboardingOpen]);
     useLeaveWhenNotHelping();
 
     if (auth === 'setup' || auth === 'login') {
@@ -662,6 +670,8 @@ export function App() {
                     />
                 ))}
                 {waiting && <SetupBanner station={waiting} onOpen={() => setSetupId(waiting.device)} />}
+                {/* Кто просится в дом по коду (этап 2 плана home-setup-flow): на любом экране, у администратора. */}
+                <JoinRequests />
                 {/* Срочный выпуск не прячется: «скрыть» у прошлой версии его не касается. */}
                 {offered && (offered.critical || offered.version !== hiddenUpdate) && (
                     <UpdateBanner
@@ -796,7 +806,19 @@ export function App() {
                             <IconSearch size={16} />
                         </button>
                         <Slot name="header.actions" />
-                        <AccountMenu onLook={() => go('settings', 'look')} onAccess={() => go('settings', 'access')} onSignOut={signOut} />
+                        <AccountMenu
+                            onLook={() => go('settings', 'look')}
+                            onAccess={() => go('settings', 'access')}
+                            onSignOut={signOut}
+                            other={
+                                // Турбо (этап 7 плана home-setup-flow): окно дома — главное, свой стол компьютера — отсюда.
+                                VIA
+                                    ? { label: tr.shell.ownDesk, open: () => (TOP_VIA ? window : (window.top ?? window)).location.assign(`${location.pathname}?local`) }
+                                    : LOCAL && role.role === 'helper'
+                                      ? { label: tr.shell.homeDesk, open: () => location.assign(location.pathname) }
+                                      : undefined
+                            }
+                        />
                     </>
                 }
                 talk={{ disabled: false, onTalk: toggleListening }}

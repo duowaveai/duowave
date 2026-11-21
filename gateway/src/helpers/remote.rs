@@ -226,8 +226,13 @@ impl RemoteHelper {
     }
 
     /// The link started, unless it runs already. Never for an entry that cannot be linked: no https address, no pin,
-    /// no link key — the key then goes nowhere, and the entry says why.
-    pub(crate) fn run_link(&self, timing: LinkTiming, news: super::link::NewsSink) {
+    /// no link key — the key then goes nowhere, and the entry says why. `up`: the door for the helper's own requests.
+    pub(crate) fn run_link(
+        &self,
+        timing: LinkTiming,
+        news: super::link::NewsSink,
+        up: Option<Arc<dyn super::link::UpDoor>>,
+    ) {
         let mut link = locked(&self.link);
         if link.as_ref().is_some_and(|link| !link.stopped()) {
             return;
@@ -246,6 +251,7 @@ impl RemoteHelper {
             key: self.key.clone(),
             helper_id: self.helper_id.clone().unwrap_or_default(),
             me: Arc::new(move || Me::of(&identity)),
+            up,
         };
         *link = Some(Link::start(setup, timing, news));
     }

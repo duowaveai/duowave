@@ -319,6 +319,16 @@ impl SessionRegistry {
         })
     }
 
+    /// The station this gateway runs on, when its session is relayed to Yandex (the mode «Алиса»): the gateway's own
+    /// words go through it (`RelaySession::say_aloud`).
+    pub fn local_relay(&self) -> Option<Arc<super::relay_session::RelaySession>> {
+        let active = self.lock().active.clone();
+        active.into_iter().rev().find_map(|session| match session {
+            AnySession::Relay(relay) if is_local(&relay.remote_address) => Some(relay),
+            _ => None,
+        })
+    }
+
     /// The newest live session of a device (`*`: any) that can speak.
     pub fn speaking_on(&self, device_tag: &str) -> Option<Arc<StationSession>> {
         let active = self.lock().active.clone();

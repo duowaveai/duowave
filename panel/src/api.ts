@@ -863,7 +863,8 @@ export interface StationUpdateStarted {
     version: string;
 }
 
-export type MoveTo = 'station' | 'stationServer' | 'pc' | 'yandex';
+/** `ear` — «Ещё колонка» (этап 5 плана home-setup-flow): DuoWave на вторую колонку сразу ухом центра. */
+export type MoveTo = 'station' | 'stationServer' | 'pc' | 'yandex' | 'ear';
 export type MoveStepId = 'check' | 'copy' | 'install' | 'settings' | 'point' | 'arrive' | 'stop';
 
 export interface MoveJob {
@@ -874,7 +875,69 @@ export interface MoveJob {
     steps: Array<{ id: MoveStepId; state: 'pending' | 'running' | 'done' | 'failed' | 'skipped' }>;
     error?: string;
     note?: string;
+    /** Почему встал: `homeOnStation` — на колонке свой дом, перенос его не затирает без «Заменить дом на колонке». */
+    code?: 'homeOnStation';
     startedAt: string;
+}
+
+/** Как центр сказал код подключения (docs/plans/home-setup-flow.md, этап 2). */
+export interface JoinTold {
+    /** Вслух через колонку центра (в режиме сессии). */
+    spoken: boolean;
+    /** Окном приложения на компьютере-центре. */
+    window: boolean;
+    /** Строкой в терминале сервера. */
+    printed: boolean;
+}
+
+/** Компьютер попросился в дом: его запрос на центре. */
+export interface PairCodeAsked {
+    id: string;
+    address: string;
+    port: number;
+    expiresAt?: string;
+    tries?: number;
+    told?: JoinTold;
+}
+
+/** Как идёт запрос компьютера в дом: ждёт, вошёл (колонка связана), отклонён, закрыт. */
+export interface PairCodeLook {
+    id: string;
+    status: 'pending' | 'joined' | 'denied' | 'closed';
+    triesLeft: number;
+    expiresAt: string;
+    told: JoinTold;
+    why?: string;
+    joined?: boolean;
+    station?: StationGatewayView;
+}
+
+/** Запрос в дом, как его видит администратор центра: с кодом, пока он открыт. */
+export interface HomeJoinRequest {
+    id: string;
+    kind: 'turbo' | 'ear';
+    name: string;
+    address?: string;
+    source: string;
+    code?: string;
+    status: 'pending' | 'joined' | 'denied' | 'closed';
+    triesLeft: number;
+    expiresAt: string;
+    told: JoinTold;
+    why?: string;
+}
+
+/** Строка «Состояния дома» (этап 4 плана home-setup-flow): что не так и чем это починить. */
+export interface HomeStatusRow {
+    id: 'voice' | 'brain' | 'turbo' | 'characterVoice' | 'mode' | 'stations';
+    state: 'ok' | 'warn' | 'bad';
+    text: string;
+    action?: 'pointLocal' | 'brain' | 'turbo' | 'firewall' | 'voice' | 'mode' | 'station' | 'addStations';
+}
+
+export interface HomeStatusView {
+    rows: HomeStatusRow[];
+    green: boolean;
 }
 
 /** «Где работает шлюз» для обоих пультов. */
@@ -1140,6 +1203,21 @@ export interface PlacementHealth {
     station?: PlacedStation;
     /** Каждая колонка с размещением на этом компьютере. */
     stations?: PlacedStation[];
+    /**
+     * У компьютера — Турбо дома, чей центр другой компьютер или сервер (по связи, этап 7 плана home-setup-flow): ключ
+     * прохода к центру, имя дома, есть ли связь сейчас. Шлюз присылает, только когда центр принимает пульт по связи.
+     */
+    centre?: LinkCentre;
+}
+
+/** Центр дома для его Турбо по связи: проход `/station/<ключ>/…` идёт к нему обратно по связи. */
+export interface LinkCentre {
+    /** `link:<id>` — ключ прохода (`?via=`). */
+    key: string;
+    /** Имя дома. */
+    name?: string;
+    /** Связь с центром сейчас есть. */
+    online: boolean;
 }
 
 /** «Как говорить с DuoWave»: через колонку с Алисой или микрофоном этого компьютера (voice-input.ts). */
@@ -3815,6 +3893,8 @@ export const api = {
         gateway?: string;
         settingsHome?: 'station' | 'pc';
         remove?: boolean;
+        /** «Заменить дом на колонке»: дом колонки уступает дому этого компьютера — её люди и персонажи пропадут. */
+        replaceHome?: boolean;
     }) => post<MoveJob>('/api/v1/placement/move', body),
     moveJob: (id: string) => get<MoveJob>(`/api/v1/placement/move/${encodeURIComponent(id)}`),
     setSafety: (on: boolean, station?: string) => post<unknown>(forStation('/api/v1/placement/safety', station), { on }),
@@ -3850,8 +3930,20 @@ export const api = {
     /** Связать по паролю пульта колонки: компьютер берёт ключ пары у неё сам (docs/plans/desk.md, этап 4). */
     pairStation: (address: string, port: number, password: string, name?: string) =>
         post<StationGatewayView>('/api/v1/placement/pair-station', { address, port, password, name: name || undefined }),
+    /** «Дом уже есть»: компьютер просится в дом Турбо — центр говорит код (этапы 2–3 плана home-setup-flow). */
+    pairCode: (address: string, port?: number, kind?: 'turbo' | 'ear') => post<PairCodeAsked>('/api/v1/placement/pair-code', { address, port, kind }),
+    pairCodeEnter: (id: string, code: string) =>
+        post<StationGatewayView & { joined: boolean; helping: boolean }>(`/api/v1/placement/pair-code/${encodeURIComponent(id)}`, { code }),
+    pairCodeLook: (id: string) => get<PairCodeLook>(`/api/v1/placement/pair-code/${encodeURIComponent(id)}`),
+    pairCodeSay: (id: string) => post<{ said: boolean; told?: JoinTold }>(`/api/v1/placement/pair-code/${encodeURIComponent(id)}/say`),
+    /** «Состояние дома» центра: строка на каждое, с действием, которое его чинит. */
+    homeStatus: (signal?: AbortSignal) => get<HomeStatusView>('/api/v1/home/status', signal),
+    /** Центр: кто просится в дом — с кодом; «Разрешить», «Это не я». */
+    homeJoins: (signal?: AbortSignal) => get<HomeJoinRequest[]>('/api/v1/home/joins', signal),
+    approveJoin: (id: string) => post<unknown>(`/api/v1/home/join/${encodeURIComponent(id)}/approve`),
+    denyJoin: (id: string) => post<unknown>(`/api/v1/home/join/${encodeURIComponent(id)}/deny`),
     probeStation: (address: string, port?: number) =>
-        get<{ gateway: boolean; version?: string | null; port: number }>(
+        get<{ gateway: boolean; version?: string | null; port: number; earOf?: { address: string; port: number } | null; home?: { id: string } | null }>(
             `/api/v1/placement/probe?address=${encodeURIComponent(address)}${port ? `&port=${port}` : ''}`,
         ),
     /** Шлюз на колонке: голос колонки — Яндексу или обратно себе, без компьютера. */
@@ -3937,7 +4029,9 @@ export const api = {
     /** gateway — адреса этого шлюза в домашней сети, как их наберёт колонка (пусто в Docker). */
     /** port — на какой порт колонка пойдёт, если адрес шлюза введён без порта: порт самого шлюза. */
     /** `whyNone` — ничего не нашлось на Windows: что на этом компьютере может закрывать поиск (брандмауэр, общедоступная сеть). */
-    discoverStations: () => get<{ stations: FoundStation[]; gateway?: string[]; port?: number; whyNone?: string }>('/api/v1/stations/connect/discover'),
+    /** `homes` — DuoWave на компьютерах и серверах, что объявляют себя (`_duowave._tcp`, этап 6 плана home-setup-flow). */
+    discoverStations: () =>
+        get<{ stations: FoundStation[]; homes?: FoundStation[]; gateway?: string[]; port?: number; whyNone?: string }>('/api/v1/stations/connect/discover'),
     /** Подключённые колонки, которые всё ещё ходят на прежний порт этого компьютера: шлюз с тех пор сменил порт. */
     movedGateway: () => get<MovedGateway[]>('/api/v1/stations/connect/moved'),
     /** Windows: профиль сети, брандмауэр и правила для DuoWave — что мешает колонке и другим достучаться до компьютера. */

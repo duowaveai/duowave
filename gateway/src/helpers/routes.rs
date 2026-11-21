@@ -155,6 +155,36 @@ fn link_url(text: &str) -> Option<String> {
     Some(format!("https://{host}:{port}"))
 }
 
+/// Into the home by a code (src/home/join.rs, docs/plans/home-setup-flow.md stage 2): a computer that asked in with its
+/// own connection key and its link's address is paired here as a Turbo at home — as «Подключить Турбо» with that key
+/// pairs it, the household's code (or an admin's «Разрешить») in place of the key typed by hand. The entry's id.
+pub async fn pair_with_key(
+    app: &Arc<App>,
+    url: &str,
+    key: &str,
+    name: Option<&str>,
+    actor: Option<crate::core::events::Actor>,
+) -> Result<String, ApiError> {
+    let connection = super::link::ConnectionKey::parse(key.trim()).ok_or_else(|| {
+        ApiError::bad_request(crate::tr!("Ключ подключения — 26 букв и цифр, как его показывает Турбо."))
+    })?;
+    let url = link_url(url)
+        .ok_or_else(|| ApiError::bad_request(crate::tr!("Адрес Турбо: http://адрес:порт или https://…")))?;
+    if !crate::operations::networks::is_local_url(Some(&url)) {
+        return Err(ApiError::bad_request(crate::tr!("Турбо по адресу вне дома не может быть «дома».")));
+    }
+    let name = name.map(super::helper_name).transpose()?;
+    let me = super::remote::Me::of(&app.identity);
+    let home_key = app.secrets.get(crate::core::identity::home::HOME_KEY).unwrap_or_default();
+    let check = app.helpers.pair_check(None);
+    let timing = app.helpers.link_timing();
+    let paired = super::link::pair(&url, &connection, &me, &home_key, &timing, false, &check)
+        .await
+        .map_err(|error| error.into_api(&url))?;
+    let (id, _) = app.helpers.add_linked(&url, name, Some(HelperKind::Home), Vec::new(), None, paired, actor).await?;
+    Ok(id)
+}
+
 /// The pairing: the helper's link, the connection key, this gateway's home proven, `pair_check` before anything is
 /// spent; a probe stops there. Every check of the input comes first: once the helper confirms, its key is spent.
 async fn pair(

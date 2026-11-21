@@ -528,7 +528,7 @@ function ClientSheet({ client, onClose, onSaved }: { client: ClientView; onClose
 }
 
 /** «214 вопросов», «198 фраз», «31 ответ» — слова и числа по языку; и чем колонка обходится без компьютера. */
-const parts = (): Array<{ id: HelperPart; title: string; without: string }> => [
+export const parts = (): Array<{ id: HelperPart; title: string; without: string }> => [
     { id: 'asr', title: tr.desk.partEar, without: tr.desk.withoutCloud },
     { id: 'tts', title: tr.desk.partVoice, without: tr.desk.withoutAlice },
     { id: 'llm', title: tr.desk.partModel, without: tr.desk.withoutAlice },

@@ -53,6 +53,9 @@ pub fn router() -> Router<Arc<App>> {
         .route("/api/v1/placement/station-voice", post(pc::station_voice))
         .route("/api/v1/placement/link", post(pc::link))
         .route("/api/v1/placement/pair-station", post(pc::pair_station))
+        .route("/api/v1/placement/pair-code", post(pc::pair_code))
+        .route("/api/v1/placement/pair-code/{id}", get(pc::pair_code_look).post(pc::pair_code_enter))
+        .route("/api/v1/placement/pair-code/{id}/say", post(pc::pair_code_say))
         .route("/api/v1/placement/probe", get(pc::probe))
         .route("/api/v1/desktop/awake", get(pc::awake).put(pc::set_awake))
         .route("/api/v1/placement/helper", post(pc::helper))
@@ -353,7 +356,7 @@ mod pc {
     ) -> ApiResult<MoveJob> {
         caller.permitted(STATIONS_MANAGE)?;
         let to: MoveTo = serde_json::from_value(body.get("to").cloned().unwrap_or(Value::Null))
-            .map_err(|_| ApiError::bad_request(crate::tr!("to: station, stationServer, pc или yandex")))?;
+            .map_err(|_| ApiError::bad_request(crate::tr!("to: station, stationServer, pc, yandex или ear")))?;
         let picked = body.get("station").and_then(Value::as_str);
         let record = app.station_gateway.pick(picked).and_then(|station| station.record());
         let address = body
@@ -381,12 +384,24 @@ mod pc {
         };
         // The home's settings live at its centre, never on a computer (docs/plans/home-and-devices.md, stage 3).
         let settings_home = crate::settings::definitions::SettingsHome::Station;
+        // «Ещё колонка» (stage 5): the centre the new ear joins — found before the move links the station here.
+        let ear_of = if to == MoveTo::Ear {
+            let (address, port, key, name) = crate::home::ear::centre_for_ear(&app)?;
+            Some(crate::placement::moves::EarTarget { address, port, key, name })
+        } else {
+            None
+        };
+        // An ear leans on the centre, not on this computer as its server.
+        let gateway = if to == MoveTo::Ear { None } else { gateway };
         let request = MoveRequest {
             to,
             address,
             gateway,
             settings_home,
             remove: body.get("remove").and_then(Value::as_bool).unwrap_or(false),
+            // «Заменить дом на колонке»: only this way a move covers a station's own home (stage 0).
+            replace_home: body.get("replaceHome").and_then(Value::as_bool).unwrap_or(false),
+            ear_of,
         };
         Ok(created(app.moves.start(request, caller.actor())?))
     }
@@ -609,7 +624,11 @@ mod pc {
         let Ok(answer) = answer else { return Ok(ok(json!({ "gateway": false }))) };
         let health: Value = answer.json().await.unwrap_or(Value::Null);
         let (gateway, version) = recognise(&health);
-        Ok(ok(json!({ "gateway": gateway, "version": version, "port": port })))
+        // A centre or an ear (stage 6): an ear's centre is the home to offer, not the ear.
+        let status = health.get("message").filter(|message| message.is_object()).unwrap_or(&health);
+        let ear_of = status.pointer("/placement/earOf").filter(|ear| !ear.is_null()).cloned();
+        let home = status.get("home").cloned();
+        Ok(ok(json!({ "gateway": gateway, "version": version, "port": port, "earOf": ear_of, "home": home })))
     }
 
     /// A /health answer: a DuoWave gateway that is not a computer's, and its version. The answer comes in the API's
@@ -643,20 +662,299 @@ mod pc {
             .get("on")
             .and_then(Value::as_bool)
             .ok_or_else(|| ApiError::bad_request(crate::tr!("on: true или false")))?;
+        switch_helper(&app, &station, on, caller.actor()).await?;
+        Ok(created(serde_json::to_value(station.view())?))
+    }
+
+    /// «ПК помогает колонке» on or off: on — a key made here first, if the station has none of ours.
+    async fn switch_helper(
+        app: &App,
+        station: &super::super::watch::StationGateway,
+        on: bool,
+        actor: Option<crate::core::events::Actor>,
+    ) -> Result<(), ApiError> {
         let key = if on && station.needs_home_key() {
             let created = app.access.keys.create(
                 &serde_json::Map::from_iter([
                     ("name".into(), json!("Колонка: домашний сервер")),
                     ("grants".into(), json!(["home.models"])),
                 ]),
-                caller.actor(),
+                actor.clone(),
             )?;
             Some((created.secret, created.key.id))
         } else {
             None
         };
-        station.set_helper(on, key, caller.actor()).await.map_err(ApiError::unavailable)?;
-        Ok(created(serde_json::to_value(station.view())?))
+        station.set_helper(on, key, actor).await.map_err(ApiError::unavailable)
+    }
+
+    // ─── Into the home by a code (docs/plans/home-setup-flow.md, stages 2 and 3) ───
+
+    /// A call to the home's centre for a request into it: its answer's `message`, or its refusal in its own words and
+    /// status.
+    async fn to_centre(method: reqwest::Method, url: &str, body: Option<Value>) -> Result<Value, ApiError> {
+        let mut request = crate::utils::http::client().request(method, url).timeout(std::time::Duration::from_secs(15));
+        if let Some(body) = body {
+            request = request.json(&body);
+        }
+        let answer = request
+            .send()
+            .await
+            .map_err(|_| ApiError::unavailable(crate::tr!("Центр дома не отвечает по этому адресу.")))?;
+        let status = answer.status();
+        let value: Value = answer.json().await.unwrap_or(Value::Null);
+        if status.is_success() {
+            return Ok(value.get("message").cloned().unwrap_or(value));
+        }
+        let said = value.get("message").and_then(Value::as_str).map(str::to_string);
+        Err(ApiError::new(
+            status,
+            said.unwrap_or_else(|| crate::tr!("Центр дома отказал: {status}.", status = status.as_u16())),
+        ))
+    }
+
+    /// The host of this computer's address in the centre's network, as `pick_home` names it with this gateway's port
+    /// (`192.168.1.104:7780`): the link listens on its own port (the two-computer check 22.11 offered
+    /// `https://192.168.1.104:7780:7781`, which the centre refused).
+    pub(super) fn link_host(best: &str) -> &str {
+        best.rsplit_once(':').filter(|(_, port)| port.parse::<u16>().is_ok()).map_or(best, |(host, _)| host)
+    }
+
+    /// What answers at that address: `pc` (a computer's or a server's gateway), `station`, or nothing known.
+    async fn centre_role(address: &str, port: u16) -> Option<String> {
+        let answer = crate::utils::http::client()
+            .get(format!("http://{address}:{port}/health"))
+            .timeout(std::time::Duration::from_secs(3))
+            .send()
+            .await
+            .ok()?;
+        let health: Value = answer.json().await.ok()?;
+        let status = health.get("message").filter(|message| message.is_object()).unwrap_or(&health);
+        status.pointer("/placement/role").and_then(Value::as_str).map(str::to_string)
+    }
+
+    /// The pair's key a centre gave: the station is linked as today's `pair-station` links it, and this computer
+    /// helps it at once — «Что даёт этот компьютер» comes next in the panel, no switch to find.
+    async fn joined(
+        app: &Arc<App>,
+        outgoing: &crate::home::join::Outgoing,
+        grant: &Value,
+        actor: Option<crate::core::events::Actor>,
+    ) -> Result<Value, ApiError> {
+        // A computer centre paired with this computer over the link (its own connection key): nothing to link here —
+        // the centre dials this computer, and it helps that home from now on («Помогаю»).
+        if grant.get("helper").is_some() && grant.get("key").is_none() {
+            return Ok(json!({ "joined": true, "helper": true, "address": outgoing.address, "port": outgoing.port }));
+        }
+        let key = grant.get("key").and_then(Value::as_str).filter(|key| key.len() >= 16).ok_or_else(|| {
+            ApiError::conflict(crate::tr!("Центр дома впустил, но не дал ключ пары: обновите DuoWave на нём."))
+        })?;
+        if outgoing.kind == crate::home::join::JoinKind::Ear {
+            return joined_as_ear(app, outgoing, key, actor).await;
+        }
+        let view = app
+            .station_gateway
+            .link(&outgoing.address, outgoing.port, key, actor.clone())
+            .await
+            .map_err(ApiError::conflict)?;
+        // By the key the link gave it: two stations may share an address (a test's sockets), never a key.
+        let station = app.station_gateway.find(&view.key).ok_or_else(|| {
+            ApiError::conflict(crate::tr!("Колонка связалась, но её не видно среди колонок этого компьютера."))
+        })?;
+        // Helping on at once (stage 3): a failure leaves the link — the switch is in «Что даёт этот компьютер».
+        let helping = switch_helper(app, &station, true, actor).await;
+        if let Err(error) = &helping {
+            tracing::warn!(target: "placement", "pair-code: linked, helping not switched on: {}", error.message);
+        }
+        let mut answer = serde_json::to_value(view)?;
+        answer["joined"] = json!(true);
+        answer["helping"] = json!(helping.is_ok());
+        Ok(answer)
+    }
+
+    /// A station with DuoWave of its own let this computer in (stage 5): it is linked with its pair key and becomes the
+    /// centre's ear — the centre found before the link, so the new record is never taken for it. Its settings,
+    /// people and characters give way to the home's copy; its memory is merged (src/home/copy.rs).
+    async fn joined_as_ear(
+        app: &Arc<App>,
+        outgoing: &crate::home::join::Outgoing,
+        key: &str,
+        actor: Option<crate::core::events::Actor>,
+    ) -> Result<Value, ApiError> {
+        let (address, port, centre_key, name) = crate::home::ear::centre_for_ear(app)?;
+        if address == outgoing.address && port == outgoing.port {
+            return Err(ApiError::conflict(crate::tr!("Это и есть центр дома.")));
+        }
+        let view =
+            app.station_gateway.link(&outgoing.address, outgoing.port, key, actor).await.map_err(ApiError::conflict)?;
+        let client = app.station_gateway.find(&view.key).and_then(|station| station.client()).ok_or_else(|| {
+            ApiError::conflict(crate::tr!("Колонка связалась, но её не видно среди колонок этого компьютера."))
+        })?;
+        client
+            .put("/api/v1/home/ear", json!({ "address": address, "port": port, "key": centre_key, "name": name }))
+            .await
+            .map_err(ApiError::unavailable)?;
+        app.events.emit(crate::core::events::GatewayEvent::HomeDevicesChanged { reason: "join".into() });
+        let mut answer = serde_json::to_value(view)?;
+        answer["joined"] = json!(true);
+        answer["ear"] = json!(true);
+        Ok(answer)
+    }
+
+    /// «Дом уже есть»: this computer asks the home's centre in as its Turbo (`POST /api/v1/home/join` there); the
+    /// centre tells a code. `{address, port?}` → `{id, expiresAt, tries, told}`.
+    pub async fn pair_code(State(app): State<Arc<App>>, caller: Caller, Body(body): Body<Value>) -> ApiResult<Value> {
+        caller.permitted(STATIONS_MANAGE)?;
+        let address = body
+            .get("address")
+            .and_then(Value::as_str)
+            .and_then(plain_address)
+            .ok_or_else(|| ApiError::bad_request(crate::tr!("address: адрес колонки, IPv4")))?;
+        let port =
+            body.get("port").and_then(Value::as_u64).filter(|port| (1..=65535).contains(port)).unwrap_or(8790) as u16;
+        let addresses = app.station_connect.home_addresses(
+            &crate::stations::connect::station_connect::host_interfaces(),
+            crate::stations::connect::station_connect::in_container(),
+        );
+        let mine = crate::placement::watch::pick_home(&addresses, &address);
+        // «Ещё колонка» (stage 5): this computer, the home's Turbo, takes a station with DuoWave of its own in as the
+        // centre's ear — that station says the code, and it asks in the home's name.
+        let kind = match body.get("kind").and_then(Value::as_str) {
+            Some("ear") => crate::home::join::JoinKind::Ear,
+            _ => crate::home::join::JoinKind::Turbo,
+        };
+        let name = match kind {
+            crate::home::join::JoinKind::Ear => {
+                let (_, _, _, centre) = crate::home::ear::centre_for_ear(&app)?;
+                centre.unwrap_or_else(|| app.identity.home_name())
+            }
+            crate::home::join::JoinKind::Turbo => app.identity.as_helper().name,
+        };
+        // A centre on a computer or a server (stage 6 finds those): it pairs with this computer's own connection key
+        // over the link, as «Подключить Турбо» with that key does — offered with the request, armed for its minutes.
+        let link = if kind == crate::home::join::JoinKind::Turbo
+            && centre_role(&address, port).await.as_deref() == Some("pc")
+        {
+            let link_port = app.link.port().filter(|_| app.link.helps()).ok_or_else(|| {
+                ApiError::conflict(crate::tr!(
+                    "Этот компьютер сейчас не принимает связь Турбо: обновите или перезапустите DuoWave."
+                ))
+            })?;
+            let host = mine
+                .as_deref()
+                .map(link_host)
+                .ok_or_else(|| ApiError::conflict(crate::tr!("Не нашёл адрес этого компьютера в сети центра.")))?;
+            Some(json!({ "url": format!("https://{host}:{link_port}"), "key": app.link.connection_key(true).shown() }))
+        } else {
+            None
+        };
+        let asked = to_centre(
+            reqwest::Method::POST,
+            &format!("http://{address}:{port}/api/v1/home/join"),
+            Some(json!({ "kind": kind.as_str(), "name": name, "address": mine, "link": link })),
+        )
+        .await
+        .map_err(|error| match error.status.as_u16() {
+            // A centre from before the codes: the panel offers the password of its panel instead.
+            404 | 405 => ApiError::conflict(crate::tr!(
+                "DuoWave на колонке постарше и кода не знает: обновите его — или подключите по паролю пульта колонки."
+            )),
+            _ => error,
+        })?;
+        let id = asked.get("id").and_then(Value::as_str).unwrap_or_default().to_string();
+        let token = asked.get("token").and_then(Value::as_str).unwrap_or_default().to_string();
+        if id.is_empty() || token.is_empty() {
+            return Err(ApiError::conflict(crate::tr!("Центр дома ответил без запроса: обновите DuoWave на нём.")));
+        }
+        let expires_ms = asked
+            .get("expiresAt")
+            .and_then(Value::as_str)
+            .and_then(|at| chrono::DateTime::parse_from_rfc3339(at).ok())
+            .map(|at| at.timestamp_millis().max(0) as u64)
+            .unwrap_or_else(|| crate::utils::time::now_ms() + crate::home::join::CODE_MS);
+        let outgoing = crate::home::join::Outgoing { address: address.clone(), port, token, expires_ms, kind };
+        app.joins.keep_outgoing(&id, outgoing, crate::utils::time::now_ms());
+        tracing::info!(target: "placement", "pair-code: asked {address}:{port} ({})", kind.as_str());
+        Ok(created(json!({
+            "id": id,
+            "address": address,
+            "port": port,
+            "expiresAt": asked.get("expiresAt"),
+            "tries": asked.get("tries"),
+            "told": asked.get("told"),
+        })))
+    }
+
+    fn outgoing_of(app: &App, id: &str) -> Result<crate::home::join::Outgoing, ApiError> {
+        app.joins
+            .outgoing(id)
+            .ok_or_else(|| ApiError::not_found(crate::tr!("Такого запроса нет: попросите новый код.")))
+    }
+
+    /// The code the household heard: `{code}` → the centre's answer; the right one links and helps.
+    pub async fn pair_code_enter(
+        State(app): State<Arc<App>>,
+        caller: Caller,
+        axum::extract::Path(id): axum::extract::Path<String>,
+        Body(body): Body<Value>,
+    ) -> ApiResult<Value> {
+        caller.permitted(STATIONS_MANAGE)?;
+        let outgoing = outgoing_of(&app, &id)?;
+        let code = body.get("code").and_then(Value::as_str).unwrap_or_default();
+        let answer = to_centre(
+            reqwest::Method::POST,
+            &format!("http://{}:{}/api/v1/home/join/{id}/code", outgoing.address, outgoing.port),
+            Some(json!({ "token": outgoing.token, "code": code })),
+        )
+        .await?;
+        let grant = answer.get("grant").cloned().unwrap_or(Value::Null);
+        let view = joined(&app, &outgoing, &grant, caller.actor()).await?;
+        app.joins.forget_outgoing(&id);
+        Ok(created(view))
+    }
+
+    /// The asker's look while it waits for «Разрешить» in the home's panel: `{status, why?}`, and — once allowed —
+    /// the station linked and helped, `joined`.
+    pub async fn pair_code_look(
+        State(app): State<Arc<App>>,
+        caller: Caller,
+        axum::extract::Path(id): axum::extract::Path<String>,
+    ) -> ApiResult<Value> {
+        caller.permitted(STATIONS_MANAGE)?;
+        let outgoing = outgoing_of(&app, &id)?;
+        let mut look = to_centre(
+            reqwest::Method::GET,
+            &format!("http://{}:{}/api/v1/home/join/{id}?token={}", outgoing.address, outgoing.port, outgoing.token),
+            None,
+        )
+        .await?;
+        if let Some(grant) = look.get("grant").cloned() {
+            let view = joined(&app, &outgoing, &grant, caller.actor()).await?;
+            app.joins.forget_outgoing(&id);
+            look["station"] = view;
+            look["joined"] = json!(true);
+        }
+        if let Some(object) = look.as_object_mut() {
+            object.remove("grant");
+        }
+        Ok(ok(look))
+    }
+
+    /// «Сказать ещё раз».
+    pub async fn pair_code_say(
+        State(app): State<Arc<App>>,
+        caller: Caller,
+        axum::extract::Path(id): axum::extract::Path<String>,
+    ) -> ApiResult<Value> {
+        caller.permitted(STATIONS_MANAGE)?;
+        let outgoing = outgoing_of(&app, &id)?;
+        let answer = to_centre(
+            reqwest::Method::POST,
+            &format!("http://{}:{}/api/v1/home/join/{id}/say", outgoing.address, outgoing.port),
+            Some(json!({ "token": outgoing.token })),
+        )
+        .await?;
+        Ok(created(answer))
     }
 
     /// «Попробовать снова» after the safety net.
@@ -712,6 +1010,14 @@ mod tests {
         (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
     }
 
+    /// The link offered to a computer centre is this computer's host with its link's port, never its gateway's port too.
+    #[cfg(feature = "pc")]
+    #[test]
+    fn the_link_offer_takes_the_host_without_the_gateways_port() {
+        assert_eq!(pc::link_host("192.168.1.104:7780"), "192.168.1.104");
+        assert_eq!(pc::link_host("192.168.1.104"), "192.168.1.104");
+    }
+
     /// The first run's probe reads a real /health answer, envelope and all: a station's gateway is one, a computer's
     /// is not; a gateway from before the envelope (bare) still is.
     #[cfg(feature = "pc")]
@@ -726,6 +1032,90 @@ mod tests {
         let (_, health) = send(&computer, "GET", "/health", &[], Value::Null).await;
         assert_eq!(pc::recognise(&health), (false, Some(crate::VERSION)), "{health}");
         assert_eq!(pc::recognise(&json!({ "code": 200, "message": { "status": "ok" } })), (false, None), "a stranger");
+    }
+
+    /// Stages 2 and 3 of docs/plans/home-setup-flow.md, end to end over a real socket: the computer asks a station
+    /// centre in (no password of its panel), the code the centre shows its admin is typed on the computer, and the
+    /// computer is linked to the station as `pair-station` linked it — the pair's key never typed by anybody.
+    #[cfg(feature = "pc")]
+    #[tokio::test]
+    async fn a_computer_joins_the_station_centre_by_the_code_and_is_linked() {
+        let centre = station(&[]);
+        let admin = centre.access.auth.setup("admin-password-1", "Мама", "test").await.unwrap().unwrap().token;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(crate::app::serve(centre.clone(), listener, std::future::pending()));
+
+        let computer = App::build(Config::for_tests(&Env::from_pairs([("STATE_DIR", "")]))).unwrap();
+        let owner = computer.access.auth.setup("admin-password-1", "Я", "test").await.unwrap().unwrap().token;
+        let owner = format!("Bearer {owner}");
+        let mine = [("authorization", owner.as_str())];
+        let body = json!({ "address": "127.0.0.1", "port": port });
+        let (status, asked) = send(&computer, "POST", "/api/v1/placement/pair-code", &mine, body).await;
+        assert_eq!(status, StatusCode::CREATED, "{asked}");
+        let id = asked["message"]["id"].as_str().unwrap().to_string();
+        assert!(asked["message"].get("token").is_none(), "the token stays in the computer's gateway: {asked}");
+
+        // The code as the centre's admin sees it (and the station says it, in the session mode).
+        let code = centre.joins.list(crate::utils::time::now_ms())[0].code.clone().unwrap();
+        let wrong = if code == "000000" { "111111" } else { "000000" };
+        let uri = format!("/api/v1/placement/pair-code/{id}");
+        let (status, refused) = send(&computer, "POST", &uri, &mine, json!({ "code": wrong })).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{refused}");
+        assert!(refused["message"].as_str().unwrap_or_default().contains('2'), "two tries left: {refused}");
+
+        let (status, joined) = send(&computer, "POST", &uri, &mine, json!({ "code": code })).await;
+        assert_eq!(status, StatusCode::CREATED, "{joined}");
+        assert_eq!(joined["message"]["joined"], true);
+        let linked = computer.station_gateway.at_address("127.0.0.1").expect("the station linked");
+        assert_eq!(linked.record().map(|record| (record.port, record.managed)), Some((port, false)));
+        assert!(admin.len() > 10);
+    }
+
+    /// Stage 5: a second station with DuoWave of its own joins the home as the centre's ear by the code it says
+    /// itself — typed on the computer that is the home's Turbo; it then follows the centre (`/api/v1/home/ear`).
+    #[cfg(feature = "pc")]
+    #[tokio::test]
+    async fn a_station_with_its_own_duowave_becomes_the_centres_ear_by_its_own_code() {
+        let serve = |app: Arc<App>| async move {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let port = listener.local_addr().unwrap().port();
+            tokio::spawn(crate::app::serve(app, listener, std::future::pending()));
+            port
+        };
+        let centre = station(&[]);
+        let centre_port = serve(centre.clone()).await;
+        let bedroom = station(&[]);
+        let bedroom_port = serve(bedroom.clone()).await;
+
+        let computer = App::build(Config::for_tests(&Env::from_pairs([("STATE_DIR", "")]))).unwrap();
+        // This computer is the centre's Turbo already (its pair key, as pair-code gives it). Its people are the
+        // home's from then on (the centre's copy): the owner signs in after the link.
+        let key = centre.placement.pair_key().unwrap();
+        computer.station_gateway.link("127.0.0.1", centre_port, &key, None).await.unwrap();
+        let owner = match computer.access.auth.setup("admin-password-1", "Я", "test").await.unwrap() {
+            Some(signed) => signed.token,
+            None => panic!("the computer kept people of its own after the link"),
+        };
+        let owner = format!("Bearer {owner}");
+        let mine = [("authorization", owner.as_str())];
+
+        let body = json!({ "address": "127.0.0.1", "port": bedroom_port, "kind": "ear" });
+        let (status, asked) = send(&computer, "POST", "/api/v1/placement/pair-code", &mine, body).await;
+        assert_eq!(status, StatusCode::CREATED, "{asked}");
+        let id = asked["message"]["id"].as_str().unwrap().to_string();
+        let request = bedroom.joins.list(crate::utils::time::now_ms())[0].clone();
+        assert_eq!(request.kind, crate::home::join::JoinKind::Ear, "the bedroom says its own code");
+
+        let uri = format!("/api/v1/placement/pair-code/{id}");
+        let (status, joined) = send(&computer, "POST", &uri, &mine, json!({ "code": request.code.unwrap() })).await;
+        assert_eq!(status, StatusCode::CREATED, "{joined}");
+        assert_eq!(
+            (joined["message"]["joined"].as_bool(), joined["message"]["ear"].as_bool()),
+            (Some(true), Some(true))
+        );
+        let ear = bedroom.settings.get(&crate::home::ear::HOME_EAR, None).expect("the bedroom is an ear now");
+        assert_eq!((ear.address.as_str(), ear.port), ("127.0.0.1", centre_port));
     }
 
     #[tokio::test]

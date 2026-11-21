@@ -17,6 +17,7 @@ const en: Translation<typeof ru> = {
         stationServer: 'Moving the hub to the speaker with a home server',
         pc: 'Moving the hub back to the computer',
         yandex: 'Giving the speaker back to Yandex',
+        ear: 'The speaker becomes the hub’s ear',
     },
     levelYes: 'yes',
     levelPartial: 'partly',
@@ -100,6 +101,10 @@ const en: Translation<typeof ru> = {
 
     moveDone: ' — done',
     moveFailed: ' — failed',
+    replaceHome: 'Replace the speaker’s home',
+    replaceHomeWarn: 'The speaker’s people, characters, memory and settings will be gone: this computer’s home takes their place. They can’t be brought back.',
+    replaceHomeSure: 'Yes, replace',
+    replaceHomeCancel: 'Don’t replace',
 
     segPc: 'On the computer',
     segStation: 'On the speaker',

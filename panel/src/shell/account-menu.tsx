@@ -18,7 +18,18 @@ const modes = (): Array<{ id: ModePick; label: string; Icon: typeof IconSun }> =
 /** Первая буква имени — на аватаре; без имени — «Я». */
 const initial = (name: string | undefined): string => (name?.trim()[0] ?? tr.shell.initialFallback).toUpperCase();
 
-export function AccountMenu({ onLook, onAccess, onSignOut }: { onLook: () => void; onAccess: () => void; onSignOut: () => void }) {
+export function AccountMenu({
+    onLook,
+    onAccess,
+    onSignOut,
+    other,
+}: {
+    onLook: () => void;
+    onAccess: () => void;
+    onSignOut: () => void;
+    /** Турбо: другой пульт этого компьютера — свой стол или пульт дома (этап 7 плана home-setup-flow). */
+    other?: { label: string; open: () => void };
+}) {
     const [open, setOpen] = useState(false);
     const box = useRef<HTMLDivElement>(null);
     const button = useRef<HTMLButtonElement>(null);
@@ -79,6 +90,11 @@ export function AccountMenu({ onLook, onAccess, onSignOut }: { onLook: () => voi
                     <button role="menuitem" class="tab-more-item" onClick={() => pick(onAccess)}>
                         {tr.shell.peopleAccess}
                     </button>
+                    {other && (
+                        <button role="menuitem" class="tab-more-item" onClick={() => pick(other.open)}>
+                            {other.label}
+                        </button>
+                    )}
                     <button role="menuitem" class="tab-more-item" onClick={() => pick(onSignOut)}>
                         {tr.shell.signOut}
                     </button>

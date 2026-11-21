@@ -6,7 +6,7 @@
 
 import { useEffect, useRef, useState } from 'preact/hooks';
 
-import { FoundStation, api, can, problemOf, stationCall } from '../api';
+import { FoundStation, PairCodeAsked, PairCodeLook, StationGatewayView, api, can, problemOf, stationCall } from '../api';
 import { LANGUAGES, setLanguage, tr, useLanguage } from '../i18n';
 import { usePanel } from '../shell/context';
 import { flushPanelMemory, recalled, remember } from '../shell/memory';
@@ -17,15 +17,17 @@ import { AnswerStep } from './onb/answer';
 import { BrainStep } from './onb/brain';
 import { CharacterStep } from './onb/character';
 import { Choice, OnboardingContext, StepNav, StepNavContext } from './onb/nav';
-import { SpeakerStep, resumeLink } from './onb/speaker';
+import { SpeakerStep, avoidStations, resumeLink } from './onb/speaker';
 import { steerInvite } from './onb/invite-state';
 import { StoreStep } from './onb/store';
 import { TryStep } from './onb/try';
+import { TurboStep } from './onb/turbo';
+import { StatusStep } from './onb/status';
 import { ONBOARDING, TOP_VIA, VIA } from '../via';
 import { InstallPill } from '../magicplace/wizard';
 import '../ui/onboarding-canvas.css';
 
-type StepId = 'where' | 'brain' | 'speaker' | 'answer' | 'character' | 'try' | 'store';
+type StepId = 'where' | 'brain' | 'speaker' | 'answer' | 'character' | 'try' | 'store' | 'status';
 
 /**
  * Запись первых шагов (onb/record.ts): выбор, шаг, пройденные шаги и хвосты. Нет записи — шаги пройдены или закрыты.
@@ -55,9 +57,10 @@ function againStart(panel: ReturnType<typeof usePanel>): { choice: Choice; done:
 
 /** Шаги по выбору. Шлюз на самой колонке (пульт открыт на ней): где жить — уже решено. */
 function stepsOf(choice: Choice, onStation: boolean): StepId[] {
-    if (onStation) return ['character', 'try', 'store'];
-    if (choice === 'computer') return ['where', 'brain', 'character', 'try', 'store'];
-    return ['where', 'speaker', 'answer', 'character', 'try', 'store'];
+    // «Ваш дом» (этап 4 плана home-setup-flow) — последним на каждом пути.
+    if (onStation) return ['character', 'try', 'store', 'status'];
+    if (choice === 'computer') return ['where', 'brain', 'character', 'try', 'store', 'status'];
+    return ['where', 'speaker', 'answer', 'character', 'try', 'store', 'status'];
 }
 
 /**
@@ -159,6 +162,8 @@ export function Onboarding({ onClose }: { onClose: () => void }) {
     const [busy, setBusy] = useState(false);
     const [problem, setProblem] = useState<string | null>(null);
     const [nav, setNav] = useState<StepNav | null>(null);
+    // Компьютер вошёл в дом по коду: шаг «Что даёт этот компьютер» (этап 3 плана home-setup-flow), потом стол дома.
+    const [turbo, setTurbo] = useState<{ key: string; name: string; status?: boolean } | null>(null);
     const main = useRef<HTMLElement>(null);
 
     // Подключение и перенос колонки ведёт пульт (screens/onb/speaker.tsx), а не шлюз: уход со шага их не останавливает,
@@ -272,8 +277,37 @@ export function Onboarding({ onClose }: { onClose: () => void }) {
                         )}
                         {/* Встроенная часть упала (нет поля в ответе шлюза) — шаг говорит об этом, «Дальше» работает. */}
                         <Boundary key={step} name={`onboarding.${step}`} fallback={<p class="card small">{tr.onboarding.stepFailed}</p>}>
-                            {helperShown ? (
-                                <HelperStep found={helper} onNo={scan.declineHelper} onLinked={finish} />
+                            {turbo?.status ? (
+                                <StatusStep
+                                    centre={turbo.key}
+                                    onDone={() => {
+                                        finish();
+                                        panel.go('home');
+                                    }}
+                                />
+                            ) : turbo ? (
+                                <TurboStep station={turbo.key} name={turbo.name} onDone={() => setTurbo({ ...turbo, status: true })} />
+                            ) : helperShown ? (
+                                <HelperStep
+                                    found={helper}
+                                    onNo={() => {
+                                        // «Это новый дом» (этап 0 плана home-setup-flow): дом — на этом компьютере, колонку
+                                        // в другом доме не трогаем: ни подключения мастера, ни переноса на неё.
+                                        avoidStations(scan.withGateway.map((station) => station.address));
+                                        scan.declineHelper();
+                                        if (!scan.found.some((station) => !scan.withGateway.some((busy) => busy.address === station.address))) {
+                                            setChoice('computer');
+                                            patchRecord({ choice: 'computer', step, picked: undefined });
+                                        }
+                                    }}
+                                    onLinked={(joined) => {
+                                        // Центр — компьютер: он ведёт этот компьютер-Турбо сам, шагов колонки нет.
+                                        if (joined.computer) {
+                                            finish();
+                                            panel.go('home');
+                                        } else setTurbo(joined);
+                                    }}
+                                />
                             ) : step === 'where' ? (
                                 <WhereStep
                                     choice={choice}
@@ -293,13 +327,15 @@ export function Onboarding({ onClose }: { onClose: () => void }) {
                                 <CharacterStep />
                             ) : step === 'try' ? (
                                 <TryStep />
+                            ) : step === 'status' ? (
+                                <StatusStep />
                             ) : (
                                 <StoreStep />
                             )}
                         </Boundary>
                     </main>
 
-                    {!helperShown && (
+                    {!helperShown && !turbo && (
                         <footer class={`onb-foot${nav?.secondary ? ' crowded' : ''}`}>
                             <div class="steps" aria-label={tr.onboarding.title}>
                                 {labels.map((label, at) => {
@@ -367,6 +403,8 @@ interface Found extends FoundStation {
     /** Порт и версия шлюза DuoWave на колонке, если он там есть. */
     gatewayPort?: number;
     version?: string | null;
+    /** Центр дома — компьютер или сервер (его объявление `_duowave._tcp`), а не колонка. */
+    computer?: boolean;
 }
 
 interface Scan {
@@ -394,17 +432,37 @@ function useScan(enabled: boolean): Scan {
         let alive = true;
         void (async () => {
             try {
-                const { stations } = await api.discoverStations();
+                const { stations, homes = [] } = await api.discoverStations();
                 if (!alive) return;
                 setFound(stations);
                 if (linked) return;
                 const probed = await Promise.all(
                     stations.slice(0, 6).map(async (station): Promise<Found | null> => {
                         const probe = await api.probeStation(station.address).catch(() => null);
-                        return probe?.gateway ? { ...station, gatewayPort: probe.port, version: probe.version } : null;
+                        if (!probe?.gateway) return null;
+                        // Ухо дома (этап 6): дом — у его центра, его и предлагаем, а не ухо.
+                        if (probe.earOf) {
+                            const centre = await api.probeStation(probe.earOf.address, probe.earOf.port).catch(() => null);
+                            return centre?.gateway
+                                ? { address: probe.earOf.address, name: undefined, txt: {}, ssh: null, gatewayPort: centre.port, version: centre.version }
+                                : null;
+                        }
+                        return { ...station, gatewayPort: probe.port, version: probe.version };
                     }),
                 );
-                if (alive) setWithGateway(probed.filter((entry): entry is Found => entry !== null));
+                // Центр на компьютере или сервере: его объявление говорит роль, порт и версию.
+                const computers: Found[] = homes
+                    .filter((home) => home.txt.role === 'centre')
+                    .map((home) => ({
+                        ...home,
+                        name: home.txt.name || home.txt.home || home.name,
+                        gatewayPort: Number(home.txt.port) || undefined,
+                        version: home.txt.version ?? null,
+                        computer: true,
+                    }));
+                const all = [...probed.filter((entry): entry is Found => entry !== null), ...computers];
+                const unique = all.filter((entry, at) => all.findIndex((other) => other.address === entry.address) === at);
+                if (alive) setWithGateway(unique);
             } catch {
                 if (alive) setFound([]);
             }
@@ -512,8 +570,17 @@ function WhereStep({ choice, scan, onPick }: { choice: Choice; scan: Scan; onPic
     const lines = choice === 'computer' ? t.linesComputer : choice === 'station' ? t.linesStation : t.linesStationPc;
     // Последняя строка «Только компьютер» и «Только колонка» — чего не будет (янтарь), у остальных — галочка.
     const warnLast = choice !== 'stationPc';
+    // «Это новый дом»: колонки в другом доме не берём; других нет — выбор только «этот компьютер».
+    const elsewhere = new Set(scan.helperDeclined ? scan.withGateway.map((station) => station.address) : []);
+    const noFree = elsewhere.size > 0 && scan.found.every((station) => elsewhere.has(station.address));
     const option = (id: Choice, title: string, sub: string, icon: preact.ComponentChildren, wide = false, chip?: string) => (
-        <button type="button" class={`opt${choice === id ? ' on' : ''}`} aria-pressed={choice === id} onClick={() => onPick(id)}>
+        <button
+            type="button"
+            class={`opt${choice === id ? ' on' : ''}`}
+            aria-pressed={choice === id}
+            disabled={noFree && id !== 'computer'}
+            onClick={() => onPick(id)}
+        >
             <span class="radio" />
             <span class="opt-body">
                 <span class="opt-title">
@@ -554,11 +621,10 @@ function WhereStep({ choice, scan, onPick }: { choice: Choice; scan: Scan; onPic
                     </div>
                 )}
                 <div class="onb-opts">
-                    {option('computer', t.choiceComputer, t.choiceComputerSub, <Ico name="laptop" size="lg" />)}
                     {option(
                         'stationPc',
                         t.choiceStationPc,
-                        t.choiceStationPcSub,
+                        noFree ? t.stationsElsewhere : t.choiceStationPcSub,
                         <>
                             <Ico name="speaker" />
                             <Ico name="laptop" />
@@ -566,7 +632,9 @@ function WhereStep({ choice, scan, onPick }: { choice: Choice; scan: Scan; onPic
                         true,
                         t.recommended,
                     )}
-                    {option('station', t.choiceStation, t.choiceStationSub, <Ico name="speakerOnly" size="lg" />)}
+                    {option('station', t.choiceStation, noFree ? t.stationsElsewhere : t.choiceStationSub, <Ico name="speakerOnly" size="lg" />)}
+                    {/* Своим домом — последним, только явным выбором (холст «Онбординг», доска Where, 21.11). */}
+                    {option('computer', t.choiceComputer, t.choiceComputerSub, <Ico name="laptop" size="lg" />)}
                 </div>
                 <HomeFound scan={scan} choice={choice} />
                 {choice !== 'computer' && (
@@ -624,9 +692,16 @@ function HomeFound({ scan, choice }: { scan: Scan; choice: Choice }) {
     const t = tr.onboarding;
     if (!scan.done) return null;
     const centre = new Set(scan.withGateway.map((station) => station.address));
+    // Несколько колонок (решение 21.11): первая ставится центром, остальные «Ваш дом» добавит ушами потом.
+    let centreTaken = false;
     const rows = scan.found.slice(0, 4).map((station) => {
-        const role = centre.has(station.address) ? t.deviceCentreHere : station.ssh === null ? t.needsRoot : t.deviceCanCentre;
-        return { key: station.address, name: nameOf(station), role, warn: station.ssh === null && !centre.has(station.address) };
+        const busy = centre.has(station.address);
+        // «Это новый дом»: центр на колонке — чужой дом, его не трогаем (этап 0 плана home-setup-flow).
+        if (busy && scan.helperDeclined) return { key: station.address, name: nameOf(station), role: t.deviceOtherHome, warn: true };
+        if (station.ssh === null && !busy) return { key: station.address, name: nameOf(station), role: t.needsRoot, warn: true };
+        const role = busy ? t.deviceCentreHere : centreTaken ? t.deviceEarLater : t.deviceCanCentre;
+        centreTaken = true;
+        return { key: station.address, name: nameOf(station), role, warn: false };
     });
     rows.push({
         key: 'this-computer',
@@ -655,27 +730,104 @@ function HomeFound({ scan, choice }: { scan: Scan; choice: Choice }) {
 
 // ─── «На колонке уже работает DuoWave» (доска Helper) ──────────
 
-function HelperStep({ found, onNo, onLinked }: { found: Found; onNo: () => void; onLinked: () => void }) {
+function HelperStep({
+    found,
+    onNo,
+    onLinked,
+}: {
+    found: Found;
+    onNo: () => void;
+    onLinked: (station: { key: string; name: string; computer?: boolean }) => void;
+}) {
     const t = tr.onboarding;
     const m = t.map;
-    const panel = usePanel();
+    const name = nameOf(found);
+    const port = found.gatewayPort ?? 8790;
+    // Код вместо пароля пульта (этапы 2–3 плана home-setup-flow): компьютер просит дом, центр говорит код. Колонка со
+    // старым DuoWave кода не знает — тогда пароль её пульта, как раньше.
+    const [mode, setMode] = useState<'code' | 'password'>('code');
+    const [asked, setAsked] = useState<PairCodeAsked | null>(null);
+    const [look, setLook] = useState<PairCodeLook | null>(null);
+    const [code, setCode] = useState('');
     const [password, setPassword] = useState('');
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState<string | null>(null);
-    const name = nameOf(found);
-    const link = async () => {
+    // Центр-компьютер связывается с этим компьютером сам (ключ подключения): своей колонки тут нет — шаги закончены.
+    const linked = (view: StationGatewayView | { helper?: boolean; key?: string }) =>
+        onLinked({ key: 'key' in view && view.key ? view.key : '', name, computer: 'helper' in view && !!view.helper });
+    const askNow = async (): Promise<void> => {
+        setError(null);
+        setLook(null);
+        setCode('');
+        try {
+            setAsked(await api.pairCode(found.address, port));
+        } catch (e) {
+            setAsked(null);
+            setError(problemOf(e));
+        }
+    };
+    useEffect(() => {
+        if (mode === 'code' && !asked) void askNow();
+    }, [mode]);
+    // Пока ждём: «Разрешить» в пульте дома впускает без кода — компьютер узнаёт об этом сам.
+    useEffect(() => {
+        if (!asked || mode !== 'code') return;
+        let alive = true;
+        const timer = window.setInterval(() => {
+            void api
+                .pairCodeLook(asked.id)
+                .then((fresh) => {
+                    if (!alive) return;
+                    setLook(fresh);
+                    if (fresh.joined && fresh.station) linked(fresh.station);
+                })
+                .catch(() => undefined);
+        }, 2500);
+        return () => {
+            alive = false;
+            window.clearInterval(timer);
+        };
+    }, [asked?.id, mode]);
+    const digits = code.replace(/\D/g, '');
+    const closed = !!look && (look.status === 'denied' || look.status === 'closed');
+    const enter = async (): Promise<void> => {
+        if (!asked || digits.length !== 6 || busy) return;
         setBusy(true);
         setError(null);
         try {
-            await api.pairStation(found.address, found.gatewayPort ?? 8790, password, '');
-            onLinked();
-            panel.go('home');
+            linked(await api.pairCodeEnter(asked.id, digits));
+        } catch (e) {
+            setError(problemOf(e));
+            setCode('');
+            void api.pairCodeLook(asked.id).then(setLook).catch(() => undefined);
+        } finally {
+            setBusy(false);
+        }
+    };
+    const sayAgain = async (): Promise<void> => {
+        if (!asked) return;
+        await api.pairCodeSay(asked.id).catch((e) => setError(problemOf(e)));
+    };
+    const byPassword = async (): Promise<void> => {
+        setBusy(true);
+        setError(null);
+        try {
+            linked(await api.pairStation(found.address, port, password, ''));
         } catch (e) {
             setError(problemOf(e));
         } finally {
             setBusy(false);
         }
     };
+    const lead = !asked
+        ? t.helperAsking
+        : asked.told?.spoken
+          ? t.helperCodeLead(name)
+          : asked.told?.window
+            ? t.helperCodeWindow
+            : asked.told?.printed
+              ? t.helperCodePrinted
+              : t.helperCodeSilent(name);
     return (
         <div class="onb-split">
             <section class="onb-col" style={{ maxWidth: '540px', gap: '16px' }}>
@@ -686,7 +838,7 @@ function HelperStep({ found, onNo, onLinked }: { found: Found; onNo: () => void;
                         {found.version ? ` · ${t.helperVersion(found.version)}` : ''}
                     </span>
                 </div>
-                <h1 class="h2">{t.helperTitle(name)}</h1>
+                <h1 class="h2">{found.computer ? t.helperTitleComputer(name) : t.helperTitle(name)}</h1>
                 <p class="lead" style={{ fontSize: '15px', lineHeight: 1.55 }}>
                     {t.helperAbout}
                 </p>
@@ -717,7 +869,7 @@ function HelperStep({ found, onNo, onLinked }: { found: Found; onNo: () => void;
                 </p>
             </section>
 
-            <section class="card onb-col" style={{ maxWidth: '480px', gap: '16px', padding: '24px' }}>
+            <section class="card onb-col" style={{ maxWidth: '480px', gap: '14px', padding: '24px' }}>
                 <PlaceMap
                     nodes={[
                         { x: 36, y: 60, w: 150, title: m.stationNamed(name), sub: m.stationMain, tone: 'own' },
@@ -733,22 +885,71 @@ function HelperStep({ found, onNo, onLinked }: { found: Found; onNo: () => void;
                     home={m.homeHelper}
                     label={t.helperTitle(name)}
                 />
-                <div class="field">
-                    <label for="onb-stpw">{t.helperPassword(name)}</label>
-                    {/* Пароль другого устройства — пульта колонки, не входа сюда: менеджер паролей не должен ни
-                        подставлять пароль этого компьютера, ни сохранять этот вместо него (как SecretField на столе). */}
-                    <input
-                        id="onb-stpw"
-                        name="speaker-password"
-                        class="input"
-                        type="password"
-                        placeholder={t.helperPasswordHint}
-                        autocomplete="off"
-                        value={password}
-                        onInput={(event) => setPassword((event.target as HTMLInputElement).value)}
-                        onKeyDown={(event) => event.key === 'Enter' && password && void link()}
-                    />
-                </div>
+                {mode === 'code' ? (
+                    <>
+                        <p class="small" role="status" style={{ margin: 0 }}>
+                            {closed ? (look?.why ?? t.helperAskAgain) : lead}
+                        </p>
+                        {closed ? (
+                            <button type="button" class="dw-btn dw-btn-light" onClick={() => void askNow()}>
+                                {t.helperAskAgain}
+                            </button>
+                        ) : (
+                            <div class="field">
+                                <label for="onb-code">{t.helperCodeLabel}</label>
+                                {/* DESIGN.md «number»: 22 px, цифры одной ширины. */}
+                                <input
+                                    id="onb-code"
+                                    name="one-time-code"
+                                    class="input"
+                                    inputMode="numeric"
+                                    autocomplete="one-time-code"
+                                    maxLength={8}
+                                    placeholder="•• •• ••"
+                                    disabled={!asked || busy}
+                                    value={code}
+                                    style={{ fontSize: '22px', lineHeight: '26px', letterSpacing: '0.2em', fontVariantNumeric: 'tabular-nums' }}
+                                    onInput={(event) => setCode((event.target as HTMLInputElement).value)}
+                                    onKeyDown={(event) => event.key === 'Enter' && void enter()}
+                                />
+                                <span class="small">{look ? `${t.helperCodeHint} · ${t.helperWaiting}` : t.helperCodeHint}</span>
+                            </div>
+                        )}
+                        <div class="onb-row-between" style={{ flexWrap: 'wrap', gap: '8px' }}>
+                            <button type="button" class="btn-ghost" style={{ padding: 0 }} disabled={!asked || closed} onClick={() => void sayAgain()}>
+                                {t.helperSayAgain}
+                            </button>
+                            <button type="button" class="btn-ghost" style={{ padding: 0 }} onClick={() => (setError(null), setMode('password'))}>
+                                {t.helperByPassword}
+                            </button>
+                        </div>
+                        <p class="small" style={{ margin: 0 }}>
+                            {t.helperNotHeard}
+                        </p>
+                    </>
+                ) : (
+                    <>
+                        <div class="field">
+                            <label for="onb-stpw">{t.helperPassword(name)}</label>
+                            {/* Пароль другого устройства — пульта колонки, не входа сюда: менеджер паролей не должен ни
+                                подставлять пароль этого компьютера, ни сохранять этот вместо него (как SecretField на столе). */}
+                            <input
+                                id="onb-stpw"
+                                name="speaker-password"
+                                class="input"
+                                type="password"
+                                placeholder={t.helperPasswordHint}
+                                autocomplete="off"
+                                value={password}
+                                onInput={(event) => setPassword((event.target as HTMLInputElement).value)}
+                                onKeyDown={(event) => event.key === 'Enter' && password && void byPassword()}
+                            />
+                        </div>
+                        <button type="button" class="btn-ghost" style={{ padding: 0, alignSelf: 'flex-start' }} onClick={() => (setError(null), setMode('code'))}>
+                            {t.helperByCode}
+                        </button>
+                    </>
+                )}
                 {error && (
                     <p class="small" role="alert" style={{ margin: 0, color: 'var(--bad)' }}>
                         {error}
@@ -761,7 +962,13 @@ function HelperStep({ found, onNo, onLinked }: { found: Found; onNo: () => void;
                     <button type="button" class="btn-ghost" style={{ padding: 0 }} onClick={onNo}>
                         {t.helperNo}
                     </button>
-                    <button type="button" class="dw-btn dw-btn-lg dw-btn-accent" disabled={!password || busy} onClick={() => void link()}>
+                    <button
+                        type="button"
+                        class="dw-btn dw-btn-lg dw-btn-accent"
+                        disabled={busy || (mode === 'code' ? digits.length !== 6 || !asked || closed : !password)}
+                        aria-busy={busy || undefined}
+                        onClick={() => void (mode === 'code' ? enter() : byPassword())}
+                    >
                         {t.helperYes}
                     </button>
                 </div>

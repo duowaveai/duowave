@@ -2,6 +2,11 @@
 //! control the Yandex app uses). A query from a random port gets unicast answers (RFC 6762, legacy unicast); one from
 //! 5353, where the OS lets us share it, gets the multicast ones too. Then each answer's SSH port is asked for its
 //! banner — reading only. No package: a PTR query and the answer's records are a page of code.
+//!
+//! The same for homes (docs/plans/home-setup-flow.md, stage 6): a DuoWave gateway on a computer or a server announces
+//! itself as _duowave._tcp (src/platform/announce.rs) — role, port, version, home — so a computer finds a centre that
+//! is not on a station, and on a port other than 8790. Stations do not announce: their RAM is tight; they are found as
+//! above, and their /health says whether they are a centre or an ear.
 
 use std::collections::BTreeMap;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
@@ -14,8 +19,10 @@ use tokio::net::{TcpStream, UdpSocket};
 use tokio::time::{timeout, timeout_at, Instant};
 
 pub const YANDEX_SERVICE: &str = "_yandexio._tcp.local";
-const MDNS_GROUP: Ipv4Addr = Ipv4Addr::new(224, 0, 0, 251);
-const MDNS_PORT: u16 = 5353;
+/// DuoWave's own: a gateway on a computer or a server, with its role and its home in TXT.
+pub const DUOWAVE_SERVICE: &str = "_duowave._tcp.local";
+pub(crate) const MDNS_GROUP: Ipv4Addr = Ipv4Addr::new(224, 0, 0, 251);
+pub(crate) const MDNS_PORT: u16 = 5353;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct FoundStation {
@@ -177,9 +184,102 @@ pub async fn discover_stations(ms: u64) -> Vec<FoundStation> {
     ask(&[SocketAddr::V4(SocketAddrV4::new(MDNS_GROUP, MDNS_PORT))], true, Duration::from_millis(ms)).await
 }
 
-/// The query sent to each of `to` (the mDNS group; a pretend station in tests), and the answers heard for `window`.
+/// DuoWave gateways that announce themselves (computers, servers) for `ms`: their TXT has `role`, `port`, `version`,
+/// `home`, `homeId`, and `centre` for a Turbo or an ear.
+pub async fn discover_homes(ms: u64) -> Vec<FoundStation> {
+    ask_for(
+        DUOWAVE_SERVICE,
+        &[SocketAddr::V4(SocketAddrV4::new(MDNS_GROUP, MDNS_PORT))],
+        true,
+        Duration::from_millis(ms),
+    )
+    .await
+}
+
 async fn ask(to: &[SocketAddr], shared: bool, window: Duration) -> Vec<FoundStation> {
-    let query = mdns_query(YANDEX_SERVICE);
+    ask_for(YANDEX_SERVICE, to, shared, window).await
+}
+
+/// Whether an mDNS packet is a question about `service` (PTR or ANY): the announcer answers those.
+pub fn asks_for(packet: &[u8], service: &str) -> bool {
+    let Some(flags) = u16_at(packet, 2) else { return false };
+    if flags & 0x8000 != 0 {
+        return false;
+    }
+    let questions = u16_at(packet, 4).unwrap_or(0);
+    let mut offset = 12;
+    for _ in 0..questions.min(16) {
+        let Some((name, after)) = read_name(packet, offset) else { return false };
+        let kind = u16_at(packet, after).unwrap_or(0);
+        if name.eq_ignore_ascii_case(service) && (kind == 12 || kind == 255) {
+            return true;
+        }
+        offset = after + 4;
+    }
+    false
+}
+
+fn put_name(packet: &mut Vec<u8>, name: &str) {
+    for label in name.split('.').filter(|label| !label.is_empty()) {
+        let bytes = &label.as_bytes()[..label.len().min(63)];
+        packet.push(bytes.len() as u8);
+        packet.extend_from_slice(bytes);
+    }
+    packet.push(0);
+}
+
+/// An mDNS answer with these records, as a responder sends it (QR and AA set, no questions; names uncompressed).
+/// `ttl` — how long the records stand: 120 s, and 0 to say goodbye.
+pub fn mdns_answer(records: &[DnsRecord], ttl: u32) -> Vec<u8> {
+    let mut packet = vec![0u8; 12];
+    packet[2..4].copy_from_slice(&0x8400u16.to_be_bytes());
+    packet[6..8].copy_from_slice(&(records.len().min(usize::from(u16::MAX)) as u16).to_be_bytes());
+    for record in records {
+        let (name, kind, data) = match record {
+            DnsRecord::Ptr { name, target } => {
+                let mut data = Vec::new();
+                put_name(&mut data, target);
+                (name, 12u16, data)
+            }
+            DnsRecord::Srv { name, target, port } => {
+                let mut data = vec![0, 0, 0, 0];
+                data.extend_from_slice(&port.to_be_bytes());
+                put_name(&mut data, target);
+                (name, 33u16, data)
+            }
+            DnsRecord::Txt { name, entries } => {
+                let mut data = Vec::new();
+                for (key, value) in entries {
+                    let text = format!("{key}={value}");
+                    let bytes = &text.as_bytes()[..text.len().min(255)];
+                    data.push(bytes.len() as u8);
+                    data.extend_from_slice(bytes);
+                }
+                if data.is_empty() {
+                    data.push(0);
+                }
+                (name, 16u16, data)
+            }
+            DnsRecord::A { name, address } => {
+                let Ok(ip) = address.parse::<Ipv4Addr>() else { continue };
+                (name, 1u16, ip.octets().to_vec())
+            }
+        };
+        put_name(&mut packet, name);
+        packet.extend_from_slice(&kind.to_be_bytes());
+        // Class IN with the cache-flush bit for the unique records (SRV, TXT, A); a PTR is shared.
+        let class: u16 = if kind == 12 { 1 } else { 0x8001 };
+        packet.extend_from_slice(&class.to_be_bytes());
+        packet.extend_from_slice(&ttl.to_be_bytes());
+        packet.extend_from_slice(&(data.len() as u16).to_be_bytes());
+        packet.extend_from_slice(&data);
+    }
+    packet
+}
+
+/// The query sent to each of `to` (the mDNS group; a pretend station in tests), and the answers heard for `window`.
+async fn ask_for(service: &'static str, to: &[SocketAddr], shared: bool, window: Duration) -> Vec<FoundStation> {
+    let query = mdns_query(service);
     let mut sockets = Vec::new();
     // Unicast answers to a random port.
     match UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).await {
@@ -223,7 +323,7 @@ async fn ask(to: &[SocketAddr], shared: bool, window: Duration) -> Vec<FoundStat
                 let mut buffer = vec![0u8; 9000];
                 while let Ok(Ok((size, from))) = timeout_at(deadline, socket.recv_from(&mut buffer)).await {
                     let address = from.ip().to_string();
-                    let Some(station) = stations_in(&parse_records(&buffer[..size]), &address, YANDEX_SERVICE) else {
+                    let Some(station) = stations_in(&parse_records(&buffer[..size]), &address, service) else {
                         continue;
                     };
                     let mut found = found.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -243,7 +343,7 @@ async fn ask(to: &[SocketAddr], shared: bool, window: Duration) -> Vec<FoundStat
 
 /// UDP 5353 shared with the system's responder (SO_REUSEADDR, and SO_REUSEPORT where it exists, as Node's
 /// `reuseAddr` does); None when the system keeps it to itself.
-fn shared_socket() -> Option<UdpSocket> {
+pub(crate) fn shared_socket() -> Option<UdpSocket> {
     use socket2::{Domain, Protocol, Socket, Type};
     let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP)).ok()?;
     socket.set_reuse_address(true).ok()?;

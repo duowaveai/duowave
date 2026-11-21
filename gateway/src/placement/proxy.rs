@@ -10,13 +10,17 @@
 //! computer, a change of them is refused too: the next sending from here would overwrite it. A plugin's call is a
 //! reading here (its widgets read their data with it), and the station's plugins' panel parts and the workshop's
 //! previews pass without the session: `import()` and `<link>` carry no key, and the station serves them to anyone.
+//!
+//! The centre of a home this computer is the Turbo of over the link (another computer or a server; stage 7 of
+//! docs/plans/home-setup-flow.md) has the same pass by its client's key, `/station/link:<id>/…` (`link_pass`): its
+//! requests go back over the link that centre opened (`up`).
 use std::path::{Path as FsPath, PathBuf};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use axum::body::{Body, Bytes};
 use axum::extract::{Path, RawQuery, State};
-use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode};
+use axum::http::{header, HeaderMap, HeaderName, HeaderValue, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::any;
 use axum::Router;
@@ -28,6 +32,7 @@ use crate::app::App;
 use crate::core::identity::permissions::STATION_VIEW;
 use crate::core::identity::principal::{Principal, PrincipalKind};
 use crate::core::identity::roles::Role;
+use crate::helpers::link::{plain_path, LinkError, UpPerson, BODY_MAX};
 use crate::platform::http::{ApiError, Caller, Zone};
 use crate::utils::time::now_ms;
 
@@ -100,19 +105,6 @@ fn speaking(rest: &str) -> bool {
 /// remembers about them. Anyone at home who may see the home writes their own.
 fn own_row(rest: &str) -> bool {
     matches!(rest, "api/v1/desk/gateway" | "api/v1/panel/state")
-}
-
-/// A path that stays where it says, before the whitelist reads it: no empty segment, no «.» or «..» — nor their
-/// percent-encoded forms or the same with spaces around, which the address of the request reads as the same — and no
-/// backslash, query, fragment, control character or encoded slash hidden in a segment (the router has decoded the
-/// path once: `..%2F` came as `../`). The address made of it is checked against the whitelist once more (`pass`).
-fn plain_path(rest: &str) -> bool {
-    !rest.contains(|c: char| matches!(c, '\\' | '?' | '#') || c.is_control())
-        && rest.split('/').all(|segment| {
-            let segment = segment.to_ascii_lowercase();
-            let dotted = segment.trim().replace("%2e", ".");
-            !matches!(dotted.as_str(), "" | "." | "..") && !segment.contains("%2f") && !segment.contains("%5c")
-        })
 }
 
 /// The role the station gives the person at the computer: a person's own; a key's (no role) — a guest's.
@@ -225,6 +217,11 @@ async fn pass(
     // From the home network only: the station sees this computer's address and would take the person for one at
     // home — its own rules «только из дома» (its plugins' code, its connectors, the pair) would not hold.
     caller.zone_at_least(Zone::Home)?;
+    // The centre of a home this computer is the Turbo of over the link: back over that link.
+    if link_client(&key) {
+        let asked = Asked { method, headers: &headers, rest: &rest, query: query.as_deref(), body };
+        return link_pass(&app, &caller, &key, asked).await;
+    }
     let reading = matches!(method, Method::GET | Method::HEAD);
     // The station's plugins' panel parts and the workshop's previews are public there and come without a key
     // (`import()`, `<link>`): no session asked. Everything else — the person on the computer: reading needs the right
@@ -397,6 +394,124 @@ async fn pass(
         out.headers_mut().insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, HeaderValue::from_static("*"));
     }
     Ok(out)
+}
+
+/// A key of the pass that names a home this computer helps over the link — its client's id, `link:<12 hex>` —, not a
+/// station.
+fn link_client(key: &str) -> bool {
+    key.strip_prefix("link:").is_some_and(|id| {
+        id.len() == 12 && id.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    })
+}
+
+/// A request to pass on as it came: its method, headers, path after the key, query and body.
+struct Asked<'a> {
+    method: Method,
+    headers: &'a HeaderMap,
+    rest: &'a str,
+    query: Option<&'a str>,
+    body: Bytes,
+}
+
+/// The pass to the centre of a home this computer is the Turbo of over the link (stage 7 of
+/// docs/plans/home-setup-flow.md). Such a centre — another computer or a server — dials this computer, and this one
+/// holds no address or key of it: the panel's requests go back over the link the centre opened (`up`). The station
+/// pass's rules, a little narrower: from the home network only (`pass` checked it), a reading needs the right to see
+/// the home and a change an admin here; a person only — a key's script is nobody at home —, named to the centre with
+/// their role here; the panel's API and the centre's health only; no copies while the centre is away. The centre lets
+/// in only a Turbo of its own at home and acts as that person with that role, never above it (`Helpers::takes_up`).
+async fn link_pass(app: &Arc<App>, caller: &Caller, client: &str, asked: Asked<'_>) -> Result<Response, ApiError> {
+    let Asked { method, headers, rest, query, body } = asked;
+    let reading = matches!(method, Method::GET | Method::HEAD);
+    let principal = caller.permitted(STATION_VIEW)?;
+    let role = match (principal.kind, principal.role) {
+        (PrincipalKind::User, Some(role)) => role,
+        _ => return Err(ApiError::forbidden(crate::tr!("Пульт дома отсюда открывает человек, а не ключ."))),
+    };
+    let changing = !reading && !(method == Method::POST && (plugin_call(rest) || speaking(rest))) && !own_row(rest);
+    if changing && role != Role::Admin {
+        return Err(ApiError::forbidden(crate::tr!("Править настройки дома отсюда может администратор.")));
+    }
+    if !plain_path(rest) || !(rest.starts_with("api/v1/") || (reading && rest == "health")) {
+        return Err(ApiError::not_found("Not Found"));
+    }
+    let Some(record) = app.clients.record_of(client).filter(|record| record.confirmed) else {
+        return Err(ApiError::not_found(crate::tr!("Такого дома у этого компьютера нет.")));
+    };
+    let name = if record.home.name.trim().is_empty() { client.to_string() } else { record.home.name };
+    if body.len() > BODY_MAX {
+        return Err(ApiError::new(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            crate::tr!("Запрос слишком большой для центра дома."),
+        ));
+    }
+    let Some(calls) = app.link.up_of(client) else {
+        return Err(match app.link.takes_up(client) {
+            Some(false) => ApiError::conflict(crate::tr!(
+                "Центр дома «{name}» не открывает свой пульт через этот компьютер: на нём DuoWave постарше, или этот компьютер для него не Турбо дома.",
+                name = name
+            )),
+            _ => ApiError::unavailable(crate::tr!(
+                "Центр дома «{name}» не на связи: его пульт откроется, когда он вернётся.",
+                name = name
+            )),
+        });
+    };
+    let path = format!("/{rest}{}", query.map(|query| format!("?{query}")).unwrap_or_default());
+    let uri = path.parse::<axum::http::Uri>().map_err(|_| ApiError::not_found("Not Found"))?;
+    let mut request = axum::extract::Request::new(Body::from(body));
+    *request.method_mut() = method;
+    *request.uri_mut() = uri;
+    for carried in [header::CONTENT_TYPE, header::ACCEPT, header::RANGE, header::ACCEPT_LANGUAGE] {
+        if let Some(value) = headers.get(&carried) {
+            request.headers_mut().insert(carried, value.clone());
+        }
+    }
+    // Who asks: the person signed in here, with their role here — in the request's frame, never as a header.
+    request.extensions_mut().insert(UpPerson {
+        name: principal.name.chars().filter(|c| !c.is_control()).take(40).collect(),
+        role: role.as_str().to_string(),
+        id: principal.id.chars().filter(|c| c.is_ascii_graphic()).take(64).collect(),
+    });
+    let wait = if changing { CHANGE_WAIT } else { READ_WAIT };
+    let mut response = match calls.call_within(request, wait).await {
+        Ok(response) => response,
+        Err(LinkError::Away) => {
+            return Err(ApiError::unavailable(crate::tr!(
+                "Центр дома «{name}» не на связи: его пульт откроется, когда он вернётся.",
+                name = name
+            )))
+        }
+        Err(LinkError::Busy) => {
+            return Err(ApiError::unavailable(crate::tr!(
+                "Центр дома «{name}» занят — попробуйте ещё раз.",
+                name = name
+            )))
+        }
+        Err(LinkError::Broken(why)) => {
+            tracing::info!(target: "placement", "pass to the home's centre over the link: {why}");
+            return Err(ApiError::bad_gateway(crate::tr!(
+                "Центр дома «{name}» не ответил — попробуйте ещё раз.",
+                name = name
+            )));
+        }
+    };
+    // A bare refusal is the centre's own door: this computer is not its Turbo at home (any more).
+    if response.status() == StatusCode::FORBIDDEN && axum::body::HttpBody::is_end_stream(response.body()) {
+        return Err(ApiError::forbidden(crate::tr!(
+            "Центр дома «{name}» не пускает этот компьютер к своему пульту: в его списке Турбо он не «дома».",
+            name = name
+        )));
+    }
+    // The API is not opened across origins through the pass, and the browser keeps no answer.
+    let headers = response.headers_mut();
+    let crossing: Vec<HeaderName> =
+        headers.keys().filter(|name| name.as_str().starts_with("access-control-")).cloned().collect();
+    for name in crossing {
+        headers.remove(name);
+    }
+    headers.entry(header::CACHE_CONTROL).or_insert(HeaderValue::from_static("no-store"));
+    Ok(response)
 }
 
 fn copy_response(copy: Copy) -> Response {

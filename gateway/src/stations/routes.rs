@@ -112,6 +112,9 @@ mod connect {
     #[serde(rename_all = "camelCase")]
     pub(super) struct Discovered {
         stations: Vec<FoundStation>,
+        /// DuoWave gateways on computers and servers that announce themselves (stage 6 of the home-setup-flow plan):
+        /// TXT `role` (centre, turbo, ear), `port`, `version`, `name`, `home`, `homeId`, `centre`. Not this computer.
+        homes: Vec<FoundStation>,
         gateway: Vec<String>,
         /// The port a station dials when the typed address has none: the gateway's own (the published one in Docker).
         port: u16,
@@ -123,8 +126,17 @@ mod connect {
     /// Stations that answer mDNS on the home network (none inside a container's bridge: type the address).
     pub(super) async fn discover(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<Discovered> {
         caller.permitted(STATIONS_MANAGE)?;
-        let stations = app.station_connect.discover().await;
+        let (stations, homes) =
+            tokio::join!(app.station_connect.discover(), crate::stations::connect::discovery::discover_homes(2000));
         let interfaces = host_interfaces();
+        // This computer answers its own question too: not a home to find.
+        let own: Vec<String> =
+            interfaces.iter().filter(|entry| entry.ipv4).map(|entry| entry.address.clone()).collect();
+        let me = app.identity.as_helper().name;
+        let homes: Vec<FoundStation> = homes
+            .into_iter()
+            .filter(|home| !(own.contains(&home.address) && home.txt.get("name") == Some(&me)))
+            .collect();
         let gateway = app.station_connect.home_addresses(&interfaces, in_container());
         tracing::info!(
             "station search: {} found; this computer's adapters: {}",
@@ -145,7 +157,7 @@ mod connect {
         } else {
             None
         };
-        Ok(ok(Discovered { stations, gateway, port: app.station_connect.port(), why_none }))
+        Ok(ok(Discovered { stations, homes, gateway, port: app.station_connect.port(), why_none }))
     }
 
     /// Connected stations that still dial this computer's old port (PORT changed since): the panel's banner.

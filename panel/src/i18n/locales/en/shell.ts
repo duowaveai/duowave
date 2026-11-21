@@ -18,6 +18,9 @@ const en: Translation<typeof ru> = {
     look: 'Appearance',
     peopleAccess: 'People and access',
     signOut: 'Sign out',
+    // A Turbo (stage 7 of the home-setup-flow plan): this computer’s own desk — from here, not instead of the home’s panel.
+    ownDesk: 'This computer’s desk',
+    homeDesk: 'The home’s panel',
     // search
     closeSearch: 'Close search',
     searchPanel: 'Search the panel',

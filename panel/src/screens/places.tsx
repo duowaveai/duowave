@@ -34,7 +34,7 @@ import { DevicesPage } from './devices';
 import { RoomCard } from './room-card';
 import { Stations, Updates } from './house';
 import { SetupSheet } from './stations';
-import { TOP_VIA, VIA } from '../via';
+import { TOP_VIA, VIA, VIA_LINK } from '../via';
 import { useHomeStationName } from '../station-name';
 import { JournalScreen } from './journal';
 import { StationMemoryCard } from './memory';
@@ -238,7 +238,8 @@ function LookPage() {
 function UpdatesPage() {
     const panel = usePanel();
     const homeName = useHomeStationName();
-    const turbo = panel.role.role === 'helper' && can('station.view');
+    // Колонку обновляет этот компьютер; центр по связи (компьютер или сервер) обновляется сам.
+    const turbo = panel.role.role === 'helper' && !!panel.role.station && can('station.view');
     const name = panel.role.station?.name ?? homeName;
     return (
         <>
@@ -248,7 +249,7 @@ function UpdatesPage() {
                     <WatchWidget />
                 </Card>
             )}
-            <Updates title={turbo ? tr.core.tabThisComputer : VIA && name ? tr.core.tabStation(name) : undefined} />
+            <Updates title={turbo ? tr.core.tabThisComputer : VIA && !VIA_LINK && name ? tr.core.tabStation(name) : undefined} />
             {VIA && <Updates own title={tr.core.tabThisComputer} />}
         </>
     );

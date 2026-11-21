@@ -13,7 +13,7 @@ import { fileURLToPath } from 'node:url';
 import type { BrainView, ProviderView } from '../src/api.ts';
 import { paintedAround } from '../src/shell/backdrop-around.ts';
 import { landingsOf, repairedLayout } from '../src/shell/desk-repair.ts';
-import { helpsSomeone } from '../src/shell/role.ts';
+import { helpsSomeone, homeWindowKey, roleOf } from '../src/shell/role.ts';
 import { chosenDevice, dotOf, placeDevice, thisDeviceOf, viewsOf } from '../src/home-model.ts';
 import { endedStillShown } from '../src/shell/plaque-model.ts';
 import { waitPage, waitShownOn } from '../src/voice/waiting-model.ts';
@@ -203,6 +203,27 @@ check('keep_awake_shows_only_while_this_computer_helps_someone', () => {
     expect(helpsSomeone([], 1), 'a gateway connected by a key');
     const side = textOf('src/screens/helper-pc.tsx', 'HelperSide');
     expect(/helpsSomeone\([^)]*\) && (\(\s*<section[^>]*>\s*)?<KeepAwake/.test(side), '«Этот компьютер» shows the switch by another rule');
+});
+
+// ─── The Turbo of a computer centre over the link (stage 7 of home-setup-flow) ───────────────────────────────────────
+
+check('a_turbo_of_a_centre_over_the_link_is_a_helper_whose_window_goes_there_while_the_link_is_up', () => {
+    const health = (placement: Partial<PlacementHealth>) =>
+        ({ status: 'ok', placement: { role: 'pc', placement: 'pc', peerApi: 2, ...placement } }) as Parameters<typeof roleOf>[0];
+    const centre = { key: 'link:0123456789ab', name: 'Дача', online: true };
+    const role = roleOf(health({ centre }));
+    expect(role.role === 'helper' && role.centre?.key === centre.key && !role.station, 'a helper with the centre, no speaker');
+    expect(homeWindowKey(role) === centre.key, 'its window goes to the centre');
+    // The link down: still the home's Turbo, but its window waits — no copies there; its own desk stays meanwhile.
+    const away = roleOf(health({ centre: { ...centre, online: false } }));
+    expect(away.role === 'helper' && homeWindowKey(away) === undefined, 'no window to an absent centre');
+    // A speaker with its own gateway placed here comes first; a computer alone stays a gateway with no window.
+    const speaker = { key: 'h:kitchen', device: 'd1', placement: 'station' as const, address: '192.168.1.30', reachable: false };
+    expect(homeWindowKey(roleOf(health({ centre, station: speaker, stations: [speaker] }), 'd1')) === 'h:kitchen', 'the speaker first');
+    const alone = roleOf(health({}));
+    expect(alone.role === 'gateway' && homeWindowKey(alone) === undefined, 'a lone computer');
+    // The window stays while the computer keeps that centre: the check of the app reads `placement.centre` too.
+    expect(/placement\.centre\?\.key === VIA/.test(source('src/app.tsx')), 'the window of the centre leaves on its own');
 });
 
 // ─── «Где я»: device tabs in the top bar (owner's decision 16.11, point 2) ───────────────────────────────────────────

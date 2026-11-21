@@ -329,7 +329,12 @@ impl StationGateway {
                 self.events.emit(GatewayEvent::PlacementChanged { what: "helper".into() });
             }
         }
-        if record.home_key_id.is_none() {
+        // This computer is the station's home computer: it gave the station its key, or the station names this very
+        // computer as its door's helper (a link by hand or by the code gives no key here; test 21.11: the station kept
+        // dialling the Mac's old address after it changed networks). Another computer's address is never touched.
+        let me = self.settings.get(&crate::settings::definitions::GATEWAY_SELF, None).map(|me| me.id);
+        let named = health.pointer("/placement/homeServer/helperId").and_then(Value::as_str);
+        if record.home_key_id.is_none() && !(named.is_some() && named == me.as_deref()) {
             return;
         }
         let Some(known) = health.pointer("/placement/homeServer/url").and_then(Value::as_str) else { return };
@@ -699,6 +704,7 @@ impl StationGateway {
             return;
         }
         self.keep_links(&client).await;
+        self.report_network(&client).await;
         match self.sync(&client).await {
             Ok(()) => self.lock().sync_error = None,
             Err(error) => {
@@ -713,6 +719,35 @@ impl StationGateway {
         // The home's copy is taken above, before anything goes to the station.
         if !self.follow_up().await {
             self.auto_update().await;
+        }
+    }
+
+    /// «Состояние дома» at the centre (docs/plans/home-setup-flow.md, stage 4): this computer tells the station what may
+    /// keep the station from reaching it — Windows' network and firewall — over its own look, outbound, which a closed
+    /// firewall lets through while the station's calls in are refused. Once on a change and at most every 5 minutes
+    /// while there is something to tell; a station of a build before it answers 404, and nothing more is sent.
+    async fn report_network(&self, client: &PeerClient) {
+        use std::collections::HashMap;
+        use std::sync::LazyLock;
+        static SENT: LazyLock<Mutex<HashMap<String, (String, std::time::Instant)>>> =
+            LazyLock::new(|| Mutex::new(HashMap::new()));
+        let Some(network) = crate::platform::windows_net::last() else { return };
+        let advice = crate::platform::windows_net::advice(&network);
+        let report = serde_json::json!({ "closed": network.likely_closed(), "advice": advice });
+        let text = report.to_string();
+        {
+            let sent = SENT.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            if let Some((last, at)) = sent.get(&self.key) {
+                let fresh = at.elapsed() < Duration::from_secs(5 * 60);
+                if last == &text && (fresh || advice.is_none()) {
+                    return;
+                }
+            }
+        }
+        if client.post("/api/v1/home/turbo-network", report).await.is_ok() {
+            SENT.lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .insert(self.key.clone(), (text, std::time::Instant::now()));
         }
     }
 
@@ -1759,6 +1794,8 @@ mod tests {
         links: Mutex<Vec<Value>>,
         /// A station of this build: its helpers in /health, and its entry of this computer switched on or not.
         helpers: Mutex<Option<bool>>,
+        /// The id its door's computer named at its last look (`homeServer.helperId`).
+        helper_id: Mutex<Option<String>>,
     }
 
     async fn helped_station(key: &str, state: Arc<Helped>) -> u16 {
@@ -1773,12 +1810,16 @@ mod tests {
                     let placement = seen.placement.lock().unwrap().clone();
                     let url = seen.url.lock().unwrap().clone();
                     let helpers = *seen.helpers.lock().unwrap();
+                    let helper_id = seen.helper_id.lock().unwrap().clone();
                     async move {
                         let mut health = serde_json::json!({"message": {
                             "build": {"version": "0.0.1", "peerApi": PEER_API},
                             "placement": {"role": "station", "placement": placement, "settingsRevision": 1,
                                           "homeServer": url.map(|url| serde_json::json!({"url": url}))}
                         }});
+                        if let Some(id) = helper_id {
+                            health["message"]["placement"]["homeServer"]["helperId"] = serde_json::json!(id);
+                        }
                         if let Some(enabled) = helpers {
                             let placement = &mut health["message"]["placement"];
                             placement["helpers"] = serde_json::json!({"away": "any", "list": []});
@@ -1918,6 +1959,29 @@ mod tests {
         watch.set_record(Some(&on_station(port, Placement::StationServer, None)), None).unwrap();
         watch.poll().await;
         assert!(state.links.lock().unwrap().is_empty());
+    }
+
+    /// Linked by hand or by the code — no key from here — yet the station names this very computer as its door's
+    /// helper: its new address goes there (test 21.11: the Mac changed networks, the station kept the old one).
+    #[tokio::test]
+    async fn a_station_that_names_this_computer_gets_its_new_address_without_a_key_from_here() {
+        let dir = tempfile::tempdir().unwrap();
+        let (watch, _) = computer(dir.path());
+        watch.set_home_addresses(Arc::new(|| vec!["127.0.0.35".to_string()]));
+        let me = crate::settings::definitions::GatewaySelf { id: "this-computer".into(), name: None };
+        watch.settings.set(&crate::settings::definitions::GATEWAY_SELF, &me, None).unwrap();
+        let key = watch.peer_key().unwrap();
+        let state = Arc::new(Helped::default());
+        *state.placement.lock().unwrap() = "stationServer".into();
+        *state.url.lock().unwrap() = Some("http://127.0.0.20".into());
+        *state.helper_id.lock().unwrap() = Some("another-computer".into());
+        let port = helped_station(&key, state.clone()).await;
+        watch.set_record(Some(&on_station(port, Placement::StationServer, None)), None).unwrap();
+        watch.poll().await;
+        assert!(state.links.lock().unwrap().is_empty(), "another computer's address stays");
+        *state.helper_id.lock().unwrap() = Some("this-computer".into());
+        watch.poll().await;
+        assert_eq!(state.links.lock().unwrap().clone(), vec![serde_json::json!({"url": "http://127.0.0.35"})]);
     }
 
     #[tokio::test]

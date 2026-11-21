@@ -3,6 +3,12 @@
 //! all its fields (field numbers for what the schema lacks), and the audio of each stream — the station's voice,
 //! Alice's speech — as a file. Tokens never reach the journal; the raw view of SynchronizeState, which carries them,
 //! is not written at all. Nothing is answered here.
+//!
+//! One exception, the gateway's own words (`say_aloud`, docs/plans/home-setup-flow.md stage 2: the join code): a
+//! TtsGenerate of ours goes up the relayed connection itself — as the station does for its own vocalisation — and
+//! Yandex's answer to it (its TtsSpeak, the audio of its stream, the stream's close) is taken off the way to the
+//! station; the gateway plays it on the station's own speaker. Every other frame passes as before. No second session
+//! for the device: one that opened beside the relayed one was never tried and might push the station's own out.
 
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
@@ -166,6 +172,17 @@ struct RelayedStream {
     bytes: usize,
 }
 
+/// A phrase of the gateway's own on its way back from Yandex (`say_aloud`): its frames stop here.
+struct OwnPhrase {
+    message_id: String,
+    stream_id: Option<u32>,
+    audio: Vec<u8>,
+    done: Option<tokio::sync::oneshot::Sender<Result<Vec<u8>, String>>>,
+}
+
+/// The audio of one phrase at most: Ogg/Opus of a few seconds is far below.
+const OWN_AUDIO_MAX: usize = 2 * 1024 * 1024;
+
 /// Our connection to Yandex: opening (the station's frames wait, in order), open, or gone.
 enum Upstream {
     Connecting(Vec<(Bytes, bool)>),
@@ -183,6 +200,8 @@ struct Inner {
     trips: RelayTrips,
     /// Yandex answered a ping or sent a frame since the last ping.
     yandex_heard: bool,
+    /// A phrase of the gateway's own (`say_aloud`), while its answer comes.
+    own: Option<OwnPhrase>,
 }
 
 pub struct RelaySession {
@@ -245,6 +264,7 @@ impl RelaySession {
                 stream_labels: HashMap::new(),
                 trips,
                 yandex_heard: true,
+                own: None,
             }),
         });
         (session, outgoing)
@@ -457,12 +477,107 @@ impl RelaySession {
 
     fn on_yandex_frame(&self, frame: Bytes, is_binary: bool) {
         self.lock().yandex_heard = true;
+        if self.own_frame(&frame, is_binary) {
+            return;
+        }
         if is_binary {
             self.outbox.send_binary(frame.clone());
         } else {
             self.outbox.send_text(String::from_utf8_lossy(&frame).into_owned());
         }
         self.observe(EventDirection::Out, &frame, is_binary);
+    }
+
+    /// The gateway's own words, in Alice's voice, through this relayed session (see the module's head): the phrase's
+    /// audio (Ogg/Opus) once Yandex has said it all. One at a time; the station hears nothing of it — the caller plays
+    /// it.
+    pub async fn say_aloud(&self, text: &str) -> Result<Vec<u8>, String> {
+        let message_id = crate::utils::ids::uuid();
+        let tts = &self.deps.config.tts;
+        let mut generate = json!({ "text": text, "lang": tts.lang, "format": "audio/opus" });
+        if let Some(voice) = &tts.voice {
+            generate["voice"] = json!(voice);
+        }
+        let object = json!({ "event": { "header": { "messageId": message_id }, "ttsGenerate": generate } });
+        let frame = self.deps.codec.encode_client_object(&object).map_err(|error| error.to_string())?;
+        let (done, answer) = tokio::sync::oneshot::channel();
+        {
+            let mut inner = self.lock();
+            if inner.own.is_some() {
+                return Err("a phrase of ours is already on its way".into());
+            }
+            let Upstream::Open(sender) = &inner.upstream else {
+                return Err("no connection to Yandex yet".into());
+            };
+            sender.send(UpstreamMessage::Binary(frame)).map_err(|_| "the connection to Yandex is gone".to_string())?;
+            inner.own = Some(OwnPhrase {
+                message_id: message_id.clone(),
+                stream_id: None,
+                audio: Vec::new(),
+                done: Some(done),
+            });
+        }
+        self.note("ownPhrase", &format!("ttsGenerate {}", &message_id[..8.min(message_id.len())]), None);
+        let outcome = tokio::time::timeout(Duration::from_millis(tts.timeout_ms.max(5000) * 2), answer).await;
+        // Whatever came of it, nothing of ours waits any more: later frames of that phrase go to the station.
+        self.lock().own.take();
+        match outcome {
+            Ok(Ok(result)) => result,
+            Ok(Err(_)) => Err("the phrase was dropped".into()),
+            Err(_) => Err("Yandex did not say the phrase in time".into()),
+        }
+    }
+
+    /// A frame of our own phrase: taken off the way to the station. True when it was ours.
+    fn own_frame(&self, frame: &Bytes, is_binary: bool) -> bool {
+        let mut inner = self.lock();
+        let Some(own) = inner.own.as_mut() else { return false };
+        if !is_binary {
+            return false;
+        }
+        // Audio: [u32 stream][Ogg pages], no AAPI magic; events carry it.
+        if !AapiCodec::is_aapi_frame(frame) {
+            if frame.len() < 4 {
+                return false;
+            }
+            let stream_id = u32::from_be_bytes([frame[0], frame[1], frame[2], frame[3]]);
+            if own.stream_id != Some(stream_id) {
+                return false;
+            }
+            if own.audio.len() + frame.len() - 4 <= OWN_AUDIO_MAX {
+                own.audio.extend_from_slice(&frame[4..]);
+            }
+            return true;
+        }
+        let Ok(decoded) = self.deps.codec.decode_server_frame(frame) else { return false };
+        let kind = self.deps.codec.server_event_kind(&decoded).unwrap_or("unknown").to_string();
+        let header = decoded.get("event").and_then(|event| event.get("header"));
+        let refers = header.and_then(|header| header.get("refMessageId")).and_then(Value::as_str);
+        if refers == Some(own.message_id.as_str()) {
+            if kind == "ttsSpeak" {
+                own.stream_id =
+                    header.and_then(|header| header.get("streamId")).and_then(Value::as_u64).map(|id| id as u32);
+            } else if kind == "error" || kind == "unknown" {
+                if let Some(done) = own.done.take() {
+                    let _ = done.send(Err(format!("Yandex answered {kind}")));
+                }
+            }
+            return true;
+        }
+        let control = decoded.get("streamControl");
+        let stream = control.and_then(|control| control.get("streamId")).and_then(Value::as_u64).map(|id| id as u32);
+        // A stream's control is no event: it has no kind of the schema's events, only its own field.
+        if control.is_some() && stream.is_some() && stream == own.stream_id {
+            let closed = control.and_then(|control| control.get("close")).is_some_and(|close| !close.is_null());
+            if closed {
+                let audio = std::mem::take(&mut own.audio);
+                if let Some(done) = own.done.take() {
+                    let _ = done.send(if audio.is_empty() { Err("no audio came".into()) } else { Ok(audio) });
+                }
+            }
+            return true;
+        }
+        false
     }
 
     /// Journals a frame without ever stopping it: a frame we cannot read still went through.
@@ -727,6 +842,56 @@ fn upstream_message(frame: Bytes, is_binary: bool) -> UpstreamMessage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The gateway's own phrase goes up the relayed connection and its answer — the TtsSpeak, the audio of its
+    /// stream, the stream's close — stops here and comes back as Ogg; a frame of the station's own talk passes on.
+    #[tokio::test]
+    async fn the_gateways_own_phrase_rides_the_relay_and_its_answer_never_reaches_the_station() {
+        let codec = Arc::new(AapiCodec::new());
+        let config = crate::config::Config::for_tests(&crate::config::Env::from_pairs([("STATE_DIR", "")]));
+        let deps = RelayDeps {
+            codec: codec.clone(),
+            config: Arc::new(config.gateway.clone()),
+            events: EventBus::new(),
+            requests: None,
+        };
+        let handshake = Handshake { headers: axum::http::HeaderMap::new(), remote_address: "127.0.0.1".into() };
+        let (session, mut to_station) = RelaySession::new(&handshake, deps);
+        let (up, mut upstream) = mpsc::unbounded_channel();
+        session.lock().upstream = Upstream::Open(up);
+
+        let speaker = session.clone();
+        let said = tokio::spawn(async move { speaker.say_aloud("Код подключения: 4 7, 1 9, 8 2.").await });
+        let UpstreamMessage::Binary(asked) = upstream.recv().await.unwrap() else { panic!("a binary frame up") };
+        let decoded = codec.decode_client(&asked).unwrap();
+        let summary = format!("{:?}", decoded.message);
+        assert!(summary.contains("TtsGenerate") || summary.contains("ttsGenerate"), "{summary}");
+        let message_id = session.lock().own.as_ref().unwrap().message_id.clone();
+
+        let speak = codec
+            .encode_server_object(
+                &json!({ "event": { "header": { "refMessageId": message_id, "streamId": 77 }, "ttsSpeak": {} } }),
+            )
+            .unwrap();
+        session.on_yandex_frame(speak, true);
+        let mut audio = 77u32.to_be_bytes().to_vec();
+        audio.extend_from_slice(b"OggS-pretend-audio");
+        session.on_yandex_frame(Bytes::from(audio), true);
+        // The station's own talk meanwhile: another stream's audio passes on.
+        let mut other = 5u32.to_be_bytes().to_vec();
+        other.extend_from_slice(b"OggS-alice");
+        session.on_yandex_frame(Bytes::from(other.clone()), true);
+        let close = codec.encode_server_object(&json!({ "streamControl": { "streamId": 77, "close": {} } })).unwrap();
+        session.on_yandex_frame(close, true);
+
+        assert_eq!(said.await.unwrap().unwrap(), b"OggS-pretend-audio".to_vec());
+        let mut passed = Vec::new();
+        while let Ok(frame) = to_station.try_recv() {
+            passed.push(frame);
+        }
+        assert_eq!(passed.len(), 1, "only the station's own frame went to it");
+        assert!(session.lock().own.is_none(), "nothing of ours waits any more");
+    }
 
     #[test]
     fn describes_yandex_frames_in_a_line() {

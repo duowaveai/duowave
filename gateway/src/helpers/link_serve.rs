@@ -19,6 +19,9 @@
 //!   Another link version is told 426 before any socket.
 //! - **Serving**: each request frame runs through `/home/v1` as a request of that home (`LinkOrigin`: outside the
 //!   home, with only what this computer gives it), its answer streamed back; the status is told when it changes.
+//! - **Up** (stage 7 of docs/plans/home-setup-flow.md): a home whose gateway said at its upgrade that it takes them
+//!   (`UP_HEADER`) gets this computer's own requests over the same link — the pass to that home's panel
+//!   (placement/proxy.rs) for the person signed in here. Their answers come back as `up-res` and pieces.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::convert::Infallible;
@@ -51,15 +54,14 @@ use tokio::task::JoinSet;
 use tokio::time::{Instant, Sleep};
 use tokio_rustls::server::TlsStream;
 use tokio_util::sync::CancellationToken;
-use tower::ServiceExt;
 
 use super::clients::{kept_name, Clients, LinkClient, Names, MUSCLES};
 use super::contract::{Abilities, HelperIdentity};
 use super::link::{
-    bound_host, decode_chunk, encode_chunk, headers_from, headers_json, link_proof, read_text, same, sha256,
-    wrapped_link_key, Binding, ConnectionKey, Out, Transcript, Wire, WireSink, WireStream, BODY_MAX, BUSY, CARRIED,
-    CHUNK, DONE, FRAME_MAX, GATEWAY_HEADER, GATEWAY_NAME_HEADER, GOING, HOME_HEADER, LINK_ID_HEADER, PAIR_FRAME_MAX,
-    PAIR_HEADER, PATH, PROTOCOL, REFUSED, SILENT, VERSION, VERSION_HEADER,
+    answer, bound_host, decode_chunk, headers_from, link_proof, read_text, same, sha256, up_piece, wrapped_link_key,
+    Binding, ConnectionKey, Out, Session, Transcript, Way, Wire, WireSink, WireStream, BODY_MAX, BUSY, CARRIED, DONE,
+    FRAME_MAX, GATEWAY_HEADER, GATEWAY_NAME_HEADER, GOING, HOME_HEADER, LINK_ID_HEADER, PAIR_FRAME_MAX, PAIR_HEADER,
+    PATH, PROTOCOL, REFUSED, SILENT, UP_BIT, UP_HEADER, VERSION, VERSION_HEADER,
 };
 use crate::app::App;
 use crate::config::Config;
@@ -706,10 +708,12 @@ struct KeyState {
     since: Option<String>,
 }
 
-/// A live link: whose, and its way to be cut.
+/// A live link: whose, its way to be cut, and — when its home's gateway takes them — this computer's own requests to it
+/// (`up`).
 struct LiveLink {
     client: String,
     cut: CancellationToken,
+    up: Option<Arc<Session>>,
 }
 
 /// The helper's side of the link on this computer.
@@ -739,6 +743,8 @@ pub struct LinkServer {
     client_bodies: Mutex<HashMap<String, Arc<AtomicUsize>>>,
     live: Mutex<HashMap<u64, LiveLink>>,
     next_live: AtomicU64,
+    /// Whether each home's gateway took this computer's own requests (`up`) at its last link since the start.
+    centres: Mutex<HashMap<String, bool>>,
     stopping: CancellationToken,
     nudge: Arc<Notify>,
 }
@@ -817,6 +823,7 @@ impl LinkServer {
             client_bodies: Mutex::new(HashMap::new()),
             live: Mutex::new(HashMap::new()),
             next_live: AtomicU64::new(1),
+            centres: Mutex::new(HashMap::new()),
             stopping: CancellationToken::new(),
             nudge: Arc::new(Notify::new()),
         }
@@ -981,6 +988,21 @@ impl LinkServer {
     /// The links live now, for tests.
     pub fn live_links(&self) -> usize {
         locked(&self.live).len()
+    }
+
+    /// This computer's own requests to a home's gateway (`up`): over the newest live link of that home whose gateway
+    /// takes them; none while there is no such link.
+    pub(crate) fn up_of(&self, client: &str) -> Option<Arc<Session>> {
+        let live = locked(&self.live);
+        let newest =
+            live.iter().filter(|(_, live)| live.client == client && live.up.is_some()).max_by_key(|(id, _)| **id);
+        newest.and_then(|(_, live)| live.up.clone())
+    }
+
+    /// Whether a home's gateway takes this computer's own requests, as its last link since the start said; none before
+    /// its first link.
+    pub(crate) fn takes_up(&self, client: &str) -> Option<bool> {
+        locked(&self.centres).get(client).copied()
     }
 
     /// A plain link request comes from a proxy on this computer, or from one the owner named.
@@ -1210,6 +1232,8 @@ async fn door(app: Arc<App>, transport: Transport, request: Request) -> Response
         peer,
         deadline,
         unproven,
+        // The gateway takes this computer's own requests (`up`): it said so at its upgrade.
+        up: parts.headers.get(UP_HEADER).and_then(|value| value.to_str().ok()).map(str::trim) == Some("1"),
     };
     socket.max_frame_size(FRAME_MAX).max_message_size(FRAME_MAX).on_upgrade(move |socket| async move {
         let (sink, stream) = axum_wire(socket);
@@ -1242,6 +1266,8 @@ pub(crate) struct Knock {
     pub(crate) deadline: Option<Arc<Deadline>>,
     /// A plain link's place among those not proven yet, given back with its proof.
     pub(crate) unproven: Option<tokio::sync::OwnedSemaphorePermit>,
+    /// The gateway takes this computer's own requests (`UP_HEADER`).
+    pub(crate) up: bool,
 }
 
 /// A later link after its upgrade: the challenge, the proof of the key within `PROOF` of the upgrade — a wrong one closed
@@ -1266,7 +1292,7 @@ pub(crate) async fn link_session(app: Arc<App>, mut sink: WireSink, mut stream: 
     if let Some(deadline) = &knock.deadline {
         deadline.release();
     }
-    serve_home(app, sink, stream, knock.client, knock.named, knock.peer, permit).await;
+    serve_home(app, sink, stream, knock.client, knock.named, knock.peer, permit, knock.up).await;
 }
 
 /// How a link's proof came: right, a `proof` whose MAC does not hold, or none (gone, silent, or not a proof).
@@ -1555,7 +1581,9 @@ pub(crate) struct Home {
     done: mpsc::UnboundedSender<u32>,
 }
 
-/// A home's link at this computer, as its record names the home (never as the gateway's headers do).
+/// A home's link at this computer, as its record names the home (never as the gateway's headers do); `up` — its gateway
+/// takes this computer's own requests over it.
+#[allow(clippy::too_many_arguments)]
 async fn serve_home(
     app: Arc<App>,
     mut sink: WireSink,
@@ -1564,11 +1592,12 @@ async fn serve_home(
     named: HelperIdentity,
     peer: SocketAddr,
     permit: Permit,
+    up: bool,
 ) {
     let server = app.link.clone();
     let id = server.next_live.fetch_add(1, Ordering::SeqCst);
     let cut = CancellationToken::new();
-    locked(&server.live).insert(id, LiveLink { client: client.id.clone(), cut: cut.clone() });
+    locked(&server.live).insert(id, LiveLink { client: client.id.clone(), cut: cut.clone(), up: None });
     // Removed between its proof and now: `cut` found no link of it to close then.
     if !server.clients.alive(&client.id) {
         locked(&server.live).remove(&id);
@@ -1576,10 +1605,20 @@ async fn serve_home(
         return;
     }
     let origin = LinkOrigin { client: client.id.clone(), own_home: client.own_home, home: client.home, gateway: named };
+    let out = Out::start(sink);
+    // This computer's own requests to the home's gateway share the link's writer; the pass finds them here.
+    let calls = up.then(|| Session::over(out.clone(), Way::Up));
+    if let Some(live) = locked(&server.live).get_mut(&id) {
+        live.up = calls.clone();
+    }
+    locked(&server.centres).insert(client.id.clone(), up);
     server.clients.online(&client.id, &origin.gateway, true);
-    let code = serve_link(app.clone(), sink, stream, origin.clone(), peer, cut).await;
+    let code = serve_link(app.clone(), out, stream, origin.clone(), peer, cut, calls.clone()).await;
     tracing::info!("link: a home's link closed ({code})");
     locked(&server.live).remove(&id);
+    if let Some(calls) = calls {
+        calls.fail_all("the link closed");
+    }
     server.clients.online(&client.id, &origin.gateway, false);
     // The home's count of bodies goes with its last link.
     locked(&server.client_bodies).retain(|_, held| Arc::strong_count(held) > 1);
@@ -1592,17 +1631,18 @@ fn status_for(app: &App, origin: &LinkOrigin) -> Value {
 }
 
 /// A home's link served until it ends: the welcome, then its requests through `/home/v1`, the status told as it
-/// changes, the client looked at again every `RECHECK` (removed: 4401), silence closed (4408). The close code.
+/// changes, the client looked at again every `RECHECK` (removed: 4401), silence closed (4408); the answers to this
+/// computer's own requests (`up`, over `calls`) to their callers. The close code.
 pub(crate) async fn serve_link(
     app: Arc<App>,
-    sink: WireSink,
+    out: Out,
     mut stream: WireStream,
     origin: LinkOrigin,
     peer: SocketAddr,
     cut: CancellationToken,
+    calls: Option<Arc<Session>>,
 ) -> u16 {
     let server = app.link.clone();
-    let out = Out::start(sink);
     let gone = out.gone.clone();
     let (done, mut finished) = mpsc::unbounded_channel();
     let client_held = locked(&server.client_bodies).entry(origin.client.clone()).or_default().clone();
@@ -1639,10 +1679,28 @@ pub(crate) async fn serve_link(
                             let _ = server.clients.remove(&home.origin.client, None);
                             break DONE;
                         }
+                        // The answers to this computer's own requests (`up`): to the callers that wait for them.
+                        Some((kind, value)) if kind == Way::Up.answer() => {
+                            if let Some(calls) = &calls {
+                                calls.on_answer(&value);
+                            }
+                        }
+                        Some((kind, value)) if kind == Way::Up.failure() => {
+                            if let Some(calls) = &calls {
+                                calls.on_failure(&value);
+                            }
+                        }
                         _ => {}
                     },
                     Wire::Binary(bytes) => {
-                        if !home.feed(&bytes) {
+                        // The pieces of those answers (their ids above `UP_BIT`) to their readers; the gateway's request
+                        // bodies to their handlers here.
+                        let fed = match (&calls, up_piece(&bytes)) {
+                            (Some(calls), true) => calls.on_chunk(&bytes).await,
+                            (None, true) => true,
+                            (_, false) => home.feed(&bytes),
+                        };
+                        if !fed {
                             break PROTOCOL;
                         }
                     }
@@ -1744,11 +1802,11 @@ impl Home {
         self.control(Wire::json(&frame));
     }
 
-    /// A request frame: run through `/home/v1` as this home's, unless it is a flood (close 4400), more than may run
-    /// (503), or not a `/home/v1` path (404).
+    /// A request frame: run through `/home/v1` as this home's, unless it is a flood or not of the gateway's ids (close
+    /// 4400: those above `UP_BIT` are this computer's own), more than may run (503), or not a `/home/v1` path (404).
     fn request(&mut self, value: &Value) -> Result<(), u16> {
         let id = value.get("id").and_then(Value::as_u64).and_then(|id| u32::try_from(id).ok()).ok_or(PROTOCOL)?;
-        if self.running.contains_key(&id) || self.running.len() >= OPEN {
+        if id & UP_BIT != 0 || self.running.contains_key(&id) || self.running.len() >= OPEN {
             return Err(PROTOCOL);
         }
         let path = value.get("path").and_then(Value::as_str).unwrap_or("");
@@ -1793,6 +1851,7 @@ impl Home {
             self.out.clone(),
             answered.clone(),
             self.done.clone(),
+            Way::Req,
         ));
         let now = Instant::now();
         self.running.insert(
@@ -1865,56 +1924,6 @@ impl Home {
             self.refuse(id, StatusCode::REQUEST_TIMEOUT, true);
         }
     }
-}
-
-/// One request's answer: its head, then its body in pieces of at most `CHUNK`, the end marked; a body that breaks
-/// midway ends in an `error`, never as a short whole one.
-async fn answer(
-    router: Router,
-    request: Request,
-    id: u32,
-    out: Out,
-    answered: Arc<AtomicBool>,
-    done: mpsc::UnboundedSender<u32>,
-) {
-    let send = |wire: Wire| {
-        let out = out.clone();
-        async move { out.send(wire).await }
-    };
-    let response = router.oneshot(request).await.unwrap_or_else(|never| match never {});
-    let (parts, body) = response.into_parts();
-    let has_body = !axum::body::HttpBody::is_end_stream(&body);
-    let head = json!({
-        "t": "res", "id": id, "status": parts.status.as_u16(),
-        "headers": headers_json(&parts.headers, super::link::carried_back), "body": has_body,
-    });
-    if !send(Wire::json(&head)).await {
-        return;
-    }
-    answered.store(true, Ordering::SeqCst);
-    if has_body {
-        let mut pieces = body.into_data_stream();
-        while let Some(piece) = pieces.next().await {
-            match piece {
-                Ok(piece) => {
-                    for part in piece.chunks(CHUNK) {
-                        if !send(Wire::Binary(encode_chunk(id, false, part))).await {
-                            return;
-                        }
-                    }
-                }
-                Err(error) => {
-                    let _ = send(Wire::json(&json!({ "t": "error", "id": id, "message": error.to_string() }))).await;
-                    let _ = done.send(id);
-                    return;
-                }
-            }
-        }
-        if !send(Wire::Binary(encode_chunk(id, true, &[]))).await {
-            return;
-        }
-    }
-    let _ = done.send(id);
 }
 
 #[cfg(test)]

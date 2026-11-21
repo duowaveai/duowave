@@ -14,14 +14,25 @@
 //! - copy.rs, queue.rs — the home's copy on a device that can answer by itself, and its changes made while the
 //!   centre was away.
 //! - ear.rs — a second station as an ear of the centre, and «Сделать центром».
+//! - join.rs, join_say.rs — into the home by a code: a Turbo or an ear asks the centre, the centre tells a code of six
+//!   digits (aloud, in a window, on stdout) and shows it to the admins with «Разрешить».
+//! - announce.rs — «Поиск дома»: a computer's or a server's gateway says on the network what it is in its home
+//!   (`_duowave._tcp`), so another computer finds a home whose centre is not on a station.
+//! - status.rs — «Состояние дома»: one look at what the home needs, a row each with the one thing that fixes it.
 
+// «Поиск дома»: a computer's or a server's gateway announces itself as _duowave._tcp (stage 6).
+#[cfg(feature = "pc")]
+pub mod announce;
 pub mod apps;
 pub mod character;
 pub mod copy;
 pub mod devices;
 pub mod ear;
+pub mod join;
+pub mod join_say;
 pub mod queue;
 pub mod rooms;
+pub mod status;
 pub mod telegram;
 
 pub use devices::watch;
@@ -35,4 +46,6 @@ pub fn routes() -> axum::Router<std::sync::Arc<crate::app::App>> {
         .merge(ear::routes())
         .merge(telegram::routes())
         .merge(character::routes())
+        .merge(join::routes())
+        .merge(status::routes())
 }

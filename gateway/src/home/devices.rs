@@ -327,7 +327,61 @@ async fn list(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<serde_js
         }
         return Ok(ok(serde_json::to_value(as_turbo(&app, &centre)).unwrap_or_default()));
     }
+    // The Turbo of a home whose centre is another computer (the link): that home, not one of its own.
+    #[cfg(feature = "pc")]
+    if let Some(home) = link_home(&app).and_then(|client| as_link_turbo(&app, &client)) {
+        return Ok(ok(serde_json::to_value(home).unwrap_or_default()));
+    }
     Ok(ok(serde_json::to_value(of_app(&app)).unwrap_or_default()))
+}
+
+/// A computer that helps another home over the link and keeps no station of its own (stage 7 of
+/// docs/plans/home-setup-flow.md): that home's Turbo, not a centre with a Turbo of its own — «Компьютер · Центр ·
+/// Турбо» on one device was the Windows test's puzzle (21.11). Its own home stays in its data, for «Это новый дом».
+#[cfg(feature = "pc")]
+fn link_home(app: &App) -> Option<crate::helpers::clients::ClientView> {
+    if !app.link.helps() || !app.station_gateway.all().is_empty() || !app.stations.list().is_empty() {
+        return None;
+    }
+    app.clients.view(&[]).into_iter().find(|client| client.via == "link" && !client.own_home && client.home.is_some())
+}
+
+/// The home this computer is the Turbo of over the link, as /health tells the panel (`placement.centre`, stage 7 of
+/// docs/plans/home-setup-flow.md): the key of the pass to its centre (the client's id), the home's name, whether a link
+/// to it is up now. Only once its centre said at a link that it takes this computer's own requests (`up`): with an older
+/// centre — or one that does not count this computer as a Turbo at home — the panel keeps this computer's own desk.
+#[cfg(feature = "pc")]
+pub(crate) fn link_centre(app: &App) -> Option<serde_json::Value> {
+    let client = link_home(app)?;
+    if app.link.takes_up(&client.id) != Some(true) {
+        return None;
+    }
+    let name = client.home.as_ref().map(|home| home.name.clone()).unwrap_or_default();
+    let online = app.link.up_of(&client.id).is_some();
+    Some(serde_json::json!({ "key": client.id, "name": name, "online": online }))
+}
+
+/// That home as its Turbo shows it: the centre by the home's name — its gateways online or not —, itself as Turbo.
+#[cfg(feature = "pc")]
+fn as_link_turbo(app: &App, client: &crate::helpers::clients::ClientView) -> Option<HomeDevices> {
+    let home = client.home.clone()?;
+    let id = format!("home:{}", home.id);
+    let mut hub =
+        HomeDevice::new(id.clone(), DeviceKind::Computer, crate::tr!("Центр дома «{name}»", name = home.name.clone()));
+    hub.roles.push(DeviceRole::Centre);
+    hub.state =
+        if client.gateways.iter().any(|gateway| gateway.online) { DeviceState::Online } else { DeviceState::Offline };
+    let me = app.identity.gateway();
+    let mut itself = HomeDevice::new(
+        format!("gateway:{}", me.as_ref().map(|me| me.id.clone()).unwrap_or_default()),
+        DeviceKind::Computer,
+        me.as_ref().map(|me| me.name.clone()).unwrap_or_default(),
+    );
+    itself.roles.push(DeviceRole::Turbo);
+    itself.state = DeviceState::Online;
+    itself.itself = true;
+    itself.gateway_id = me.map(|me| me.id);
+    Some(HomeDevices { home: HomeInfo { id: Some(home.id), name: home.name }, centre: id, devices: vec![hub, itself] })
 }
 
 /// What an ear knows of its home while the centre is away: the centre by its address, itself with its copy.
@@ -362,10 +416,19 @@ fn as_ear(app: &App, ear: &super::ear::EarOf) -> HomeDevices {
 #[cfg(feature = "pc")]
 pub(crate) fn centre_elsewhere(app: &App) -> Option<Arc<crate::placement::watch::StationGateway>> {
     use crate::core::availability::Placement;
+    // Not an ear of it: a second station joined as the centre's ear has its own gateway and a record here too.
+    let ear = |station: &crate::placement::watch::StationGateway| {
+        station
+            .live()
+            .health
+            .as_ref()
+            .and_then(|health| health.pointer("/placement/earOf"))
+            .is_some_and(|ear| !ear.is_null())
+    };
     app.station_gateway
         .all()
         .into_iter()
-        .find(|station| station.record().is_some_and(|record| record.placement != Placement::Pc))
+        .find(|station| station.record().is_some_and(|record| record.placement != Placement::Pc) && !ear(station))
 }
 
 /// What a Turbo computer knows of its home while the centre is away: the centre by its record, then itself.

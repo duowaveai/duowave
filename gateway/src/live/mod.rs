@@ -89,6 +89,8 @@ pub const RELAYED: &[&str] = &[
     // The devices of the home (src/home): the line at the top of the panel reads them again.
     "home.devices.changed",
     "home.room.changed",
+    // A request into the home by a code (src/home/join.rs): the admins' panels show its card.
+    "home.join",
     "home.copied",
     // Who this computer helps over the link, and its connection key changed.
     "helpers.clients",
@@ -192,6 +194,8 @@ fn subject_of(event: &GatewayEvent) -> (Option<String>, Option<String>) {
         GatewayEvent::BusNews { from, event } => (Some(from.clone()), Some(event.clone())),
         // Which helper and how: `added`, `order`, `contract`…; up or away.
         GatewayEvent::HelpersChanged { id, change, .. } => (id.clone(), Some(change.clone())),
+        // Which request into the home and how: `asked`, `joined`…
+        GatewayEvent::HomeJoin { id, change, .. } => (Some(id.clone()), Some(change.clone())),
         GatewayEvent::HelperUp { id, .. } => (Some(id.clone()), Some("up".into())),
         GatewayEvent::HelperDown { id, .. } => (Some(id.clone()), Some("down".into())),
         // Which home this computer helps, and how: `paired`, `online`…

@@ -19,7 +19,9 @@ async function readHomeName(): Promise<void> {
     try {
         const health = await ownCall<Health>('GET', '/health');
         const placed = health?.placement?.stations ?? (health?.placement?.station ? [health.placement.station] : []);
-        const name = placed.find((entry) => entry.key === VIA)?.name;
+        // Окно центра по связи (этап 7 плана home-setup-flow): имя дома.
+        const centre = health?.placement?.centre;
+        const name = placed.find((entry) => entry.key === VIA)?.name ?? (centre?.key === VIA ? centre.name : undefined);
         homeName = name && name.trim() && name !== FIRST_NAME ? name : null;
     } catch {
         homeName = null;

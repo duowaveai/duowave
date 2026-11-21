@@ -112,6 +112,11 @@ html[data-theme='dark'] {
 .home-chip .dot-ok { background: #65a30d; }
 .home-chip .dot-warn { background: #f59e0b; }
 .home-hears { color: var(--sub); }
+/* «Состояние дома» на столе (screens/home-status.tsx): точка строки — зелёная, янтарная, красная, как у устройств. */
+.home-status .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--bar-off); }
+.home-status .dot-ok { background: #65a30d; }
+.home-status .dot-warn { background: #f59e0b; }
+.home-status .dot-offline { background: var(--dot-offline); }
 .home-bar.is-short .home-bar-name { display: none; }
 .home-bar.is-short .home-role { display: none; }
 .home-bar.is-short .home-chip-name { max-width: 12ch; }

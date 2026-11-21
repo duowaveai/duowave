@@ -42,6 +42,11 @@ pub trait HomeServerView: Send + Sync {
 /// so its safety net counts no failure; a test counts instead.
 pub type Restarter = Arc<dyn Fn() + Send + Sync>;
 
+/// What /health says of the home this computer is the Turbo of over the link (`placement.centre`); none when it is no
+/// such Turbo.
+#[cfg(feature = "pc")]
+pub type Centre = Arc<dyn Fn() -> Option<Value> + Send + Sync>;
+
 pub fn restart_soon() -> Restarter {
     Arc::new(|| {
         tokio::spawn(async {
@@ -66,6 +71,9 @@ pub struct PlacementService {
     /// The computer's view of the station's gateway (src/placement/watch.rs).
     #[cfg(feature = "pc")]
     station: OnceLock<Arc<super::watch::StationGateways>>,
+    /// The home this computer is the Turbo of over the link, as /health tells it (`home::devices::link_centre`).
+    #[cfg(feature = "pc")]
+    centre: OnceLock<Centre>,
     /// What starts it again; the last one set wins (a test's own over the test support's).
     restarter: Mutex<Option<Restarter>>,
     /// The revision, computed at most every few seconds: the panels and the computer ask /health often.
@@ -97,6 +105,8 @@ impl PlacementService {
             home: OnceLock::new(),
             #[cfg(feature = "pc")]
             station: OnceLock::new(),
+            #[cfg(feature = "pc")]
+            centre: OnceLock::new(),
             restarter: Mutex::new(None),
             revision: Mutex::new(None),
             made_key: OnceLock::new(),
@@ -139,6 +149,11 @@ impl PlacementService {
     #[cfg(feature = "pc")]
     pub fn station(&self) -> Option<&Arc<super::watch::StationGateways>> {
         self.station.get()
+    }
+
+    #[cfg(feature = "pc")]
+    pub fn set_centre(&self, centre: Centre) {
+        let _ = self.centre.set(centre);
     }
 
     pub fn set_restarter(&self, restarter: Restarter) {
@@ -382,6 +397,12 @@ impl PlacementService {
                             "stations": all,
                         }),
                     );
+                }
+                // The home's centre when this computer is its Turbo over the link (stage 7 of home-setup-flow): the panel
+                // goes to that home's panel through the pass with its key.
+                #[cfg(feature = "pc")]
+                if let Some(centre) = self.centre.get().and_then(|centre| centre()) {
+                    merge(&mut health, json!({ "centre": centre }));
                 }
             }
         }

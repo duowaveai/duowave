@@ -5,6 +5,7 @@
 pub mod api_keys_service;
 pub mod audit_service;
 pub mod auth_service;
+pub mod cli;
 pub mod controller;
 pub mod household_service;
 pub mod passwords;

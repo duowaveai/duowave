@@ -196,6 +196,28 @@ pub const RESERVED: [&str; 5] = ["order", "away", "key", "clients", "self"];
 pub const SELF: &str = "self";
 /// How often each helper is looked at.
 pub const CHECK_EVERY: Duration = Duration::from_secs(15);
+/// How often a Turbo at home that is away is looked for by its announcement (`Helpers::search_moved`).
+#[cfg(feature = "pc")]
+pub const MOVED_EVERY: Duration = Duration::from_secs(120);
+
+/// The away helpers `(entry, link url, helper id)` found at another address among the announcements: `(entry, new
+/// link url)`. A helper is known by the id it names in TXT (`id`) and its link port (`link`); one found at the same
+/// address is not moved.
+#[cfg(feature = "pc")]
+pub fn moved_helpers(
+    away: &[(String, String, Option<String>)],
+    found: &[crate::stations::connect::discovery::FoundStation],
+) -> Vec<(String, String)> {
+    away.iter()
+        .filter_map(|(entry, url, helper)| {
+            let helper = helper.as_deref()?;
+            let home = found.iter().find(|home| home.txt.get("id").map(String::as_str) == Some(helper))?;
+            let port: u16 = home.txt.get("link")?.parse().ok()?;
+            let moved = format!("https://{}:{port}", home.address);
+            (moved != *url).then(|| (entry.clone(), moved))
+        })
+        .collect()
+}
 /// Looks in a row without an answer before a helper counts as away (~30 s).
 pub const DOWN_AFTER: u32 = 2;
 /// How long the helpers answer before «Свой» comes back by itself.
@@ -386,6 +408,8 @@ pub struct Helpers {
     unread: AtomicBool,
     /// Itself, for the links' news.
     this: OnceLock<Weak<Helpers>>,
+    /// The whole app, once built: a linked helper's own requests (`up`) go into its routes.
+    app: OnceLock<Weak<crate::app::App>>,
     /// The links' times (tests scale them).
     link_timing: Mutex<LinkTiming>,
     /// The looks have started, and the server listens on its port (the bridge's address): links run once both hold.
@@ -429,6 +453,7 @@ impl Helpers {
             followers: Mutex::new(Vec::new()),
             unread: AtomicBool::new(false),
             this: OnceLock::new(),
+            app: OnceLock::new(),
             link_timing: Mutex::new(LinkTiming::default()),
             started: AtomicBool::new(false),
             listening: AtomicBool::new(false),
@@ -475,6 +500,11 @@ impl Helpers {
     /// This gateway's own parts as a helper (stage 6: a computer build that is not a station).
     pub fn set_own(&self, own: Arc<dyn OwnParts>) {
         let _ = self.own.set(own);
+    }
+
+    /// The whole app joins once built: the links started from now on take their helper's own requests (`up`).
+    pub fn attach(&self, app: Weak<crate::app::App>) {
+        let _ = self.app.set(app);
     }
 
     /// This gateway's own hearing, when it takes it from itself (stage 6).
@@ -579,6 +609,63 @@ impl Helpers {
         });
     }
 
+    /// «Поиск дома» for a Turbo that moved (docs/plans/home-setup-flow.md, stage 6): a linked helper at home that is
+    /// away is looked for on the home network by its own announcement (`_duowave._tcp`, its id and link port in TXT) —
+    /// one multicast question, never a sweep of the subnet. Found at another address, its entry's link address
+    /// follows; the pinned certificate still proves it is the same computer. Every `MOVED_EVERY`, only while one is away.
+    #[cfg(feature = "pc")]
+    pub fn search_moved(self: &Arc<Self>) {
+        let me: Weak<Helpers> = Arc::downgrade(self);
+        let stop = self.stop.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = tokio::time::sleep(MOVED_EVERY) => {}
+                    _ = stop.cancelled() => break,
+                }
+                let Some(helpers) = me.upgrade() else { break };
+                let away: Vec<(String, String, Option<String>)> = helpers
+                    .views()
+                    .into_iter()
+                    .filter(|view| view.enabled && view.kind == HelperKind::Home && view.state == HelperState::Down)
+                    .filter_map(|view| {
+                        let entry = helpers.entry(&view.id)?;
+                        Some((entry.id.clone(), entry.url.clone(), entry.helper_id.clone()))
+                    })
+                    .filter(|(_, _, helper)| helper.is_some())
+                    .collect();
+                if away.is_empty() {
+                    continue;
+                }
+                let found = crate::stations::connect::discovery::discover_homes(1500).await;
+                for (id, url) in moved_helpers(&away, &found) {
+                    tracing::info!(target: "helpers", "helpers: {id} answers at {url} now (its announcement): the link follows");
+                    if let Err(error) = helpers.readdress(&id, &url) {
+                        tracing::warn!(target: "helpers", "helpers: {id} not moved to {url}: {}", error.message);
+                    }
+                }
+            }
+        });
+    }
+
+    /// A linked entry's link address changed (`search_moved`): written, its link dialled anew at the new one.
+    #[cfg(feature = "pc")]
+    pub fn readdress(&self, id: &str, url: &str) -> Result<(), ApiError> {
+        let changed = self.write(None, |list| {
+            let entry = list.iter_mut().find(|entry| entry.id == id).ok_or_else(no_such_helper)?;
+            if entry.url == url {
+                return Ok(None);
+            }
+            entry.url = url.to_string();
+            Ok(Some(()))
+        })?;
+        if changed.is_some() {
+            self.changed(Some(id), "moved", None);
+            self.links();
+        }
+        Ok(())
+    }
+
     /// The tick ends, and the listener with it (`App::shutdown`); the links too.
     pub fn stop(&self) {
         self.stop.cancel();
@@ -645,8 +732,35 @@ impl Helpers {
                     helpers.on_link(id, news);
                 }
             });
-            remote.run_link(self.link_timing(), news);
+            let door = self.app.get().map(|app| {
+                let helpers = self.this.get().cloned().unwrap_or_default();
+                Arc::new(EntryDoor { helpers, app: app.clone(), entry: entry.id.clone() }) as Arc<dyn link::UpDoor>
+            });
+            remote.run_link(self.link_timing(), news, door);
         }
+    }
+
+    /// Whether an entry's helper may ask this gateway for its own panel's requests over its link now (`up`, stage 7
+    /// of docs/plans/home-setup-flow.md: a Turbo opens the home's panel through its centre).
+    ///
+    /// The trust rule: only a Turbo **at home** — an entry of this list of the kind «дома», at a home address (so never
+    /// a server of one's own or the cloud, whatever kind it was given), switched on, not this gateway itself, let out by
+    /// the regulator (a road at home always is) — reached over its link, which proved this home's link key over the
+    /// pinned certificate. Such a computer is trusted as a station trusts its computer's pass (placement/proxy.rs): it
+    /// names the person signed in at it and their role there, and the request acts as that person with that role —
+    /// never above an admin, never as a key's script; a request that names nobody is refused (`caller::up_origin`). Its
+    /// requests reach only the panel's API and the health (`link::up_path`), from the home zone, never this computer's.
+    /// The owner made it this home's Turbo with its connection key or the household's code; another kind, «Выключить»
+    /// or «Удалить» closes the door at the next request.
+    pub fn takes_up(&self, id: &str) -> bool {
+        let snap = self.snap();
+        snap.list.iter().find(|entry| entry.id == id).is_some_and(|entry| {
+            entry.enabled
+                && entry.kind == HelperKind::Home
+                && reach_of(entry) == Reach::Home
+                && snap.away.lets(Reach::Home)
+                && !self.is_self(entry)
+        })
     }
 
     /// What a link told: the entry's state and status at once, the events, «Свой»; a helper on the line with a bot has
@@ -1772,6 +1886,9 @@ impl Helpers {
         Some(json!({
             "url": entry.url,
             "enabled": entry.enabled,
+            // Who the door's computer said it is at its last look: that computer knows itself by it and brings its
+            // new address when its network changes (placement/watch.rs, `keep_links`).
+            "helperId": entry.helper_id,
             "state": state,
             "since": remote.as_ref().and_then(|remote| remote.since()),
             "error": remote.as_ref().and_then(|remote| remote.error()).map(|error| crate::core::tx_dyn(&error)),
@@ -1850,6 +1967,29 @@ fn fill_status(view: &mut HelperView, status: &HelperStatus) {
     view.helper = (!status.contract.helper.id.is_empty()).then(|| status.contract.helper.clone());
     view.version = status.program.clone();
     view.abilities = status.contract.abilities.clone();
+}
+
+/// A linked entry's door for its helper's own requests (`link::UpDoor`): open while `Helpers::takes_up` says so; the
+/// app's routes, and the person a request names (`caller::up_origin`), from the app as it is now.
+struct EntryDoor {
+    helpers: Weak<Helpers>,
+    app: Weak<crate::app::App>,
+    entry: String,
+}
+
+impl link::UpDoor for EntryDoor {
+    fn open(&self) -> bool {
+        self.helpers.upgrade().is_some_and(|helpers| helpers.takes_up(&self.entry))
+    }
+
+    fn router(&self) -> Option<axum::Router> {
+        self.app.upgrade().map(crate::app::router)
+    }
+
+    fn origin(&self, person: &Value) -> Option<crate::platform::http::UpOrigin> {
+        let app = self.app.upgrade()?;
+        crate::platform::http::caller::up_origin(&app, &self.entry, person)
+    }
 }
 
 /// A helper as the panel shows it (`GET /api/v1/helpers`).
@@ -1982,3 +2122,36 @@ impl crate::speech::voice_service::HomeVoice for Helpers {
 /// The unit tests of the helpers, and the stand-ins other modules' tests share: a helper's `/home/v1`, a station.
 #[cfg(test)]
 pub(crate) mod tests;
+
+/// A Turbo that moved is followed by its announcement, not by a sweep of the subnet.
+#[cfg(all(test, feature = "pc"))]
+mod moved_tests {
+    use crate::stations::connect::discovery::FoundStation;
+
+    fn home(address: &str, id: &str, link: &str) -> FoundStation {
+        let txt = [("role", "turbo"), ("id", id), ("link", link)]
+            .into_iter()
+            .map(|(key, value)| (key.to_string(), value.to_string()))
+            .collect();
+        FoundStation { address: address.into(), name: None, txt, ssh: None }
+    }
+
+    #[test]
+    fn an_away_helper_found_at_another_address_is_followed_by_its_id_and_link_port() {
+        let away = vec![
+            ("laptop".to_string(), "https://192.168.1.20:7781".to_string(), Some("gw-laptop".to_string())),
+            ("still".to_string(), "https://192.168.1.30:7781".to_string(), Some("gw-still".to_string())),
+            ("unknown".to_string(), "https://192.168.1.40:7781".to_string(), None),
+        ];
+        let found = vec![
+            home("192.168.1.104", "gw-laptop", "7781"),
+            home("192.168.1.30", "gw-still", "7781"),
+            home("192.168.1.50", "gw-stranger", "7781"),
+        ];
+        assert_eq!(
+            super::moved_helpers(&away, &found),
+            vec![("laptop".to_string(), "https://192.168.1.104:7781".to_string())],
+            "only the one at another address; one that never named itself is not guessed"
+        );
+    }
+}

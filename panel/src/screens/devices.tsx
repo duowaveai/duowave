@@ -22,6 +22,7 @@ import { VIA } from '../via';
 import { onComputer } from '../voice-input';
 import { AddHelperSheet, CentreOverview } from './helpers';
 import { HelperSide, OwnFrame, ThisComputer } from './helper-pc';
+import { FoundStations } from './home-ears';
 import { Stations, Updates } from './house';
 import { ComputerMic, StationDevice, StationRoom } from './places';
 
@@ -149,10 +150,21 @@ function DeviceList({ view, onOpen }: { view: HomeDevices; onOpen: (device: Home
                 </div>
             </Card>
             <OtherStations view={view} onJoined={(device) => onOpen(device)} />
+            {/* Колонки в сети не в доме — уши одной кнопкой (этап 5 плана home-setup-flow): ищет компьютер-Турбо. */}
+            <FoundStationsHere />
             {can('station.view') && !onComputer() && <Stations />}
             {adding && helpers && <AddHelperSheet listed={helpers.helpers} onClose={() => setAdding(false)} onDone={() => setAdding(false)} />}
         </>
     );
+}
+
+/** Колонки, что нашёл компьютер и которых нет в доме: в доме — те, что компьютер уже знает (центр и уши). */
+function FoundStationsHere() {
+    const own = useOwnHealth();
+    // Только компьютер ищет колонки в сети, и только когда знает, что он компьютер (поиск читает их SSH-приветствие).
+    if (!own?.placement || own.placement.role !== 'pc') return null;
+    const inHome = new Set((own.placement.stations ?? []).map((station) => station.address));
+    return <FoundStations inHome={inHome} onJoined={() => undefined} />;
 }
 
 /**

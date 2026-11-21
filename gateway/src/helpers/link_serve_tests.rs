@@ -25,8 +25,8 @@ use super::*;
 use crate::config::{Config, Env};
 use crate::helpers::contract::Ability;
 use crate::helpers::link::{
-    client_config, link_key_hash, link_key_id, pair_over, tungstenite_wire, FirstMeeting, LinkTiming, PairError,
-    Paired, Pinned,
+    client_config, encode_chunk, link_key_hash, link_key_id, pair_over, tungstenite_wire, FirstMeeting, LinkTiming,
+    PairError, Paired, Pinned, UpPerson, CHUNK,
 };
 use crate::helpers::remote::Me;
 use crate::settings::definitions::{HelperOutside, HELPER_CLIENTS};
@@ -558,6 +558,15 @@ async fn home_link(
     app: &Arc<App>,
     client: &str,
 ) -> (tokio::task::JoinHandle<()>, WebSocketStream<tokio::io::DuplexStream>) {
+    home_link_taking(app, client, false).await
+}
+
+/// A home's link as `home_link`, its gateway taking this computer's own requests (`up`) or not.
+async fn home_link_taking(
+    app: &Arc<App>,
+    client: &str,
+    up: bool,
+) -> (tokio::task::JoinHandle<()>, WebSocketStream<tokio::io::DuplexStream>) {
     let (gateway, helper) = tokio::io::duplex(1 << 22);
     let gateway = WebSocketStream::from_raw_socket(gateway, Role::Client, None).await;
     let config = WebSocketConfig::default().max_frame_size(Some(FRAME_MAX)).max_message_size(Some(FRAME_MAX));
@@ -569,7 +578,7 @@ async fn home_link(
     let peer = SocketAddr::new("192.0.2.5".parse().unwrap(), 5000);
     let permit = app.link.links.take("192.0.2.5").unwrap();
     let app = app.clone();
-    let served = tokio::spawn(async move { serve_home(app, sink, stream, client, named, peer, permit).await });
+    let served = tokio::spawn(async move { serve_home(app, sink, stream, client, named, peer, permit, up).await });
     (served, gateway)
 }
 
@@ -906,6 +915,7 @@ async fn knocking(
         peer: SocketAddr::new(source.parse().unwrap(), 5000),
         deadline: None,
         unproven: None,
+        up: false,
     };
     let app = app.clone();
     (tokio::spawn(async move { link_session(app, sink, stream, knock).await }), gateway)
@@ -1290,4 +1300,224 @@ async fn the_door_behind_a_proxy_and_the_link_version() {
         assert_eq!(status, StatusCode::UPGRADE_REQUIRED);
         assert_eq!(told.as_ref().and_then(|told| told.to_str().ok()), Some(VERSION.to_string().as_str()));
     }
+}
+
+// ── Up: this computer's own requests to its home's centre over the link (stage 7 of home-setup-flow) ──
+
+/// A request to the app's router from `from`, signed with `token` (none: no header): its status and its JSON.
+async fn ask(app: &Arc<App>, from: &str, method: &str, uri: &str, token: &str) -> (StatusCode, Value) {
+    let body = if method == "GET" || method == "HEAD" { Body::empty() } else { Body::from("{}") };
+    let mut request = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("content-type", "application/json")
+        .header("accept-language", "ru");
+    if !token.is_empty() {
+        request = request.header("authorization", format!("Bearer {token}"));
+    }
+    let mut request = request.body(body).unwrap();
+    request.extensions_mut().insert(ConnectInfo(SocketAddr::new(from.parse().unwrap(), 5000)));
+    let response = crate::app::router(app.clone()).oneshot(request).await.unwrap();
+    let status = response.status();
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+}
+
+/// A person of the app with this role, signed in: their token.
+async fn signed_in(app: &Arc<App>, name: &str, role: &str) -> String {
+    let input = json!({ "name": name, "role": role, "password": "person-password-1" });
+    app.access.users.create(input.as_object().unwrap(), None).await.unwrap();
+    match app.access.auth.login(Some(name), "person-password-1", "test").await.unwrap() {
+        crate::access::auth_service::LoginResult::Ok(session) => session.token,
+        _ => panic!("{name} signs in"),
+    }
+}
+
+/// This computer's own request straight over its link — past the pass's checks —, for `person` when named.
+fn own_request(method: &str, path: &str, person: Option<UpPerson>) -> Request {
+    let mut request = Request::builder().method(method).uri(path).body(Body::empty()).unwrap();
+    if let Some(person) = person {
+        request.extensions_mut().insert(person);
+    }
+    request
+}
+
+/// An answer's status and JSON.
+async fn answered(response: axum::response::Response) -> (StatusCode, Value) {
+    let status = response.status();
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+}
+
+/// Two gateways over a real link (TLS on this machine's link port): the centre pairs this computer as a Turbo at home
+/// by its connection key, its link says it takes the Turbo's own requests, and the pass `/station/<client>/…` reaches
+/// the centre's panel API as the person signed in at the Turbo — their name, their role there. The centre refuses what
+/// is not its panel's API and a request that names nobody, never lets a role above an admin's, and shuts its door once
+/// the Turbo is no longer «дома» in its list.
+#[tokio::test]
+async fn an_up_request_over_a_real_link_reaches_the_centres_api_as_the_person_signed_in_at_the_turbo() {
+    // The Turbo: a computer that helps, its link port open on this machine; its admin and a member.
+    let turbo = computer(&[]);
+    let (port, stop, _) = link_port(&turbo, Duration::from_secs(10)).await;
+    let mama = turbo.access.auth.setup("admin-password-1", "Мама", "test").await.unwrap().unwrap().token;
+    let anya = signed_in(&turbo, "Аня", "member").await;
+    // The centre: another computer with its own admin; it pairs the Turbo by its connection key («Подключить Турбо»).
+    let centre = computer(&[]);
+    centre.access.auth.setup("centre-password-1", "Папа", "test").await.unwrap();
+    centre.helpers.start();
+    centre.helpers.set_local_port(9);
+    let key = turbo.link.connection_key(true).shown();
+    let url = format!("https://127.0.0.1:{port}");
+    let entry = crate::helpers::routes::pair_with_key(&centre, &url, &key, None, None).await.expect("paired");
+    assert!(centre.helpers.takes_up(&entry), "a Turbo at home");
+    let client = turbo.clients.view(&[]).into_iter().find(|view| view.via == "link").expect("the centre's home").id;
+    let linked = tokio::time::timeout(Duration::from_secs(10), async {
+        while turbo.link.up_of(&client).is_none() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    });
+    assert!(linked.await.is_ok(), "the centre's link takes the Turbo's own requests");
+    assert_eq!(turbo.link.takes_up(&client), Some(true));
+    // The Turbo's /health names the home's centre by the key of its pass: the panel goes there (`?via=`).
+    let home = "192.168.1.20";
+    let (_, health) = ask(&turbo, home, "GET", "/health", &mama).await;
+    let named = &health["message"]["placement"]["centre"];
+    assert_eq!((named["key"].as_str(), named["online"].as_bool()), (Some(client.as_str()), Some(true)), "{health}");
+
+    let pass = |rest: &str| format!("/station/{client}/{rest}");
+    // Each person reaches the centre's API as who they are here, with their role here.
+    let (status, body) = ask(&turbo, home, "GET", &pass("api/v1/auth/me"), &mama).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        (body["message"]["role"].as_str(), body["message"]["name"].as_str()),
+        (Some("admin"), Some("Турбо (Мама)"))
+    );
+    let (status, body) = ask(&turbo, home, "GET", &pass("api/v1/auth/me"), &anya).await;
+    assert_eq!((status, body["message"]["role"].as_str()), (StatusCode::OK, Some("member")), "{body}");
+    // The centre's own health, for the panel's window.
+    let (status, body) = ask(&turbo, home, "GET", &pass("health"), &anya).await;
+    assert_eq!((status, body["message"]["placement"]["role"].as_str()), (StatusCode::OK, Some("pc")), "{body}");
+    // A change of the home's settings: an admin's here; a member's is refused before it goes.
+    let (status, body) = ask(&turbo, home, "PUT", &pass("api/v1/brain"), &anya).await;
+    assert_eq!(
+        (status, body["message"].as_str()),
+        (StatusCode::FORBIDDEN, Some("Править настройки дома отсюда может администратор."))
+    );
+    // Refused at the Turbo, nothing sent: from outside the home, a key's script, what is not the panel's API.
+    assert_eq!(ask(&turbo, "8.8.8.8", "GET", &pass("api/v1/auth/me"), &mama).await.0, StatusCode::FORBIDDEN);
+    let grants = serde_json::Map::from_iter([
+        ("name".to_string(), json!("Скрипт")),
+        ("grants".to_string(), json!(["station.view"])),
+    ]);
+    let script = turbo.access.keys.create(&grants, None).unwrap().secret;
+    let (status, body) = ask(&turbo, home, "GET", &pass("api/v1/auth/me"), &script).await;
+    assert_eq!(
+        (status, body["message"].as_str()),
+        (StatusCode::FORBIDDEN, Some("Пульт дома отсюда открывает человек, а не ключ."))
+    );
+    for rest in ["home/v1/status", "station/h:kitchen/api/v1/brain", "api/v1/../home/v1/status", "debug/sessions"] {
+        assert_eq!(ask(&turbo, home, "GET", &pass(rest), &mama).await.0, StatusCode::NOT_FOUND, "{rest}");
+    }
+    assert_eq!(
+        ask(&turbo, home, "GET", "/station/link:000000000000/api/v1/auth/me", &mama).await.0,
+        StatusCode::NOT_FOUND
+    );
+
+    // The centre's own door, straight over the link: only its panel's API, only for a person, never above an admin.
+    let calls = turbo.link.up_of(&client).unwrap();
+    let wait = Duration::from_secs(10);
+    let mother = || Some(UpPerson { name: "Мама".into(), role: "admin".into(), id: "not-the-centres".into() });
+    for path in ["/home/v1/status", "/station/h:kitchen/api/v1/brain", "/api/v1/../home/v1/status", "/debug/sessions"] {
+        let response = calls.call_within(own_request("GET", path, mother()), wait).await.unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND, "{path}");
+    }
+    let response = calls.call_within(own_request("GET", "/api/v1/auth/me", None), wait).await.unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN, "nobody named");
+    let owner = Some(UpPerson { name: "Кто-то".into(), role: "owner".into(), id: String::new() });
+    let (status, body) =
+        answered(calls.call_within(own_request("GET", "/api/v1/auth/me", owner), wait).await.unwrap()).await;
+    assert_eq!(
+        (status, body["message"]["role"].as_str()),
+        (StatusCode::OK, Some("guest")),
+        "an unknown role: the least"
+    );
+    let (_, body) =
+        answered(calls.call_within(own_request("GET", "/api/v1/auth/me", mother()), wait).await.unwrap()).await;
+    assert_eq!(body["message"]["id"], "helper", "an id the centre does not know is nobody's there");
+
+    // The centre makes it a server of its own: no longer «дома», the door shuts at the next request; the pass says why.
+    centre
+        .helpers
+        .write(None, |list| {
+            list.iter_mut().find(|listed| listed.id == entry).unwrap().kind = crate::helpers::HelperKind::Own;
+            Ok(Some(()))
+        })
+        .unwrap();
+    assert!(!centre.helpers.takes_up(&entry));
+    let (status, body) = ask(&turbo, home, "GET", &pass("api/v1/auth/me"), &mama).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert!(body["message"].as_str().unwrap_or("").contains("не «дома»"), "{body}");
+    centre.helpers.stop();
+    stop.cancel();
+}
+
+/// A centre whose link says nothing of `up` (an older DuoWave) is never asked: the pass says so at once and nothing
+/// crosses the link, and /health names no centre — the panel keeps this computer's own desk. A centre that takes `up`
+/// but keeps silent: the request waits its time and goes — cancelled at the centre, its place let go —, and the link
+/// goes on. A request of the centre's own in this computer's ids breaks the protocol.
+#[tokio::test(start_paused = true)]
+async fn an_older_centre_is_never_asked_and_a_silent_one_lets_the_request_go_in_time() {
+    let app = computer(&[]);
+    let mama = app.access.auth.setup("admin-password-1", "Мама", "test").await.unwrap().unwrap().token;
+    let home = "192.168.1.20";
+    let pass = |client: &str| format!("/station/{client}/api/v1/brain");
+    let older = confirmed(&app, "gw-1");
+    let (_, mut gateway) = home_link_taking(&app, &older, false).await;
+    assert_eq!(next_frame(&mut gateway).await.unwrap()["t"], "welcome");
+    assert!(app.link.up_of(&older).is_none());
+    assert_eq!(app.link.takes_up(&older), Some(false));
+    let (status, body) = ask(&app, home, "GET", &pass(&older), &mama).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    let quiet = tokio::time::timeout(Duration::from_secs(1), next_frame(&mut gateway)).await;
+    assert!(quiet.is_err(), "nothing asked of it: {quiet:?}");
+    let (_, health) = ask(&app, home, "GET", "/health", &mama).await;
+    assert!(health["message"]["placement"].get("centre").is_none(), "{health}");
+
+    let silent = confirmed(&app, "gw-2");
+    let (_, mut gateway) = home_link_taking(&app, &silent, true).await;
+    assert_eq!(next_frame(&mut gateway).await.unwrap()["t"], "welcome");
+    let calls = app.link.up_of(&silent).expect("its own requests go over this link");
+    let asking = {
+        let (app, uri, mama) = (app.clone(), pass(&silent), mama.clone());
+        tokio::spawn(async move { ask(&app, home, "GET", &uri, &mama).await })
+    };
+    let asked = next_frame(&mut gateway).await.unwrap();
+    assert_eq!(
+        (asked["t"].as_str(), asked["method"].as_str(), asked["path"].as_str()),
+        (Some("up"), Some("GET"), Some("/api/v1/brain")),
+        "{asked}"
+    );
+    let id = asked["id"].as_u64().unwrap();
+    assert!(id >= u64::from(UP_BIT), "in this computer's own ids: {id}");
+    assert_eq!((asked["person"]["name"].as_str(), asked["person"]["role"].as_str()), (Some("Мама"), Some("admin")));
+    assert!(asked["headers"].get("authorization").is_none(), "never the panel's key: {asked}");
+    let (status, body) = asking.await.unwrap();
+    assert_eq!(status, StatusCode::BAD_GATEWAY, "{body}");
+    assert_eq!(next_frame(&mut gateway).await.unwrap(), json!({ "t": "up-cancel", "id": id }));
+    assert_eq!(calls.open_streams(), 0, "its place let go");
+    // The link goes on: the centre's own request is answered as ever.
+    say(
+        &mut gateway,
+        json!({ "t": "req", "id": 1, "method": "GET", "path": "/home/v1/status", "headers": {}, "body": false }),
+    )
+    .await;
+    assert_eq!(answer_to(&mut gateway, 1).await["status"], 200);
+    // The centre's request in this computer's ids: a protocol error, the link closed.
+    let theirs = u64::from(UP_BIT) + 1;
+    say(
+        &mut gateway,
+        json!({ "t": "req", "id": theirs, "method": "GET", "path": "/home/v1/status", "headers": {}, "body": false }),
+    )
+    .await;
+    assert_eq!(next_frame(&mut gateway).await, Err(Some((PROTOCOL, String::new()))));
 }

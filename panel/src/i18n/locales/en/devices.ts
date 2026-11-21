@@ -93,4 +93,29 @@ export default {
     otherStationsLead: 'DuoWave runs on them with a hub of their own. Join one to the home — it becomes an ear of the hub with a copy of the home, and only its room is asked.',
     joinHome: 'Join the home',
     joined: 'The speaker is in the home: choose its room.',
+
+    // Requests to join the home by a code (screens/home-join.tsx, stage 2 of the home-setup-flow plan)
+    joinTitle: 'Asking to join',
+    joinTurbo: (name: string) => `The computer “${name}” asks to join the home as a Turbo`,
+    joinEar: (name: string) => `The home “${name}” invites this speaker as its ear`,
+    joinFrom: (source: string, until: string) => `from ${source} · the code works until ${until}`,
+    joinCodeLabel: 'Connection code',
+    joinHint: 'The same code is on the device that asks. If it’s you, press “Allow” — no need to type the code.',
+    joinEarWarn: 'The speaker’s settings and characters will be replaced by the home’s; the memory is merged.',
+    joinAllow: 'Allow',
+    joinDeny: 'That’s not me',
+
+    // More speakers — ears with one button (screens/home-ears.tsx, stage 5 of the home-setup-flow plan)
+    foundTitle: 'Speakers on the network not in the home yet',
+    foundLead: 'Each becomes an ear of the hub: it hears for the home, and the hub answers. Then only its room is asked.',
+    makeEar: 'Make it an ear',
+    makeEarNote: 'I’ll put DuoWave on the speaker over SSH and make it the hub’s ear right away. Undo with one button.',
+    joinByCode: 'Join the home',
+    askCode: 'Ask for a code',
+    earCodeLead: (name: string) => `The speaker “${name}” is about to say a code — type it here.`,
+    earCodeSilent: (name: string) => `The speaker “${name}” won’t say the code aloud: open its panel — the request is there with its code and an “Allow” button.`,
+    earCodeLabel: 'Code from the speaker',
+    earJoined: 'The speaker is in the home as the hub’s ear: choose its room.',
+    earNeedsRoot: 'needs root: DuoWave can’t go on the speaker without it',
+    earCancel: 'Cancel',
 };

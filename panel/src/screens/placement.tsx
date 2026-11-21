@@ -150,7 +150,19 @@ export function PlacementCard() {
                         onUnlink={() => setUnlinking(true)}
                     />
                 )}
-                {job && <MoveProgress job={job} />}
+                {job && (
+                    <MoveProgress
+                        job={job}
+                        onReplace={
+                            mayManage
+                                ? () =>
+                                      void act('replace', async () => {
+                                          setJob(await api.startMove({ to: job.to, address: job.address, replaceHome: true }));
+                                      })
+                                : undefined
+                        }
+                    />
+                )}
                 {message && <Line tone={message.ok ? 'ok' : 'error'}>{message.text}</Line>}
             </section>
             {linking && (
@@ -520,7 +532,8 @@ function StationSide({
 }
 
 /** Шаги перехода. */
-export function MoveProgress({ job }: { job: MoveJob }) {
+export function MoveProgress({ job, onReplace }: { job: MoveJob; onReplace?: () => void }) {
+    const [sure, setSure] = useState(false);
     return (
         <div role="status" class="flex flex-col gap-4 py-10 px-12 r-panel bg-divider">
             <span class="fw-700 fs-13">
@@ -537,6 +550,22 @@ export function MoveProgress({ job }: { job: MoveJob }) {
             ))}
             {job.note && <Line>{job.note}</Line>}
             {job.error && <Line tone="error">{job.error}</Line>}
+            {/* Этап 0 плана home-setup-flow: дом колонки затирается только явно — кнопкой с предупреждением. */}
+            {job.status === 'failed' && job.code === 'homeOnStation' && onReplace && (
+                <span class="flex flex-col gap-6">
+                    {sure && <Line tone="error">{tr.placement.replaceHomeWarn}</Line>}
+                    <span class="flex gap-8">
+                        <button type="button" class={sure ? 'btn btn-danger' : 'btn'} onClick={() => (sure ? onReplace() : setSure(true))}>
+                            {sure ? tr.placement.replaceHomeSure : tr.placement.replaceHome}
+                        </button>
+                        {sure && (
+                            <button type="button" class="btn btn-ghost" onClick={() => setSure(false)}>
+                                {tr.placement.replaceHomeCancel}
+                            </button>
+                        )}
+                    </span>
+                </span>
+            )}
         </div>
     );
 }

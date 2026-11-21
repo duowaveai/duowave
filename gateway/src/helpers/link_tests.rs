@@ -324,6 +324,11 @@ struct Served {
 }
 
 async fn session(timing: LinkTiming) -> Served {
+    session_with(timing, None).await
+}
+
+/// A session as `session`, with a door for the helper's own requests (`up`).
+async fn session_with(timing: LinkTiming, up: Option<Arc<dyn UpDoor>>) -> Served {
     let (kept, news) = news_kept();
     let setup = LinkSetup {
         entry: "own-1".into(),
@@ -332,6 +337,7 @@ async fn session(timing: LinkTiming) -> Served {
         key: "dwl1_".into(),
         helper_id: "helper-1".into(),
         me: Arc::new(Me::default_for_tests),
+        up,
     };
     let link = Link::idle(setup, timing, news);
     let (gateway, helper) = tokio::io::duplex(1 << 20);
@@ -609,6 +615,141 @@ async fn control_frames_wait_in_order_and_a_peer_that_reads_nothing_ends_the_lin
     assert!(out.gone.is_cancelled(), "a writer full for five seconds");
 }
 
+// ── Up: the helper's own requests at the gateway ──
+
+/// A gateway's door for the test: open or not; a small router of its own — who asks, and a body echoed —; the person
+/// as their role names them, nobody without one.
+struct Door {
+    open: std::sync::atomic::AtomicBool,
+}
+
+impl UpDoor for Door {
+    fn open(&self) -> bool {
+        self.open.load(Ordering::SeqCst)
+    }
+
+    fn router(&self) -> Option<Router> {
+        let who = |request: Request| async move {
+            let origin = request.extensions().get::<UpOrigin>().cloned();
+            axum::Json(json!({ "name": origin.map(|origin| origin.principal.name) }))
+        };
+        let echo = |body: Bytes| async move { body };
+        Some(
+            Router::new()
+                .route("/api/v1/who", axum::routing::get(who))
+                .route("/api/v1/echo", axum::routing::post(echo)),
+        )
+    }
+
+    fn origin(&self, person: &Value) -> Option<UpOrigin> {
+        let role = crate::core::identity::roles::Role::parse(person.get("role")?.as_str()?)?;
+        let name = person.get("name").and_then(Value::as_str).unwrap_or("");
+        let principal = crate::core::identity::principal::user_principal("u-1", name, role, None);
+        Some(UpOrigin { entry: "own-1".into(), principal })
+    }
+}
+
+/// A body of the helper's own request, as its pieces come to the helper: whole, up to its end.
+async fn body_of(helper: &mut WebSocketStream<tokio::io::DuplexStream>, id: u32) -> Vec<u8> {
+    let mut body = Vec::new();
+    loop {
+        match helper.next().await.expect("a frame").expect("no error") {
+            Message::Binary(frame) => {
+                let (at, end, data) = decode_chunk(&frame).unwrap();
+                assert_eq!(at, id);
+                body.extend_from_slice(&data);
+                if end {
+                    return body;
+                }
+            }
+            Message::Ping(_) | Message::Pong(_) => continue,
+            other => panic!("not a piece: {other:?}"),
+        }
+    }
+}
+
+/// The helper's own requests at the gateway (stage 7 of docs/plans/home-setup-flow.md): run as the person they name,
+/// their bodies and answers in pieces of the helper's own ids; refused outside the panel's API, without a person, and
+/// while the door is shut; one in the gateway's ids breaks the protocol.
+#[tokio::test]
+async fn the_helpers_own_requests_run_as_the_person_they_name_and_only_where_the_door_lets_them() {
+    let door = Arc::new(Door { open: std::sync::atomic::AtomicBool::new(true) });
+    let Served { mut helper, end, .. } = session_with(LinkTiming::default(), Some(door.clone())).await;
+    let mama = json!({ "name": "Мама", "role": "admin", "id": "u-1" });
+    let up = |id: u32, method: &str, path: &str, person: &Value, body: bool| {
+        json!({ "t": "up", "id": UP_BIT | id, "method": method, "path": path,
+                "headers": { "content-type": "application/json", "authorization": "Bearer nobody" },
+                "body": body, "person": person })
+    };
+    // A reading, as the person it names: its answer comes back as `up-res` and pieces of the same id.
+    text(&mut helper, up(1, "GET", "/api/v1/who", &mama, false)).await;
+    let head = next_text(&mut helper).await;
+    assert_eq!(
+        (head["t"].as_str(), head["id"].as_u64(), head["status"].as_u64()),
+        (Some("up-res"), Some(u64::from(UP_BIT | 1)), Some(200)),
+        "{head}"
+    );
+    let body: Value = serde_json::from_slice(&body_of(&mut helper, UP_BIT | 1).await).unwrap();
+    assert_eq!(body, json!({ "name": "Мама" }));
+    // A body in pieces of the helper's own ids reaches its handler whole.
+    text(&mut helper, up(2, "POST", "/api/v1/echo", &mama, true)).await;
+    piece(&mut helper, UP_BIT | 2, false, b"{\"say\":").await;
+    piece(&mut helper, UP_BIT | 2, true, b"\"hi\"}").await;
+    assert_eq!(next_text(&mut helper).await["status"], 200);
+    assert_eq!(body_of(&mut helper, UP_BIT | 2).await, b"{\"say\":\"hi\"}");
+    // Refused, no handler reached: a path that is not the panel's API, a change of the health, nobody named.
+    let refusals = [
+        (3, "GET", "/home/v1/status", &mama, 404),
+        (4, "GET", "/station/h:kitchen/api/v1/who", &mama, 404),
+        (5, "GET", "/api/v1/../home/v1/status", &mama, 404),
+        (6, "POST", "/health", &mama, 404),
+        (7, "GET", "/api/v1/who", &Value::Null, 403),
+    ];
+    for (id, method, path, person, status) in refusals {
+        text(&mut helper, up(id, method, path, person, false)).await;
+        let head = next_text(&mut helper).await;
+        assert_eq!(
+            (head["t"].as_str(), head["id"].as_u64(), head["status"].as_u64(), head["body"].as_bool()),
+            (Some("up-res"), Some(u64::from(UP_BIT | id)), Some(status), Some(false)),
+            "{path}"
+        );
+    }
+    // The door shut (the entry is no Turbo at home now): refused at the next request.
+    door.open.store(false, Ordering::SeqCst);
+    text(&mut helper, up(8, "GET", "/api/v1/who", &mama, false)).await;
+    assert_eq!(next_text(&mut helper).await["status"], 403);
+    // An `up` in the gateway's own ids: a protocol error, the link closed.
+    let theirs = json!({ "t": "up", "id": 9, "method": "GET", "path": "/api/v1/who", "headers": {}, "body": false });
+    text(&mut helper, theirs).await;
+    assert_eq!(tokio::time::timeout(Duration::from_secs(5), end).await.unwrap().unwrap(), End::Protocol);
+}
+
+/// A gateway's ids stay below `UP_BIT`, the helper's own above it, whatever their count; the pieces of each are told
+/// apart by their first byte.
+#[test]
+fn the_two_ways_number_their_streams_apart() {
+    assert_eq!(Way::Req.id(UP_BIT + 5), 5, "the gateway's count wraps below the helper's");
+    assert_eq!(Way::Up.id(5), UP_BIT | 5);
+    assert!(up_piece(&encode_chunk(UP_BIT | 5, false, b"x")) && !up_piece(&encode_chunk(5, false, b"x")));
+    let reading = Method::GET;
+    for path in ["/api/v1/brain", "/api/v1/brain?x=/../", "/health"] {
+        assert!(up_path(path, &reading), "{path}");
+    }
+    for path in [
+        "/home/v1/status",
+        "/station/h:k/api/v1/brain",
+        "/api/v1/../debug",
+        "/api/v1//brain",
+        "/api/v1/%2e%2e/x",
+        "api/v1/brain",
+        "/debug/sessions",
+        "/via/own-1/home/v1/status",
+    ] {
+        assert!(!up_path(path, &reading), "{path}");
+    }
+    assert!(!up_path("/health", &Method::POST), "the health is only read");
+}
+
 // ── The verifiers, over an in-memory TLS pair ──
 
 #[cfg(feature = "pc")]
@@ -721,6 +862,7 @@ mod tls {
             key: format!("dwl1_0123456789ab_{}", "a".repeat(64)),
             helper_id: "helper-1".into(),
             me: Arc::new(Me::default_for_tests),
+            up: None,
         };
         let timing = LinkTiming { pauses: vec![Duration::from_millis(10)], ..LinkTiming::default() };
         Link::start(setup, timing, news)
@@ -814,6 +956,7 @@ mod tls {
             key: format!("dwl1_0123456789ab_{}", "a".repeat(64)),
             helper_id: "helper-1".into(),
             me: Arc::new(Me::default_for_tests),
+            up: None,
         };
         let timing = LinkTiming { pauses: vec![Duration::from_millis(10)], ..LinkTiming::default() };
         let link = Link::start(setup, timing, news);
@@ -977,7 +1120,7 @@ async fn a_link_never_goes_plain() {
     // A pinned entry at a plain address: never dialed, down in words — the key goes nowhere.
     let plain = reach(format!("http://127.0.0.1:{port}"), Some(pin));
     let (_, news) = news_kept();
-    plain.run_link(LinkTiming::default(), news);
+    plain.run_link(LinkTiming::default(), news, None);
     assert!(plain.link().is_none());
     assert_eq!((plain.state(), plain.error()), (HelperState::Down, Some(REFUSED_WORDS.to_string())));
     // A link key without a pin: no plain look sends it, at whatever address.

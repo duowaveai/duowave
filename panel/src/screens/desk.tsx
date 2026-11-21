@@ -14,6 +14,7 @@ import { landingsOf } from '../shell/desk-repair';
 import { WidgetFrame, WidgetMenu } from '../ui/widget';
 import { settingsPlace } from '../builtin';
 import { ConnectFirstCard } from './connect';
+import { HomeStatusCard } from './home-status';
 import { FirstRun } from './first-run';
 import { MicFirstCard } from './voice-input';
 import { LocalAsrSetup, localAsrNeedsCard, useLocalAsr } from './local-asr';
@@ -147,6 +148,8 @@ export function DeskScreen() {
             <>
                 {panel.banner}
                 {setup}
+                {/* «Состояние дома» (этап 4 плана home-setup-flow): пока не всё зелёное. */}
+                <HomeStatusCard />
                 <FolderOffers offers={offers} />
             </>
         ) : null;
