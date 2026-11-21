@@ -336,7 +336,21 @@ mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
 
+    /// Node's archive as its site gives it: a .tar.gz with bin/node — or, for Windows, a .zip with node.exe at the top
+    /// (unpacked by Windows' own tar there).
     fn archive(version: &str, file: &str) -> Vec<u8> {
+        if let Some(name) = file.strip_suffix(".zip") {
+            use std::io::Write;
+            let top = format!("node-v{version}-{name}");
+            let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+            for (path, body) in
+                [(format!("{top}/node.exe"), "MZ node"), (format!("{top}/node_modules/npm/bin/npm-cli.js"), "// npm\n")]
+            {
+                zip.start_file(path, zip::write::SimpleFileOptions::default()).unwrap();
+                zip.write_all(body.as_bytes()).unwrap();
+            }
+            return zip.finish().unwrap().into_inner();
+        }
         let mut builder = tar::Builder::new(flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast()));
         let top = format!("node-v{version}-{}", file.trim_end_matches(".tar.gz"));
         for (path, body, mode) in [
@@ -374,16 +388,21 @@ mod tests {
     #[tokio::test]
     async fn downloads_our_node_once_checks_its_hash_and_drops_an_older_pin() {
         let dir = tempfile::tempdir().unwrap();
-        let bytes = archive("24.0.0", "test-x64.tar.gz");
+        // As each system's Node comes: a zip on Windows, a .tar.gz elsewhere.
+        let file = if cfg!(windows) { "test-x64.zip" } else { "test-x64.tar.gz" };
+        let bytes = archive("24.0.0", file);
         let sha256 = hex::encode(Sha256::digest(&bytes));
         let (url, asked) = mirror(bytes).await;
         std::fs::create_dir_all(dir.path().join("22.1.0/bin")).unwrap();
-        let build = Build { file: "test-x64.tar.gz".into(), sha256 };
+        let build = Build { file: file.into(), sha256 };
         let home = NodeHome::with(dir.path().into(), None, url.clone(), Some(build), "24.0.0".into());
         let told = Mutex::new(Vec::<String>::new());
         let tell = |line: &str| told.lock().unwrap().push(line.to_string());
         let node = home.node(&tell).await.unwrap();
-        if !cfg!(windows) {
+        if cfg!(windows) {
+            assert!(node.program.ends_with("24.0.0/node.exe"), "{node:?}");
+            assert!(node.npm.as_ref().is_some_and(|npm| npm.is_file()));
+        } else {
             assert!(node.program.ends_with("24.0.0/bin/node"), "{node:?}");
             assert!(node.npm.as_ref().is_some_and(|npm| npm.is_file()));
             #[cfg(unix)]
@@ -407,7 +426,7 @@ mod tests {
 
         // Another hash: nothing is placed.
         let other = tempfile::tempdir().unwrap();
-        let wrong = Build { file: "test-x64.tar.gz".into(), sha256: "0".repeat(64) };
+        let wrong = Build { file: file.into(), sha256: "0".repeat(64) };
         let home = NodeHome::with(other.path().into(), None, url, Some(wrong), "24.0.0".into());
         let error = home.node(&quiet).await.unwrap_err();
         assert!(error.contains("хеш не совпал"), "{error}");
@@ -422,22 +441,14 @@ mod tests {
         assert!(home.node(&quiet).await.unwrap_err().contains("такого файла нет"));
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn puts_an_apps_dependencies_once_per_lock_without_their_scripts() {
-        use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let bin = dir.path().join("bin");
-        std::fs::create_dir_all(&bin).unwrap();
-        // A «node» that writes down how it was asked and puts a dependency, as npm ci would.
-        let program = bin.join("node");
-        let said = dir.path().join("said.txt");
-        std::fs::write(
-            &program,
-            format!("#!/bin/sh\necho \"$@\" >> {}\nmkdir -p node_modules/left-pad\n", said.display()),
-        )
-        .unwrap();
-        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // A «node» that writes down how it was asked (`calls` beside it) and puts a dependency, as npm ci would
+        // (test_stub.rs, `node`): on Windows too.
+        let program = crate::utils::test_stub::put(&bin, "node");
+        let said = bin.join("calls");
         let npm = dir.path().join("npm-cli.js");
         std::fs::write(&npm, "").unwrap();
         let node = Node { program, npm: Some(npm), bin_dir: bin };

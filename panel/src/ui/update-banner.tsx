@@ -5,17 +5,20 @@ import { tr } from '../i18n';
  * Строка на главном экране: вышла новая версия шлюза. «Обновить» ведёт в «Дом → Шлюз → Обновления», где человек
  * читает, что нового, и сам соглашается на установку; «×» прячет строку до следующей версии (точка на «Дом» остаётся).
  * Срочный выпуск (critical) не прячется и говорит, поставит ли его шлюз сам или это надо сделать человеку.
+ * `computer` — в окне колонки версия самого этого компьютера (update-offer.ts): он обновляется первым.
  */
 export function UpdateBanner({
     version,
     critical = false,
     auto = false,
+    computer = false,
     onOpen,
     onHide,
 }: {
     version: string;
     critical?: boolean;
     auto?: boolean;
+    computer?: boolean;
     onOpen: () => void;
     onHide: () => void;
 }) {
@@ -34,7 +37,9 @@ export function UpdateBanner({
                 </b>
                 <span class="t-caption">
                     {!critical
-                        ? tr.ui.updateWhatsNew
+                        ? computer
+                            ? tr.ui.updateForComputer
+                            : tr.ui.updateWhatsNew
                         : auto
                           ? tr.ui.updateAutoSoon
                           : tr.ui.updateInstallSoon}

@@ -249,22 +249,27 @@ fn sysctl_any(args: &[&str]) -> Option<String> {
 }
 
 /// How much memory a process holds now (its resident set), MB: this gateway's when `pid` is none. /proc on Linux,
-/// `ps` elsewhere; None where it cannot tell.
+/// `ps` on a Mac, the process's working set on Windows; None where it cannot tell.
 pub fn process_rss_mb(pid: Option<u32>) -> Option<u64> {
-    if cfg!(target_os = "linux") {
-        let file = match pid {
-            Some(pid) => format!("/proc/{pid}/status"),
-            None => "/proc/self/status".into(),
-        };
-        return parse_rss(&std::fs::read_to_string(file).ok()?);
+    #[cfg(windows)]
+    return windows::working_set_bytes(pid).map(|bytes| round(bytes as f64 / MB) as u64);
+    #[cfg(not(windows))]
+    {
+        if cfg!(target_os = "linux") {
+            let file = match pid {
+                Some(pid) => format!("/proc/{pid}/status"),
+                None => "/proc/self/status".into(),
+            };
+            return parse_rss(&std::fs::read_to_string(file).ok()?);
+        }
+        if cfg!(unix) {
+            let pid = pid.unwrap_or_else(std::process::id).to_string();
+            let output = std::process::Command::new("ps").args(["-o", "rss=", "-p", &pid]).output().ok()?;
+            let kb = number(&String::from_utf8_lossy(&output.stdout));
+            return (output.status.success() && kb.is_finite()).then(|| round(kb / 1024.0) as u64);
+        }
+        None
     }
-    if cfg!(unix) {
-        let pid = pid.unwrap_or_else(std::process::id).to_string();
-        let output = std::process::Command::new("ps").args(["-o", "rss=", "-p", &pid]).output().ok()?;
-        let kb = number(&String::from_utf8_lossy(&output.stdout));
-        return (output.status.success() && kb.is_finite()).then(|| round(kb / 1024.0) as u64);
-    }
-    None
 }
 
 /// What an app's program holds together with the processes it started (the «VPN»'s engine is its own child), MB:
@@ -357,7 +362,12 @@ pub fn free_disk_mb(path: &Path) -> Option<u64> {
     Some(bytes / 1_048_576)
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+pub fn free_disk_mb(path: &Path) -> Option<u64> {
+    windows::disk_bytes(path).map(|(_, free)| free / 1_048_576)
+}
+
+#[cfg(not(any(unix, windows)))]
 pub fn free_disk_mb(_path: &Path) -> Option<u64> {
     None
 }
@@ -379,9 +389,65 @@ pub fn disk_mb(path: &Path) -> Option<(u64, u64)> {
     Some((blocks * size / 1_048_576, free * size / 1_048_576))
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+pub fn disk_mb(path: &Path) -> Option<(u64, u64)> {
+    windows::disk_bytes(path).map(|(total, free)| (total / 1_048_576, free / 1_048_576))
+}
+
+#[cfg(not(any(unix, windows)))]
 pub fn disk_mb(_path: &Path) -> Option<(u64, u64)> {
     None
+}
+
+/// Windows' own calls for what /proc, `ps` and statvfs tell elsewhere. Until 21.11 these were None on Windows: the
+/// apps' memory caps never saw a program's memory, the plugins' budget no free room, the device state no disk.
+#[cfg(windows)]
+mod windows {
+    use std::os::windows::ffi::OsStrExt;
+    use std::path::Path;
+
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
+    use windows_sys::Win32::System::ProcessStatus::{K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
+    use windows_sys::Win32::System::Threading::{
+        GetCurrentProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_VM_READ,
+    };
+
+    /// A process's working set — the memory it holds in RAM now, what VmRSS is on Linux: this process's when `pid`
+    /// is none.
+    pub fn working_set_bytes(pid: Option<u32>) -> Option<u64> {
+        // SAFETY: a handle opened here is closed here; the current process's is a pseudo handle, never closed.
+        unsafe {
+            let (process, opened) = match pid {
+                Some(pid) if pid != std::process::id() => {
+                    let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, 0, pid);
+                    if handle.is_null() {
+                        return None;
+                    }
+                    (handle, true)
+                }
+                _ => (GetCurrentProcess(), false),
+            };
+            let mut counters: PROCESS_MEMORY_COUNTERS = std::mem::zeroed();
+            counters.cb = std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32;
+            let ok = K32GetProcessMemoryInfo(process, &mut counters, counters.cb);
+            if opened {
+                CloseHandle(process);
+            }
+            (ok != 0).then_some(counters.WorkingSetSize as u64)
+        }
+    }
+
+    /// The whole disk that holds `path` and its room free for this user, bytes.
+    pub fn disk_bytes(path: &Path) -> Option<(u64, u64)> {
+        // The folder may not exist yet: its nearest parent that does is on the same disk.
+        let existing = path.ancestors().find(|dir| dir.exists())?;
+        let wide: Vec<u16> = existing.as_os_str().encode_wide().chain(Some(0)).collect();
+        let (mut free, mut total) = (0u64, 0u64);
+        // SAFETY: a NUL-terminated wide path and two u64 to fill; the disk's whole free room is not asked.
+        let ok = unsafe { GetDiskFreeSpaceExW(wide.as_ptr(), &mut free, &mut total, std::ptr::null_mut()) };
+        (ok != 0).then_some((total, free))
+    }
 }
 
 /// What a folder holds, its files counted, MB rounded up.
@@ -487,6 +553,7 @@ mod tests {
         assert!(process_rss_mb(None).is_some_and(|mb| mb > 0), "this test's own process holds memory");
         let dir = tempfile::tempdir().unwrap();
         assert!(free_disk_mb(&dir.path().join("not/yet")).is_some(), "a folder to be is on its parent's disk");
+        assert!(disk_mb(dir.path()).is_some_and(|(total, free)| total > 0 && free <= total));
         std::fs::write(dir.path().join("a"), vec![0u8; 1_500_000]).unwrap();
         assert_eq!(folder_mb(dir.path()), 2);
     }

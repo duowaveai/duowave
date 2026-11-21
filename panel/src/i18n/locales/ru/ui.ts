@@ -112,6 +112,7 @@ export default {
     updateUrgent: (version: string) => `Срочное обновление ${version}`,
     updateAvailable: (version: string) => `Доступна версия ${version}`,
     updateWhatsNew: 'что нового — в «Обновлениях»',
+    updateForComputer: 'для этого компьютера, он обновляется первым — в «Обновлениях»',
     updateAutoSoon: 'исправляет важное — DuoWave поставит его сам в течение часа',
     updateInstallSoon: 'исправляет важное — поставьте его как можно скорее',
     update: 'Обновить',

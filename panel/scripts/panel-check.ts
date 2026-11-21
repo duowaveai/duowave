@@ -26,6 +26,7 @@ import type { HelperView, HelpersView, HomeDevice, HomeDevices } from '../src/ap
 import { type Laid, type Rect, arrange, overlaps, pushApart, underTop } from '../src/screens/desk-places.ts';
 import { stationOfferOf, stationUpdatePressable, stationUpdateStep } from '../src/station-update.ts';
 import type { StationUpdatePlan } from '../src/api.ts';
+import { bannerOffer } from '../src/update-offer.ts';
 
 const checks: Array<[string, () => void]> = [];
 const check = (name: string, run: () => void): void => void checks.push([name, run]);
@@ -594,6 +595,24 @@ check('an_app_for_both_is_placed_where_its_gateway_is', () => {
         expect(source(file).includes('entry.runs, entry.place)'), `${file} passes the gateway’s place to its word`);
     }
     expect(source('src/screens/plugins.tsx').includes('view.runs, view.place)'), 'the installed app’s word too');
+});
+
+check('the_update_line_speaks_of_this_computer_first_in_the_stations_window', () => {
+    // owner 21.11: 0.17.2 in the tray, no line on the home screen — the line read only the station centre, which the
+    // computer could not reach; and the computer, which updates first, never had a line of its own.
+    const plain = { version: '0.17.2', critical: false, auto: false };
+    const urgent = { version: '0.17.3', critical: true, auto: true };
+    expect(bannerOffer(null, null) === null, 'nothing offered, no line');
+    expect(bannerOffer(plain, null)?.computer === false, 'only the station: its line, as before');
+    const mine = bannerOffer(null, plain);
+    expect(mine?.computer === true && mine.version === '0.17.2', 'only the computer: the line is the computer’s');
+    expect(bannerOffer(plain, { ...plain, version: '0.17.1' })?.computer === true, 'both: the computer first');
+    expect(bannerOffer(urgent, plain)?.version === '0.17.3', 'an urgent station release goes before a plain one');
+    expect(bannerOffer(urgent, { ...plain, critical: true })?.computer === true, 'both urgent: the computer first');
+    const app = source('src/app.tsx');
+    expect(app.includes('void readOwnUpdateStatus()') && app.includes('OWN_READ_MS'), 'the station’s window reads the computer too');
+    expect(app.includes('computer={offered.computer && !!VIA}'), 'the line says it is this computer’s');
+    expect(/own \? setOwnUpdateStatus : setUpdateStatus/.test(source('src/screens/house.tsx')), '«Этот компьютер» tells the line');
 });
 
 let failed = 0;

@@ -3652,6 +3652,8 @@ mod tests {
         }
     }
 
+    // Unix only: the refusal is made with Unix rights (a folder 0o555); Windows refuses by a file another program
+    // holds, which is marked to go later instead (model_files: a_model_file_another_program_holds_…).
     #[cfg(unix)]
     #[tokio::test]
     async fn a_silero_install_that_cannot_clear_the_other_generation_says_why() {

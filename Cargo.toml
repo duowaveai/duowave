@@ -9,7 +9,7 @@ members = ["gateway"]
 exclude = ["desktop/src-tauri", "yam", "apps/own-server", "apps/youtube-lite"]
 
 [workspace.package]
-version = "0.17.2"
+version = "0.17.3"
 edition = "2021"
 license = "Apache-2.0"
 publish = false

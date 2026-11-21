@@ -1,4 +1,4 @@
-//! The works in folders end to end inside the crate, with the stub `claude` (gateway/tests/fixtures/claude-stub):
+//! The works in folders end to end inside the crate, with the stub `claude` (`duowave-test-stub`, src/bin/test_stub.rs):
 //! stage 3's conditions of readiness (docs/plans/router-and-works.md, «Этапы», 3).
 
 use std::path::{Path, PathBuf};
@@ -14,6 +14,11 @@ use crate::settings::definitions::{HARNESS_CLAUDE_AUTH, HARNESS_CLAUDE_PATH};
 use crate::talk::folder::{FolderEnd, FolderStart, PortEvent, WorksPort};
 
 const RESUME: &str = "Продолжай работу с того места, где остановился.";
+
+/// The folder's own commands, as the household writes them for its system: sh, and cmd on Windows (runner.rs).
+const PREPARE: &str = if cfg!(windows) { "exit /b 0" } else { "true" };
+const CHECK: &str =
+    if cfg!(windows) { "if exist contacts.txt (exit /b 0) else (exit /b 1)" } else { "test -f contacts.txt" };
 
 struct Bench {
     dir: tempfile::TempDir,
@@ -40,10 +45,8 @@ impl Bench {
         let settings = Arc::new(SettingsService::new(db.clone(), EventBus::new()));
         let secrets = Arc::new(SecretsService::new(db.clone(), Some(&state)).unwrap());
         let stub = dir.path().join("stub");
-        std::fs::create_dir_all(&stub).unwrap();
-        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/claude-stub");
-        std::fs::copy(&fixture, stub.join("claude")).unwrap();
-        settings.set(&HARNESS_CLAUDE_PATH, &stub.join("claude").display().to_string(), None).unwrap();
+        let claude = crate::utils::test_stub::put(&stub, "claude");
+        settings.set(&HARNESS_CLAUDE_PATH, &claude.display().to_string(), None).unwrap();
         // The person's folder with a remote of its own (a bare repository), on its branch `main`.
         let remote = dir.path().join("remote.git");
         std::fs::create_dir_all(&remote).unwrap();
@@ -72,8 +75,8 @@ impl Bench {
         let asked = Asked {
             name: Some("Сайт".into()),
             path: Some(folder.display().to_string()),
-            prepare: Some(vec!["true".into()]),
-            checks: Some(vec!["test -f contacts.txt".into()]),
+            prepare: Some(vec![PREPARE.into()]),
+            checks: Some(vec![CHECK.into()]),
             ..Asked::default()
         };
         folders::add(&settings, &guarded, asked, None).await.unwrap();
@@ -400,7 +403,7 @@ async fn a_restart_interrupts_and_go_on_takes_the_same_session() {
         .any(|step| step["type"] == "end" && step["error"].as_str().is_some_and(|e| e.contains("bypassPermissions"))));
 }
 
-// ─── Stage 3б: agents of the Agent Client Protocol, with the stub agent (tests/fixtures/acp-stub) ───
+// ─── Stage 3б: agents of the Agent Client Protocol, with the stub agent (`duowave-test-stub` as `acp-stub`) ───
 
 use crate::plugins::manifest::{AgentAcp, AgentCard, AgentModel, AgentProgram, AgentSignin};
 use crate::settings::definitions::HARNESS_PATHS;
@@ -427,11 +430,8 @@ fn card() -> AgentCard {
 
 impl Bench {
     /// The stub agent as an installed card, its program where the panel set it; the folder's agent.
-    fn with_agent(&self, allow: &[&str]) -> Option<PathBuf> {
-        super::harness::find_program("python3")?;
-        let program = self.stub.join("acp-stub");
-        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/acp-stub");
-        std::fs::copy(&fixture, &program).unwrap();
+    fn with_agent(&self, allow: &[&str]) -> PathBuf {
+        let program = crate::utils::test_stub::put(&self.stub, "acp-stub");
         self.works.agents.set_cards(Arc::new(|| {
             vec![super::agents::Card { id: AGENT.into(), title: "Stub Agent".into(), description: None, card: card() }]
         }));
@@ -444,7 +444,7 @@ impl Bench {
             ..Asked::default()
         };
         folders::update(&self.settings, "sayt", asked, None).unwrap();
-        Some(program)
+        program
     }
 
     fn agent_calls(&self) -> String {
@@ -458,10 +458,7 @@ impl Bench {
 #[tokio::test]
 async fn an_acp_agent_works_like_claude_code_and_its_rights_follow_the_folder() {
     let bench = Bench::new().await;
-    if bench.with_agent(&["Bash(npm test *)"]).is_none() {
-        eprintln!("no python3: the stub agent cannot run");
-        return;
-    }
+    bench.with_agent(&["Bash(npm test *)"]);
     let id = bench.start("Сделай страницу контактов");
     assert_eq!(bench.ended(&id).await, FolderEnd::Ready);
     let record = bench.works.record(&id).unwrap();
@@ -505,9 +502,7 @@ async fn an_acp_agent_works_like_claude_code_and_its_rights_follow_the_folder() 
 #[tokio::test]
 async fn an_acp_agent_without_a_cost_goes_on_in_its_session_and_stops() {
     let bench = Bench::new().await;
-    if bench.with_agent(&[]).is_none() {
-        return;
-    }
+    bench.with_agent(&[]);
     bench.mode("nocost");
     let id = bench.start("Сделай страницу");
     assert_eq!(bench.ended(&id).await, FolderEnd::Ready);
@@ -544,7 +539,7 @@ async fn an_acp_agent_without_a_cost_goes_on_in_its_session_and_stops() {
 async fn an_unknown_protocol_or_a_missing_program_is_not_ready() {
     use super::harness::NotReady;
     let bench = Bench::new().await;
-    let Some(program) = bench.with_agent(&[]) else { return };
+    let program = bench.with_agent(&[]);
     std::fs::write(bench.stub.join("protocol"), "2").unwrap();
     let id = bench.start("Сделай страницу");
     assert_eq!(bench.ended(&id).await, FolderEnd::Failed);

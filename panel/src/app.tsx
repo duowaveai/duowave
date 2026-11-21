@@ -30,7 +30,7 @@ import { useTheme } from './shell/theme';
 import { DIVI_DRAWING, drawingOf } from './stations';
 import { MovedBanner } from './ui/moved-banner';
 import { UpdateBanner } from './ui/update-banner';
-import { readUpdateStatus, useOfferedUpdate } from './updates';
+import { OWN_READ_MS, readOwnUpdateStatus, readUpdateStatus, useOfferedUpdate } from './updates';
 import { syncPackages } from './plugins/loader';
 import { notePackageChange, runtimeOnly } from './plugins/versions';
 import { ConsentSheet } from './bus/consent-sheet';
@@ -359,11 +359,17 @@ export function App() {
     }, []);
 
     // Что шлюз знает о новой версии: для точки на «Дом» и строки на главном экране. Без живого канала — раз в час.
+    // В окне колонки — и что знает сам компьютер (updates.ts, OWN_READ_MS): его находку живой канал окна не несёт.
     useEffect(() => {
         if (auth !== 'ok') return;
         void readUpdateStatus();
+        void readOwnUpdateStatus();
         const timer = window.setInterval(() => void readUpdateStatus(), 60 * 60_000);
-        return () => window.clearInterval(timer);
+        const ownTimer = VIA ? window.setInterval(() => void readOwnUpdateStatus(), OWN_READ_MS) : undefined;
+        return () => {
+            window.clearInterval(timer);
+            if (ownTimer !== undefined) window.clearInterval(ownTimer);
+        };
     }, [auth]);
     const offered = useOfferedUpdate();
     const [hiddenUpdate, setHiddenUpdate] = useState(() => remembered('glass-update-later'));
@@ -662,6 +668,7 @@ export function App() {
                         version={offered.version}
                         critical={offered.critical}
                         auto={offered.auto}
+                        computer={offered.computer && !!VIA}
                         onOpen={() => go('settings', 'updates')}
                         onHide={() => {
                             setHiddenUpdate(offered.version);

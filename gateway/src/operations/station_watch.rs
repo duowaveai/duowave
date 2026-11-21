@@ -499,6 +499,8 @@ mod tests {
         assert!(left.upgrade().is_none(), "a restarted engine leaves the old watch behind");
     }
 
+    // macOS only: a zombie is a Unix process nobody waited for, and spawn_reaped's waiting is the Mac's case (`true`
+    // here is its /usr/bin/true); Windows leaves no such process.
     #[cfg(target_os = "macos")]
     #[tokio::test]
     async fn waits_for_the_program_it_starts_so_none_is_left_a_zombie() {

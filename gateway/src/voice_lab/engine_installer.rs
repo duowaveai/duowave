@@ -562,7 +562,6 @@ mod tests {
     use crate::voice_lab::platform::{GpuInfo, Tools};
     use crate::voice_lab::system_memory::{MemorySnapshot, Pressure};
 
-    #[cfg(unix)]
     #[test]
     fn measures_a_download_by_its_folder_nested_files_count_links_to_them_do_not_a_missing_folder_is_empty() {
         let dir = tempfile::tempdir().unwrap();
@@ -571,12 +570,13 @@ mod tests {
         std::fs::write(blobs.join("model.safetensors"), vec![0u8; 3000]).unwrap();
         std::fs::write(dir.path().join("config.json"), vec![0u8; 200]).unwrap();
         std::fs::create_dir(dir.path().join("snapshots")).unwrap();
-        // HuggingFace's snapshots are links to the blobs: counted once.
-        std::os::unix::fs::symlink(
-            blobs.join("model.safetensors"),
-            dir.path().join("snapshots").join("model.safetensors"),
-        )
-        .unwrap();
+        // HuggingFace's snapshots are links to the blobs: counted once (on Windows too, where hub makes them when it
+        // may — CI's runner may).
+        let (blob, link) = (blobs.join("model.safetensors"), dir.path().join("snapshots").join("model.safetensors"));
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&blob, &link).unwrap();
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_file(&blob, &link).unwrap();
         assert_eq!(folder_bytes(dir.path()), 3200);
         assert_eq!(folder_bytes(&dir.path().join("nothing-here")), 0);
     }
@@ -633,18 +633,16 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
-    fn executable(path: &Path, script: &str) {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(path, script).unwrap();
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    /// uv and the Python it makes — `duowave-test-stub` (src/bin/test_stub.rs, roles `uv` and `python`): its
+    /// environment's Python answers the install's check and fetches the weights as `python-mode` beside uv says (none:
+    /// nothing fetched). On Windows too; until 21.11 these were sh scripts. Their calls go to `calls` beside each.
+    fn fake_uv(root: &Path, python_mode: Option<&str>) -> PathBuf {
+        let uv = crate::utils::test_stub::put_at(&root.join("bin").join("uv"));
+        if let Some(mode) = python_mode {
+            std::fs::write(root.join("bin").join("python-mode"), mode).unwrap();
+        }
+        uv
     }
-
-    /// A Python that answers the install's check and fetches no weights.
-    #[cfg(unix)]
-    const FAKE_PYTHON: &str = "#!/bin/sh\necho \"$*\" >> \"$(dirname \"$0\")/calls\"\n\
-        case \"$2\" in *'import json, torch'*) echo '{\"stage\":\"done\",\"device\":\"mps\",\"torch\":\"2.8.0\"}';; esac\n";
 
     async fn install(plan: InstallPlan) -> JobState {
         let jobs = runner();
@@ -662,20 +660,10 @@ mod tests {
     }
 
     /// The install with a uv that only pretends: the environment it «makes» has a Python that only answers the check.
-    #[cfg(unix)]
     #[tokio::test]
     async fn installs_an_engine_through_uv_and_its_python_and_writes_ready_json_last() {
         let root = tempfile::tempdir().unwrap();
-        let uv = root.path().join("bin").join("uv");
-        let python = FAKE_PYTHON.replace('\'', "'\\''");
-        executable(
-            &uv,
-            &format!(
-                "#!/bin/sh\necho \"$*\" >> \"{log}\"\nif [ \"$1\" = venv ]; then mkdir -p \"$4/bin\"; printf '%s' '{python}' > \
-                 \"$4/bin/python\"; chmod 755 \"$4/bin/python\"; fi\n",
-                log = root.path().join("uv-calls").display(),
-            ),
-        );
+        let uv = fake_uv(root.path(), None);
         let plan = InstallPlan {
             engine: spec(EngineId::Omnivoice),
             platform: mac(Some(uv.to_string_lossy().into_owned())),
@@ -687,7 +675,7 @@ mod tests {
         };
         let state = install(plan).await;
         assert_eq!(state.state, JobRunState::Done, "{state:?}");
-        let calls = std::fs::read_to_string(root.path().join("uv-calls")).unwrap();
+        let calls = std::fs::read_to_string(root.path().join("bin").join("calls")).unwrap();
         let target = root.path().join("runtime").join("omnivoice");
         assert!(calls.contains(&format!("venv --python 3.11 {}", target.join("env").display())), "{calls}");
         assert!(calls.contains("torch==2.8.0 torchaudio==2.8.0"), "{calls}");
@@ -699,13 +687,14 @@ mod tests {
         assert_eq!(result.get("source"), Some(&Value::from("download")));
     }
 
-    /// The bench's copy: `cp` of its environment and weights, then the same check.
+    /// The bench's copy: `cp` of its environment and weights, then the same check. Unix only: a Mac's or Linux's own
+    /// `cp`; Windows never copies the bench (install_engine takes uv there).
     #[cfg(unix)]
     #[tokio::test]
     async fn copies_the_benchs_installation_when_this_computer_has_one() {
         let root = tempfile::tempdir().unwrap();
         let bench = root.path().join("bench").join("models");
-        executable(&bench.join("omnivoice").join("env").join("bin").join("python"), FAKE_PYTHON);
+        crate::utils::test_stub::put_at(&bench.join("omnivoice").join("env").join("bin").join("python"));
         std::fs::create_dir_all(bench.join("omnivoice").join("hf-cache")).unwrap();
         std::fs::write(bench.join("omnivoice").join("hf-cache").join("weights.bin"), "w").unwrap();
         let plan = InstallPlan {
@@ -730,19 +719,10 @@ mod tests {
         assert_eq!(ready.source, InstallSource::Bench);
     }
 
-    /// A uv whose Python is `python`: it makes the environment, the Python answers the check and fetches the weights
-    /// its own way.
-    #[cfg(unix)]
-    fn plan_with_python(root: &Path, python: &str, watch: Watch) -> InstallPlan {
-        let uv = root.join("bin").join("uv");
-        let python = python.replace('\'', "'\\''");
-        executable(
-            &uv,
-            &format!(
-                "#!/bin/sh\nif [ \"$1\" = venv ]; then mkdir -p \"$4/bin\"; printf '%s' '{python}' > \"$4/bin/python\"; chmod 755 \
-                 \"$4/bin/python\"; fi\n"
-            ),
-        );
+    /// A uv whose Python fetches the weights as `python_mode` says (test_stub.rs, `engine::python`): it makes the
+    /// environment, the Python answers the check.
+    fn plan_with_python(root: &Path, python_mode: &str, watch: Watch) -> InstallPlan {
+        let uv = fake_uv(root, Some(python_mode));
         InstallPlan {
             engine: spec(EngineId::Omnivoice),
             platform: mac(Some(uv.to_string_lossy().into_owned())),
@@ -756,14 +736,8 @@ mod tests {
 
     /// The weights' fetch of a hanging CDN: each start brings a little into its own `.<8 hex>.incomplete` (as
     /// huggingface_hub 2.x does) and then stands still; from the `good`-th start on it finishes. `starts` counts them.
-    #[cfg(unix)]
     fn hanging_python(good: u32) -> String {
-        format!(
-            "#!/bin/sh\ncase \"$2\" in\n*snapshot_download*)\n  mkdir -p \"$HF_HOME\"; n=$(cat \"$HF_HOME/../starts\" 2>/dev/null || echo 0); n=$((n+1)); echo $n > \
-             \"$HF_HOME/../starts\"\n  mkdir -p \"$HF_HOME/hub/blobs\"\n  if [ $n -ge {good} ]; then head -c 4096 /dev/zero > \"$HF_HOME/hub/blobs/w\"; \
-             exit 0; fi\n  head -c 2048 /dev/zero > \"$HF_HOME/hub/blobs/w.0a1b2c3$n.incomplete\"\n  exec sleep 30;;\n\
-             *'import json, torch'*) echo '{{\"stage\":\"done\",\"device\":\"mps\",\"torch\":\"2.8.0\"}}';;\nesac\n"
-        )
+        format!("hang {good}")
     }
 
     // Long enough that a busy test run still starts the fake fetch before it counts as standing still.
@@ -772,7 +746,6 @@ mod tests {
 
     /// п. 66: the download stood still at 603 MB for minutes, the bar on 72 %, and nothing noticed. Now: standing still
     /// — taken down and started again; the dead partial is dropped (2.x would not continue it), what finished stays.
-    #[cfg(unix)]
     #[tokio::test]
     async fn a_download_standing_still_is_started_again_and_its_dead_partial_dropped() {
         let root = tempfile::tempdir().unwrap();
@@ -787,7 +760,6 @@ mod tests {
     }
 
     /// Standing still every time: after three starts again — in words, the job failed (the panel offers «Повторить»).
-    #[cfg(unix)]
     #[tokio::test]
     async fn a_download_that_keeps_standing_still_fails_in_words_after_three_tries() {
         let root = tempfile::tempdir().unwrap();
@@ -804,12 +776,11 @@ mod tests {
 
     /// п. 68: «Отменить» left a hung download living (TERM did not take it, KILL did). Now the stop takes the job's
     /// program down — TERM, and KILL after the grace when TERM is ignored — and the job ends stopped.
-    #[cfg(unix)]
     #[tokio::test]
     async fn a_stop_takes_down_a_hung_download_that_ignores_term_and_the_job_ends_stopped() {
         let root = tempfile::tempdir().unwrap();
-        let hung = "#!/bin/sh\ncase \"$2\" in\n*snapshot_download*) mkdir -p \"$HF_HOME\"; echo $$ > \"$HF_HOME/../pid\"; trap '' TERM; \
-                    exec sleep 60;;\nesac\n";
+        // Its pid beside the weights, TERM ignored, a minute's wait (test_stub.rs, `engine::python`).
+        let hung = "hung";
         let slow = Watch { stall_after: Duration::from_secs(60), retries: 3, period: Duration::from_millis(100) };
         let plan = plan_with_python(root.path(), hung, slow);
         let jobs = runner();
@@ -834,7 +805,15 @@ mod tests {
         assert!(jobs.stop());
         let state = finished(&jobs).await;
         assert_eq!(state.state, JobRunState::Stopped, "{state:?}");
-        let alive = std::process::Command::new("kill").args(["-0", &pid]).status().unwrap().success();
+        let alive = if cfg!(windows) {
+            let list = std::process::Command::new("tasklist")
+                .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&list.stdout).contains(&format!("\"{pid}\""))
+        } else {
+            std::process::Command::new("kill").args(["-0", &pid]).status().unwrap().success()
+        };
         assert!(!alive, "the download's program is gone");
     }
 

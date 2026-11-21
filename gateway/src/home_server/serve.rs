@@ -1266,7 +1266,6 @@ mod tests {
     /// Clean-path check 18.11, item 40: the centre asks how the character's voice would stand here before it is
     /// installed — every model with how its voice comes (snapshot, reference), its state, room and memory against
     /// what is free, the model it would go with; the model the centre names is kept and the plan reports it.
-    #[cfg(unix)]
     #[tokio::test]
     async fn the_turbo_answers_the_plan_of_the_characters_voice_and_keeps_the_model_the_centre_names() {
         let lab = crate::voice_lab::service::testing::lab().await;
@@ -1334,7 +1333,6 @@ mod tests {
     /// A model that does not fit on this computer's disk is never downloaded: the plan does not choose it (none at all
     /// when nothing fits), the centre naming it is refused and nothing kept, and a character whose models do not fit
     /// gets its fallback voice with no install started.
-    #[cfg(unix)]
     #[tokio::test]
     async fn a_model_that_does_not_fit_on_the_disk_is_never_chosen_nor_downloaded() {
         use std::sync::atomic::Ordering;

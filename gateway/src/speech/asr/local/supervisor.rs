@@ -1470,4 +1470,36 @@ mod tests {
         assert_eq!(said_since(&log, 0).first().map(String::as_str), Some("an earlier worker's words"));
         assert_eq!(said_since(&log, 10_000), said_since(&log, 0), "a log cut since: all of it");
     }
+
+    /// Windows, test 21.11: the engine built for the CI's processor died at its first AVX-512 instruction — exit
+    /// status 0xC000001D. A worker that ends so is named by it, with its last line.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn a_worker_that_dies_on_windows_says_how_and_what_it_wrote() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("asr-worker.log");
+        std::fs::write(&log, "an earlier worker's words\n").unwrap();
+        let from = std::fs::metadata(&log).unwrap().len();
+        let stderr = std::fs::OpenOptions::new().append(true).open(&log).unwrap();
+        let child = tokio::process::Command::new("powershell.exe")
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "[Console]::Error.WriteLine('ggml: cannot run here'); exit -1073741795",
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::from(stderr))
+            .spawn()
+            .unwrap();
+        let mut conn = Conn {
+            reader: Box::new(tokio::io::empty()),
+            writer: Box::new(tokio::io::sink()),
+            child: Some(child),
+            log_from: Some((log.clone(), from)),
+        };
+        let words = conn.post_mortem().await;
+        assert!(words.contains("код выхода 0xC000001D — процессор не знает команду"), "{words}");
+        assert!(words.ends_with(": ggml: cannot run here"), "{words}");
+    }
 }

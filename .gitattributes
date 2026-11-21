@@ -1,0 +1,5 @@
+# Every text file checks out with LF, on Windows too. Git for Windows (and GitHub's Windows runners) turns LF into CRLF
+# by default (core.autocrlf), and the gateway carries the station's scripts inside it by include_str! (voice.sh,
+# S95duowave, gateway.sh): a gateway built on Windows would have sent the station scripts with \r in every line, and
+# busybox sh runs none of them. Tests compare texts byte for byte too. Git still tells text from binary by itself.
+* text=auto eol=lf

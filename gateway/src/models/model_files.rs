@@ -551,6 +551,33 @@ mod tests {
         assert!(!busy_code(Some(2)) && busy_code(Some(33)));
     }
 
+    /// Windows, for real: the voice server (Python) holds the model open without letting it be deleted — Windows
+    /// answers os error 32. The file is marked, no longer installed, survives a start while still held, and goes at
+    /// the first start after it is let go.
+    #[cfg(windows)]
+    #[test]
+    fn a_model_file_another_program_holds_is_marked_and_goes_once_let_go() {
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_SHARE_READ: u32 = 1;
+        const FILE_SHARE_WRITE: u32 = 2;
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join("silero")).unwrap();
+        let model = root.path().join("silero/v4_ru.pt");
+        std::fs::write(&model, "x").unwrap();
+        // As Python's open() holds a file: shared for reading and writing, not for deleting.
+        let held =
+            std::fs::OpenOptions::new().read(true).share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE).open(&model).unwrap();
+        let files = ModelFiles::new(root.path());
+        assert!(std::fs::remove_file(&model).is_err_and(|error| is_busy(&error)), "Windows refuses an open file");
+        assert_eq!(files.remove("silero", "v4_ru.pt").unwrap(), Removed::Later);
+        assert!(model.exists() && with_suffix(&model, REMOVE_MARK).exists());
+        assert!(!files.installed("silero", Some("v4_ru.pt")));
+        assert!(files.cleanup().is_empty(), "still held at this start");
+        drop(held);
+        assert_eq!(files.cleanup(), vec!["silero/v4_ru.pt"]);
+        assert!(!root.path().join("silero").exists());
+    }
+
     #[tokio::test]
     async fn takes_a_silero_file_by_hand_only_as_a_pt_and_clears_the_halves_a_crash_left() {
         let root = tempfile::tempdir().unwrap();

@@ -797,18 +797,12 @@ fn signal_group(pid: u32, signal: Signal) {
     }
 }
 
-/// Windows: the program and its children, at once.
+/// Windows: the program and its children, at once (utils::process::kill_tree).
 pub(crate) fn taskkill(pid: u32) {
-    let mut kill = std::process::Command::new("taskkill");
-    kill.args(["/PID", &pid.to_string(), "/T", "/F"]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
     #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        kill.creation_flags(super::platform::CREATE_NO_WINDOW);
-    }
-    if let Ok(mut child) = kill.spawn() {
-        std::thread::spawn(move || child.wait());
-    }
+    crate::utils::process::kill_tree(pid);
+    #[cfg(not(windows))]
+    let _ = pid;
 }
 
 /// A limiter that refuses to run the program here (taskpolicy or systemd-run without the flags or the session it
@@ -860,6 +854,50 @@ mod tests {
     use crate::voice_lab::platform::{GpuInfo, GpuKind, Tools};
     use crate::voice_lab::system_memory::Pressure;
 
+    /// Windows: a stop ends the program and what it started (taskkill /T) — a voice server is cmd or uv with Python
+    /// under it, and Python left running would hold the GPU and the model files (os error 32).
+    #[cfg(windows)]
+    #[test]
+    fn taskkill_ends_the_program_and_the_programs_it_started() {
+        use std::time::Instant;
+        let dir = tempfile::tempdir().unwrap();
+        let pid_file = dir.path().join("child.pid");
+        let mut parent = std::process::Command::new("cmd")
+            .args([
+                "/C",
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                "$PID | Out-File -Encoding ascii $env:PID_FILE; Start-Sleep 120",
+            ])
+            .env("PID_FILE", &pid_file)
+            .stdin(Stdio::null())
+            .spawn()
+            .unwrap();
+        let alive = |pid: u32| {
+            let list = std::process::Command::new("tasklist")
+                .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&list.stdout).contains(&format!("\"{pid}\""))
+        };
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let child: u32 = loop {
+            if let Some(pid) = std::fs::read_to_string(&pid_file).ok().and_then(|text| text.trim().parse().ok()) {
+                break pid;
+            }
+            assert!(Instant::now() < deadline, "PowerShell under cmd did not start");
+            std::thread::sleep(Duration::from_millis(100));
+        };
+        assert!(alive(child));
+        taskkill(parent.id());
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while parent.try_wait().unwrap().is_none() || alive(child) {
+            assert!(Instant::now() < deadline, "after taskkill: cmd or the PowerShell under it still runs");
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+
     fn calm() -> MemorySnapshot {
         MemorySnapshot {
             total_mb: 36_864,
@@ -887,10 +925,11 @@ mod tests {
         runner_with(calm)
     }
 
-    /// A fake job: sh -c with a script, speaking as imprint.py does.
-    #[cfg(unix)]
-    fn sh(script: &str) -> (String, Vec<String>) {
-        ("sh".into(), vec!["-c".into(), script.into()])
+    /// A fake job: `duowave-test-stub` as `job`, its steps in its arguments (src/bin/test_stub.rs), speaking as
+    /// imprint.py does — on Windows too (it was `sh -c` until 21.11).
+    fn job(steps: &[&str]) -> (String, Vec<String>) {
+        let program = crate::utils::test_stub::role("job");
+        (program.display().to_string(), steps.iter().map(|step| step.to_string()).collect())
     }
 
     async fn finished(jobs: &JobRunner) -> JobState {
@@ -903,22 +942,20 @@ mod tests {
         jobs.state().expect("a job ran")
     }
 
-    #[cfg(unix)]
     fn object(value: Value) -> Map<String, Value> {
         value.as_object().cloned().unwrap_or_default()
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn follows_a_program_stages_into_the_job_progress_labels_the_log_its_memory_its_last_word() {
         let jobs = runner();
-        let (command, args) = sh(r#"
-            echo '{"stage":"select","percent":10}'
-            echo 'Loading weights: 100%'
-            echo '{"memoryMb":1234}'
-            echo '{"stage":"samples","percent":60}'
-            echo '{"stage":"done","percent":100,"peakMb":2955,"rtf":1.2}'
-        "#);
+        let (command, args) = job(&[
+            r#"say:{"stage":"select","percent":10}"#,
+            "say:Loading weights: 100%",
+            r#"say:{"memoryMb":1234}"#,
+            r#"say:{"stage":"samples","percent":60}"#,
+            r#"say:{"stage":"done","percent":100,"peakMb":2955,"rtf":1.2}"#,
+        ]);
         let (said, heard) = oneshot::channel();
         jobs.start(
             JobKind::Imprint,
@@ -947,16 +984,15 @@ mod tests {
         assert_eq!(result.get("rtf"), Some(&Value::from(1.2)));
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn fails_with_what_the_program_said_and_refuses_a_second_job_while_one_runs() {
         let jobs = runner();
-        let (command, args) = sh(r#"
-            echo '{"stage":"words","percent":20}'
-            echo '{"error":"распознавание не ответило","reason":"error"}'
-            sleep 0.1
-            exit 1
-        "#);
+        let (command, args) = job(&[
+            r#"say:{"stage":"words","percent":20}"#,
+            r#"say:{"error":"распознавание не ответило","reason":"error"}"#,
+            "sleep:100",
+            "exit:1",
+        ]);
         jobs.start(
             JobKind::Imprint,
             "omnivoice",
@@ -1003,15 +1039,10 @@ mod tests {
         assert_eq!(finished(&jobs).await.state, JobRunState::Done);
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn stops_on_the_owners_word_and_kills_a_program_that_ignores_the_polite_signal() {
         let jobs = runner();
-        let (command, args) = sh(r#"
-            trap '' TERM
-            echo '{"stage":"load","percent":30}'
-            while true; do sleep 1; done
-        "#);
+        let (command, args) = job(&["ignore-term", r#"say:{"stage":"load","percent":30}"#, "sleep:600000"]);
         jobs.start(
             JobKind::Imprint,
             "omnivoice",
@@ -1027,14 +1058,10 @@ mod tests {
         assert_eq!(state.error.as_deref(), Some("Остановлено."));
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn stops_a_job_that_outgrows_its_ceiling_by_its_own_report() {
         let jobs = runner();
-        let (command, args) = sh(r#"
-            mb=1000
-            while true; do mb=$((mb + 1000)); echo "{\"memoryMb\": $mb}"; sleep 0.02; done
-        "#);
+        let (command, args) = job(&["grow:1000:20"]);
         jobs.start(
             JobKind::Imprint,
             "omnivoice",
@@ -1055,12 +1082,11 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn stops_a_job_when_the_system_starts_to_run_out_whoever_is_to_blame() {
         let jobs =
             runner_with(|| MemorySnapshot { pressure: Pressure::Critical, at: crate::utils::time::now_ms(), ..calm() });
-        let (command, args) = sh(r#"while true; do echo '{"memoryMb": 500}'; sleep 0.02; done"#);
+        let (command, args) = job(&[r#"forever:{"memoryMb": 500}:20"#]);
         jobs.start(
             JobKind::Imprint,
             "omnivoice",
@@ -1076,21 +1102,11 @@ mod tests {
         assert_eq!(state.reason, Some(JobReason::Pressure));
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn keeps_the_jobs_stdin_open_the_program_can_tie_its_life_to_the_gateways() {
         let jobs = runner();
-        // A reader in the background holds stdin: alive after 200 ms only while nobody closed it.
-        let (command, args) = sh(r#"
-            exec 3<&0
-            cat <&3 >/dev/null &
-            reader=$!
-            sleep 0.2
-            if kill -0 $reader 2>/dev/null; then open=true; else open=false; fi
-            kill $reader 2>/dev/null
-            echo "{\"stage\":\"done\",\"open\":$open}"
-            exit 0
-        "#);
+        // A reader in the background holds stdin: after 200 ms, whether nobody closed it.
+        let (command, args) = job(&["stdin-open:200", "exit:0"]);
         let (said, heard) = oneshot::channel();
         jobs.start(
             JobKind::Imprint,
@@ -1107,12 +1123,11 @@ mod tests {
         assert_eq!(result.get("open"), Some(&Value::Bool(true)));
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn keeps_the_work_a_program_reported_done_even_if_it_fell_over_on_its_way_out_06_11_exit_134_after_the_voice()
     {
         let jobs = runner();
-        let (command, args) = sh(r#"echo '{"stage":"done","percent":100,"peakMb":3066}'; exit 134"#);
+        let (command, args) = job(&[r#"say:{"stage":"done","percent":100,"peakMb":3066}"#, "exit:134"]);
         jobs.start(
             JobKind::Imprint,
             "omnivoice",

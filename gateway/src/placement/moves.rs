@@ -1076,6 +1076,8 @@ fn parse_ms(iso: &str) -> u64 {
 mod tests {
     //! A move against a pretend station: its files in a folder, run through the station's own commands
     //! (station_fs.rs) — the same code the program runs there — and its gateway a pretend HTTP server. Never a station.
+    //! The moves that run the station's voice.sh are unix only (Windows has no sh); their helpers go unused there.
+    #![cfg_attr(not(unix), allow(dead_code, unused_imports))]
 
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::LazyLock;
@@ -1545,6 +1547,7 @@ mod tests {
         job.steps.iter().map(|step| (step.id, step.state)).collect()
     }
 
+    #[cfg(unix)] // the pretend station runs the station's own voice.sh under sh (station half of the move); Windows has no sh
     #[tokio::test]
     async fn moves_the_gateway_onto_the_station_with_the_computer_as_its_server_and_back_to_yandex() {
         let (computer, station) = setup().await;
@@ -1621,6 +1624,7 @@ mod tests {
         assert_eq!(computer.restarts.load(Ordering::Relaxed), 0);
     }
 
+    #[cfg(unix)] // the pretend station runs the station's own voice.sh under sh (station half of the move); Windows has no sh
     #[tokio::test]
     async fn alone_on_the_station_the_computers_address_and_key_travel_too_and_wait_switched_off() {
         let (computer, station) = setup().await;
@@ -1647,6 +1651,7 @@ mod tests {
         assert!(record.home_key_id.is_some(), "«ПК помогает колонке» later needs no new key");
     }
 
+    #[cfg(unix)] // the pretend station runs the station's own voice.sh under sh (station half of the move); Windows has no sh
     #[tokio::test]
     async fn moving_back_to_the_computer_takes_the_settings_that_lived_on_the_station_and_restarts_on_them() {
         let (computer, station) = setup().await;
@@ -1798,6 +1803,7 @@ mod tests {
     /// Alice's voice in «Шлюз», «Список покупок» was off there with its list on the computer, and its windows called it
     /// «Колонка». The move carries this computer's voice choice, the plugins' switches and data, and the station's name
     /// as this computer knows it; a move alone carries no voice.
+    #[cfg(unix)] // the pretend station runs the station's own voice.sh under sh (station half of the move); Windows has no sh
     #[tokio::test]
     async fn the_move_with_the_computer_as_its_server_carries_its_voice_its_plugins_and_the_stations_name() {
         let (computer, station) = setup_with(&[("TTS_OWN_URL", "http://127.0.0.1:9/v1")]).await;
@@ -1832,6 +1838,7 @@ mod tests {
     /// installed there from the computer's archive (its hash checked), its registry row keeps the feed, and the choice
     /// travels with the settings. A character that does not fit the room the program left stays here and the move says
     /// so.
+    #[cfg(unix)] // the pretend station runs the station's own voice.sh under sh (station half of the move); Windows has no sh
     #[tokio::test]
     async fn the_move_carries_the_characters_from_an_own_source_and_says_what_did_not_fit() {
         use crate::plugins::install::tests::{archive, character_manifest, expected, noise, vgp, Item};
@@ -1918,6 +1925,7 @@ mod tests {
     /// Live, 10.11 (and 08.11): the move back revoked the station's key to its home server and the station's settings
     /// applied at the restart brought it back; the station's plugins' data stayed on it. The move back takes the
     /// plugins' state with the settings, and the key stays revoked.
+    #[cfg(unix)] // the pretend station runs the station's own voice.sh under sh (station half of the move); Windows has no sh
     #[tokio::test]
     async fn the_move_back_brings_the_plugins_data_and_the_revoked_home_key_stays_revoked() {
         let (computer, station) = setup().await;
@@ -1955,6 +1963,7 @@ mod tests {
     }
 
     /// The settings live on the computer: the move back takes the plugins' state alone, for the restart.
+    #[cfg(unix)] // the pretend station runs the station's own voice.sh under sh (station half of the move); Windows has no sh
     #[tokio::test]
     async fn with_the_settings_on_the_computer_the_move_back_takes_the_plugins_alone() {
         let (computer, station) = setup().await;
@@ -2047,6 +2056,7 @@ mod tests {
         assert_eq!(states(&job)[0], (MoveStep::Check, StepState::Done), "{:?}", job.error);
     }
 
+    #[cfg(unix)] // the pretend station runs the station's own voice.sh under sh (station half of the move); Windows has no sh
     #[tokio::test]
     async fn tells_what_happened_by_the_shell_when_the_program_is_the_broken_part_and_tries_again() {
         let (computer, station) = setup().await;
@@ -2084,6 +2094,7 @@ mod tests {
         assert!(station.status().local);
     }
 
+    #[cfg(unix)] // the pretend station runs the station's own voice.sh under sh (station half of the move); Windows has no sh
     #[tokio::test]
     async fn a_program_the_power_cut_took_goes_back_with_the_retry() {
         let (computer, station) = setup().await;

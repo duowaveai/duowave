@@ -456,8 +456,7 @@ impl CharacterVoices {
     }
 }
 
-// The voice lab's test double (voice_lab::service::testing) pretends with a shell script: these run where it does.
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::characters::contributes::tests::{arthur_manifest, write_arthur};

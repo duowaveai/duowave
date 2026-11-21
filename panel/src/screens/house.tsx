@@ -4,7 +4,7 @@ import { Station, StationGatewayView, UpdateStatus, api, can, problemOf } from '
 import { locale, tr } from '../i18n';
 import { clock, timeAgo } from '../time';
 import { stationUpdatePressable, stationUpdateStep } from '../station-update';
-import { checkIsStale, setUpdateStatus } from '../updates';
+import { checkIsStale, setOwnUpdateStatus, setUpdateStatus } from '../updates';
 import { ask } from '../ui/confirm';
 import { byMode } from '../words';
 import { VIA } from '../via';
@@ -134,11 +134,11 @@ export function Updates({ title, own = false }: { title?: string; own?: boolean 
     const updates = own
         ? { read: api.ownUpdates, check: api.ownCheckUpdates, install: api.ownInstallUpdate }
         : { read: api.updates, check: api.checkUpdates, install: api.installUpdate };
-    // Всё, что раздел узнал, видят и точка на «Дом», и строка на главном экране — о шлюзе этого пульта, не о компьютере
-    // в окне колонки.
+    // Всё, что раздел узнал, видят и точка на «Дом», и строка на главном экране: о шлюзе этого пульта — и, в окне
+    // колонки, о самом компьютере (updates.ts — у каждого своё).
     const setStatus = (answer: UpdateStatus | null): void => {
         setShown(answer);
-        if (answer && !own) setUpdateStatus(answer);
+        if (answer) (own ? setOwnUpdateStatus : setUpdateStatus)(answer);
     };
     const readComputer = async (): Promise<void> => {
         if (!viaStation || !VIA) return;

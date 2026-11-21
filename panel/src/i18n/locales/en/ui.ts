@@ -114,6 +114,7 @@ const en: Translation<typeof ru> = {
     updateUrgent: (version: string) => `Urgent update ${version}`,
     updateAvailable: (version: string) => `Version ${version} is available`,
     updateWhatsNew: 'what’s new — in “Updates”',
+    updateForComputer: 'for this computer, which updates first — in “Updates”',
     updateAutoSoon: 'fixes something important — DuoWave will install it itself within an hour',
     updateInstallSoon: 'fixes something important — install it as soon as you can',
     update: 'Update',

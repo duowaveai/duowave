@@ -634,6 +634,8 @@ mod tests {
         assert!(!target.exists(), "nothing left of a failure");
     }
 
+    // Unix only: the program is a shell script answering as the gateway does; the same check on Windows has its own
+    // test below, with a real program.
     #[cfg(unix)]
     #[test]
     fn asks_the_new_program_its_version() {
@@ -649,6 +651,24 @@ mod tests {
         assert!(matches!(answers_version(&silent, "9.9.9", Duration::from_millis(300)), Err(NotAnswered::Wrong(_))));
         assert!(matches!(
             answers_version(&dir.path().join("none"), "9.9.9", Duration::from_secs(1)),
+            Err(NotAnswered::NotRun(_))
+        ));
+    }
+
+    /// Windows: the version check with a real program (`duowave-test-stub` as `duowave`, its version in its last
+    /// bytes); a program that says nothing in time, and one that is not there.
+    #[cfg(windows)]
+    #[test]
+    fn asks_the_new_program_its_version_on_windows() {
+        let dir = tempfile::tempdir().unwrap();
+        let program = dir.path().join("duowave-9.9.9.exe");
+        std::fs::write(&program, crate::updates::testing::program_answering("9.9.9")).unwrap();
+        assert!(answers_version(&program, "v9.9.9", Duration::from_secs(10)).is_ok());
+        assert!(matches!(answers_version(&program, "9.9.10", Duration::from_secs(10)), Err(NotAnswered::Wrong(_))));
+        let silent = crate::utils::test_stub::put(dir.path(), "sleep");
+        assert!(matches!(answers_version(&silent, "9.9.9", Duration::from_millis(300)), Err(NotAnswered::Wrong(_))));
+        assert!(matches!(
+            answers_version(&dir.path().join("none.exe"), "9.9.9", Duration::from_secs(1)),
             Err(NotAnswered::NotRun(_))
         ));
     }

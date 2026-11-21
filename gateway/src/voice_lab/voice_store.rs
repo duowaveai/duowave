@@ -770,6 +770,7 @@ pub(crate) mod tests {
         std::fs::metadata(path).unwrap().permissions().mode() & 0o777
     }
 
+    // Unix only: the refusal is made with Unix rights (a folder 0o500); on Windows, by a file held open — below.
     #[cfg(unix)]
     #[test]
     fn says_when_a_take_could_not_be_removed_and_keeps_it_listed() {
@@ -791,6 +792,26 @@ pub(crate) mod tests {
         assert_eq!(store.takes(), vec![]);
     }
 
+    /// Windows: a take another program holds open (a player, the voice server) cannot go — os error 32: said, and it
+    /// stays listed; once let go, it goes.
+    #[cfg(windows)]
+    #[test]
+    fn says_when_a_take_held_open_could_not_be_removed_and_keeps_it_listed() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let (_root, store) = store();
+        store.add_take(&reading(16.0, -20.0, -60.0), None).unwrap();
+        // Shared for reading and writing, not for deleting: as Python's open() holds a file.
+        let held = std::fs::OpenOptions::new().read(true).share_mode(1 | 2).open(store.take_file(1)).unwrap();
+        let refused = store.remove_take(1);
+        assert!(refused.is_err(), "{refused:?}");
+        assert_eq!(store.takes().iter().map(|take| take.n).collect::<Vec<_>>(), vec![1]);
+        drop(held);
+        assert!(store.remove_take(1).unwrap());
+        assert_eq!(store.takes(), vec![]);
+    }
+
+    // Unix only: «owner only» is Unix rights (utils::files::owner_only sets 0o700/0o600; on Windows it sets nothing —
+    // a user's profile folder is private by its own rights).
     #[cfg(unix)]
     #[test]
     fn makes_a_root_deleted_while_running_owner_only_again_before_writing_under_it() {

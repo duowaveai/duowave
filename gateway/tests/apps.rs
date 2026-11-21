@@ -332,12 +332,20 @@ async fn an_app_runs_a_long_task_the_panel_follows_and_cancels() {
 }
 
 /// A Node on this machine for the test: the gateway's own is downloaded at the first need, here one is given instead
-/// (`DUOWAVE_NODE`, as the Docker image does). Without one the test says so and passes.
+/// (`DUOWAVE_NODE`, as the Docker image does). Without one the test says so and passes — on a developer's computer;
+/// CI's runners all have Node, so there a missing one fails the test instead of skipping it.
 fn some_node() -> Option<String> {
-    // As PATH names it, not where the link leads: npm lies beside that name (Homebrew keeps it out of Node's cellar).
-    let output = std::process::Command::new("sh").args(["-c", "command -v node"]).output();
-    let path = output.ok().filter(|output| output.status.success())?;
-    Some(String::from_utf8_lossy(&path.stdout).trim().to_string()).filter(|path| !path.is_empty())
+    // As PATH names it, not where the link leads: npm lies beside that name (Homebrew keeps it out of Node's cellar;
+    // on Windows npm is in node_modules beside node.exe). Read from PATH itself, no shell: Windows has none.
+    let name = if cfg!(windows) { "node.exe" } else { "node" };
+    let found = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+        .map(|dir| dir.join(name))
+        .find(|path| path.is_file())
+        .map(|path| path.to_string_lossy().into_owned());
+    if found.is_none() && std::env::var_os("CI").is_some() {
+        panic!("no {name} on PATH, and CI's runners have Node: the test of runtime node would be skipped");
+    }
+    found
 }
 
 /// An app of `runtime: node` (docs/plans/feed.md, stage 2): the example «Привет на Node» from docs/plugins/apps — put

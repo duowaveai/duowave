@@ -369,7 +369,15 @@ fn signal(pid: Option<u32>, signal: Signal) {
             }
         }
     }
-    #[cfg(not(unix))]
+    // Windows has no SIGINT for a program without our console: a stop ends it and what it started at once (its turn
+    // without its result — the work is stopped all the same). Until 21.11 nothing was sent: a stop waited STOP_WAIT
+    // and killed claude alone, its commands left running.
+    #[cfg(windows)]
+    {
+        let _ = signal;
+        crate::utils::process::kill_tree(pid as u32);
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = (pid, signal);
     }

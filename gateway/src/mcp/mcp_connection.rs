@@ -850,6 +850,26 @@ mod program {
             assert_eq!(*said.lock().unwrap(), ["caf\u{fffd}", "still here"]);
         }
 
+        /// Windows: the same through PowerShell — raw bytes not UTF-8 (Windows-1252's «é»), then a line after it.
+        #[cfg(windows)]
+        #[tokio::test]
+        async fn a_program_that_writes_bytes_that_are_not_utf8_to_stderr_keeps_running_on_windows() {
+            let (log, said) = sink();
+            let script =
+                "$e = [Console]::OpenStandardError(); $e.Write([byte[]](99,97,102,233,10), 0, 5); $e.Flush(); \
+                          Start-Sleep -Milliseconds 200; [Console]::Error.WriteLine('still here')";
+            let mut child = tokio::process::Command::new("powershell.exe")
+                .args(["-NoProfile", "-NonInteractive", "-Command", script])
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap();
+            let reading = tokio::spawn(read_log(child.stderr.take().unwrap(), log));
+            let status = child.wait().await.unwrap();
+            reading.await.unwrap();
+            assert!(status.success(), "{status:?}");
+            assert_eq!(*said.lock().unwrap(), ["caf\u{fffd}", "still here"]);
+        }
+
         #[test]
         fn gives_a_program_the_safe_set_and_its_own_variables_only() {
             let own = BTreeMap::from([("TOKEN".to_string(), "secret".to_string())]);

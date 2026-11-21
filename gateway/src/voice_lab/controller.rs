@@ -226,7 +226,7 @@ async fn remove(State(app): State<Arc<App>>, caller: Caller, Path(id): Path<Stri
 
 /// test/voice-lab.e2e-spec.ts through the handlers, with the caller a signed-in admin of this computer (sign-in itself
 /// is the access module's): engines, takes, an imprint, choosing it. tests/voice_lab.rs asks the same over HTTP.
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests {
     use std::sync::atomic::Ordering;
     use std::time::Duration;
@@ -297,7 +297,6 @@ mod tests {
 
     #[tokio::test]
     async fn takes_a_voice_again_for_another_engine_and_a_characters_voice_from_its_reference() {
-        use std::os::unix::fs::PermissionsExt;
         let lab = lab().await;
         let id = imprinted(&lab, "Мой голос").await;
         let reimprint_as = |body: Value| reimprint(state(&lab), admin(&lab), Path(id.clone()), Body(body));
@@ -307,10 +306,7 @@ mod tests {
         assert_eq!(status, StatusCode::BAD_REQUEST, "the engine it has already");
         // CosyVoice 3 installed (a Python that only pretends, as OmniVoice's).
         let runtime = lab.app.config.voice_lab.runtime_dir.join("cosyvoice3");
-        std::fs::create_dir_all(runtime.join("env/bin")).unwrap();
-        let python = runtime.join("env/bin/python");
-        std::fs::write(&python, crate::voice_lab::service::testing::FAKE_PYTHON).unwrap();
-        std::fs::set_permissions(&python, std::fs::Permissions::from_mode(0o755)).unwrap();
+        crate::utils::test_stub::put_at(&runtime.join("env/bin/python"));
         std::fs::write(runtime.join("ready.json"), r#"{"engine":"cosyvoice3","device":"cpu","torch":"2.3.1","source":"bench","installedAt":"2026-11-07T00:00:00Z"}"#).unwrap();
         let (status, job) = answer(reimprint_as(json!({ "engine": "cosyvoice3" })).await);
         assert_eq!(status, StatusCode::CREATED, "{job}");

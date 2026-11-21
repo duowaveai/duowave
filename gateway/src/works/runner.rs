@@ -494,7 +494,12 @@ impl FolderWorks {
                         libc::killpg(pid, libc::SIGKILL);
                     }
                 }
-                #[cfg(not(unix))]
+                // Windows: cmd and the command under it, at once (cmd alone would leave the command running).
+                #[cfg(windows)]
+                if let Some(pid) = pid {
+                    crate::utils::process::kill_tree(pid);
+                }
+                #[cfg(not(any(unix, windows)))]
                 let _ = pid;
                 let _ = child.start_kill();
                 let words = if stop.is_cancelled() { "stopped" } else { "took too long" };

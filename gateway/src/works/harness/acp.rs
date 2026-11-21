@@ -585,7 +585,9 @@ impl Connection {
         let inside = |path: &Option<String>| {
             path.as_deref().is_none_or(|path| {
                 let path = Path::new(path);
-                let path = if path.is_absolute() { path.to_path_buf() } else { self.shared.copy.join(path) };
+                // Rooted is not relative: on Windows «/etc/hosts» (no drive) is that drive's root, not the copy's
+                // — joined to the copy it was taken for a file inside it, and allowed.
+                let path = if path.has_root() { path.to_path_buf() } else { self.shared.copy.join(path) };
                 let real = std::fs::canonicalize(&path)
                     .or_else(|_| path.parent().map(std::fs::canonicalize).unwrap_or(Ok(path.clone())))
                     .unwrap_or(path);
@@ -615,6 +617,11 @@ impl Connection {
             unsafe {
                 libc::killpg(pid, libc::SIGTERM);
             }
+        }
+        // Windows: no signals; the agent and what it started go at once (it was the agent alone, its commands left).
+        #[cfg(windows)]
+        if let Some(pid) = self.pid {
+            crate::utils::process::kill_tree(pid);
         }
         if tokio::time::timeout(Duration::from_secs(2), child.wait()).await.is_err() {
             #[cfg(unix)]

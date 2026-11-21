@@ -1247,9 +1247,9 @@ fn admitted(admission: &Admission, anyway: bool) -> Result<(), ApiError> {
 }
 
 /// A gateway with the voice lab on a Mac that only pretends: its memory as a test sets it, an engine «installed» whose
-/// Python is a script speaking as clone-server/imprint.py does (synthetic audio only, in a temporary folder), and a
-/// voice server already up that answers /health and speaks a tone.
-#[cfg(all(test, unix))]
+/// Python is `duowave-test-stub` speaking as clone-server/imprint.py does (synthetic audio only, in a temporary
+/// folder; it runs on Windows too), and a voice server already up that answers /health and speaks a tone.
+#[cfg(test)]
 pub(crate) mod testing {
     use std::path::Path;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -1330,35 +1330,6 @@ pub(crate) mod testing {
         }
     }
 
-    /// The imprint job as the engine's Python would run it (clone-server/imprint.py), without a model: the same JSON
-    /// lines and the same voice folder, made of the first take.
-    pub const FAKE_PYTHON: &str = r#"#!/bin/sh
-take=""; out=""; name=""; engine=""; device=""; samples=""; field=""
-for arg in "$@"; do
-  case "$arg" in
-    --*) field="$arg"; continue ;;
-  esac
-  case "$field" in
-    --takes) [ -z "$take" ] && take="$arg" ;;
-    --out) out="$arg" ;;
-    --name) name="$arg" ;;
-    --engine) engine="$arg" ;;
-    --device) device="$arg" ;;
-    --samples) samples="$arg" ;;
-  esac
-done
-first=$(printf '%s' "$samples" | sed 's/^\["\([^"]*\)".*$/\1/')
-echo '{"stage":"select","percent":12}'
-echo '{"memoryMb":900}'
-echo '{"stage":"imprint","percent":55}'
-mkdir -p "$out/samples"
-cp "$take" "$out/ref.wav"
-cp "$take" "$out/samples/1.wav"
-printf 'imprint' > "$out/voice.pt"
-printf '{"id":"%s","name":"%s","engine":"%s","device":"%s","createdAt":"2026-11-06T01:00:00+00:00","reference":{"take":1,"start":1,"end":7,"seconds":6,"snrDb":30,"words":"слова образца"},"samples":[{"n":1,"text":"%s","seconds":3.2}],"rtf":1.2,"peakMb":2100}' "$(basename "$out")" "$name" "$engine" "$device" "$first" > "$out/meta.json"
-echo "{\"stage\":\"done\",\"percent\":100,\"peakMb\":2100,\"rtf\":1.2,\"refSeconds\":6,\"device\":\"$device\"}"
-"#;
-
     /// 20 s of reading: phrases and pauses, 16 kHz.
     pub fn spoken_take() -> Vec<u8> {
         let mut pcm = Vec::new();
@@ -1410,17 +1381,11 @@ echo "{\"stage\":\"done\",\"percent\":100,\"peakMb\":2100,\"rtf\":1.2,\"refSecon
         (url, server)
     }
 
-    fn executable(path: &Path, script: &str) {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(path, script).unwrap();
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
-
     pub async fn lab() -> Lab {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        executable(&root.join("runtime/omnivoice/env/bin/python"), FAKE_PYTHON);
+        // The engine's Python: the stub as imprint.py (src/bin/test_stub.rs, role `python`).
+        crate::utils::test_stub::put_at(&root.join("runtime/omnivoice/env/bin/python"));
         std::fs::write(
             root.join("runtime/omnivoice/ready.json"),
             r#"{"engine":"omnivoice","device":"mps","torch":"2.8.0","source":"bench","installedAt":"2026-11-06T00:00:00Z"}"#,
@@ -1457,7 +1422,7 @@ echo "{\"stage\":\"done\",\"percent\":100,\"peakMb\":2100,\"rtf\":1.2,\"refSecon
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests {
     use super::testing::lab;
     use super::*;
@@ -1589,6 +1554,8 @@ mod tests {
         );
     }
 
+    // Unix only: the refusal is made with Unix rights (a folder 0o500); Windows refuses by a file held open, below.
+    #[cfg(unix)]
     #[tokio::test]
     async fn answers_500_for_a_take_that_could_not_be_removed_and_keeps_it_listed() {
         use std::os::unix::fs::PermissionsExt;
@@ -1606,6 +1573,30 @@ mod tests {
         writable(0o700).unwrap();
         assert_eq!(refused.unwrap_err().status, StatusCode::INTERNAL_SERVER_ERROR);
         assert_eq!(voice_lab.view().await.draft.takes.len(), 1);
+        voice_lab.remove_take(Some(1)).unwrap();
+        assert_eq!(voice_lab.remove_take(Some(1)).unwrap_err().status, StatusCode::NOT_FOUND);
+    }
+
+    /// Windows: a take another program holds open (a player, the voice server) cannot go — os error 32: a 500, and
+    /// it stays listed; once let go, it goes.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn answers_500_for_a_take_held_open_and_keeps_it_listed() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let lab = lab().await;
+        let voice_lab = &lab.app.voice_lab;
+        voice_lab.add_take(reading(16.0, -20.0, -60.0), None).await.unwrap();
+        let take = std::fs::read_dir(&voice_lab.store.draft_dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .find(|path| path.extension().is_some_and(|ext| ext == "wav"))
+            .expect("the take's file");
+        // Shared for reading and writing, not for deleting: as Python's open() holds a file.
+        let held = std::fs::OpenOptions::new().read(true).share_mode(1 | 2).open(&take).unwrap();
+        assert_eq!(voice_lab.remove_take(Some(1)).unwrap_err().status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(voice_lab.view().await.draft.takes.len(), 1);
+        drop(held);
         voice_lab.remove_take(Some(1)).unwrap();
         assert_eq!(voice_lab.remove_take(Some(1)).unwrap_err().status, StatusCode::NOT_FOUND);
     }

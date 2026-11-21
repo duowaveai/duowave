@@ -19,6 +19,13 @@ path = "src/main.rs"
 name = "duowave-echo-app"
 path = "src/bin/echo_app.rs"
 
+# The programs the tests stand in for — Claude Code, an ACP agent — in one program that runs on every system, Windows
+# too (src/bin/test_stub.rs). Built by `cargo test -p duowave` with the rest; `libc` (pc) for its SIGINT on Unix.
+[[bin]]
+name = "duowave-test-stub"
+path = "src/bin/test_stub.rs"
+required-features = ["pc"]
+
 [features]
 default = ["pc", "wasm"]
 # Everything that builds from source: the station connect over SSH, local model servers, the voice lab, calls.
@@ -169,4 +176,11 @@ coremidi = { version = "0.9.2", optional = true }
 core-foundation = { version = "0.10.1", optional = true }
 
 [target."cfg(windows)".dependencies]
-windows-sys = { version = "0.61.2", features = ["Win32_System_SystemInformation", "Win32_Storage_FileSystem"] }
+# Process memory (system_memory.rs: an app's working set, OpenProcess + K32GetProcessMemoryInfo) besides the system's.
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+    "Win32_System_ProcessStatus",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+] }

@@ -1296,6 +1296,7 @@ mod tests {
     /// The way the owner's station is updated (20.11): the computer sends the archive of the new version, the
     /// station checks it with its own key, tries it from memory and becomes it — the program on the disk untouched
     /// until the trial is over.
+    #[cfg(unix)] // the station's own update (Linux): its test station runs the new program, an extension-less file Windows cannot run
     #[tokio::test]
     async fn the_station_takes_the_computers_archive_tries_it_from_memory_and_keeps_the_old_program() {
         let station = testing::Station::new(400_000);
@@ -1340,6 +1341,7 @@ mod tests {
     /// «Колонка без компьютера» (owner 20.11): the station that its computer updates installs the feed's version
     /// itself only by «Поставить без компьютера» — not by «Обновить», not by itself even when it is urgent — and then
     /// the station's way as any update: checked, tried from memory, the old program kept.
+    #[cfg(unix)] // the station's own update (Linux): its test station runs the new program, an extension-less file Windows cannot run
     #[tokio::test]
     async fn a_station_its_computer_updates_installs_from_the_feed_alone_only_by_the_button() {
         let site = testing::Site::start().await;

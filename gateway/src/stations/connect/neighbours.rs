@@ -296,7 +296,9 @@ mod tests {
     }
 
     /// Each switch under the real sh, against a pretend station in a folder: the mod's own scripts are fakes that
-    /// log their call. Where the mod is not, nothing runs.
+    /// log their call. Where the mod is not, nothing runs. Unix only: these commands run on the station under busybox
+    /// sh and nowhere else — Windows has no sh to run them with.
+    #[cfg(unix)]
     #[test]
     fn the_switches_run_under_sh() {
         let root = tempfile::tempdir().unwrap();
@@ -342,7 +344,9 @@ mod tests {
         assert!(!script.replace("2>/dev/null", "").contains('>'), "the look must not write a file");
     }
 
-    /// The script under the real sh (busybox's on the station): it runs and prints only the lines read() knows.
+    /// The script under the real sh (busybox's on the station): it runs and prints only the lines read() knows. Unix
+    /// only: the script runs on the station alone; Windows has no sh.
+    #[cfg(unix)]
     #[test]
     fn the_script_runs_under_sh() {
         let output = std::process::Command::new("sh").arg("-c").arg(script()).output().unwrap();

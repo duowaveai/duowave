@@ -1,5 +1,5 @@
 //! The works in folders end to end through the API (docs/plans/router-and-works.md, stage 3), with the stub
-//! `claude` (tests/fixtures/claude-stub): the agent found and signed in, a folder added (one without git refused),
+//! `claude` (`duowave-test-stub`, src/bin/test_stub.rs): the agent found and signed in, a folder added (one without git refused),
 //! «Новая работа» — its «Готово» with the branch, the checks and the dollars, its deal on the seat «Исполнитель», its
 //! runs, its journal read from a place and its raw file; one work in folders at a time; a plan's limit asked and
 //! answered from the page; a stop and «Продолжить» in the same session. Each test starts its own gateway.
@@ -13,6 +13,13 @@ use std::time::Duration;
 use reqwest::StatusCode;
 use serde_json::{json, Value};
 use support::{bearer, message, send, Gateway};
+
+/// The stub's name is its role (src/bin/test_stub.rs).
+const CLAUDE: &str = if cfg!(windows) { "claude.exe" } else { "claude" };
+/// The folder's own commands, as the household writes them for its system: sh, and cmd on Windows.
+const PREPARE: &str = if cfg!(windows) { "exit /b 0" } else { "true" };
+const CHECK: &str =
+    if cfg!(windows) { "if exist contacts.txt (exit /b 0) else (exit /b 1)" } else { "test -f contacts.txt" };
 
 trait Signed {
     fn signed(self, token: &str) -> Self;
@@ -51,8 +58,7 @@ impl Bench {
         let outside = tempfile::tempdir().unwrap();
         let stub = outside.path().join("stub");
         std::fs::create_dir_all(&stub).unwrap();
-        std::fs::copy(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/claude-stub"), stub.join("claude"))
-            .unwrap();
+        std::fs::copy(env!("CARGO_BIN_EXE_duowave-test-stub"), stub.join(CLAUDE)).unwrap();
         let folder = outside.path().join("site");
         std::fs::create_dir_all(&folder).unwrap();
         git(&folder, &["init", "--quiet", "-b", "main"]);
@@ -94,7 +100,7 @@ impl Bench {
             self.gateway
                 .put("/api/v1/harnesses/claude-code")
                 .signed(&self.admin)
-                .json(&json!({ "path": self.stub.join("claude").display().to_string() })),
+                .json(&json!({ "path": self.stub.join(CLAUDE).display().to_string() })),
             StatusCode::OK,
         )
         .await;
@@ -108,8 +114,8 @@ impl Bench {
                 json!({
                     "name": "Сайт",
                     "path": self.folder.display().to_string(),
-                    "prepare": ["true"],
-                    "checks": ["test -f contacts.txt"],
+                    "prepare": [PREPARE],
+                    "checks": [CHECK],
                 }),
             )
             .await;

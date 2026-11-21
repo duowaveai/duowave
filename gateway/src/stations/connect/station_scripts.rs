@@ -288,6 +288,8 @@ pub fn copy_state(copy: Option<&str>, refused: Option<&str>) -> Option<CopyState
 
 #[cfg(test)]
 pub(crate) mod tests {
+    // The pretend station's helpers serve the tests that run the station's scripts under sh, which are unix only.
+    #![cfg_attr(not(unix), allow(dead_code, unused_imports))]
     use std::path::PathBuf;
     use std::process::{Command, Stdio};
 
@@ -488,6 +490,7 @@ mv "$1.under" "$1" && grep -v " $1 " "$PRETEND/proc/mounts" > "$PRETEND/proc/mou
         assert!(output.status.success(), "{}\n{script}", String::from_utf8_lossy(&output.stderr));
     }
 
+    #[cfg(unix)] // the station's own script under sh: it runs on the station alone, Windows has no sh
     #[test]
     fn are_valid_sh() {
         for script in [
@@ -510,6 +513,7 @@ mv "$1.under" "$1" && grep -v " $1 " "$PRETEND/proc/mounts" > "$PRETEND/proc/mou
         }
     }
 
+    #[cfg(unix)] // the station's own script under sh: it runs on the station alone, Windows has no sh
     #[test]
     fn points_through_a_copy_and_leaves_the_firmwares_file_as_it_was() {
         let pretend = Pretend::new();
@@ -535,6 +539,7 @@ mv "$1.under" "$1" && grep -v " $1 " "$PRETEND/proc/mounts" > "$PRETEND/proc/mou
         assert_eq!(url_of(&pretend.config()), target().url);
     }
 
+    #[cfg(unix)] // the station's own script under sh: it runs on the station alone, Windows has no sh
     #[test]
     fn a_reset_or_an_update_leaves_the_usual_alice() {
         let pretend = Pretend::new();
@@ -559,6 +564,7 @@ mv "$1.under" "$1" && grep -v " $1 " "$PRETEND/proc/mounts" > "$PRETEND/proc/mou
         assert_eq!(url_of(&pretend.config()), YANDEX_URL);
     }
 
+    #[cfg(unix)] // the station's own script under sh: it runs on the station alone, Windows has no sh
     #[test]
     fn will_not_overwrite_an_address_someone_else_put_into_our_copy_unless_told() {
         let pretend = Pretend::new();
@@ -586,6 +592,7 @@ mv "$1.under" "$1" && grep -v " $1 " "$PRETEND/proc/mounts" > "$PRETEND/proc/mou
     /// Live 08.11: after the safety net the boot mounts the way back (previous.cfg) while our copy names this station's
     /// gateway. That is ours, not someone else's change: «Попробовать снова» points the voice here again with the way
     /// back kept as it was, and «На компьютере» rewrites the copy, so the next boot does not go back to the station.
+    #[cfg(unix)] // the station's own script under sh: it runs on the station alone, Windows has no sh
     #[test]
     fn after_the_safety_net_the_way_back_is_ours_to_point_from() {
         let pretend = Pretend::new();
@@ -625,6 +632,7 @@ mv "$1.under" "$1" && grep -v " $1 " "$PRETEND/proc/mounts" > "$PRETEND/proc/mou
     }
 
     /// Something else mounted over the config — neither our copy nor the way back — is still someone else's.
+    #[cfg(unix)] // the station's own script under sh: it runs on the station alone, Windows has no sh
     #[test]
     fn a_mount_that_is_not_ours_is_still_someone_elses() {
         let pretend = Pretend::new();
@@ -644,6 +652,7 @@ mv "$1.under" "$1" && grep -v " $1 " "$PRETEND/proc/mounts" > "$PRETEND/proc/mou
         assert!(refused.stderr.contains("ws://198.51.100.7/uni.ws"), "{}", refused.stderr);
     }
 
+    #[cfg(unix)] // the station's own script under sh: it runs on the station alone, Windows has no sh
     #[test]
     fn restore_sh_brings_the_firmwares_own_config_back_without_the_gateway() {
         let pretend = Pretend::new();
@@ -683,6 +692,7 @@ mv "$1.under" "$1" && grep -v " $1 " "$PRETEND/proc/mounts" > "$PRETEND/proc/mou
         pretend
     }
 
+    #[cfg(unix)] // the station's own script under sh: it runs on the station alone, Windows has no sh
     #[test]
     fn uninstall_sh_takes_duowave_off_the_station() {
         let pretend = station_with_everything();
@@ -704,6 +714,7 @@ mv "$1.under" "$1" && grep -v " $1 " "$PRETEND/proc/mounts" > "$PRETEND/proc/mou
         assert!(!gone.stdout.contains("yam"), "no YAM package here: {}", gone.stdout);
     }
 
+    #[cfg(unix)] // the station's own script under sh: it runs on the station alone, Windows has no sh
     #[test]
     fn uninstall_sh_keeps_the_gateways_data_when_asked() {
         let pretend = station_with_everything();
@@ -721,6 +732,7 @@ mv "$1.under" "$1" && grep -v " $1 " "$PRETEND/proc/mounts" > "$PRETEND/proc/mou
         assert!(pretend.mounted() && pretend.file(VOICE_SCRIPT).exists());
     }
 
+    #[cfg(unix)] // the station's own script under sh: it runs on the station alone, Windows has no sh
     #[test]
     fn uninstall_sh_leaves_a_yam_package_off_and_names_yam_remove() {
         let pretend = station_with_everything();
@@ -733,6 +745,7 @@ mv "$1.under" "$1" && grep -v " $1 " "$PRETEND/proc/mounts" > "$PRETEND/proc/mou
         assert_eq!(left, vec![std::ffi::OsString::from("yam-off")], "the package's updates leave the gateway off");
     }
 
+    #[cfg(unix)] // the station's own script under sh: it runs on the station alone, Windows has no sh
     #[test]
     fn uninstall_sh_changes_nothing_while_the_voice_is_not_back() {
         let pretend = station_with_everything();
@@ -746,6 +759,7 @@ mv "$1.under" "$1" && grep -v " $1 " "$PRETEND/proc/mounts" > "$PRETEND/proc/mou
         assert!(pretend.file(BOOT_SCRIPT).exists() && pretend.file(UNINSTALL_SCRIPT).exists());
     }
 
+    #[cfg(unix)] // the station's own script under sh: it runs on the station alone, Windows has no sh
     #[test]
     fn the_panels_uninstall_leaves_the_reboot_to_its_steps_and_nothing_behind() {
         let pretend = station_with_everything();
@@ -760,6 +774,7 @@ mv "$1.under" "$1" && grep -v " $1 " "$PRETEND/proc/mounts" > "$PRETEND/proc/mou
         assert_eq!((after.status, after.stdout.as_str()), (Some(0), ""), "nothing of ours left");
     }
 
+    #[cfg(unix)] // the station's own script under sh: it runs on the station alone, Windows has no sh
     #[test]
     fn connect_sh_writes_its_files_points_the_voice_and_reboots() {
         let pretend = Pretend::new();
@@ -774,6 +789,7 @@ mv "$1.under" "$1" && grep -v " $1 " "$PRETEND/proc/mounts" > "$PRETEND/proc/mou
         assert!(pretend.read("calls").contains("reboot"));
     }
 
+    #[cfg(unix)] // the station's own script under sh: it runs on the station alone, Windows has no sh
     #[test]
     fn changes_nothing_in_a_file_it_does_not_know() {
         let pretend = Pretend::new();
@@ -785,6 +801,7 @@ mv "$1.under" "$1" && grep -v " $1 " "$PRETEND/proc/mounts" > "$PRETEND/proc/mou
         assert!(!pretend.mounted());
     }
 
+    #[cfg(unix)] // the station's own script under sh: it runs on the station alone, Windows has no sh
     #[test]
     fn a_copy_that_cannot_be_mounted_leaves_the_station_as_it_was() {
         let pretend = Pretend::new();
@@ -827,6 +844,7 @@ mv "$1.under" "$1" && grep -v " $1 " "$PRETEND/proc/mounts" > "$PRETEND/proc/mou
     }
 
     /// The voice addresses survive the shell: the facts' lines come out in order.
+    #[cfg(unix)] // the station's own script under sh: it runs on the station alone, Windows has no sh
     #[test]
     fn the_facts_say_where_the_copy_stands() {
         let pretend = Pretend::new();
@@ -842,6 +860,7 @@ mv "$1.under" "$1" && grep -v " $1 " "$PRETEND/proc/mounts" > "$PRETEND/proc/mou
     }
 
     /// The call client's sound guard on its own (`sh call-client.sh guard-sound`), against a pretend speaker.
+    #[cfg(unix)] // the station's own script under sh: it runs on the station alone, Windows has no sh
     #[test]
     fn the_sound_guard_restarts_alices_media_then_reboots_at_most_hourly() {
         let pretend = Pretend::new();
@@ -907,6 +926,26 @@ mv "$1.under" "$1" && grep -v " $1 " "$PRETEND/proc/mounts" > "$PRETEND/proc/mou
             [(CLIENT_DIR, VOICE_SH), (STATION_CONFIG, VOICE_SH), (CLIENT_DIR, BOOT_SH), ("/etc/init.d", VOICE_SH)]
         {
             assert!(text.contains(path), "{path}");
+        }
+    }
+
+    /// What goes to the station has LF line ends only: busybox sh takes a `\r` for part of every command. The files
+    /// the gateway carries come as git checked them out where it was built — on Windows CRLF, unless .gitattributes
+    /// keeps them LF; this test is the Windows CI's check that it does.
+    #[test]
+    fn what_goes_to_the_station_has_no_carriage_returns() {
+        let mut scripts = vec![
+            ("voice.sh", VOICE_SH.to_string()),
+            ("S95duowave", BOOT_SH.to_string()),
+            ("connect", connect_script(&target()).unwrap()),
+            ("restore", restore_script()),
+            ("uninstall", uninstall_script()),
+        ];
+        for (command, script) in deliveries() {
+            scripts.extend([("delivery", command), ("delivered", script)]);
+        }
+        for (name, script) in scripts {
+            assert!(!script.contains('\r'), "{name} has CR line ends");
         }
     }
 }

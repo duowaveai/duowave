@@ -3,7 +3,7 @@
 #                    e2e tests
 #   rust-station     the gateway's build that runs on the station: static aarch64 musl through zig, its size, and
 #                    the computer's build carrying it (DUOWAVE_STATION_PAYLOAD)
-#   rust-windows     that the gateway compiles on Windows
+#   rust-windows     the gateway's unit and e2e tests on Windows
 #   desktop          the desktop app with the gateway inside (desktop/src-tauri): format, lints, tests
 #   panel            the panel's types, its checks without a browser (scripts/panel-check.ts) and build
 #   private          that nothing private (keys, home paths, a household's addresses) is in the tree
@@ -170,16 +170,20 @@ jobs:
           DUOWAVE_STATION_PAYLOAD=$PWD/duowave-station-aarch64.tar.gz cargo test -p duowave --lib placement::payload
 
   rust-windows:
-    # Windows builds come from CI later; this only checks that the code compiles there.
+    # The gateway's tests on Windows, the same `cargo test` as on Linux: the code only Windows runs (the firewall's look
+    # through PowerShell, stopping programs, a model file another process holds open) is tested where it runs. Until
+    # 21.11 this job only compiled, and the Windows bugs of the first tester went unseen. A test that cannot run here
+    # is `#[cfg(unix)]` only when what it tests never runs on Windows (the station's scripts under busybox sh).
     runs-on: windows-latest
-    timeout-minutes: 40
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable, 10.11.2026
       - uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      - run: cargo check -p duowave --all-targets
+      - name: Tests
+        run: cargo test -p duowave
 
   desktop:
     # The desktop app (desktop/src-tauri, a Cargo workspace of its own) with the Rust gateway inside: format, lints

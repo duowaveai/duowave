@@ -845,6 +845,8 @@ pub fn own_memory() -> Option<Memory> {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    // The pretend station's helpers serve the tests that run the station's scripts under sh, which are unix only.
+    #![cfg_attr(not(unix), allow(dead_code, unused_imports))]
     use std::sync::Mutex;
 
     use super::*;
@@ -933,6 +935,7 @@ pub(crate) mod tests {
         std::fs::read_to_string(if fs.mounted() { under } else { fs.path(STATION_CONFIG) }).unwrap()
     }
 
+    #[cfg(unix)] // the station's voice.sh / gateway.sh under sh: they run on the station alone, Windows has no sh
     #[test]
     fn points_the_voice_through_a_copy_keeping_the_way_back() {
         let (_dir, fs) = pretend();
@@ -982,6 +985,7 @@ pub(crate) mod tests {
     /// Live 08.11: after the safety net the station reads the way back while our copy names its own gateway. The move
     /// to the computer is then not «nothing to change»: the copy is rewritten — with no reboot, the station already
     /// reads that address — or the next boot would send the voice to the station's gateway again.
+    #[cfg(unix)] // the station's voice.sh / gateway.sh under sh: they run on the station alone, Windows has no sh
     #[test]
     fn after_the_safety_net_the_move_home_rewrites_what_the_next_boot_mounts() {
         let (_dir, fs) = pretend();
@@ -1017,6 +1021,7 @@ pub(crate) mod tests {
         assert!(!fs.point(&pc, true, &system).unwrap().changed);
     }
 
+    #[cfg(unix)] // the station's voice.sh / gateway.sh under sh: they run on the station alone, Windows has no sh
     #[test]
     fn one_switch_at_a_time_and_a_dead_ones_lock_goes_stale() {
         let (_dir, fs) = pretend();
@@ -1122,6 +1127,7 @@ pub(crate) mod tests {
         assert!(system.calls().contains(&"service stop".to_string()), "stopped first");
     }
 
+    #[cfg(unix)] // the station's voice.sh / gateway.sh under sh: they run on the station alone, Windows has no sh
     #[test]
     fn will_not_remove_the_gateway_the_voice_goes_to_and_keeps_the_boot_script_a_copy_needs() {
         let (dir, fs) = pretend();
@@ -1149,6 +1155,7 @@ pub(crate) mod tests {
         assert!(!fs.path(DIR).exists(), "the service's marks and the folder go too (14.11: gateway.started stayed)");
     }
 
+    #[cfg(unix)] // the station's voice.sh / gateway.sh under sh: they run on the station alone, Windows has no sh
     #[test]
     fn says_where_the_copy_stands_and_why_a_boot_left_it() {
         let (_dir, fs) = pretend();
@@ -1209,6 +1216,13 @@ pub(crate) mod tests {
         assert!(!answers_health(port));
         server.join().unwrap();
         assert!(!answers_health(port), "nobody listens");
+    }
+
+    /// gateway.sh goes to the station as the gateway carries it: LF only, or busybox sh runs none of it (a gateway
+    /// built on Windows carries it as git checked it out there; .gitattributes keeps it LF).
+    #[test]
+    fn the_service_script_has_no_carriage_returns() {
+        assert!(!SERVICE_SCRIPT.contains('\r'));
     }
 
     /// The service itself, `sh gateway.sh …`, with its paths in a folder, pretend programs and a pretend /proc.
@@ -1289,6 +1303,7 @@ pub(crate) mod tests {
         }
     }
 
+    #[cfg(unix)] // the station's voice.sh / gateway.sh under sh: they run on the station alone, Windows has no sh
     #[test]
     fn the_safety_net_brings_the_version_back_first_then_gives_the_station_back() {
         let service = Service::new("ws://127.0.0.1:8790/uni.ws");
@@ -1303,6 +1318,7 @@ pub(crate) mod tests {
         assert!(service.file("bin/duowave.failed").exists() && !service.file("updated").exists());
     }
 
+    #[cfg(unix)] // the station's voice.sh / gateway.sh under sh: they run on the station alone, Windows has no sh
     #[test]
     fn the_safety_net_leaves_a_gateway_alone_when_it_is_off_or_the_voice_goes_elsewhere() {
         // Off: it keeps starting it (the pretend one stops the loop after five).
@@ -1332,6 +1348,7 @@ pub(crate) mod tests {
         assert!(!long.file("safety-fired").exists());
     }
 
+    #[cfg(unix)] // the station's voice.sh / gateway.sh under sh: they run on the station alone, Windows has no sh
     #[test]
     fn a_pid_from_another_boot_or_of_another_program_is_not_its_gateway() {
         let service = Service::new("ws://127.0.0.1:8790/uni.ws");
@@ -1352,6 +1369,7 @@ pub(crate) mod tests {
         }
     }
 
+    #[cfg(unix)] // the station's voice.sh / gateway.sh under sh: they run on the station alone, Windows has no sh
     #[test]
     fn a_gateway_that_stops_answering_is_restarted_and_the_third_time_gives_the_station_back() {
         let service = Service::new("ws://127.0.0.1:8790/uni.ws");
@@ -1440,6 +1458,7 @@ pub(crate) mod tests {
         assert!(!log.contains("killed"), "{log}");
     }
 
+    #[cfg(unix)] // the station's voice.sh / gateway.sh under sh: they run on the station alone, Windows has no sh
     #[test]
     fn its_start_gives_the_callers_output_back_while_the_loop_runs_on() {
         // An install over SSH runs the service's start with Command::output(), which waits for that output to close.
@@ -1469,6 +1488,7 @@ pub(crate) mod tests {
         }
     }
 
+    #[cfg(unix)] // the station's voice.sh / gateway.sh under sh: they run on the station alone, Windows has no sh
     #[test]
     fn its_start_waits_for_the_gateway_when_alices_voice_goes_to_it() {
         for (voice, waits) in [("ws://127.0.0.1:8790/uni.ws", true), ("ws://192.0.2.10/uni.ws", false)] {

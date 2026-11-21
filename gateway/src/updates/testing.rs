@@ -39,8 +39,14 @@ impl Signer {
 }
 
 /// A program that answers `<program> version` with `version`, as the gateway's own does — a shell script, padded to
-/// the size an archive's program must have.
+/// the size an archive's program must have. On Windows, where a script does not run, `duowave-test-stub` with the
+/// version in its last bytes (src/bin/test_stub.rs).
 pub fn program_answering(version: &str) -> Vec<u8> {
+    if cfg!(windows) {
+        let mut program = std::fs::read(crate::utils::test_stub::built()).unwrap();
+        program.extend_from_slice(format!("\nDUOWAVE-STUB-VERSION:{version}\n").as_bytes());
+        return program;
+    }
     let mut script = format!("#!/bin/sh\necho \"duowave {version}\"\n");
     while script.len() < 4096 {
         script.push_str("# padding: a program is at least a kilobyte\n");

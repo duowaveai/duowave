@@ -237,7 +237,7 @@ $r = @(Get-NetFirewallApplicationFilter -Program $env:DUOWAVE_EXE | Get-NetFirew
 @{ networks = $n; firewall = $f; rules = $r } | ConvertTo-Json -Compress -Depth 4"#;
     let output = run_powershell(script, &[("DUOWAVE_EXE", exe.to_string_lossy().into_owned())], LOOK_WAIT).await;
     match output {
-        Ok(text) => match serde_json::from_str::<WindowsNetwork>(text.trim()) {
+        Ok(text) => match parse_look(&text) {
             Ok(network) => Some(network),
             Err(error) => {
                 tracing::warn!(
@@ -252,6 +252,12 @@ $r = @(Get-NetFirewallApplicationFilter -Program $env:DUOWAVE_EXE | Get-NetFirew
             None
         }
     }
+}
+
+/// The look's JSON as PowerShell printed it: around it a line end, and a byte-order mark when the console's encoding
+/// writes one.
+fn parse_look(text: &str) -> Result<WindowsNetwork, serde_json::Error> {
+    serde_json::from_str(text.trim().trim_start_matches('\u{feff}'))
 }
 
 /// This program's inbound rules replaced with one allow rule on the private and domain profiles: one UAC prompt. Err
@@ -289,11 +295,16 @@ try {
     }
 }
 
+/// What every script starts with: its output in UTF-8. Windows PowerShell 5.1 writes into a pipe in the console's
+/// code page (437 or 866), and a network named in Russian came out as «????» (install.ps1 met the same, 68eee1d6).
+const UTF8_OUTPUT: &str = "[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false\n";
+
 /// Runs a PowerShell script with no window and no profile; its stdout when it ends with 0, else why.
 async fn run_powershell(script: &str, env: &[(&str, String)], wait: Duration) -> Result<String, String> {
+    let script = format!("{UTF8_OUTPUT}{script}");
     let mut command = tokio::process::Command::new("powershell.exe");
     command
-        .args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script])
+        .args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", &script])
         .stdin(std::process::Stdio::null())
         .kill_on_drop(true);
     for (name, value) in env {
@@ -365,6 +376,53 @@ mod tests {
         let network = read(r#"{"networks":[],"firewall":[],"rules":[]}"#);
         assert!(!network.likely_closed());
         assert!(network.summary().contains("none read"));
+    }
+
+    #[test]
+    fn the_look_reads_with_a_line_end_and_a_byte_order_mark() {
+        let network = parse_look("\u{feff}{\"networks\":[{\"alias\":\"Беспроводная сеть\",\"category\":\"Public\"}],\"firewall\":[],\"rules\":[]}\r\n")
+            .unwrap();
+        assert_eq!(network.networks[0].alias, "Беспроводная сеть");
+        assert!(parse_look("").is_err());
+    }
+
+    /// Windows: PowerShell's output comes back in UTF-8 — a network named in Russian is read as it is named.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn powershell_says_russian_names_as_they_are() {
+        let said = run_powershell("Write-Output 'Сеть «Домашняя»'", &[], LOOK_WAIT).await.unwrap();
+        assert_eq!(said.trim().trim_start_matches('\u{feff}'), "Сеть «Домашняя»");
+        let named = run_powershell(
+            "@{ networks = @(@{ alias = $env:NAME; category = 'Private' }) } | ConvertTo-Json -Compress -Depth 4",
+            &[("NAME", "Беспроводная сеть".to_string())],
+            LOOK_WAIT,
+        )
+        .await
+        .unwrap();
+        let network = parse_look(&named).unwrap();
+        assert_eq!(network.networks.len(), 1, "one network is still a list: {named}");
+        assert_eq!(network.networks[0].alias, "Беспроводная сеть");
+    }
+
+    /// Windows: the look itself on this computer — PowerShell's cmdlets answer and their JSON reads; the firewall has
+    /// its profiles (Domain, Private, Public) on every Windows.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn the_look_reads_this_windows() {
+        let network = look().await.expect("the look answers on Windows");
+        assert!(!network.firewall.is_empty(), "{}", network.summary());
+        assert!(network.firewall.iter().all(|profile| !profile.name.is_empty()), "{}", network.summary());
+        let view = view_of(Some(network.clone()));
+        assert!(view.windows);
+        assert_eq!(view.likely_closed, network.likely_closed());
+    }
+
+    /// Windows: an error of PowerShell comes back as an error, with its code.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn a_failing_script_says_its_code() {
+        let error = run_powershell("exit 1223", &[], LOOK_WAIT).await.unwrap_err();
+        assert!(error.contains("1223"), "{error}");
     }
 
     #[tokio::test]

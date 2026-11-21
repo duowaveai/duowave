@@ -1,13 +1,14 @@
 //! Own voices end to end (test/voice-lab.e2e-spec.ts): engines, takes, an imprint, choosing it — a real gateway on a
 //! free port with a temporary DATA_DIR, a Mac that only pretends (its memory as the test sets it), an engine whose
-//! Python is a script speaking as clone-server/imprint.py does, and a voice server already up. Audio is synthetic.
+//! Python is `duowave-test-stub` speaking as clone-server/imprint.py does, and a voice server already up. Audio is
+//! synthetic.
 //!
 //! The scenarios that need a signed-in admin sign in as the Node tests did (POST /api/v1/auth/setup). Choosing a
 //! voice goes through the models, speech's voice and /health, linked in App (src/links).
 //!
 //! test/voice-lab.e2e-spec.ts, the Node original, is removed from the tree: git tag `node-gateway-last`.
 
-#[cfg(all(feature = "pc", unix))]
+#[cfg(feature = "pc")]
 mod pc {
     use std::path::Path;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -24,35 +25,6 @@ mod pc {
     use reqwest::{Method, StatusCode};
     use serde_json::{json, Value};
     use tokio::sync::oneshot;
-
-    /// The imprint job as the engine's Python would run it (clone-server/imprint.py), without a model: a script in
-    /// the runtime's env/bin/python that speaks the same JSON lines and leaves the same voice folder.
-    const FAKE_PYTHON: &str = r#"#!/bin/sh
-take=""; out=""; name=""; engine=""; device=""; samples=""; field=""
-for arg in "$@"; do
-  case "$arg" in
-    --*) field="$arg"; continue ;;
-  esac
-  case "$field" in
-    --takes) [ -z "$take" ] && take="$arg" ;;
-    --out) out="$arg" ;;
-    --name) name="$arg" ;;
-    --engine) engine="$arg" ;;
-    --device) device="$arg" ;;
-    --samples) samples="$arg" ;;
-  esac
-done
-first=$(printf '%s' "$samples" | sed 's/^\["\([^"]*\)".*$/\1/')
-echo '{"stage":"select","percent":12}'
-echo '{"memoryMb":900}'
-echo '{"stage":"imprint","percent":55}'
-mkdir -p "$out/samples"
-cp "$take" "$out/ref.wav"
-cp "$take" "$out/samples/1.wav"
-printf 'imprint' > "$out/voice.pt"
-printf '{"id":"%s","name":"%s","engine":"%s","device":"%s","createdAt":"2026-11-06T01:00:00+00:00","reference":{"take":1,"start":1,"end":7,"seconds":6,"snrDb":30,"words":"слова образца"},"samples":[{"n":1,"text":"%s","seconds":3.2}],"rtf":1.2,"peakMb":2100}' "$(basename "$out")" "$name" "$engine" "$device" "$first" > "$out/meta.json"
-echo "{\"stage\":\"done\",\"percent\":100,\"peakMb\":2100,\"rtf\":1.2,\"refSeconds\":6,\"device\":\"$device\"}"
-"#;
 
     /// What the Mac's memory looks like to the sampling: 16 GB free and calm, until a test says otherwise.
     struct Memory {
@@ -157,11 +129,15 @@ echo "{\"stage\":\"done\",\"percent\":100,\"peakMb\":2100,\"rtf\":1.2,\"refSecon
         encode_wav(&pcm, RATE)
     }
 
-    fn executable(path: &Path, script: &str) {
-        use std::os::unix::fs::PermissionsExt;
+    /// The engine's Python: `duowave-test-stub` as clone-server/imprint.py (src/bin/test_stub.rs, role `python`), the
+    /// imprint without a model — the same JSON lines and voice folder; on Windows also as `python.exe`, which Windows
+    /// runs for `…/python` (the lab pretends a Mac, whose engine's Python is env/bin/python).
+    fn put_python(path: &Path) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(path, script).unwrap();
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::copy(env!("CARGO_BIN_EXE_duowave-test-stub"), path).unwrap();
+        if cfg!(windows) {
+            std::fs::copy(env!("CARGO_BIN_EXE_duowave-test-stub"), path.with_extension("exe")).unwrap();
+        }
     }
 
     /// The voice's server: already up (the gateway takes it over), speaking WAV.
@@ -216,7 +192,7 @@ echo "{\"stage\":\"done\",\"percent\":100,\"peakMb\":2100,\"rtf\":1.2,\"refSecon
     async fn gateway() -> Gateway {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        executable(&root.join("runtime/omnivoice/env/bin/python"), FAKE_PYTHON);
+        put_python(&root.join("runtime/omnivoice/env/bin/python"));
         std::fs::write(
             root.join("runtime/omnivoice/ready.json"),
             r#"{"engine":"omnivoice","device":"mps","torch":"2.8.0","source":"bench","installedAt":"2026-11-06T00:00:00Z"}"#,

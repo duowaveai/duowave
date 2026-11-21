@@ -760,13 +760,11 @@ mod tests {
         assert!(spawner.calls().is_empty());
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn stops_only_the_server_it_started_the_instance_in_its_run_file_must_answer() {
-        use std::os::unix::process::ExitStatusExt;
-
         let fixture = Fixture::new();
-        let mut child = std::process::Command::new("sleep").arg("30").spawn().unwrap();
+        // A program that only runs (test_stub.rs, `sleep`): on Windows too.
+        let mut child = std::process::Command::new(crate::utils::test_stub::role("sleep")).arg("30").spawn().unwrap();
         let pid = child.id();
         let (body, _server) = fixture.answer(
             serde_json::json!({"server": "clone-server", "engine": "omnivoice", "instance": "stranger", "pid": pid}),
@@ -783,7 +781,14 @@ mod tests {
         let stopping = clone.clone();
         tokio::spawn(async move { stopping.stop(EngineId::Omnivoice).await });
         let status = tokio::task::spawn_blocking(move || child.wait()).await.unwrap().unwrap();
-        assert_eq!(status.signal(), Some(libc::SIGTERM));
+        // SIGTERM on Unix; on Windows taskkill of its tree, which ends it with no signal to show.
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::ExitStatusExt;
+            assert_eq!(status.signal(), Some(libc::SIGTERM));
+        }
+        #[cfg(not(unix))]
+        assert!(!status.success(), "{status:?}");
     }
 
     #[test]
