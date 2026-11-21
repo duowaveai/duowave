@@ -784,6 +784,12 @@ impl Config {
         if env.get("LINK_PORT").is_none() {
             config.app.link_port = Some(0);
         }
+        // A test's session journals stay in memory unless it names where they go: the default `data/sessions` is
+        // relative to the working folder, and the test runs from gateway/ wrote them into the repository (six of them
+        // reached the 0.18.0 tree, 22.11; 12d9c10a).
+        if ["RECORDER_ENABLED", "RECORDER_DIR", "DATA_DIR"].iter().all(|name| env.get(name).is_none()) {
+            config.gateway.recorder.enabled = false;
+        }
         config
     }
 }
@@ -1462,6 +1468,20 @@ mod tests {
         assert_eq!(Config::load(&Env::from_pairs([("PACKAGES_PUBKEY", " ")])).unwrap().plugins.catalog_key, built_in);
         let own = Config::load(&Env::from_pairs([("PACKAGES_PUBKEY", "RWQone\nRWQtwo")])).unwrap();
         assert_eq!(own.plugins.catalog_key.as_deref(), Some("RWQone\nRWQtwo"), "a list, in place of the built-in one");
+    }
+
+    /// Test runs from gateway/ wrote session journals into the repository (22.11): a test's journals stay in memory
+    /// unless it names where they go.
+    #[test]
+    fn a_tests_session_journals_go_to_no_folder_it_did_not_name() {
+        assert!(!Config::for_tests(&Env::from_pairs([("STATE_DIR", "")])).gateway.recorder.enabled);
+        let named = Config::for_tests(&Env::from_pairs([("RECORDER_DIR", "/tmp/journals")]));
+        assert!(named.gateway.recorder.enabled);
+        assert!(Config::for_tests(&Env::from_pairs([("DATA_DIR", "/tmp/d")])).gateway.recorder.enabled);
+        assert!(
+            Config::load(&Env::from_pairs([("STATE_DIR", "")])).unwrap().gateway.recorder.enabled,
+            "a gateway's own"
+        );
     }
 
     #[test]

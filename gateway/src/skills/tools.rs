@@ -176,7 +176,7 @@ pub static TOOLS: LazyLock<Vec<ToolSpec>> = LazyLock::new(|| {
             tool: tool(
                 "set_timer",
                 "Start a countdown timer on the speaker. Give it a short name when the person says what it is for \
-                 (\"чай\", \"стирка\").",
+                 («чай», «стирка»).",
                 object(
                     json!({
                         "seconds": {"type": "integer", "minimum": 1, "maximum": 86400},
@@ -460,6 +460,53 @@ pub static TOOLS: LazyLock<Vec<ToolSpec>> = LazyLock::new(|| {
 /// The station's tools still offered after a text from outside the house: lookups that change nothing.
 pub const SAFE_AFTER_OUTSIDE: &[&str] = &["get_weather", "get_news"];
 
+/// Our lookups that give way to a built-in app's tool for the same thing: get_weather asks Yandex, weather_now the
+/// app «Погода»; get_news and «Новости» alike. Two tools for one wish cost every question their words and leave the
+/// model a choice it should not have (docs/plans/fast-tools.md).
+pub const GIVES_WAY_TO_APP: &[(&str, &str)] = &[("get_weather", "weather_now"), ("get_news", "news_headlines")];
+
+/// The offer without our lookups whose app's tool is offered too.
+pub fn without_doubles(tools: &mut Vec<LlmTool>) {
+    let offered = |name: &str| tools.iter().any(|tool| tool.name == name);
+    let doubles: Vec<&str> = GIVES_WAY_TO_APP.iter().filter(|(_, app)| offered(app)).map(|(ours, _)| *ours).collect();
+    tools.retain(|tool| !doubles.contains(&tool.name.as_str()));
+}
+
+/// The descriptions of a tool (or of a whole JSON value: its parameters too) not written in English: every tool
+/// speaks English, short, whatever the household's language — the model answers in the language it was asked
+/// (docs/plans/fast-tools.md). People's words go in «…» and are not counted.
+#[cfg(test)]
+pub fn not_in_english(value: &Value) -> Vec<String> {
+    fn walk(value: &Value, found: &mut Vec<String>) {
+        match value {
+            Value::Object(map) => {
+                for (key, inner) in map {
+                    match (key.as_str(), inner) {
+                        ("description", Value::String(text)) if foreign(text) => found.push(text.clone()),
+                        _ => walk(inner, found),
+                    }
+                }
+            }
+            Value::Array(items) => items.iter().for_each(|item| walk(item, found)),
+            _ => {}
+        }
+    }
+    fn foreign(text: &str) -> bool {
+        let mut quoted = 0usize;
+        text.chars().any(|c| {
+            match c {
+                '«' => quoted += 1,
+                '»' => quoted = quoted.saturating_sub(1),
+                _ => {}
+            }
+            quoted == 0 && matches!(c, 'А'..='я' | 'Ё' | 'ё')
+        })
+    }
+    let mut found = Vec::new();
+    walk(value, &mut found);
+    found
+}
+
 pub fn tool_spec(name: &str) -> Option<&'static ToolSpec> {
     TOOLS.iter().find(|spec| spec.tool.name == name)
 }
@@ -603,6 +650,70 @@ mod tests {
         assert_eq!(intent_json("no_such_tool", json!({})), Err("unknown tool no_such_tool".into()));
         let broken = ToolCall { error: Some("arguments are not JSON".into()), ..call("set_timer", json!({})) };
         assert_eq!(intent_of(&broken), Err("set_timer: arguments are not JSON".into()));
+    }
+
+    #[test]
+    fn our_lookups_give_way_to_the_apps_tools_for_the_same_thing() {
+        let names = |tools: &[LlmTool]| tools.iter().map(|tool| tool.name.clone()).collect::<Vec<_>>();
+        let app = |name: &str| LlmTool { name: name.into(), description: String::new(), parameters: json!({}) };
+        let mut tools = tools_for(ToolsKind::Conversation, None);
+        without_doubles(&mut tools);
+        assert!(names(&tools).contains(&"get_weather".to_string()), "no app: ours stays");
+        tools.push(app("weather_now"));
+        without_doubles(&mut tools);
+        let offered = names(&tools);
+        assert!(!offered.contains(&"get_weather".to_string()) && offered.contains(&"weather_now".to_string()));
+        assert!(offered.contains(&"get_news".to_string()), "«Новости» is not on: get_news stays");
+        tools.push(app("news_headlines"));
+        without_doubles(&mut tools);
+        assert!(!names(&tools).contains(&"get_news".to_string()));
+    }
+
+    /// Every word of the offered tools goes with every question, «Привет» too, and the provider reads all of it before
+    /// the first word (docs/plans/fast-tools.md): ours, the memory's and the works' stay within a budget.
+    #[test]
+    fn the_steady_tools_stay_small() {
+        let size = |tool: &LlmTool| {
+            json!({"type": "function", "function": {"name": tool.name, "description": tool.description, "parameters": tool.parameters}})
+                .to_string()
+                .chars()
+                .count()
+        };
+        let mut tools = tools_for(ToolsKind::Conversation, None);
+        tools.extend([
+            crate::memory::tools::remember_tool(),
+            crate::memory::tools::recall_tool(),
+            crate::memory::tools::forget_tool(),
+            crate::talk::work_tools::start_tool(),
+            crate::talk::work_tools::add_tool(),
+            crate::talk::work_tools::do_tool(),
+        ]);
+        let sizes: Vec<(String, usize)> = tools.iter().map(|tool| (tool.name.clone(), size(tool))).collect();
+        let total: usize = sizes.iter().map(|(_, size)| size).sum();
+        println!("{total} characters: {sizes:?}");
+        assert!(total <= BUDGET, "{total} characters: {sizes:?}");
+    }
+
+    const BUDGET: usize = 6_000;
+
+    #[test]
+    fn our_tools_speak_english() {
+        let mut tools = tools_for(ToolsKind::Command, None);
+        tools.extend([
+            crate::memory::tools::remember_tool(),
+            crate::memory::tools::recall_tool(),
+            crate::memory::tools::forget_tool(),
+            crate::talk::work_tools::start_tool(),
+            crate::talk::work_tools::add_tool(),
+            crate::talk::work_tools::do_tool(),
+        ]);
+        tools.extend(crate::plugins::workshop::agent::tools(true));
+        for tool in tools {
+            let found = not_in_english(&json!({"description": tool.description, "parameters": tool.parameters}));
+            assert!(found.is_empty(), "{}: {found:?}", tool.name);
+        }
+        assert_eq!(not_in_english(&json!({"description": "Like «Алиса, стоп»"})), Vec::<String>::new());
+        assert_eq!(not_in_english(&json!({"p": {"description": "Город"}})), vec!["Город".to_string()]);
     }
 
     #[test]

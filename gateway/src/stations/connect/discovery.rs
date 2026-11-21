@@ -614,7 +614,9 @@ mod tests {
         assert!(matches!(&answer, Err(NoBanner::NotSsh(said)) if said.starts_with("HTTP/1.1 400")), "{answer:?}");
         server.abort();
         let _ = server.await;
-        let Err(NoBanner::Unreached(kind, _)) = probe_ssh("127.0.0.1", port, 500, 500).await else {
+        // The wizard's own wait (station_shell.rs, CONNECT_MS): Windows says «refused» only after about two seconds of
+        // its own retries; elsewhere it comes at once.
+        let Err(NoBanner::Unreached(kind, _)) = probe_ssh("127.0.0.1", port, 3_000, 500).await else {
             panic!("a closed port is unreached");
         };
         assert_eq!(kind, Unreached::Refused);

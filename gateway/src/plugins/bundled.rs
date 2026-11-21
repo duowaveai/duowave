@@ -266,6 +266,23 @@ mod tests {
         assert!(radio.files.iter().any(|(path, _)| path == "backend.js"));
     }
 
+    /// The built-in apps' tools go to the model with every question: English and short, as ours
+    /// (docs/plugins/AUTHORING.md, `tools`; docs/plans/fast-tools.md).
+    #[test]
+    fn the_built_in_apps_tools_speak_english() {
+        let mut seen = 0;
+        for package in packages() {
+            let (_, manifest) = package.files.iter().find(|(path, _)| path == "manifest.json").expect("a manifest");
+            let manifest: Value = serde_json::from_slice(manifest).unwrap();
+            for tool in manifest["contributes"]["tools"].as_array().into_iter().flatten() {
+                seen += 1;
+                let found = crate::skills::tools::not_in_english(tool);
+                assert!(found.is_empty(), "{} {}: {found:?}", package.id, tool["name"]);
+            }
+        }
+        assert!(seen >= 14, "{seen} tools");
+    }
+
     #[test]
     fn lays_out_marks_switches_on_the_first_time_only_and_keeps_two_versions() {
         let dir = tempfile::tempdir().unwrap();

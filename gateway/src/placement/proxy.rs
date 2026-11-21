@@ -38,6 +38,8 @@ use crate::utils::time::now_ms;
 
 /// The header a copy carries: when the station answered it, unix ms.
 pub const COPY_AT: &str = "x-duowave-copy-at";
+/// And since when the station is away, unix ms, when its watch knows it.
+pub const AWAY_SINCE: &str = "x-duowave-away-since";
 /// Who on the computer made the change (for the station's history), and their role (for their rights there).
 use super::peer::{HELPER_PERSON, HELPER_PERSON_ID, HELPER_ROLE};
 /// A body to pass on: the panel's requests are small; a voice take or a package is the largest.
@@ -292,16 +294,32 @@ async fn pass(
         request = request.timeout(if changing { CHANGE_WAIT } else { READ_WAIT });
     }
 
-    let response = match request.send().await {
-        Ok(response) => response,
-        Err(error) => {
-            tracing::info!(target: "placement", "pass to the station {key}: {error}");
+    // A station already away is not waited for on every request: it is tried every few seconds — by its watch's looks,
+    // or by a request here when they are not going on —, and between the tries the pass answers at once (watch.rs,
+    // AWAY_LOOK).
+    let sent = if gateway.worth_a_try() { Some(request.send().await) } else { None };
+    let response = match sent {
+        Some(Ok(response)) => {
+            gateway.answered();
+            response
+        }
+        failed => {
+            let error = failed.and_then(Result::err);
+            // It took the request and did not answer in time: it is there, but slow — not «away».
+            let slow = error.as_ref().is_some_and(|error| error.is_timeout() && !error.is_connect());
+            match error.as_ref() {
+                // Into the journal by the watch: one line when the link goes, one when it is back — not one a request.
+                Some(error) if !slow => gateway.missed(&super::peer::describe(error), &super::peer::why(error)),
+                Some(error) => {
+                    tracing::info!(target: "placement", "pass to the station {key}: slow — {}", super::peer::why(error))
+                }
+                None => {}
+            }
             // Away: the last copy of what was asked, read-only; a change waits for the station.
             if let Some(found) = copy.as_ref().and_then(read_copy) {
-                return Ok(copy_response(found));
+                return Ok(copy_response(found, gateway.away_since()));
             }
-            // It took the request and did not answer in time: it is there, but slow — not «away».
-            if error.is_timeout() && !error.is_connect() {
+            if slow {
                 return Err(ApiError::unavailable(crate::tr!(
                     "Колонка «{name}» не ответила вовремя — попробуйте ещё раз.",
                     name = name
@@ -514,13 +532,18 @@ async fn link_pass(app: &Arc<App>, caller: &Caller, client: &str, asked: Asked<'
     Ok(response)
 }
 
-fn copy_response(copy: Copy) -> Response {
+/// The last copy, marked as one — and, when the station's outage is known, since when it is away (the panel: «не в
+/// сети с 14:05»).
+fn copy_response(copy: Copy, away_since: Option<u64>) -> Response {
     let mut out = (StatusCode::from_u16(copy.status).unwrap_or(StatusCode::OK), copy.body).into_response();
     if let Ok(value) = HeaderValue::from_str(&copy.content_type) {
         out.headers_mut().insert(header::CONTENT_TYPE, value);
     }
     if let Ok(value) = HeaderValue::from_str(&copy.at.to_string()) {
         out.headers_mut().insert(COPY_AT, value);
+    }
+    if let Some(value) = away_since.and_then(|since| HeaderValue::from_str(&since.to_string()).ok()) {
+        out.headers_mut().insert(AWAY_SINCE, value);
     }
     out.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     out
@@ -674,6 +697,11 @@ mod tests {
 
     /// A pretend station gateway: it answers with the headers it was asked with, and notes what it was asked.
     async fn pretend_station(asked: Arc<Mutex<Vec<String>>>) -> u16 {
+        pretend_station_on(asked, 0).await
+    }
+
+    /// The same on this port (0: any free one).
+    async fn pretend_station_on(asked: Arc<Mutex<Vec<String>>>, port: u16) -> u16 {
         let big = || async { axum::Json(json!({ "text": "a".repeat(COPY_LIMIT) })) };
         let echo = move |request: axum::extract::Request| {
             let asked = asked.clone();
@@ -692,7 +720,7 @@ mod tests {
             }
         };
         let router = Router::new().route("/api/v1/big", axum::routing::get(big)).fallback(echo);
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await.unwrap();
         let port = listener.local_addr().unwrap().port();
         tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
         port
@@ -762,6 +790,57 @@ mod tests {
             .unwrap();
         let (_, _, body) = send(&app, "192.168.1.20", "GET", brain, &admin).await;
         assert_eq!(body["message"], away("Кухня"));
+    }
+
+    /// A tester's Mini 2, 22.11: its Wi-Fi dropped many times a day, and every request of the panel waited for it and
+    /// wrote a line. Now the first miss marks the station away — since when goes with the copy —, the requests after it
+    /// answer at once without trying it, and an answer to a try ends the outage.
+    #[tokio::test]
+    async fn an_away_station_is_not_tried_on_every_request() {
+        let asked = Arc::new(Mutex::new(Vec::new()));
+        let port = pretend_station(asked.clone()).await;
+        let state = tempfile::tempdir().unwrap();
+        let env = Env::from_pairs([
+            ("STATE_DIR", state.path().to_string_lossy().into_owned()),
+            ("PANEL_REMOTE", "true".to_string()),
+        ]);
+        let app = App::build(Config::for_tests(&env)).unwrap();
+        let admin = app.access.auth.setup("admin-password-1", "Мама", "test").await.unwrap().unwrap().token;
+        app.secrets.set(&crate::placement::peer::station_secret("h:kitchen"), Some(PAIR)).unwrap();
+        let watch = app.station_gateway.watch("h:kitchen");
+        watch.set_record(Some(&kitchen(port, SettingsHome::Station)), None).unwrap();
+        let (home, journal) = ("192.168.1.20", "/station/h:kitchen/api/v1/requests?limit=4");
+
+        let (status, headers, _) = send(&app, home, "GET", journal, &admin).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(!headers.contains_key(COPY_AT) && watch.away_since().is_none());
+
+        // The station goes: nobody listens on its port. The first request misses, marks it and gets the copy.
+        let gone = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        watch.set_record(Some(&kitchen(gone, SettingsHome::Station)), None).unwrap();
+        let (status, headers, _) = send(&app, home, "GET", journal, &admin).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(headers.contains_key(COPY_AT));
+        let since = watch.away_since().expect("the station is away");
+        assert_eq!(headers.get(AWAY_SINCE).and_then(|value| value.to_str().ok()), Some(since.to_string().as_str()));
+        assert!(!watch.live().reachable);
+
+        // It comes back on its port, but was tried a moment ago: the next requests get the copy at once, unasked.
+        let back = Arc::new(Mutex::new(Vec::new()));
+        pretend_station_on(back.clone(), gone).await;
+        let (status, headers, _) = send(&app, home, "GET", journal, &admin).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(headers.contains_key(COPY_AT));
+        assert!(back.lock().unwrap().is_empty(), "an away station is not tried on every request");
+        assert_eq!(watch.away_since(), Some(since), "the outage began once");
+
+        // A look got an answer: the outage is over, the pass goes to the station again.
+        watch.answered();
+        let (status, headers, _) = send(&app, home, "GET", journal, &admin).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(!headers.contains_key(COPY_AT));
+        assert_eq!(back.lock().unwrap().len(), 1);
+        assert!(watch.away_since().is_none() && watch.live().reachable);
     }
 
     #[tokio::test]

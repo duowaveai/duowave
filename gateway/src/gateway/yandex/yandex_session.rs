@@ -471,6 +471,14 @@ impl YandexSession {
         self.lock().open_socket().is_some()
     }
 
+    /// Yandex out of reach lately: its last opens failed and none is open — the station has no way out, or Yandex is
+    /// down. A router whose internet went, 22.11: the station kept its Wi-Fi and its route, only this session could
+    /// not open.
+    pub fn unreachable(&self) -> bool {
+        let state = self.lock();
+        state.failures > 0 && state.open_socket().is_none()
+    }
+
     /// Whether the session is up, waiting up to `timeout_ms` for one that is opening (the station just connected).
     pub async fn ready(&self, timeout_ms: u64) -> bool {
         let opening = {

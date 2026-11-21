@@ -161,7 +161,7 @@ async fn a_wish_in_ones_own_words_starts_one_work_and_nothing_is_dictated() {
     assert_eq!(brain.len(), 1, "the ready phrase is said as it is: no second round");
     let system = system_of(&brain[0]);
     assert!(system.contains("никогда не диктуй человеку, какую фразу сказать"), "{system}");
-    assert!(system.contains("отвечай на языке собеседника"), "{system}");
+    assert!(system.contains("отвечай на том языке, на котором тебя спросили"), "{system}");
     let tools = tools_of(&brain[0]);
     assert!(tools.contains(&"work_start".to_string()) && tools.contains(&"work_do".to_string()), "{tools:?}");
 

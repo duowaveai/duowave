@@ -27,7 +27,27 @@ const KNOWN: &[(&str, &str)] = &[
     ("quasar-bridge", "/data/opt/quasar-bridge"),
     // Alice LED: its own picture on the ring.
     ("alice-led", "/data/opt/alice-led"),
+    // luna (nyakokitsu/luna, MIT): a runtime for Lua mods — the ring, sounds, buttons, Alice's recognized text — with
+    // its API on port 8099. Through YAM (its package yam/luna), or its own installer: /data/quazar/luna and S99luna.
+    // It leaves Alice's voice where it is, but its mods may cut her answer short (`cancel=true`), ours too.
+    ("luna", "/data/yam/pkgs/yam/luna"),
+    ("luna", "/data/quazar/luna"),
+    ("luna", "/etc/init.d/S99luna"),
+    // AliceBridge's agent (root from an Android phone; its AGENT.md): brings the home Wi-Fi back after a boot,
+    // watches ADB and SSH, puts its OTA block back after each boot — about 8 MB of memory.
+    ("alicebridge", ALICEBRIDGE),
 ];
+
+/// AliceBridge's agent's folder: `agent`, `config.json` (the home network, the Wi-Fi change under way), `agent.log`,
+/// `control.sock`, `release.json`; started by /etc/init.d/S99zzalicebridge-agent.
+const ALICEBRIDGE: &str = "/data/quasar/alicebridge-agent";
+
+/// The root password AliceBridge's SSH starts with (its install-ssh.sh; the wiki's start/root-android.md asks to
+/// change it at once). Public, so anyone at home may sign in with it.
+const ALICEBRIDGE_PASSWORD: &str = "1";
+
+/// Read first among the warnings: the station keeps falling off the network.
+const URGENT: &[&str] = &["alicebridge-wifi"];
 
 /// The mods that have their author's own switch, and what it is. Off, not removed: their settings, keys and
 /// records stay, and the panel says how to turn each back on. A station reboot is not needed before «Подключить» —
@@ -72,7 +92,8 @@ const LOW_MEMORY_KB: u64 = 30 * 1024;
 
 /// Reading only, a line each: `mod <id>` for every known mod's folder there, `mount <point> <root>` for every
 /// mount over a file of Alice's (from /proc/self/mountinfo: the root says whose file it is), `maind on|off`,
-/// `preload <libraries>` from each maind's environment, `memavail <kB>`.
+/// `preload <libraries>` from each maind's environment, `memavail <kB>`; for AliceBridge's agent, `alicebridge
+/// wifi-stuck` and `alicebridge dns <file>`.
 pub fn script() -> String {
     let mods: Vec<String> = KNOWN.iter().map(|(id, path)| format!("{id}:{path}")).collect();
     [
@@ -85,6 +106,16 @@ pub fn script() -> String {
         format!(
             "[ -d /data/opt/quasar-bridge ] && ! grep -qs '127.0.0.1:8443' {STATION_CONFIG} && echo off quasar-bridge"
         ),
+        // AliceBridge's agent stuck on a Wi-Fi change (the wiki's internals/station1-wifi-rollback.md): its change in
+        // the rollback phase with the confirmation timed out — the station drops off the network every 40–50 s. Only
+        // the mark leaves the station: its config.json also holds the home network and its password.
+        format!(
+            "A={ALICEBRIDGE}/config.json; grep -qs '\"phase\" *: *\"rolling_back\"' $A && \
+             grep -qs 'Wi-Fi confirmation timed out' $A && echo alicebridge wifi-stuck"
+        ),
+        // Its DNS: resolv.conf a link to its own file, not what the router gives.
+        "L=$(readlink /etc/resolv.conf 2>/dev/null); case \"$L\" in *alicebridge-resolv*) echo alicebridge dns \"$L\";; esac"
+            .into(),
         "awk '$5 ~ \"^/system/vendor/quasar/\" {print \"mount\", $5, $4}' /proc/self/mountinfo 2>/dev/null".into(),
         "P=$(pidof maind 2>/dev/null); if [ -n \"$P\" ]; then echo maind on; else echo maind off; fi".into(),
         "for p in $P; do tr '\\0' '\\n' < /proc/$p/environ 2>/dev/null | sed -n 's/^LD_PRELOAD=/preload /p'; done"
@@ -107,7 +138,9 @@ pub enum Severity {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Neighbour {
     /// A known mod's id, or: `maind-off`, `config-mount` (someone else's file over quasar.cfg), `alice-mount` (over
-    /// another file of Alice's), `alice-preload` (a library in her process), `low-memory`.
+    /// another file of Alice's), `alice-preload` (a library in her process), `low-memory`, `alicebridge-wifi`
+    /// (AliceBridge's agent stuck on a Wi-Fi change), `alicebridge-dns` (its own resolv.conf), `default-password`
+    /// (root signs in with AliceBridge's «1»).
     pub id: String,
     pub severity: Severity,
     /// The file, the library or the free megabytes.
@@ -161,6 +194,12 @@ pub fn read(stdout: &str) -> (Vec<Neighbour>, Option<u64>) {
                 }
             }
             (Some("memavail"), Some(kb), None) => memory = kb.parse::<u64>().ok(),
+            (Some("alicebridge"), Some("wifi-stuck"), None) => {
+                add(&mut found, "alicebridge-wifi", Severity::Warns, None);
+            }
+            (Some("alicebridge"), Some("dns"), Some(file)) if safe(file) => {
+                add(&mut found, "alicebridge-dns", Severity::Warns, Some(file.to_string()));
+            }
             _ => {}
         }
     }
@@ -195,9 +234,28 @@ pub fn read(stdout: &str) -> (Vec<Neighbour>, Option<u64>) {
             SWITCHES.iter().find(|(id, _, _)| *id == neighbour.id).map(|(_, _, command)| *command)
         };
     }
-    // The worst first; what is turned off last.
-    found.sort_by_key(|n| (n.severity != Severity::Blocks, n.off));
+    order(&mut found);
     (found, memory)
+}
+
+/// The worst first, then the station falling off the network; what is turned off last.
+fn order(found: &mut [Neighbour]) {
+    found.sort_by_key(|n| (n.severity != Severity::Blocks, !URGENT.contains(&n.id.as_str()), n.off));
+}
+
+/// The wizard signed in with AliceBridge's default root password: say so, so it is changed. Only compared here —
+/// the password itself goes nowhere.
+pub fn note_password(found: &mut Vec<Neighbour>, password: &str) {
+    if password == ALICEBRIDGE_PASSWORD && !found.iter().any(|n| n.id == "default-password") {
+        found.push(Neighbour {
+            id: "default-password".into(),
+            severity: Severity::Warns,
+            detail: None,
+            off: false,
+            switch: None,
+        });
+        order(found);
+    }
 }
 
 /// A path or a number as it may go to the panel: no spaces, no quotes, not too long.
@@ -289,8 +347,19 @@ mod tests {
             assert!(command.starts_with("[ -e /data/"), "{command}");
             assert!(!command.contains("rm -rf") && !command.contains("reboot"), "off, not removed: {command}");
         }
-        for id in ["alisa-voice", "alisa-cli", "alice-led", "maind-off", "config-mount", "alice-preload", "x; rm -rf /"]
-        {
+        for id in [
+            "alisa-voice",
+            "alisa-cli",
+            "alice-led",
+            "maind-off",
+            "config-mount",
+            "alice-preload",
+            "luna",
+            "alicebridge",
+            "alicebridge-wifi",
+            "default-password",
+            "x; rm -rf /",
+        ] {
             assert_eq!(turn_off_command(id), None, "{id}");
         }
     }
@@ -321,6 +390,91 @@ mod tests {
         assert!(run.status.success(), "{}", String::from_utf8_lossy(&run.stderr));
         assert!(std::path::Path::new(&at("/data/opt/jarvisd/disabled")).exists());
         assert_eq!(std::fs::read_to_string(at("/data/opt/jarvisd/calls")).unwrap(), "stopped\n");
+    }
+
+    #[test]
+    fn luna_is_named_once_as_a_soft_warning_with_no_switch() {
+        // YAM's package and its own installer's boot script: one luna.
+        let (found, _) = read("mod luna\nmod luna\nmaind on\nmemavail 80000\n");
+        assert_eq!(ids(&found), ["luna"]);
+        assert_eq!(found[0].severity, Severity::Warns, "it leaves Alice's voice where it is");
+        assert_eq!(found[0].switch, None);
+        assert_eq!(turn_off_command("luna"), None);
+    }
+
+    #[test]
+    fn alicebridge_s_agent_is_a_warning_and_a_stuck_wifi_change_comes_first() {
+        let (found, _) = read(
+            "mod alice-led\nmod alicebridge\nalicebridge wifi-stuck\n\
+             alicebridge dns /data/opt/etc/alicebridge-resolv.conf\nmaind on\nmemavail 70000\n",
+        );
+        assert_eq!(ids(&found), ["alicebridge-wifi", "alice-led", "alicebridge", "alicebridge-dns"]);
+        assert!(found.iter().all(|n| n.severity == Severity::Warns && n.switch.is_none()), "{found:?}");
+        assert_eq!(found[3].detail.as_deref(), Some("/data/opt/etc/alicebridge-resolv.conf"));
+        // Not turned off by DuoWave: without it the home Wi-Fi, ADB/SSH and the OTA block are not put back.
+        assert_eq!(turn_off_command("alicebridge"), None);
+        // A blocking one still goes before it.
+        let (found, _) = read("mod alicebridge\nalicebridge wifi-stuck\nmaind off\n");
+        assert_eq!(ids(&found), ["maind-off", "alicebridge-wifi", "alicebridge"]);
+        // Only a plain path is passed on.
+        let (found, _) = read("mod alicebridge\nalicebridge dns /x/alicebridge-resolv.conf;reboot\n");
+        assert_eq!(ids(&found), ["alicebridge"]);
+    }
+
+    #[test]
+    fn alicebridge_s_default_root_password_is_named_but_never_shown() {
+        let (mut found, _) = read("mod pulsar\nmod alicebridge\nmaind off\n");
+        note_password(&mut found, "1");
+        note_password(&mut found, "1");
+        assert_eq!(ids(&found), ["pulsar", "alicebridge", "default-password"]);
+        let password = &found[2];
+        assert_eq!((password.severity, password.detail.as_deref(), password.switch), (Severity::Warns, None, None));
+        for other in ["", "11", "s3cret-root"] {
+            let (mut found, _) = read("mod alicebridge\n");
+            note_password(&mut found, other);
+            assert_eq!(ids(&found), ["alicebridge"], "{other:?}");
+        }
+    }
+
+    /// The agent's part of the script under the real sh, against a pretend agent folder: a stuck change gives one
+    /// mark, and nothing of config.json — its network, its password — leaves the station. Unix only, as above.
+    #[cfg(unix)]
+    #[test]
+    fn a_stuck_alicebridge_wifi_change_is_read_without_its_network_or_password() {
+        let root = tempfile::tempdir().unwrap();
+        let folder = root.path().join("alicebridge-agent");
+        std::fs::create_dir_all(&folder).unwrap();
+        let look = || {
+            let script = script().replace(ALICEBRIDGE, &folder.display().to_string());
+            let output = std::process::Command::new("sh").arg("-c").arg(script).output().unwrap();
+            assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+            String::from_utf8(output.stdout).unwrap()
+        };
+        let stuck = [
+            // As the agent writes it, and pretty-printed.
+            r#"{"home":{"ssid_hex":"486f6d65","psk":"pretend-psk"},"home_configured":false,"transaction":{"id":"ab","phase":"rolling_back","message":"Wi-Fi confirmation timed out"}}"#,
+            "{\n  \"home_configured\": false,\n  \"transaction\": {\n    \"phase\": \"rolling_back\",\n    \"message\": \"Wi-Fi confirmation timed out\",\n    \"psk\": \"pretend-psk\"\n  }\n}\n",
+        ];
+        for config in stuck {
+            std::fs::write(folder.join("config.json"), config).unwrap();
+            let stdout = look();
+            assert!(stdout.lines().any(|line| line == "mod alicebridge"), "{stdout}");
+            assert!(stdout.lines().any(|line| line == "alicebridge wifi-stuck"), "{stdout}");
+            assert!(!stdout.contains("pretend-psk") && !stdout.contains("486f6d65"), "{stdout}");
+            // First after what blocks (here: no maind on this computer).
+            let (found, _) = read(&stdout);
+            let warns: Vec<&str> =
+                found.iter().filter(|n| n.severity == Severity::Warns).map(|n| n.id.as_str()).collect();
+            assert_eq!(warns.first(), Some(&"alicebridge-wifi"), "{found:?}");
+        }
+        // A change that went through, or one still waiting for its confirmation: nothing to say.
+        for config in [
+            r#"{"home_configured":true,"transaction":{"phase":"committed","message":""}}"#,
+            r#"{"home_configured":true,"transaction":{"phase":"rolling_back","message":"rolling back"}}"#,
+        ] {
+            std::fs::write(folder.join("config.json"), config).unwrap();
+            assert!(!look().contains("wifi-stuck"), "{config}");
+        }
     }
 
     #[test]

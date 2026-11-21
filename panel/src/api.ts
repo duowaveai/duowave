@@ -125,7 +125,7 @@ async function call<T>(method: string, path: string, body?: unknown, signal?: Ab
         signal,
         keepalive,
     });
-    if (VIA && response.status !== 503) noteAnswer(response.headers.get('x-duowave-copy-at'));
+    if (VIA && response.status !== 503) noteAnswer(response.headers.get('x-duowave-copy-at'), response.headers.get('x-duowave-away-since'));
     if (!response.ok) throw new ApiError(response.status, await response.text().catch(() => ''));
     // Центр не на связи: компьютер сохранил правку и отдаст её центру, когда тот вернётся (docs/plans/home-and-devices.md,
     // этап 3). Экран показывает эти слова там же, где показал бы отказ, — правка не потеряна, но и не сделана.
@@ -929,7 +929,8 @@ export interface HomeJoinRequest {
 
 /** Строка «Состояния дома» (этап 4 плана home-setup-flow): что не так и чем это починить. */
 export interface HomeStatusRow {
-    id: 'voice' | 'brain' | 'turbo' | 'characterVoice' | 'mode' | 'stations';
+    /** `wifi` — колонка теряла Wi-Fi за сутки: сколько раз, сколько минут и вероятная причина (без действия). */
+    id: 'voice' | 'brain' | 'turbo' | 'characterVoice' | 'mode' | 'stations' | 'wifi';
     state: 'ok' | 'warn' | 'bad';
     text: string;
     action?: 'pointLocal' | 'brain' | 'turbo' | 'firewall' | 'voice' | 'mode' | 'station' | 'addStations';

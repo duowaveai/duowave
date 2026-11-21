@@ -2,7 +2,7 @@
   "schema": 1,
   "kind": "plugin",
   "id": "p-8c4a0cef4bae",
-  "version": "2.1.1",
+  "version": "2.1.2",
   "title": "Календарь",
   "description": "Ваш календарь голосом и виджетом на столе пульта: что сегодня, завтра и на неделе. Календарь — по ссылке iCal (.ics), её дают Google, Яндекс и iCloud; без входа в аккаунт, только чтение. Ссылка — в настройках приложения. Время — по поясу календаря, «сегодня» голосом — по поясу колонки.",
   "api": "^2",
@@ -71,7 +71,7 @@
     "tools": [
       {
         "name": "calendar_events",
-        "description": "События календаря владельца: на сегодня, завтра или ближайшие дни, с начала сегодняшнего дня. У события — название, место, день недели; время — местное со сдвигом пояса (2026-11-11T18:30+07:00), событие на весь день — датой (date, а если дней несколько — lastDate). today — сегодняшняя дата в этом поясе.",
+        "description": "The owner's calendar events for today, tomorrow or the next days: title, place, weekday. Times are local with the zone offset; an all-day event has `date` (`lastDate` if longer); `today` is today's date.",
         "input": {
           "type": "object",
           "properties": {
@@ -79,11 +79,11 @@
               "type": "integer",
               "minimum": 1,
               "maximum": 14,
-              "description": "Сколько дней вперёд, считая сегодня"
+              "description": "Days ahead, today included"
             },
             "timezone": {
               "type": "string",
-              "description": "Часовой пояс колонки (Europe/Moscow): по нему «сегодня» и время; пусто — пояс календаря"
+              "description": "The speaker's time zone (Europe/Moscow) for «today»; empty — the calendar's"
             }
           }
         },

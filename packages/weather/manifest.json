@@ -2,7 +2,7 @@
   "schema": 1,
   "kind": "plugin",
   "id": "p-ad07a08e06e1",
-  "version": "2.1.1",
+  "version": "2.1.2",
   "title": "Погода",
   "description": "Погода голосом: сейчас, на завтра и на неделю — для обычного места дома или для названного города. Открытый API Open-Meteo, без ключа. Встроенное приложение: если оно выключено или не ответило, погоду говорит встроенный навык шлюза.",
   "api": "^2",
@@ -75,13 +75,13 @@
     "tools": [
       {
         "name": "weather_now",
-        "description": "Погода сейчас, на завтра или на неделю для города (или обычного места дома). Возвращает короткое описание: температура, явления, осадки, ветер.",
+        "description": "Weather now, tomorrow or for the week, for a city or the home's usual place. Returns a short summary: temperature, sky, rain or snow, wind.",
         "input": {
           "type": "object",
           "properties": {
             "place": {
               "type": "string",
-              "description": "Город; пусто — обычное место дома"
+              "description": "A city in the person's words; empty — the home's usual place"
             },
             "when": {
               "type": "string",
@@ -93,7 +93,7 @@
             },
             "timezone": {
               "type": "string",
-              "description": "Часовой пояс колонки (Europe/Moscow): по нему место, когда оно не задано"
+              "description": "The speaker's time zone (Europe/Moscow): the place when none is set"
             }
           }
         },

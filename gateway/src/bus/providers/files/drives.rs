@@ -364,7 +364,11 @@ mod tests {
             .with_home(Some(dir.path().join("DuoWave")));
         places.prepare();
         let folders = Folders::new(Arc::new(Db::memory()), places, None);
-        (Drives::new(folders.clone(), None), folders, dir)
+        let drives = Drives::new(folders.clone(), None);
+        // The look at the start, with nothing plugged in: on Windows what is there at the start is the computer's own
+        // (after_start) and never offered — the tests' drives come after it, as a flash drive does.
+        drives.step(Vec::new());
+        (drives, folders, dir)
     }
 
     fn drive(dir: &Path, label: &str) -> Drive {

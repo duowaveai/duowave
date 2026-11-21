@@ -65,7 +65,7 @@ $PACKAGES_DIR/<id>/<версия>/       PACKAGES_DIR по умолчанию �
   },
   "contributes": {
     "intents": [{ "phrases": ["включи радио {station}"], "handler": "playStation", "capability": "radio" }],
-    "tools": [{ "name": "radio_search", "description": "Ищет станции", "input": { "type": "object", "properties": {} },
+    "tools": [{ "name": "radio_search", "description": "Find radio stations by name or genre", "input": { "type": "object", "properties": {} },
                 "handler": "radioSearch", "annotations": { "readOnlyHint": true } }],
     "media": [{ "id": "stations", "kind": "radio", "handler": "stations" }],
     "events": [{ "name": "player.silent", "handler": "onPlayer" }],
@@ -167,6 +167,12 @@ $PACKAGES_DIR/<id>/<версия>/       PACKAGES_DIR по умолчанию �
   `input` — JSON Schema объекта. `annotations.readOnlyHint: true` — инструмент ничего не меняет и остаётся
   доступен после текста из интернета. Модель видит их рядом со встроенными и MCP — в разговоре колонки и в
   проверочном чате. Проверить без модели: `POST /api/v1/packages/<id>/tools/<name>/try` `{"arguments": {...}}`.
+  **Описания инструмента и его параметров — по-английски и коротко**, при любом языке приложения: каждое слово
+  уходит модели с каждым вопросом, даже с «Привет», и модель читает их до первого слова ответа (английский текст
+  ей вдвое дешевле русского). Слова людей — примеры фраз и названий — можно в «ёлочках» на их языке. Параметр, по
+  которому код ищет слова (тема, город, устройство), помечай `in the person's words`: модель передаст слова
+  человека, а не свой перевод. Отвечает модель всё равно на языке вопроса — это правило промпта шлюза.
+  Шлюз проверяет встроенные пакеты тестом (`docs/plans/fast-tools.md`).
 - **`media`** — источник для встроенного радио (`kind: radio`), музыки (`music`) или сказок (`tales`): функция
   получает `{query, limit}` (без `query` — что играть подряд) и отдаёт элементы. Звук идёт плеером шлюза, поэтому
   «пауза», «дальше», «громче» работают встроенными навыками. Источник плагина важнее встроенного запасного

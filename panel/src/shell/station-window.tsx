@@ -20,7 +20,7 @@ import { hashOf } from './links';
 import { ownName } from './role';
 import type { ShellProps } from './shell';
 import { ESCAPE_MESSAGE, WindowLift, escapeIsFree } from './window';
-import { copyShown, onCopyChange } from '../via';
+import { awayShown, copyShown, onCopyChange } from '../via';
 import { tr } from '../i18n';
 
 const hhmm = (at: number): string => {
@@ -42,9 +42,11 @@ function useCopy(): number | null {
 export function ViaNotice() {
     const copy = useCopy();
     if (copy === null) return null;
+    // С какого времени её нет — как увидел шлюз компьютера; сменится вместе с копией (тот же слушатель).
+    const since = awayShown();
     return (
         <div class="banner-offline" role="status">
-            {tr.shell.viaNotice(hhmm(copy))}
+            {since === null ? tr.shell.viaNotice(hhmm(copy)) : tr.shell.viaNoticeSince(hhmm(since), hhmm(copy))}
         </div>
     );
 }
@@ -56,13 +58,14 @@ function StationStrip() {
     const name = ownName(panel.health, panel.role) ?? panel.current?.name ?? panel.drawing.title;
     const version = panel.health?.build?.version;
     const away = copy !== null || panel.offline;
+    const since = away ? awayShown() : null;
     return (
         <div class={`station-strip${away ? ' is-away' : ''}`} role="status">
             <span class="station-strip-name">{tr.shell.stripName(name)}</span>
             <span class="w-cap">{tr.shell.gateway}{version ? ` · DuoWave ${version}` : ''}</span>
             <span class={`role-chip${away ? ' is-off' : ''}`}>
                 <span class="role-chip-dot" aria-hidden="true" />
-                {away ? tr.shell.offline : tr.shell.online}
+                {away ? (since === null ? tr.shell.offline : tr.shell.offlineSince(hhmm(since))) : tr.shell.online}
             </span>
             <span class="station-strip-note">
                 {away

@@ -2706,11 +2706,10 @@ impl PluginHost {
             app: None,
             tool: LlmTool {
                 name: CARD_TOOL.into(),
-                description: "Read an app's card — the data its widget shows on the panel's desk: numbers, lists, \
-                              news, prices, what is new. Use it whenever the person asks about what an app knows or \
-                              shows («какие новинки», «что там в …», «сколько …»), then answer with that data in \
-                              your own words. Whether its widget is placed or visible on their screen you do not \
-                              know: never send them to look at the desk instead of answering."
+                // Few words: every one goes with every question (docs/plans/fast-tools.md).
+                description: "Read the data an app's widget shows (numbers, lists, news, prices) when asked what the \
+                              app knows («какие новинки», «что там в …»), and answer with it. Never send the person \
+                              to look at the desk instead."
                     .into(),
                 parameters: json!({
                     "type": "object",
@@ -4797,7 +4796,7 @@ mod tests {
         let app = &tool.tool.parameters["properties"]["app"];
         assert_eq!(app["enum"], json!(["fresh-rap"]));
         assert!(app["description"].as_str().unwrap().contains("Fresh Hip-Hop & Rap [fresh-rap]"), "{app}");
-        assert!(tool.tool.description.contains("never send them to look at the desk"));
+        assert!(tool.tool.description.contains("Never send the person to look at the desk"));
 
         let context = ToolContext {
             principal: crate::core::identity::principal::system(),

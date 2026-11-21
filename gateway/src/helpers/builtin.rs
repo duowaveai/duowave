@@ -111,12 +111,20 @@ fn helpers_row(preset: &str, url: &str) -> bool {
         || url::Url::parse(url.trim()).is_ok_and(|url| url.path().trim_end_matches('/').ends_with("/home/v1/llm"))
 }
 
-/// Whether a server's port takes a connection now.
+/// Whether a server's port takes a connection now — at any of its host's addresses, tried at once. One after another
+/// it was wrong on Windows: «localhost» is ::1 first there, a refused ::1 takes Windows about two seconds to say so,
+/// and LOOK ran out before 127.0.0.1 was tried — LM Studio at its own http://localhost:1234 looked down (CI 0.18.0,
+/// 22.11).
 async fn answers(base_url: &str) -> bool {
     let Ok(parsed) = url::Url::parse(base_url) else { return false };
     let (Some(host), Some(port)) = (parsed.host_str(), parsed.port_or_known_default()) else { return false };
     let host = host.trim_matches(['[', ']']).to_string();
-    matches!(tokio::time::timeout(LOOK, tokio::net::TcpStream::connect((host.as_str(), port))).await, Ok(Ok(_)))
+    let look = async {
+        let addresses: Vec<std::net::SocketAddr> = tokio::net::lookup_host((host.as_str(), port)).await.ok()?.collect();
+        let tries = addresses.into_iter().map(|address| Box::pin(tokio::net::TcpStream::connect(address)));
+        futures::future::select_ok(tries).await.ok()
+    };
+    matches!(tokio::time::timeout(LOOK, look).await, Ok(Some(_)))
 }
 
 impl BuiltinHelper {

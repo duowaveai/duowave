@@ -136,6 +136,8 @@ const en: Translation<typeof ru> = {
     closeOverlayWindow: 'Close the window on top',
     // station-window
     viaNotice: (time: string) => `The speaker isn’t responding — showing its copy from ${time}. You can make changes when it’s back; “This computer” in “Settings” works.`,
+    viaNoticeSince: (since: string, time: string) => `The speaker has been offline since ${since} — showing its copy from ${time}. You can make changes when it’s back; “This computer” in “Settings” works.`,
+    offlineSince: (time: string) => `offline since ${time}`,
     stripName: (name: string) => `Speaker “${name}”`,
     gateway: 'hub',
     offline: 'offline',

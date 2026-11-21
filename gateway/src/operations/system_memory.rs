@@ -234,6 +234,12 @@ pub fn read_counters() -> Option<Counters> {
         let total = sysctl(&["-n", "hw.memsize"]).map(|text| number(&text))?;
         return parse_darwin(&sysctl_any(&DARWIN_SYSCTL)?, round(total / MB) as u64);
     }
+    // Windows: the available physical memory (it was None there until 22.11 — `system/device` had no memory, and an
+    // app reading it fell: CI 0.18.0).
+    #[cfg(windows)]
+    if let Some((free, total)) = windows::memory_bytes() {
+        return Some(windows_counters(free, total));
+    }
     None
 }
 
@@ -435,6 +441,17 @@ mod windows {
                 CloseHandle(process);
             }
             (ok != 0).then_some(counters.WorkingSetSize as u64)
+        }
+    }
+
+    /// The physical memory available now and in all, bytes.
+    pub fn memory_bytes() -> Option<(u64, u64)> {
+        use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+        // SAFETY: a zeroed MEMORYSTATUSEX with its length set, as the call wants it.
+        unsafe {
+            let mut status: MEMORYSTATUSEX = std::mem::zeroed();
+            status.dwLength = std::mem::size_of::<MEMORYSTATUSEX>() as u32;
+            (GlobalMemoryStatusEx(&mut status) != 0).then_some((status.ullAvailPhys, status.ullTotalPhys))
         }
     }
 

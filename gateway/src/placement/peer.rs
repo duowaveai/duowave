@@ -110,6 +110,19 @@ impl PeerClient {
         self.call(reqwest::Method::GET, "/health", None, Duration::from_secs(5)).await
     }
 
+    /// The station gateway's /health for its watch: on a miss, why too (for the journal), and whether the station was
+    /// reached at all.
+    pub async fn look(&self) -> Result<Value, Missed> {
+        let response = crate::utils::http::client()
+            .get(format!("{}/health", self.base))
+            .bearer_auth(&self.key)
+            .timeout(Duration::from_secs(5))
+            .send()
+            .await
+            .map_err(|error| Missed { said: describe(&error), why: why(&error), gone: true })?;
+        answer(response).await.map_err(|said| Missed { why: said.clone(), said, gone: false })
+    }
+
     /// The station's settings, opened with the pair's key.
     pub async fn settings(&self) -> Result<Bundle, String> {
         let sealed = self.call(reqwest::Method::GET, "/api/v1/transfer", None, Duration::from_secs(20)).await?;
@@ -203,7 +216,33 @@ async fn answer(response: reqwest::Response) -> Result<Value, String> {
     Ok(value.get("message").cloned().unwrap_or(value))
 }
 
-fn describe(error: &reqwest::Error) -> String {
+/// A look at the station that got no health.
+#[derive(Debug, Clone)]
+pub struct Missed {
+    /// For people: «колонка не отвечает».
+    pub said: String,
+    /// For the journal: the bottom of the error (see `why`).
+    pub why: String,
+    /// Nothing answered at all — refused, no route, no answer in time —, not a station that answered with an error.
+    pub gone: bool,
+}
+
+/// Why the station was not reached, for the journal: the bottom of the error's chain — «Connection refused (os error
+/// 111)», «Network unreachable (os error 101)» —, not reqwest's «error sending request for url (…)» alone.
+pub fn why(error: &reqwest::Error) -> String {
+    let mut deepest: &dyn std::error::Error = error;
+    while let Some(next) = deepest.source() {
+        deepest = next;
+    }
+    let said = deepest.to_string();
+    if error.is_timeout() && !said.to_lowercase().contains("timed out") {
+        format!("timed out: {said}")
+    } else {
+        said
+    }
+}
+
+pub(crate) fn describe(error: &reqwest::Error) -> String {
     if error.is_timeout() {
         crate::tr!("колонка не ответила вовремя")
     } else if error.is_connect() {

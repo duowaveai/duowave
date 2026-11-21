@@ -512,18 +512,18 @@ fn object(properties: Value, required: &[&str]) -> Value {
 pub fn start_tool() -> LlmTool {
     LlmTool {
         name: "work_start".into(),
-        description: "Start making a new thing for the home: a widget for the desk (by default), a skill, a game or a \
-                      theme. Use it whenever the person wants something that does not exist yet, in any words — \
-                      never tell them a phrase to say instead. Put the whole wish from the conversation into `brief`, \
-                      in the person's own words: what it shows or does, every detail they gave. The answer is said to \
-                      the person as it is."
+        // Its rules came from checks by hand (docs/plans/audio-interface.md); the words are kept few: every one goes
+        // with every question (docs/plans/fast-tools.md).
+        description: "Make a new thing for the home: a widget for the desk (default), a skill, a game or a theme — \
+                      whenever the person wants something that does not exist yet; never tell them a phrase to say \
+                      instead. Its answer is spoken as is."
             .into(),
         parameters: object(
             json!({
-                "brief": { "type": "string", "description": "The whole wish, gathered from the conversation, in the person's words." },
-                "face": { "type": "string", "enum": ["widget", "skill", "game", "theme"], "description": "What it becomes; a widget when the person did not say." },
-                "title": { "type": "string", "description": "Its short name, one to four words: «Испанский: слова дня»." },
-                "new": { "type": "boolean", "description": "The person confirmed they want a new thing although a similar one was made lately." }
+                "brief": { "type": "string", "description": "The whole wish from the conversation, every detail, in the person's words." },
+                "face": { "type": "string", "enum": ["widget", "skill", "game", "theme"] },
+                "title": { "type": "string", "description": "A short name: «Испанский: слова дня»." },
+                "new": { "type": "boolean", "description": "Confirmed: new, although a similar one was made lately." }
             }),
             &["brief"],
         ),
@@ -533,16 +533,14 @@ pub fn start_tool() -> LlmTool {
 pub fn add_tool() -> LlmTool {
     LlmTool {
         name: "work_add".into(),
-        description:
-            "Add to a thing or change it: what the person adds while it is being made («и ещё кнопку…») goes \
-                      into that same work — never start it over; for a thing that is ready or already on the desk it \
-                      makes a new version of that thing — never a new thing. The answer is said to the person as it is."
-                .into(),
+        description: "Add to or change a thing: while it is made, into that same work — never start it over; a \
+                      ready one or one on the desk gets a new version — never a new thing. Its answer is spoken as is."
+            .into(),
         parameters: object(
             json!({
                 "text": { "type": "string", "description": "What to add or change, in the person's words." },
-                "thing": { "type": "string", "description": "Its label from «Сейчас» ([р3]) or its name; leave it out for the thing in work or talked about last." },
-                "copy": { "type": "boolean", "description": "The person agreed to make their own copy of a built-in app to change it." }
+                "thing": { "type": "string", "description": "Its label from «Сейчас» («[р3]») or name; none for the last one." },
+                "copy": { "type": "boolean", "description": "Agreed to copy a built-in app to change it." }
             }),
             &["text"],
         ),
@@ -552,14 +550,13 @@ pub fn add_tool() -> LlmTool {
 pub fn do_tool() -> LlmTool {
     LlmTool {
         name: "work_do".into(),
-        description: "Do something with a thing being made or made lately: `status` — how it goes; `details` — what \
-                      was done; `show` — open it in the panel to try on; `desk` — put it on the desk; `park` — keep it \
-                      in the drafts; `stop` — stop the work. The answer is said to the person as it is."
+        description: "Act on a thing being made or made lately: status, details (what was done), show (open in \
+                      the panel), desk (put on the desk), park (to drafts), stop. Its answer is spoken as is."
             .into(),
         parameters: object(
             json!({
                 "action": { "type": "string", "enum": ["status", "details", "show", "desk", "park", "stop"] },
-                "thing": { "type": "string", "description": "Its label from «Сейчас» ([р3]) or its name; leave it out for the thing in work or talked about last." }
+                "thing": { "type": "string", "description": "Its label from «Сейчас» («[р3]») or name; none for the last one." }
             }),
             &["action"],
         ),

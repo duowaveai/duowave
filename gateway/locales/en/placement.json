@@ -532,5 +532,10 @@
  "Центр дома «{name}» не на связи: его пульт откроется, когда он вернётся.": "The centre of «{name}» is offline: its panel opens when it is back.",
  "Центр дома «{name}» занят — попробуйте ещё раз.": "The centre of «{name}» is busy — try again.",
  "Центр дома «{name}» не ответил — попробуйте ещё раз.": "The centre of «{name}» did not answer — try again.",
- "Центр дома «{name}» не пускает этот компьютер к своему пульту: в его списке Турбо он не «дома».": "The centre of «{name}» does not let this computer into its panel: in its list of Turbos it is not «at home»."
+ "Центр дома «{name}» не пускает этот компьютер к своему пульту: в его списке Турбо он не «дома».": "The centre of «{name}» does not let this computer into its panel: in its list of Turbos it is not «at home».",
+ "Похоже, виноват агент AliceBridge: он застрял на смене Wi-Fi, и колонка уходит из сети каждые 40–50 секунд. Задайте домашний Wi-Fi в приложении AliceBridge заново.": "Probably AliceBridge's agent: it is stuck on a Wi-Fi change, and the speaker drops off the network every 40–50 seconds. Set your home Wi-Fi again in the AliceBridge app.",
+ "Сигнал Wi-Fi слабый — {dbm} дБм: поставьте колонку ближе к роутеру.": "The Wi-Fi signal is weak — {dbm} dBm: put the speaker closer to the router.",
+ "Свободной ОЗУ мало — {mb} МБ: при нехватке памяти колонка может терять Wi-Fi.": "Little free RAM — {mb} MB: short of memory, the speaker may lose its Wi-Fi.",
+ "За сутки колонка теряла Wi-Fi — пропаданий: {drops}, без сети всего: {minutes} мин.": "In the last day the speaker lost its Wi-Fi — drops: {drops}, offline in all: {minutes} min.",
+ "У меня пропал интернет — вернусь, как только он появится.": "I've lost the internet — I'll be back as soon as it's up."
 }

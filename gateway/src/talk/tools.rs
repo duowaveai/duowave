@@ -21,7 +21,7 @@ use crate::mcp::{McpOffer, OfferOptions};
 use crate::skills::capabilities::{is_capability, CapabilityName};
 use crate::skills::router::{Resolution, RESTRICTED};
 use crate::skills::skill::ExecutionContext;
-use crate::skills::tools::{tools_for, ToolsKind, SAFE_AFTER_OUTSIDE};
+use crate::skills::tools::{tools_for, without_doubles, ToolsKind, SAFE_AFTER_OUTSIDE};
 
 /// What the model reads when a lookup has no way here: the station is not there, and Yandex is never asked.
 const NOT_HERE: &str =
@@ -72,6 +72,7 @@ pub(super) fn toolbox(deps: Deps) -> Option<ToolBox> {
     if let Some(contributed) = &contributed {
         tools.extend(contributed.tools.iter().cloned());
     }
+    without_doubles(&mut tools);
     if tools.is_empty() {
         return None;
     }

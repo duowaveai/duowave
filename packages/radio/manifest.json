@@ -2,7 +2,7 @@
   "schema": 1,
   "kind": "plugin",
   "id": "p-a2fd1d7eb8a4",
-  "version": "2.1.1",
+  "version": "2.1.2",
   "title": "Радио",
   "description": "Радиостанции голосом: свой список популярных станций и открытый каталог Radio Browser. «Включи радио джаз», поиск и включение станций для «Мозга», источник радио для плеера шлюза; станцию, на которой колонка молчит, запоминает и включает следующую.",
   "api": "^2",
@@ -77,13 +77,13 @@
     "tools": [
       {
         "name": "radio_search",
-        "description": "Ищет радиостанции по названию, жанру или настроению (джаз, рок, спокойное, новости). Возвращает список станций; включить найденную — инструментом radio_play с её названием.",
+        "description": "Find radio stations by name, genre or mood. Returns a list; play one with radio_play by its name.",
         "input": {
           "type": "object",
           "properties": {
             "query": {
               "type": "string",
-              "description": "Название, жанр или настроение"
+              "description": "A name, genre or mood, in the person's words"
             },
             "limit": {
               "type": "integer",
@@ -102,13 +102,13 @@
       },
       {
         "name": "radio_play",
-        "description": "Включает радиостанцию на колонке по названию, жанру или настроению — сразу, без отдельного поиска. Возвращает, что включено.",
+        "description": "Play a radio station on the speaker by name, genre or mood — at once, no search needed. Returns what plays.",
         "input": {
           "type": "object",
           "properties": {
             "station": {
               "type": "string",
-              "description": "Название, жанр или настроение"
+              "description": "A name, genre or mood, in the person's words"
             }
           },
           "required": [

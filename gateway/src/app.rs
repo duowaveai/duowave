@@ -219,6 +219,13 @@ impl App {
         crate::home::apps::watch(self);
         // A second station as the centre's ear: its copy of the home (stage 4).
         crate::home::ear::start(self);
+        // The station's own way out (operations/network_watch.rs): its Wi-Fi drops seen and kept for «Состояние дома»,
+        // and the phrase it says at once without it, recorded while it had it (gateway/uniproxy/offline_phrase.rs).
+        #[cfg(feature = "station")]
+        {
+            crate::operations::network_watch::start(self.config.skills.state_dir.as_deref());
+            crate::gateway::uniproxy::offline_phrase::init(self.config.skills.state_dir.as_deref());
+        }
         // Where the gateway runs: the safety net's news on the station, the watch over the station's gateway here.
         self.placement.start();
         // The settings revision counted anew after a change: the home's copy follows within seconds.

@@ -540,7 +540,9 @@ impl StationConnectService {
         // A station that cannot say does not stop the look: the panel just has nothing to warn of.
         let (neighbours, mem_available_kb) = match shell.run(&STEPS.neighbours, None).await {
             Ok(around) if around.code == 0 => {
-                let (found, memory) = neighbours::read(&around.stdout);
+                let (mut found, memory) = neighbours::read(&around.stdout);
+                // Signed in with AliceBridge's «1»: anyone at home can do the same.
+                neighbours::note_password(&mut found, &self.ssh.password_for(address));
                 (Some(found), memory)
             }
             _ => (None, None),
@@ -1712,6 +1714,24 @@ mod tests {
         assert_eq!(setup.service.check(ADDRESS, None).await.unwrap().problem, None);
         // Another station's is its own.
         assert_eq!(setup.service.ssh.password_for("192.0.2.99"), "");
+    }
+
+    /// A station rooted with AliceBridge: its SSH takes root's «1». The look says to change it and never repeats it.
+    #[tokio::test]
+    async fn the_look_asks_to_change_alicebridge_s_default_root_password() {
+        let setup = Setup::new(fast());
+        setup.station.state().around = "mod alicebridge\nalicebridge wifi-stuck\nmaind on\n".into();
+        setup.station.state().root_password = Some("1".into());
+        let check = setup.service.check_with_password(ADDRESS, None, Some("1")).await.unwrap();
+        assert_eq!(check.problem, None);
+        let found: Vec<&str> = check.neighbours.iter().flatten().map(|n| n.id.as_str()).collect();
+        assert_eq!(found, ["alicebridge-wifi", "alicebridge", "default-password"]);
+        let json = serde_json::to_value(&check).unwrap();
+        assert!(json["neighbours"][2].get("detail").is_none(), "the password itself never goes to the panel");
+        // Changed to the owner's own: nothing more to say.
+        setup.station.state().root_password = Some("s3cret-root".into());
+        let check = setup.service.check_with_password(ADDRESS, None, Some("s3cret-root")).await.unwrap();
+        assert!(check.neighbours.iter().flatten().all(|n| n.id != "default-password"));
     }
 
     #[tokio::test]

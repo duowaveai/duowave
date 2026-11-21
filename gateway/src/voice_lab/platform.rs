@@ -610,6 +610,12 @@ pub(crate) mod tests {
             self
         }
 
+        /// The pretend computer's paths with «/»: a Linux or a Mac pretended on Windows has its paths joined with «\\»
+        /// by this program — the same path all the same.
+        fn slashed(path: &Path) -> String {
+            path.to_string_lossy().replace('\\', "/")
+        }
+
         pub fn file(mut self, path: &str, text: &str) -> Computer {
             self.files.insert(path.to_string(), text.to_string());
             self
@@ -640,11 +646,11 @@ pub(crate) mod tests {
         }
 
         fn exists(&self, path: &Path) -> bool {
-            self.files.contains_key(&path.to_string_lossy().into_owned())
+            self.files.contains_key(&Computer::slashed(path))
         }
 
         fn read(&self, path: &Path) -> Option<String> {
-            self.files.get(&path.to_string_lossy().into_owned()).cloned()
+            self.files.get(&Computer::slashed(path)).cloned()
         }
 
         fn total_mb(&self) -> u64 {
@@ -710,7 +716,9 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn sees_linux_with_an_nvidia_card_uv_where_its_installer_puts_it_and_a_systemd_user_scope() {
-        let info = detect(&linux_nvidia()).await;
+        let mut info = detect(&linux_nvidia()).await;
+        // Joined by this program: «\\» on Windows, where the pretended Linux is tested too.
+        info.tools.uv = info.tools.uv.map(|uv| uv.replace('\\', "/"));
         assert_eq!(
             info.gpu,
             GpuInfo {

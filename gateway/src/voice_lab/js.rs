@@ -144,7 +144,8 @@ mod tests {
     #[test]
     fn resolves_paths_lexically() {
         let resolved = resolve(Path::new("/a/b/../c/./d"));
-        assert_eq!(resolved, PathBuf::from("/a/c/d"));
+        // «/a/c/d» as this system writes it absolute: on Windows on the current drive, C:\a\c\d.
+        assert_eq!(resolved, std::path::absolute("/a/c/d").unwrap());
         assert!(resolve(Path::new("x")).is_absolute());
     }
 }

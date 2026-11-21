@@ -134,6 +134,8 @@ export default {
     closeOverlayWindow: 'Закрыть окно поверх',
     // station-window
     viaNotice: (time: string) => `Колонка не отвечает — показываю её копию от ${time}. Менять можно, когда она вернётся; «Этот компьютер» в «Настройках» работает.`,
+    viaNoticeSince: (since: string, time: string) => `Колонка не в сети с ${since} — показываю её копию от ${time}. Менять можно, когда она вернётся; «Этот компьютер» в «Настройках» работает.`,
+    offlineSince: (time: string) => `не в сети с ${time}`,
     stripName: (name: string) => `Колонка «${name}»`,
     gateway: 'центр',
     offline: 'не на связи',

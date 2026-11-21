@@ -2648,23 +2648,28 @@ mod tests {
                 .query_row("SELECT count(*) FROM users", [], |row| row.get(0));
         assert!(held.map_or(true, |count| count == 0), "the main file alone lacks the log's rows");
 
-        // The copy cannot be made (its folder gone): nothing applied, the package kept as .failed.
-        let gone = tempfile::tempdir().unwrap();
-        let held = Db::open(Some(gone.path())).unwrap();
-        person(&held, "u1", "Мама");
-        std::fs::remove_dir_all(gone.path()).unwrap();
-        let waiting = tempfile::tempdir().unwrap();
-        std::fs::write(
-            incoming_file(waiting.path()),
-            serde_json::to_vec(&export(&pc, &pc_secrets, "pc").unwrap()).unwrap(),
-        )
-        .unwrap();
-        assert!(apply_incoming(waiting.path(), &held, &secrets, true, None).is_none());
-        assert!(waiting.path().join("incoming-settings.json.failed").exists());
-        assert!(!incoming_file(waiting.path()).exists());
-        let names: Vec<String> =
-            held.with(|c| c.prepare("SELECT name FROM users")?.query_map([], |row| row.get(0))?.collect()).unwrap();
-        assert_eq!(names, vec!["Мама"], "not applied");
+        // The copy cannot be made (its folder gone): nothing applied, the package kept as .failed. Unix only: the folder
+        // is taken from under the open database, which Windows does not allow (os error 32, CI 0.18.0) — there the copy
+        // fails no such way.
+        #[cfg(unix)]
+        {
+            let gone = tempfile::tempdir().unwrap();
+            let held = Db::open(Some(gone.path())).unwrap();
+            person(&held, "u1", "Мама");
+            std::fs::remove_dir_all(gone.path()).unwrap();
+            let waiting = tempfile::tempdir().unwrap();
+            std::fs::write(
+                incoming_file(waiting.path()),
+                serde_json::to_vec(&export(&pc, &pc_secrets, "pc").unwrap()).unwrap(),
+            )
+            .unwrap();
+            assert!(apply_incoming(waiting.path(), &held, &secrets, true, None).is_none());
+            assert!(waiting.path().join("incoming-settings.json.failed").exists());
+            assert!(!incoming_file(waiting.path()).exists());
+            let names: Vec<String> =
+                held.with(|c| c.prepare("SELECT name FROM users")?.query_map([], |row| row.get(0))?.collect()).unwrap();
+            assert_eq!(names, vec!["Мама"], "not applied");
+        }
     }
 
     /// A move back while the settings live on the computer leaves the station's plugins' state alone for the start.

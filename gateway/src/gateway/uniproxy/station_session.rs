@@ -96,7 +96,7 @@ use crate::skills::router::{Continuation, Decision, ModelState, Resolution, Rout
 use crate::skills::routes::RouteStep;
 use crate::skills::skill::{ExecutionContext, Outcome, OwnSkill};
 use crate::skills::skill_stats::{Executor, Unsupported};
-use crate::skills::tools::{lookup_question, tools_for, ToolsKind, SAFE_AFTER_OUTSIDE};
+use crate::skills::tools::{lookup_question, tools_for, without_doubles, ToolsKind, SAFE_AFTER_OUTSIDE};
 use crate::skills::{SkillsService, OUR_CALLBACK_PREFIX};
 use crate::speech::audio::ogg_opus_joiner::OggOpusJoiner;
 use crate::speech::audio::opus_pcm_decoder::SPEECH_SAMPLE_RATE;
@@ -321,6 +321,8 @@ const COMMAND_QUESTION_MS: u64 = 30_000;
 /// How long a callback for Yandex waits for our session with it while the session opens (the station just
 /// connected).
 const YANDEX_OPENING_WAIT_MS: u64 = 5000;
+/// The same when its last opens failed: the open the request starts may find the internet back, or not.
+const YANDEX_UNREACHABLE_WAIT_MS: u64 = 2000;
 /// After the emergency words are said and played, a moment more before the station is given back.
 const RESCUE_AFTER_MS: u64 = 3000;
 /// After connecting, the station's request to continue its player is its own, from before the break (a button's
@@ -2261,8 +2263,12 @@ impl StationSession {
             }
             return self.handle_request(inner, &message_id, &request, "Стоп.", false);
         }
-        self.send_empty_response(&message_id, &request, Vec::new());
         voice.timeline.mark("responseSent");
+        // Not recognised for want of a way out: the recorded phrase, not silence.
+        let offline = error.is_some() && self.no_way_out(inner);
+        if !(offline && self.answer_offline(inner, &message_id, &request)) {
+            self.send_empty_response(&message_id, &request, Vec::new());
+        }
         // Nothing after the wake word (or nothing recognised): the request ends without a word.
         let status = if error.is_some() { RequestStatus::Failed } else { RequestStatus::Silent };
         self.end_trip(inner, &message_id, status, error.as_deref(), None);
@@ -2902,6 +2908,7 @@ impl StationSession {
             if let Some(contributed) = &contributed {
                 tools.extend(contributed.tools.iter().cloned());
             }
+            without_doubles(&mut tools);
             let instructions = mcp.as_ref().map(|mcp| mcp.instructions.clone());
             let dialog = session.deps.dialog.clone();
             let choice =
@@ -3088,6 +3095,7 @@ impl StationSession {
         if let Some(contributed) = &contributed {
             tools.extend(contributed.tools.iter().cloned());
         }
+        without_doubles(&mut tools);
         // Where the phrase came from: this station, by its wake word (or an activator's) or as the answer to its
         // question.
         let origin = self.origin(activation, request).by(Some(principal.name.clone()));
@@ -3628,7 +3636,18 @@ impl StationSession {
             }
         }
         let Some(yandex) = inner.yandex.clone() else { return };
-        if yandex.connected() {
+        // No route or Wi-Fi link: Yandex cannot hear it, even while its socket has not noticed the drop yet (its pings
+        // tell in 15–30 s) — no relay and no wait, the answer at once. Its last opens failed (the router lost its
+        // internet, 22.11): a short wait for the open this request starts — the internet may be back —, then the answer.
+        let no_route = station_offline();
+        let wait = if no_route {
+            0
+        } else if yandex.unreachable() {
+            YANDEX_UNREACHABLE_WAIT_MS
+        } else {
+            YANDEX_OPENING_WAIT_MS
+        };
+        if yandex.connected() && !no_route {
             return self.voice_relayed(inner, &message_id, vec![frame], gated);
         }
         // Between its reconnects, it opens now.
@@ -3643,7 +3662,7 @@ impl StationSession {
         self.note("voiceHeld", &format!("request {}: waits for our session with Yandex", tag8(&message_id)), None);
         let session = self.clone();
         tokio::spawn(async move {
-            let ready = yandex.ready(YANDEX_OPENING_WAIT_MS).await;
+            let ready = wait > 0 && yandex.ready(wait).await;
             let mut inner = session.lock();
             let Some(held) = inner.held_voice.take() else { return };
             if held.message_id != message_id {
@@ -3818,7 +3837,7 @@ impl StationSession {
     /// A held voice request that will not go to Yandex: its stream stops going there, its trip ends, and the station,
     /// unless it cancelled it itself, stops listening and waiting (an empty result, its stream closed, an empty
     /// response).
-    fn drop_held_voice(&self, inner: &mut Inner, status: RequestStatus, reason: &str) {
+    fn drop_held_voice(self: &Arc<Self>, inner: &mut Inner, status: RequestStatus, reason: &str) {
         let Some(held) = inner.held_voice.take() else { return };
         if let Some(stream_id) = held.stream_id {
             inner.forwarded_streams.remove(&stream_id);
@@ -3830,7 +3849,11 @@ impl StationSession {
             if let Some(stream_id) = held.stream_id {
                 self.send(&ServerMessage::StreamClose { stream_id, reason: CloseReason::Ok }, false);
             }
-            self.send_empty_response(&r#ref, &held.request, Vec::new());
+            // Yandex out of reach — the internet gone, as often as not (22.11: the station kept its Wi-Fi, the router
+            // lost its link): the recorded phrase, not silence.
+            if !self.answer_offline(inner, &r#ref, &held.request) {
+                self.send_empty_response(&r#ref, &held.request, Vec::new());
+            }
         }
         self.note("voiceDropped", &format!("request {}: {reason}", tag8(&held.message_id)), None);
         self.end_trip(inner, &held.message_id, status, Some(reason), None);
@@ -4338,6 +4361,10 @@ impl StationSession {
             answer.observe(Arc::new(TripObserver { trip: trip.clone(), by, what }));
         }
         let outcome = SayOutcome::Answer(answer.play(phrases).await);
+        // Spoken, so the network was there: the phrase for an outage in this voice, when none is kept (offline_phrase).
+        if outcome == SayOutcome::Answer(AnswerOutcome::Spoken) {
+            self.record_offline_phrase();
+        }
         // Whoever counts from the end of the speech (the turn timer): the audio still to be played is known.
         if let Some(spoken) =
             answer.take_after_spoken().filter(|_| outcome == SayOutcome::Answer(AnswerOutcome::Spoken))
@@ -5058,6 +5085,83 @@ impl StationSession {
         (Place::Own, self.deps.voice.own_choice().map(|choice| choice.voice))
     }
 
+    /// No way out now: no route or Wi-Fi link (operations/network_watch.rs), or our session with Yandex cannot open.
+    fn no_way_out(&self, inner: &Inner) -> bool {
+        station_offline() || inner.yandex.as_ref().is_some_and(|yandex| yandex.unreachable())
+    }
+
+    /// The voice that answers now, as the phrase for an outage is kept by it: «Yandex:Алиса», «Own:<voice>».
+    fn voice_key(&self) -> String {
+        let (place, voice) = self.voice_of();
+        format!("{place:?}:{}", voice.unwrap_or_default())
+    }
+
+    /// No way out (operations/network_watch.rs): the station says so at once, in the voice that answers, recorded while
+    /// it was online — not 10 s of waiting for the cloud and then silence or «Не получилось получить ответ» (a tester's
+    /// Mini 2, 22.11). Called where the request's voice is over and an empty answer would go. False — nothing recorded
+    /// for that voice: the caller answers as before.
+    fn answer_offline(self: &Arc<Self>, inner: &mut Inner, r#ref: &str, request: &AliceRequest) -> bool {
+        let Some(audio) = super::offline_phrase::kept(&self.voice_key()) else { return false };
+        self.note("offline", "no way out: the phrase recorded for it, at once", None);
+        let mut options = self.answer_options(inner, r#ref, request);
+        options.listen = ListenMode::Never;
+        options.hold_response_ms = 0;
+        let answer = self.start_answer(inner, options);
+        let words = super::offline_phrase::words();
+        let clip = AudioClip { audio, label: words.clone() };
+        self.spawn_answer(answer, futures::stream::iter(vec![AnswerPart::Clip(clip)]).boxed(), words);
+        true
+    }
+
+    /// After an answer that was spoken: on the station, while it has its way out, the phrase for an outage in the voice
+    /// that answers, when none is kept for it (offline_phrase.rs) — one synthesis in the background, tried again only
+    /// after a while if it fails.
+    fn record_offline_phrase(self: &Arc<Self>) {
+        if crate::operations::network_watch::shared().is_none()
+            || crate::operations::network_watch::online_now() != Some(true)
+        {
+            return;
+        }
+        let voice = self.voice_key();
+        if !super::offline_phrase::wanted(&voice) {
+            return;
+        }
+        let synthesize = {
+            let inner = self.lock();
+            self.synthesizer(&inner)
+        };
+        let session = self.clone();
+        tokio::spawn(async move {
+            let cancel = CancellationToken::new();
+            let timeout = cancel.clone();
+            let timer = tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_secs(30)).await;
+                timeout.cancel();
+            });
+            let recorded: anyhow::Result<Bytes> = async {
+                let synthesis = synthesize(super::offline_phrase::words(), cancel).await?;
+                anyhow::ensure!(synthesis.format == "audio/opus", "the voice gives {}, not Ogg/Opus", synthesis.format);
+                let mut audio = Vec::new();
+                let mut chunks = synthesis.audio;
+                while let Some(chunk) = chunks.next().await {
+                    audio.extend_from_slice(&chunk?);
+                    anyhow::ensure!(audio.len() <= super::offline_phrase::BIGGEST, "too long for a phrase");
+                }
+                anyhow::ensure!(!audio.is_empty(), "no audio");
+                Ok(Bytes::from(audio))
+            }
+            .await;
+            timer.abort();
+            match recorded {
+                Ok(audio) => {
+                    session.note("offlinePhrase", &format!("recorded in {voice}: {} bytes", audio.len()), None);
+                    super::offline_phrase::keep(&voice, audio);
+                }
+                Err(error) => session.note("offlinePhrase", &format!("not recorded in {voice}: {error}"), None),
+            }
+        });
+    }
+
     fn note(&self, kind: &str, summary: &str, data: Option<Value>) {
         tracing::info!(target: "session", "Session {} {kind}: {summary}", tag8(&self.id));
         self.record(EventDirection::Note, kind, Some(summary.to_string()), data.as_ref(), false);
@@ -5077,6 +5181,13 @@ impl StationSession {
 fn extra_wake_words(voice: &VoiceRequest) -> Vec<String> {
     let activator = voice.activation.iter().flat_map(|activation| activation.words.iter().cloned());
     voice.request.spotter_phrase.iter().cloned().chain(activator).collect()
+}
+
+/// The station has no way out now (operations/network_watch.rs). Only on the station, whose watch runs: a computer's
+/// gateway has its own network, not the station's.
+fn station_offline() -> bool {
+    crate::operations::network_watch::shared().is_some()
+        && crate::operations::network_watch::online_now() == Some(false)
 }
 
 /// A synthesis that cannot be: every phrase fails with the reason.

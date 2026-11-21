@@ -358,12 +358,13 @@ mod tests {
     #[tokio::test]
     async fn logs_a_failed_webhook_without_its_secret_url() {
         let (logs, _guard) = capture_logs();
-        let free = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = free.local_addr().unwrap().port();
-        drop(free);
+        // A hook on port 0: nothing ever listens there, and the shared client has no pooled connection to it. A port
+        // let go, or one held without accepting, was no sure failure: with the whole suite running, another test's
+        // server on that port number answered — on Windows (CI 0.18.0) and on a Mac (0.18.1 checks, 22.11).
         let mut config = operations();
-        config.webhook_url = Some(format!("http://127.0.0.1:{port}/services/T000/B000/XXXXSECRET?token=hook-token"));
-        let watch = StationWatch::new(Arc::new(Sessions(Mutex::new(0))), None, config, EventBus::new());
+        config.webhook_url = Some("http://127.0.0.1:0/services/T000/B000/XXXXSECRET?token=hook-token".to_string());
+        let mut watch = StationWatch::new(Arc::new(Sessions(Mutex::new(0))), None, config, EventBus::new());
+        watch.send_timeout = Duration::from_millis(300);
         watch.check(now_ms() + 61_000).await;
         let logged = String::from_utf8(logs.lock().unwrap().clone()).unwrap();
         assert!(logged.contains("alert webhook: "), "{logged}");

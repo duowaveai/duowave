@@ -10,7 +10,10 @@
 //! - `brain` — the model answers, or why not (the backup answers, a key that stopped working);
 //! - `turbo` — a Turbo is there and on the line, and the station reaches it;
 //! - `characterVoice` — the character's voice speaks, not Alice's;
-//! - `mode` — who answers: «Алиса», «Алиса + ваш ИИ», «Ваш ИИ».
+//! - `mode` — who answers: «Алиса», «Алиса + ваш ИИ», «Ваш ИИ»;
+//! - `wifi` — only on a station that lost its Wi-Fi in the last day: how often and how long, and the likely cause it
+//!   sees itself — AliceBridge's agent stuck on a Wi-Fi change, a weak signal, too little free memory (a tester's
+//!   Mini 2, 22.11; operations/network_watch.rs keeps the outages).
 //!
 //! The stations found on the network that are not in the home are the panel's row: the computer's search finds them
 //! (`/api/v1/stations/connect/discover`), the centre on a station does not search.
@@ -29,6 +32,8 @@ use serde_json::{json, Value};
 use crate::app::App;
 use crate::core::availability::State as Way;
 use crate::core::identity::permissions::STATION_VIEW;
+use crate::operations::network_watch::Outages;
+use crate::operations::system_memory::{Counters, Pressure};
 use crate::platform::http::{ok, ApiResult, Caller};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -75,6 +80,85 @@ pub struct Facts {
     /// The voice speaks the character's, not Alice's.
     pub own_voice: bool,
     pub mode: crate::settings::definitions::PanelMode,
+    /// A station's Wi-Fi drops of the last day; None — none, or not a station.
+    pub wifi: Option<WifiFact>,
+}
+
+/// The station's Wi-Fi in the last day, when it dropped: how often, how long, and the likely cause.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WifiFact {
+    pub drops: usize,
+    pub minutes: u64,
+    pub hint: Option<String>,
+}
+
+/// A signal this weak or weaker drops (−80 dBm is about to).
+const WEAK_DBM: f64 = -75.0;
+/// Worth a row — and a card on the desk for a day: this many drops in the last day, or this many minutes without the
+/// network. One router restart is not.
+const WORTH_DROPS: usize = 3;
+const WORTH_MINUTES: u64 = 5;
+/// Where AliceBridge keeps its agent's settings (stations/connect/neighbours.rs reads it from a computer over SSH).
+const ALICEBRIDGE_CONFIG: &str = "/data/quasar/alicebridge-agent/config.json";
+
+/// The last day of outages at `now` (unix ms): how many there were in it and their minutes in it — one going on counts
+/// to now.
+pub fn day_of(outages: &Outages, now: u64) -> (usize, u64) {
+    let since = now.saturating_sub(24 * 3600 * 1000);
+    let spans: Vec<(u64, u64)> = outages
+        .ended
+        .iter()
+        .filter(|outage| outage.to > since)
+        .map(|outage| (outage.from.max(since), outage.to))
+        .chain(outages.offline_since.map(|from| (from.max(since), now)))
+        .collect();
+    let ms: u64 = spans.iter().map(|(from, to)| to.saturating_sub(*from)).sum();
+    (spans.len(), ms.div_ceil(60_000))
+}
+
+/// AliceBridge's agent stuck on a Wi-Fi change, as neighbours.rs's script reads it: the rollback phase with the
+/// confirmation timed out — the station drops off the network every 40–50 s.
+fn alicebridge_stuck(config: &str) -> bool {
+    let compact: String = config.chars().filter(|c| !c.is_whitespace()).collect();
+    compact.contains("\"phase\":\"rolling_back\"") && config.contains("Wi-Fi confirmation timed out")
+}
+
+/// The likely cause of the drops, as far as the station sees it; None — nothing seen.
+pub fn wifi_hint(alicebridge: Option<&str>, dbm: Option<f64>, memory: Option<&Counters>) -> Option<String> {
+    if alicebridge.is_some_and(alicebridge_stuck) {
+        return Some(crate::tr!("Похоже, виноват агент AliceBridge: он застрял на смене Wi-Fi, и колонка уходит из сети каждые 40–50 секунд. Задайте домашний Wi-Fi в приложении AliceBridge заново."));
+    }
+    if let Some(dbm) = dbm.filter(|dbm| *dbm <= WEAK_DBM) {
+        return Some(crate::tr!(
+            "Сигнал Wi-Fi слабый — {dbm} дБм: поставьте колонку ближе к роутеру.",
+            dbm = dbm.round() as i64
+        ));
+    }
+    if let Some(memory) = memory.filter(|memory| memory.pressure != Pressure::Normal) {
+        return Some(crate::tr!(
+            "Свободной ОЗУ мало — {mb} МБ: при нехватке памяти колонка может терять Wi-Fi.",
+            mb = memory.pool_mb
+        ));
+    }
+    None
+}
+
+/// On the station: its drops of the last day, when there were enough to be worth a row, with what it sees of their
+/// cause.
+fn wifi_fact() -> Option<WifiFact> {
+    let outages = crate::operations::network_watch::shared()?.outages();
+    let (drops, minutes) = day_of(&outages, crate::utils::time::now_ms());
+    if drops < WORTH_DROPS && minutes < WORTH_MINUTES {
+        return None;
+    }
+    let alicebridge = std::fs::read_to_string(ALICEBRIDGE_CONFIG).ok();
+    let dbm = std::fs::read_to_string("/proc/net/wireless")
+        .ok()
+        .as_deref()
+        .and_then(crate::operations::device_state::parse_wireless)
+        .and_then(|wifi| wifi.dbm);
+    let memory = crate::operations::system_memory::read_counters();
+    Some(WifiFact { drops, minutes, hint: wifi_hint(alicebridge.as_deref(), dbm, memory.as_ref()) })
 }
 
 /// The rows, in the order the household fixes them: the voice first — without it nothing else is heard.
@@ -94,6 +178,19 @@ pub fn rows(facts: &Facts) -> Vec<Row> {
         }
         (None, _) => row("voice", RowState::Warn, crate::tr!("Колонки в доме пока нет."), Some("station")),
     });
+    // A station that lost its Wi-Fi in the last day: what else fails may well be that.
+    if let Some(wifi) = &facts.wifi {
+        let said = crate::tr!(
+            "За сутки колонка теряла Wi-Fi — пропаданий: {drops}, без сети всего: {minutes} мин.",
+            drops = wifi.drops,
+            minutes = wifi.minutes
+        );
+        let text = match &wifi.hint {
+            Some(hint) => format!("{said} {hint}"),
+            None => said,
+        };
+        rows.push(row("wifi", RowState::Warn, text, None));
+    }
     let brain_title = facts.brain_title.clone().unwrap_or_else(|| crate::tr!("модель"));
     rows.push(match facts.brain {
         Way::Ready => row("brain", RowState::Ok, crate::tr!("Мозг отвечает: {title}.", title = brain_title), None),
@@ -213,6 +310,7 @@ pub fn facts(app: &App) -> Facts {
         turbos,
         own_voice: app.voice.chosen_provider() != crate::config::TtsProvider::Yandex,
         mode: app.modes.current(),
+        wifi: if on_station { wifi_fact() } else { None },
     }
 }
 
@@ -282,6 +380,7 @@ mod tests {
             turbos: vec![TurboFact { name: "Ноутбук".into(), up: true, error: None }],
             own_voice: true,
             mode: PanelMode::Gateway,
+            wifi: None,
         }
     }
 
@@ -342,6 +441,43 @@ mod tests {
 
     /// The Turbo says why the station cannot reach it (Windows' firewall closed): with the pair's key only, and its
     /// words then stand in the row of a Turbo that is not on the line.
+    /// A tester's Mini 2, 22.11: its Wi-Fi dropped for minutes many times a day. The station's row says how often and
+    /// how long in the last day, right after the voice, and what it sees of the cause.
+    #[test]
+    fn a_station_that_lost_its_wifi_says_how_often_how_long_and_why() {
+        use crate::operations::network_watch::Outage;
+        let hour = 3600 * 1000;
+        let now = 30 * hour;
+        let outages = Outages {
+            // One going on for 2 minutes, one of 3 minutes an hour ago, one more than a day ago — not counted.
+            offline_since: Some(now - 2 * 60_000),
+            ended: [
+                Outage { from: now - 26 * hour, to: now - 26 * hour + 60_000 },
+                Outage { from: now - hour, to: now - hour + 3 * 60_000 },
+            ]
+            .into(),
+        };
+        assert_eq!(day_of(&outages, now), (2, 5));
+        assert_eq!(day_of(&Outages::default(), now), (0, 0));
+
+        let mut facts = good();
+        facts.wifi = Some(WifiFact { drops: 2, minutes: 5, hint: Some("Сигнал слабый.".into()) });
+        let rows = rows(&facts);
+        assert_eq!(rows[1].id, "wifi");
+        assert_eq!(rows[1].state, RowState::Warn);
+        assert!(rows[1].text.contains("пропаданий: 2") && rows[1].text.contains("5 мин"), "{}", rows[1].text);
+        assert!(rows[1].text.ends_with("Сигнал слабый."), "{}", rows[1].text);
+
+        // The cause: AliceBridge stuck first, then a weak signal, then too little memory.
+        let stuck = r#"{"transaction": {"phase": "rolling_back", "message": "Wi-Fi confirmation timed out"}}"#;
+        let low = Counters { total_mb: 120, pool_mb: 9, pressure: Pressure::Critical, swap_in_bytes: None };
+        assert!(wifi_hint(Some(stuck), Some(-80.0), Some(&low)).unwrap().contains("AliceBridge"));
+        let rolling_back_only = r#"{"transaction": {"phase": "rolling_back", "message": "rolling back"}}"#;
+        assert!(wifi_hint(Some(rolling_back_only), Some(-80.0), None).unwrap().contains("-80"));
+        assert!(wifi_hint(None, Some(-60.0), Some(&low)).unwrap().contains("9 МБ"));
+        assert_eq!(wifi_hint(None, Some(-60.0), None), None);
+    }
+
     #[tokio::test]
     async fn the_turbo_tells_the_centre_its_firewall_with_the_pair_key_only() {
         use axum::body::Body as HttpBody;

@@ -2,7 +2,7 @@
   "schema": 1,
   "kind": "plugin",
   "id": "p-d530e4cef817",
-  "version": "2.0.1",
+  "version": "2.0.2",
   "title": "Новости",
   "description": "Заголовки новостей голосом: главное или по теме — из лент, выбранных в «Дом» → «Коннекторы» → «Новости», а без выбора — из каталога лент. Встроенное приложение: если оно выключено или не ответило, новости говорит встроенный навык шлюза.",
   "api": "^2",
@@ -79,13 +79,13 @@
     "tools": [
       {
         "name": "news_headlines",
-        "description": "Свежие заголовки новостей: главное или по теме (экономика, наука, спорт, технологии, в мире…). Возвращает нумерованный список заголовков.",
+        "description": "Fresh news headlines: the top ones or on a topic (economy, science, sport, tech, world…). Returns a numbered list.",
         "input": {
           "type": "object",
           "properties": {
             "topic": {
               "type": "string",
-              "description": "Тема; пусто — главное"
+              "description": "The topic in the person's words; empty — the top news"
             },
             "limit": {
               "type": "integer",

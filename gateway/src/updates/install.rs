@@ -611,11 +611,13 @@ mod tests {
     #[test]
     fn leftovers_go_and_the_way_back_stays() {
         let dir = tempfile::tempdir().unwrap();
-        let current = dir.path().join("duowave");
+        // The program by its name on this system: duowave.exe on Windows (its leftovers are named after it).
+        let name = program_name();
+        let current = dir.path().join(name);
         std::fs::write(&current, b"running").unwrap();
-        std::fs::write(dir.path().join("duowave.failed"), vec![0u8; 1000]).unwrap();
-        std::fs::write(dir.path().join("duowave.new"), vec![0u8; 200]).unwrap();
-        std::fs::write(dir.path().join(".duowave.new"), vec![0u8; 30]).unwrap();
+        std::fs::write(dir.path().join(format!("{name}.failed")), vec![0u8; 1000]).unwrap();
+        std::fs::write(dir.path().join(format!("{name}.new")), vec![0u8; 200]).unwrap();
+        std::fs::write(dir.path().join(format!(".{name}.new")), vec![0u8; 30]).unwrap();
         std::fs::write(previous_of(&current), b"way back").unwrap();
         assert_eq!(remove_leftovers(&current), 1230);
         assert!(previous_of(&current).exists() && current.exists());

@@ -2,7 +2,7 @@
   "schema": 1,
   "kind": "plugin",
   "id": "p-e99d4491bc27",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "title": "Папки",
   "description": "Голосом по домашней папке DuoWave (~/DuoWave): «какие у меня папки», «что в папке Фото», «открой папку Рецепты», «покажи фото из Отпуска», «прочитай файл борщ», «найди рецепт борща», «запиши в папку Рецепты блины два яйца», «что на флешке». В разговоре — «дальше», «предыдущая», «назад», «номер три», «прочитай», «оставь», «закрой», «пауза», «продолжи», «хватит». Фото и видео открываются окном на экране компьютера; большая карточка на столе показывает то же место. Имена файлов вслух — только своим голосом или с галочкой папки; облачной модели — только с галочкой.",
   "api": "^2",
@@ -99,17 +99,17 @@
     "tools": [
       {
         "name": "folder_find",
-        "description": "Ищет по именам в домашней папке DuoWave (фото, документы, рецепты, подключённая флешка). Возвращает адреса files/… найденного; открыть — folder_open, прочитать документ — folder_read.",
+        "description": "Search by name in the DuoWave home folder (photos, documents, a plugged-in drive). Returns files/… addresses: open with folder_open, read a document with folder_read.",
         "input": {
           "type": "object",
           "properties": {
             "query": {
               "type": "string",
-              "description": "Что искать: часть имени файла или папки"
+              "description": "Part of a file or folder name, in the person's words"
             },
             "folder": {
               "type": "string",
-              "description": "Адрес папки files/home/…, где искать; без него — во всех"
+              "description": "A files/home/… folder to search in; none — everywhere"
             }
           },
           "required": [
@@ -123,13 +123,13 @@
       },
       {
         "name": "folder_open",
-        "description": "Открывает папку или файл домашней папки и отдаёт, что в ней: имена и виды. Фото, видео и звук — окном на экране компьютера (временным: следующее окно встанет на его место). Без адреса — список папок.",
+        "description": "Open a home folder or file: its names and kinds. Photos, video and sound open in a temporary window on the computer's screen (the next one takes its place). No address — the list of folders.",
         "input": {
           "type": "object",
           "properties": {
             "address": {
               "type": "string",
-              "description": "Адрес files/home/… папки или файла"
+              "description": "A files/home/… folder or file"
             }
           }
         },
@@ -140,7 +140,7 @@
       },
       {
         "name": "folder_show",
-        "description": "Показывает фото, видео и звук из домашней папки окнами на экране компьютера — каждое своим окном. Новые окна встают на место временных (оставленные остаются); add=true — открыть рядом с уже открытыми. Возвращает окна с их id: ими окна оставляют, закрывают, ставят на паузу инструментами screen_keep, screen_close, screen_pause, screen_resume.",
+        "description": "Show photos, video and sound from the home folder, each in its own window on the computer's screen. New windows replace temporary ones (kept ones stay). Returns the windows' ids for screen_keep, screen_close, screen_pause, screen_resume.",
         "input": {
           "type": "object",
           "properties": {
@@ -149,11 +149,11 @@
               "items": {
                 "type": "string"
               },
-              "description": "Адреса files/home/… фото, видео или звука, до 8"
+              "description": "files/home/… addresses of photos, video or sound, up to 8"
             },
             "add": {
               "type": "boolean",
-              "description": "true — открыть рядом с открытыми, не закрывая временные"
+              "description": "Open beside the windows open now, closing none"
             }
           },
           "required": [
@@ -164,13 +164,13 @@
       },
       {
         "name": "folder_play",
-        "description": "Видео или звук из домашней папки в окне на экране компьютера: play — включить по адресу, pause — пауза, resume — продолжить, stop — остановить и закрыть окно. Без адреса pause и resume — для всего, что играет, stop — для временных окон.",
+        "description": "Video or sound from the home folder in a window on the computer's screen: play an address, pause, resume, stop (closes the window). Without an address pause and resume act on all that plays, stop on temporary windows.",
         "input": {
           "type": "object",
           "properties": {
             "address": {
               "type": "string",
-              "description": "Адрес files/home/… видео или звука"
+              "description": "A files/home/… video or sound"
             },
             "action": {
               "type": "string",
@@ -180,7 +180,7 @@
                 "resume",
                 "stop"
               ],
-              "description": "Что сделать; по умолчанию play"
+              "description": "play by default"
             }
           }
         },
@@ -188,18 +188,18 @@
       },
       {
         "name": "folder_read",
-        "description": "Текст документа из домашней папки (txt, md, rtf, docx, pdf) по частям.",
+        "description": "A document's text from the home folder (txt, md, rtf, docx, pdf), part by part.",
         "input": {
           "type": "object",
           "properties": {
             "address": {
               "type": "string",
-              "description": "Адрес файла files/home/…"
+              "description": "A files/home/… file"
             },
             "part": {
               "type": "integer",
               "minimum": 0,
-              "description": "Какая часть, с нуля"
+              "description": "Which part, from 0"
             }
           },
           "required": [
@@ -213,21 +213,21 @@
       },
       {
         "name": "folder_write",
-        "description": "Записывает текстовый файл в папку домашней папки DuoWave. Есть файл с таким именем — новый получит имя «… 2».",
+        "description": "Write a text file into a home folder; a taken name gets «… 2».",
         "input": {
           "type": "object",
           "properties": {
             "folder": {
               "type": "string",
-              "description": "Адрес папки files/home/…"
+              "description": "A files/home/… folder"
             },
             "name": {
               "type": "string",
-              "description": "Имя файла без расширения"
+              "description": "The file's name without extension"
             },
             "text": {
               "type": "string",
-              "description": "Что записать"
+              "description": "What to write"
             }
           },
           "required": [

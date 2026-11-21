@@ -3,6 +3,8 @@
 //! relayed to Yandex (relay_session.rs, with the requests' trips read off the frames).
 
 pub mod device_tag;
+// What the station says at once with no way out, recorded while it was online (a tester's Mini 2, 22.11).
+pub mod offline_phrase;
 pub mod relay_session;
 pub mod relay_trips;
 pub mod rescue;

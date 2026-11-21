@@ -67,25 +67,36 @@ export function saveLabel(label = tr.core.saveLabel): string {
 
 // Копия вместо ответа: колонка не на связи, шлюз компьютера показывает, что помнит.
 let copyAt: number | null = null;
+// С какого времени колонка не в сети — как её увидел шлюз компьютера (`x-duowave-away-since`, тестер 22.11: Wi-Fi
+// колонки пропадал по нескольку раз в день).
+let awaySince: number | null = null;
 let liveAt = 0;
 const listeners = new Set<() => void>();
 
-/** Ответ пришёл: с отметкой копии — колонки нет, без неё — она на связи. */
-export function noteAnswer(header: string | null): void {
-    const before = copyAt;
+/** Ответ пришёл: с отметкой копии — колонки нет (и, если шлюз знает, с какого времени), без неё — она на связи. */
+export function noteAnswer(header: string | null, away: string | null = null): void {
+    const before = [copyAt, awaySince];
     if (header) {
         const at = Number(header);
         copyAt = Number.isFinite(at) ? Math.min(copyAt ?? at, at) : copyAt;
+        const since = away ? Number(away) : NaN;
+        if (Number.isFinite(since)) awaySince = since;
     } else {
         copyAt = null;
+        awaySince = null;
         liveAt = Date.now();
     }
-    if (before !== copyAt) for (const listener of [...listeners]) listener();
+    if (before[0] !== copyAt || before[1] !== awaySince) for (const listener of [...listeners]) listener();
 }
 
 /** Когда снята копия, которую пульт показывает (мс от эпохи); null — колонка отвечает сама. */
 export function copyShown(): number | null {
     return copyAt;
+}
+
+/** С какого времени колонка не в сети (мс от эпохи); null — шлюз этого не сказал или колонка на связи. */
+export function awayShown(): number | null {
+    return awaySince;
 }
 
 export function lastLive(): number {

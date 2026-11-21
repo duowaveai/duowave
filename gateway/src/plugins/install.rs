@@ -383,6 +383,8 @@ pub struct Failed {
     pub message: String,
     /// HTTP 404 or 410: no file at this address — a feed that moved on to a newer version, say.
     pub missing: bool,
+    /// Larger than it may be: asking again brings the same.
+    pub too_big: bool,
 }
 
 /// A file at `url`, whole, at most `max` bytes.
@@ -392,7 +394,7 @@ pub async fn download(url: &str, max: u64, timeout: Duration) -> Result<Vec<u8>,
 
 /// The same, telling a file that is not there (404, 410) from a failure on the way.
 pub async fn fetch(url: &str, max: u64, timeout: Duration) -> Result<Vec<u8>, Failed> {
-    let failed = |message: String| Failed { message, missing: false };
+    let failed = |message: String| Failed { message, missing: false, too_big: false };
     let client = crate::utils::http::client_builder()
         .timeout(timeout)
         .build()
@@ -404,9 +406,12 @@ pub async fn fetch(url: &str, max: u64, timeout: Duration) -> Result<Vec<u8>, Fa
         return Err(Failed {
             message: crate::tr!("загрузка: HTTP {status}", status = status),
             missing: matches!(status.as_u16(), 404 | 410),
+            too_big: false,
         });
     }
-    let too_big = || failed(crate::tr!("загрузка: файл больше {max} КБ", max = max / 1024));
+    let too_big = || Failed {
+        too_big: true, ..failed(crate::tr!("загрузка: файл больше {max} КБ", max = max / 1024))
+    };
     if response.content_length().is_some_and(|length| length > max) {
         return Err(too_big());
     }

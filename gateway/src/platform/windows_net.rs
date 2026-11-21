@@ -71,36 +71,56 @@ pub struct FirewallRule {
     pub profile: String,
 }
 
+/// The firewall profile a network of this category is under: Private, Domain (DomainAuthenticated), else Public —
+/// Windows treats a network it does not know as public.
+fn profile_of(category: &str) -> &'static str {
+    let category = category.to_ascii_lowercase();
+    if category == "private" {
+        "private"
+    } else if category.starts_with("domain") {
+        "domain"
+    } else {
+        "public"
+    }
+}
+
 impl WindowsNetwork {
-    /// A network the computer is on is «Общедоступная»: Windows blocks what others dial here, unless allowed for it.
-    pub fn public(&self) -> bool {
-        self.networks.iter().any(|network| network.category.eq_ignore_ascii_case("public"))
+    /// Whether the firewall is on for this profile. A profile that was not read counts as off: nothing to say.
+    fn firewall_on(&self, profile: &str) -> bool {
+        self.firewall.iter().any(|entry| entry.enabled && entry.name.eq_ignore_ascii_case(profile))
     }
 
-    /// A rule blocks this program: Windows' own after «Отмена» in its window — it wins over any allow rule.
-    pub fn blocked(&self) -> bool {
-        self.rules.iter().any(|rule| rule.action.eq_ignore_ascii_case("block"))
-    }
-
-    /// An allow rule for this program on the private profile (or any).
-    pub fn allowed_private(&self) -> bool {
+    /// A rule of this action (Allow, Block) for this program covers the profile: named in it, «Any», or none named.
+    fn rule_covers(&self, action: &str, profile: &str) -> bool {
         self.rules.iter().any(|rule| {
-            rule.action.eq_ignore_ascii_case("allow") && {
-                let profile = rule.profile.to_lowercase();
-                profile.contains("private") || profile.contains("any") || profile.is_empty()
+            rule.action.eq_ignore_ascii_case(action) && {
+                let profiles = rule.profile.to_lowercase();
+                profiles.is_empty() || profiles.contains("any") || profiles.contains(profile)
             }
         })
     }
 
-    /// Whether the firewall is on for a network of this computer.
-    pub fn firewall_on(&self) -> bool {
-        self.firewall.iter().any(|profile| profile.enabled)
+    /// Whether Windows keeps others away from this program on a network of this profile: the firewall is on for it,
+    /// and a block rule covers it (Windows' own after «Отмена» in its window — it wins over any allow rule) or no allow
+    /// rule does.
+    fn closed_on(&self, profile: &str) -> bool {
+        self.firewall_on(profile) && (self.rule_covers("block", profile) || !self.rule_covers("allow", profile))
     }
 
-    /// Whether others may well not reach this program: the firewall is on, and either a rule blocks it, or no rule
-    /// allows it on a private network, or the network is public.
+    /// The networks the computer is on that keep others away, each judged by its own profile. A tester's Windows,
+    /// 22.11: a «Общедоступная» Ethernet, the Public firewall off and an allow rule for Public — open, though the
+    /// Domain firewall was on; any profile on and any public network made it «closed».
+    fn closed_networks(&self) -> Vec<&NetworkProfile> {
+        self.networks.iter().filter(|network| self.closed_on(profile_of(&network.category))).collect()
+    }
+
+    /// Whether others may well not reach this program on a network the computer is on. With no network read, a home
+    /// network is judged as private.
     pub fn likely_closed(&self) -> bool {
-        self.firewall_on() && (self.blocked() || !self.allowed_private() || self.public())
+        if self.networks.is_empty() {
+            return self.closed_on("private");
+        }
+        !self.closed_networks().is_empty()
     }
 
     /// One line for the log: networks, the firewall, the rules.
@@ -125,29 +145,34 @@ impl WindowsNetwork {
 
 /// What the person reads when the station cannot reach this computer: what to do on this Windows, if anything is seen.
 pub fn advice(network: &WindowsNetwork) -> Option<String> {
-    if network.public() {
-        let names: Vec<&str> = network
-            .networks
-            .iter()
-            .filter(|network| network.category.eq_ignore_ascii_case("public"))
-            .map(|network| network.alias.as_str())
-            .collect();
+    let closed = network.closed_networks();
+    // A «Общедоступная» network that keeps others away: the way is to make it private (the button allows private and
+    // domain networks only).
+    let public: Vec<&str> = closed
+        .iter()
+        .filter(|entry| profile_of(&entry.category) == "public")
+        .map(|entry| entry.alias.as_str())
+        .collect();
+    if !public.is_empty() {
         return Some(crate::tr!(
             "Сеть «{names}» в Windows — «Общедоступная»: в ней Windows не пускает к компьютеру никого. Сделайте её частной: «Параметры» → «Сеть и Интернет» → сеть → «Частная».",
-            names = names.join("», «")
+            names = public.join("», «")
         ));
     }
-    if network.firewall_on() && network.blocked() {
+    // A private or domain network that keeps others away; with no network read, a home one judged as private.
+    let profile = match closed.first() {
+        Some(entry) => profile_of(&entry.category),
+        None if network.networks.is_empty() && network.closed_on("private") => "private",
+        None => return None,
+    };
+    if network.rule_covers("block", profile) {
         return Some(crate::tr!(
             "Брандмауэр Windows запрещает DuoWave входящие подключения (так бывает, если в его окне нажали «Отмена»). Нажмите «Разрешить в брандмауэре»."
         ));
     }
-    if network.firewall_on() && !network.allowed_private() {
-        return Some(crate::tr!(
-            "В брандмауэре Windows нет разрешения для DuoWave в частной сети. Нажмите «Разрешить в брандмауэре»."
-        ));
-    }
-    None
+    Some(crate::tr!(
+        "В брандмауэре Windows нет разрешения для DuoWave в частной сети. Нажмите «Разрешить в брандмауэре»."
+    ))
 }
 
 /// The last look, for what is read without waiting (the warnings about the station): None off Windows or before it.
@@ -368,6 +393,49 @@ mod tests {
         );
         assert!(!off.likely_closed() && advice(&off).is_none());
         assert!(off.summary().contains("Private off"), "{}", off.summary());
+    }
+
+    /// A tester's Windows, 22.11: a «Общедоступная» Ethernet, the Domain firewall on, Private and Public off, an allow
+    /// rule for Private and Public — the computer is open, and nothing is said. Each network goes by its own profile.
+    #[test]
+    fn a_public_network_with_its_firewall_off_or_this_program_allowed_is_open() {
+        let tester = read(
+            r#"{"networks":[{"alias":"Ethernet","category":"Public"}],
+                "firewall":[{"name":"Domain","enabled":true},{"name":"Private","enabled":false},{"name":"Public","enabled":false}],
+                "rules":[{"name":"DuoWave","action":"Allow","profile":"Private, Public"}]}"#,
+        );
+        assert!(!tester.likely_closed(), "{}", tester.summary());
+        assert_eq!(advice(&tester), None);
+
+        // The Public firewall on, this program allowed there: open too.
+        let allowed = read(
+            r#"{"networks":[{"alias":"Ethernet","category":"Public"}],"firewall":[{"name":"Public","enabled":true}],
+                "rules":[{"name":"DuoWave","action":"Allow","profile":"Any"}]}"#,
+        );
+        assert!(!allowed.likely_closed());
+        assert_eq!(advice(&allowed), None);
+
+        // A block rule for Public only does not close a private network.
+        let blocked_elsewhere = read(
+            r#"{"networks":[{"alias":"Wi-Fi","category":"Private"}],
+                "firewall":[{"name":"Private","enabled":true},{"name":"Public","enabled":true}],
+                "rules":[{"name":"duowave.exe","action":"Block","profile":"Public"},{"name":"DuoWave","action":"Allow","profile":"Private, Domain"}]}"#,
+        );
+        assert!(!blocked_elsewhere.likely_closed());
+        assert_eq!(advice(&blocked_elsewhere), None);
+
+        // A domain network goes by the Domain profile: on, and no rule allows it there.
+        let domain = read(
+            r#"{"networks":[{"alias":"Office","category":"DomainAuthenticated"}],
+                "firewall":[{"name":"Domain","enabled":true},{"name":"Private","enabled":true}],
+                "rules":[{"name":"DuoWave","action":"Allow","profile":"Private"}]}"#,
+        );
+        assert!(domain.likely_closed());
+        assert!(advice(&domain).unwrap().contains("нет разрешения"), "{:?}", advice(&domain));
+
+        // No network read: judged as a home network, by the Private profile.
+        let unread = read(r#"{"networks":[],"firewall":[{"name":"Private","enabled":true}],"rules":[]}"#);
+        assert!(unread.likely_closed() && advice(&unread).is_some());
     }
 
     #[test]

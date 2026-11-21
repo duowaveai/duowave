@@ -126,16 +126,19 @@ pub mod test_stub {
     }
 
     /// The stub as the build made it.
+    /// Looked for up from the test's own program, not at a fixed depth: cargo up to 1.99 puts a library's tests in
+    /// `target/<profile>/deps/`, 1.100 in `target/<profile>/build/duowave/<hash>/out/` — the stub stays in
+    /// `target/<profile>/` either way (0.18.0's CI, 22.11: 42 tests on Linux could not find it).
     pub fn built() -> PathBuf {
         let exe = std::env::current_exe().expect("the test's own path");
         let name = format!("duowave-test-stub{}", std::env::consts::EXE_SUFFIX);
-        let built = exe.parent().and_then(Path::parent).map(|profile| profile.join(&name)).unwrap_or_default();
-        assert!(
-            built.is_file(),
-            "no {}: `cargo test -p duowave` builds it; for `--lib` alone, first `cargo build -p duowave --bin \
-             duowave-test-stub`",
-            built.display()
-        );
-        built
+        let found = exe.ancestors().skip(1).map(|dir| dir.join(&name)).find(|candidate| candidate.is_file());
+        found.unwrap_or_else(|| {
+            panic!(
+                "no {name} above {}: `cargo test -p duowave` builds it; for `--lib` alone, first `cargo build -p \
+                 duowave --bin duowave-test-stub`",
+                exe.display()
+            )
+        })
     }
 }

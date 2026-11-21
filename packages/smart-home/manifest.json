@@ -2,7 +2,7 @@
   "schema": 1,
   "kind": "plugin",
   "id": "p-7334b3fd20b1",
-  "version": "2.0.1",
+  "version": "2.0.2",
   "title": "Умный дом",
   "description": "Свет и устройства Home Assistant голосом: «включи свет на кухне», «выключи свет», и что включено дома — для «Мозга». Подключение и его ключ — в «Дом» → «Коннекторы», приложение их не видит. Встроенное приложение: без него умным домом управляет встроенный навык.",
   "api": "^2",
@@ -47,13 +47,13 @@
     "tools": [
       {
         "name": "smart_home_status",
-        "description": "Устройства умного дома и их состояние: что включено, температура, яркость. Только чтение.",
+        "description": "Smart home devices and their state: what is on, temperature, brightness. Read only.",
         "input": {
           "type": "object",
           "properties": {
             "words": {
               "type": "string",
-              "description": "Что интересует: «свет», «кухня»; пусто — всё"
+              "description": "A device or room in the person's words; empty — all"
             }
           }
         },

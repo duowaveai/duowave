@@ -2222,12 +2222,34 @@ pub(crate) mod tests {
             serde_json::from_str(&s.mcp.try_tool(&server.id, "env", None).await.unwrap().content).unwrap();
         assert_eq!(seen["FIXTURE_VAR"], json!("fixture-value-1234"));
         let keys: Vec<String> = serde_json::from_value(seen["keys"].clone()).unwrap();
-        let own = ["HOME", "LOGNAME", "PATH", "SHELL", "TERM", "USER", "FIXTURE_VAR"];
+        // The safe set is each system's own (mcp_connection.rs, INHERITED): Windows' has APPDATA, SYSTEMROOT and the
+        // like, without which a program there does not start.
+        let own: &[&str] = if cfg!(windows) {
+            &[
+                "APPDATA",
+                "HOMEDRIVE",
+                "HOMEPATH",
+                "LOCALAPPDATA",
+                "PATH",
+                "PROCESSOR_ARCHITECTURE",
+                "SYSTEMDRIVE",
+                "SYSTEMROOT",
+                "TEMP",
+                "USERNAME",
+                "USERPROFILE",
+                "PROGRAMFILES",
+                "FIXTURE_VAR",
+            ]
+        } else {
+            &["HOME", "LOGNAME", "PATH", "SHELL", "TERM", "USER", "FIXTURE_VAR"]
+        };
         // Nothing of the gateway's own environment: what the program sees beyond its own and the safe set, the
         // gateway does not have (the system gives every process a few).
         for key in &keys {
             assert!(
-                own.contains(&key.as_str()) || std::env::var_os(key).is_none() || key.starts_with("__CF"),
+                own.iter().any(|own| own.eq_ignore_ascii_case(key))
+                    || std::env::var_os(key).is_none()
+                    || key.starts_with("__CF"),
                 "{key} leaked"
             );
         }

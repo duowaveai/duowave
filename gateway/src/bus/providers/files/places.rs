@@ -382,7 +382,7 @@ impl Places {
                 if std::fs::read_link(at).is_ok_and(|now| now == target) {
                     return;
                 }
-                let _ = std::fs::remove_file(at);
+                let _ = remove_link(at);
             }
             Ok(_) => return,
             Err(_) => {}
@@ -395,7 +395,7 @@ impl Places {
     /// Takes away a link the gateway made; anything else there stays.
     pub fn unlink(&self, at: &Path) {
         if at.symlink_metadata().is_ok_and(|meta| meta.file_type().is_symlink()) {
-            let _ = std::fs::remove_file(at);
+            let _ = remove_link(at);
         }
     }
 
@@ -459,6 +459,12 @@ fn make_link(target: &Path, at: &Path) -> std::io::Result<()> {
 #[cfg(windows)]
 fn make_link(target: &Path, at: &Path) -> std::io::Result<()> {
     std::os::windows::fs::symlink_dir(target, at)
+}
+
+/// A link taken away, never what it leads to. Windows makes a folder's link a directory (symlink_dir), and only
+/// remove_dir takes that away — remove_file refused, and a detached folder stayed in Connected (CI 0.18.0, 22.11).
+fn remove_link(at: &Path) -> std::io::Result<()> {
+    std::fs::remove_file(at).or_else(|error| if cfg!(windows) { std::fs::remove_dir(at) } else { Err(error) })
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -554,7 +560,10 @@ mod tests {
             std::fs::read_dir(&home).unwrap().flatten().map(|e| e.file_name().to_string_lossy().to_string()).collect();
         made.sort();
         let mut wanted = vec!["Connected", "Documents", "Downloads", "Photos", "Pictures", "Projects", "Videos"];
-        if cfg!(unix) {
+        // The links to the music and the tales: on Unix always; on Windows where a program may make links (developer
+        // mode, or an administrator — CI's runner is one).
+        let probe = dir.path().join("link-probe");
+        if make_link(dir.path(), &probe).is_ok() {
             wanted.extend(["Music", "Stories"]);
         }
         wanted.sort();

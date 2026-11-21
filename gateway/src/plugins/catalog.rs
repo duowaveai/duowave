@@ -29,7 +29,7 @@
 //! A feed may also keep a whole package out of sight (`unlisted: true`): it installs as any other, but the catalog's
 //! view and the voice leave it out unless the admin turned on the hidden developer option «Показывать скрытые пакеты»
 //! (setting packages.show_hidden), or it is installed here — then its card and updates are the household's.
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -65,6 +65,9 @@ const MAX_FEED: u64 = 1024 * 1024;
 const MAX_IMAGE: u64 = 256 * 1024;
 const MAX_SAMPLE: u64 = 64 * 1024;
 const MAX_SAMPLES: usize = 3;
+/// A preview that did not come (no network, a timeout, a full disk) is asked again at a later read of its feed, not
+/// sooner than this: «check now» pressed again and again does not ask it each time.
+const PREVIEW_AGAIN: Duration = Duration::from_secs(15 * 60);
 const ARCHIVE_TIMEOUT: Duration = Duration::from_secs(120);
 /// The extra feeds the main one may name.
 const MAX_FEEDS: usize = 4;
@@ -1209,6 +1212,14 @@ struct Status {
     through_home: Option<std::time::Instant>,
 }
 
+/// A preview that did not come: from which address, when, and whether it cannot come at all (no file there, larger
+/// than a preview may be, not WebP, PNG or Opus) — then it is not asked again before its version or address changes.
+struct Miss {
+    url: String,
+    at: std::time::Instant,
+    lasting: bool,
+}
+
 /// How an extra feed's last read went.
 #[derive(Debug, Clone, Default)]
 struct FeedStatus {
@@ -1258,6 +1269,9 @@ pub struct PackageCatalog {
     status: Mutex<Status>,
     /// One read of the feed at a time.
     reading: tokio::sync::Mutex<()>,
+    /// The previews that did not come, by their feed's folder and their file without its extension. In memory only:
+    /// nothing written on a station's small disk, and a start asks each one again.
+    misses: Mutex<HashMap<(PathBuf, PathBuf), Miss>>,
     /// One install, update or removal at a time.
     installing: tokio::sync::Mutex<()>,
     /// Where our Node lies, and a Node of one's own (DUOWAVE_NODE): whether an app on Node downloads it first.
@@ -1309,6 +1323,7 @@ impl PackageCatalog {
             placement: deps.placement,
             status: Mutex::new(Status::default()),
             reading: tokio::sync::Mutex::new(()),
+            misses: Mutex::new(HashMap::new()),
             installing: tokio::sync::Mutex::new(()),
             node_dir: deps.config.node_dir.clone(),
             own_node: deps.config.own_node.clone(),
@@ -1564,6 +1579,7 @@ impl PackageCatalog {
             Answer::Same => {
                 let fetched = Fetched { url: url.to_string(), etag, fetched_at: now_iso(), closed: false };
                 let _ = write_whole(&self.dir.join("state.json"), &serde_json::to_vec(&fetched).unwrap_or_default());
+                self.previews_again(&self.dir, url).await;
                 let mut status = lock(&self.status);
                 status.offline = false;
                 status.problem = None;
@@ -1719,6 +1735,7 @@ impl PackageCatalog {
             Answer::Same => {
                 let fetched = Fetched { url: url.to_string(), etag, fetched_at: now_iso(), closed: false };
                 let _ = write_whole(&dir.join("state.json"), &serde_json::to_vec(&fetched).unwrap_or_default());
+                self.previews_again(&dir, url).await;
                 Ok(false)
             }
             Answer::Unreachable(error) | Answer::Broken(error) => {
@@ -1913,6 +1930,7 @@ impl PackageCatalog {
                             status = status
                         ),
                         missing: failed.missing || matches!(status.as_u16(), 404 | 410),
+                        too_big: failed.too_big,
                     });
                 }
                 let bytes = answer.bytes().await.map_err(|_| failed.clone())?;
@@ -1920,6 +1938,7 @@ impl PackageCatalog {
                     return Err(install::Failed {
                         message: crate::tr!("файл больше {max} КБ", max = max / 1024),
                         missing: false,
+                        too_big: true,
                     });
                 }
                 Ok(bytes.to_vec())
@@ -1970,8 +1989,15 @@ impl PackageCatalog {
         install::download(url.as_str(), MAX_ARCHIVE, ARCHIVE_TIMEOUT).await.map_err(ApiError::bad_gateway)
     }
 
+    /// After a read that found the feed the same (304): the previews its copy here names that did not come before —
+    /// a timeout at the first read, say — asked again, by the rules of `previews`.
+    async fn previews_again(&self, root: &Path, url: &url::Url) {
+        let Some(feed) = text_in(root, url).and_then(|text| parse_feed(&text, url).ok()) else { return };
+        self.previews(root, &feed).await;
+    }
+
     /// The previews of a feed's packages that are not here yet, in its folder; the ones of versions it no longer
-    /// names go.
+    /// names go. One that did not come waits `PREVIEW_AGAIN`; one that cannot come waits for a new version or address.
     async fn previews(&self, root: &Path, feed: &Feed) {
         let mut kept: HashSet<PathBuf> = HashSet::new();
         for entry in feed.newest() {
@@ -1985,21 +2011,44 @@ impl PackageCatalog {
                 if self.preview_file(&dir, &name).is_some() {
                     continue;
                 }
-                match install::download(url.as_str(), max, FEED_TIMEOUT).await {
+                let key = (root.to_path_buf(), dir.join(&name));
+                let resting = lock(&self.misses).get(&key).is_some_and(|miss| {
+                    miss.url == url.as_str() && (miss.lasting || miss.at.elapsed() < PREVIEW_AGAIN)
+                });
+                if resting {
+                    continue;
+                }
+                let lasting = match install::fetch(url.as_str(), max, FEED_TIMEOUT).await {
                     Ok(bytes) => match preview_kind(&bytes) {
                         Some(extension) if (name == "image") == (extension != "ogg") => {
-                            if let Err(error) = write_whole(&dir.join(format!("{name}.{extension}")), &bytes) {
-                                tracing::warn!(target: "plugins", "packages catalog: {}: {error}", dir.display());
+                            match write_whole(&dir.join(format!("{name}.{extension}")), &bytes) {
+                                Ok(()) => {
+                                    lock(&self.misses).remove(&key);
+                                    continue;
+                                }
+                                Err(error) => {
+                                    tracing::warn!(target: "plugins", "packages catalog: {}: {error}", dir.display());
+                                    false
+                                }
                             }
                         }
                         _ => {
-                            tracing::warn!(target: "plugins", "packages catalog: {} {name}: not WebP, PNG or Opus", entry.id)
+                            tracing::warn!(target: "plugins", "packages catalog: {} {name}: not WebP, PNG or Opus", entry.id);
+                            true
                         }
                     },
-                    Err(error) => tracing::warn!(target: "plugins", "packages catalog: {} {name}: {error}", entry.id),
-                }
+                    Err(failed) => {
+                        tracing::warn!(target: "plugins", "packages catalog: {} {name}: {}", entry.id, failed.message);
+                        failed.missing || failed.too_big
+                    }
+                };
+                let miss = Miss { url: url.to_string(), at: std::time::Instant::now(), lasting };
+                lock(&self.misses).insert(key, miss);
             }
         }
+        // What this feed no longer names is not remembered either.
+        lock(&self.misses)
+            .retain(|(feed, file), _| feed != root || file.parent().is_some_and(|dir| kept.contains(dir)));
         // Folders of packages and versions the feed no longer has.
         for package in std::fs::read_dir(root).into_iter().flatten().flatten() {
             if !package.file_type().is_ok_and(|kind| kind.is_dir()) {
@@ -2931,6 +2980,10 @@ pub mod tests {
         pub refuse: Arc<AtomicUsize>,
         /// Taken down: the feed answers 404.
         pub gone: Arc<std::sync::atomic::AtomicBool>,
+        /// The feed's answers «the same» (304).
+        pub same: Arc<AtomicUsize>,
+        /// Each file's requests, by its path.
+        pub asked: Arc<Mutex<BTreeMap<String, usize>>>,
     }
 
     async fn feed(State(site): State<Site>, headers: HeaderMap) -> axum::response::Response {
@@ -2944,6 +2997,7 @@ pub mod tests {
         let text = lock(&site.feed).clone();
         let etag = format!("\"{}\"", hex::encode(&sha2::Sha256::digest(text.as_bytes())[..8]));
         if headers.get(header::IF_NONE_MATCH).and_then(|value| value.to_str().ok()) == Some(etag.as_str()) {
+            site.same.fetch_add(1, Ordering::SeqCst);
             return StatusCode::NOT_MODIFIED.into_response();
         }
         ([(header::ETAG, etag)], text).into_response()
@@ -2953,6 +3007,7 @@ pub mod tests {
         State(site): State<Site>,
         axum::extract::Path(path): axum::extract::Path<String>,
     ) -> axum::response::Response {
+        *lock(&site.asked).entry(path.clone()).or_default() += 1;
         if site.refuse.load(Ordering::SeqCst) > 0 {
             site.refuse.fetch_sub(1, Ordering::SeqCst);
             return StatusCode::SERVICE_UNAVAILABLE.into_response();
@@ -2974,6 +3029,8 @@ pub mod tests {
             down: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             refuse: Arc::new(AtomicUsize::new(0)),
             gone: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            same: Arc::new(AtomicUsize::new(0)),
+            asked: Arc::new(Mutex::new(BTreeMap::new())),
         };
         let router =
             Router::new().route("/catalog.json", get(feed)).route("/{*path}", get(file)).with_state(site.clone());
@@ -3015,6 +3072,11 @@ pub mod tests {
             let mut feed: Value = serde_json::from_str(&lock(&self.feed)).unwrap();
             feed["packages"].as_array_mut().unwrap().push(entry);
             *lock(&self.feed) = feed.to_string();
+        }
+
+        /// How many times a file was asked for.
+        fn asked(&self, path: &str) -> usize {
+            lock(&self.asked).get(path).copied().unwrap_or(0)
         }
 
         /// Its scheme, host and port.
@@ -3339,6 +3401,92 @@ pub mod tests {
         assert_eq!(site.reads.load(Ordering::SeqCst), before);
         let refused = catalog.install("arthur", None, false, None).await.unwrap_err();
         assert_eq!(refused.status, StatusCode::CONFLICT);
+    }
+
+    /// The previews that did not come, as if `PREVIEW_AGAIN` had passed.
+    fn rested(catalog: &PackageCatalog) {
+        let long_ago = std::time::Instant::now().checked_sub(PREVIEW_AGAIN).expect("a clock older than the wait");
+        for miss in lock(&catalog.misses).values_mut() {
+            miss.at = long_ago;
+        }
+    }
+
+    #[tokio::test]
+    async fn a_preview_that_did_not_come_comes_at_a_later_read_of_a_feed_that_did_not_change() {
+        let (main, own) = (site().await, site().await);
+        main.publish(&[character("arthur", "1.0.0")]);
+        own.publish(&[unknown_voice_character("jarvis-demo", "1.0.0")]);
+        // The first file each site is asked for — the picture — fails on the way.
+        main.refuse.store(1, Ordering::SeqCst);
+        own.refuse.store(1, Ordering::SeqCst);
+        let fixture = fixture(FeedSource::Url(main.url.clone()), Placement::Pc);
+        let catalog = &fixture.catalog;
+        catalog.view(false).await;
+        let view = catalog.add_source(&own.url, None).await.unwrap();
+        let image = |view: &CatalogView, id: &str| {
+            view.packages.iter().find(|entry| entry.id == id).unwrap().preview.image.is_some()
+        };
+        assert!(!image(&view, "arthur") && !image(&view, "jarvis-demo"), "no pictures yet");
+        assert_eq!(view.packages.iter().find(|entry| entry.id == "jarvis-demo").unwrap().preview.samples.len(), 1);
+
+        // «Check now» at once: both feeds the same, the pictures not asked again so soon.
+        let same = (main.same.load(Ordering::SeqCst), own.same.load(Ordering::SeqCst));
+        let view = catalog.view(true).await;
+        assert!(main.same.load(Ordering::SeqCst) > same.0 && own.same.load(Ordering::SeqCst) > same.1);
+        assert!(!image(&view, "arthur") && !image(&view, "jarvis-demo"));
+        assert_eq!((main.asked("previews/arthur.webp"), own.asked("previews/arthur.webp")), (1, 1));
+
+        // A later read, both feeds still the same: the pictures come.
+        rested(catalog);
+        let view = catalog.view(true).await;
+        assert!(main.same.load(Ordering::SeqCst) > same.0 + 1 && own.same.load(Ordering::SeqCst) > same.1 + 1);
+        assert!(image(&view, "arthur") && image(&view, "jarvis-demo"), "{view:?}");
+        catalog.preview("arthur", "image").await.expect("the main feed's picture");
+        catalog.preview("jarvis-demo", "image").await.expect("the own source's picture");
+        assert_eq!((main.asked("previews/arthur.webp"), own.asked("previews/arthur.webp")), (2, 2));
+        assert_eq!(main.asked("previews/arthur-1.opus"), 1, "a phrase that came is not asked again");
+        assert!(lock(&catalog.misses).is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_preview_that_cannot_come_is_not_asked_at_every_read_only_for_a_new_version() {
+        let site = site().await;
+        let mut bob = character("bob", "1.0.0");
+        bob.0["preview"] = json!({ "image": "previews/bob.webp" });
+        site.publish(&[character("arthur", "1.0.0"), bob.clone()]);
+        let break_files = || {
+            let mut files = lock(&site.files);
+            files.remove("previews/arthur.webp"); // no file there: 404
+            files.insert("previews/arthur-1.opus".into(), [OPUS, &vec![0; MAX_SAMPLE as usize]].concat()); // too big
+            files.insert("previews/bob.webp".into(), b"not a picture".to_vec());
+        };
+        break_files();
+        let fixture = fixture(FeedSource::Url(site.url.clone()), Placement::Pc);
+        let catalog = &fixture.catalog;
+        let view = catalog.view(false).await;
+        assert!(view.packages.iter().all(|entry| entry.preview.image.is_none() && entry.preview.samples.is_empty()));
+        for _ in 0..3 {
+            rested(catalog);
+            catalog.view(true).await;
+        }
+        assert!(site.same.load(Ordering::SeqCst) >= 3);
+        let asked = |site: &Site| {
+            ["previews/arthur.webp", "previews/arthur-1.opus", "previews/bob.webp"].map(|path| site.asked(path))
+        };
+        assert_eq!(asked(&site), [1, 1, 1], "each asked once, not at every read");
+
+        // A new version of arthur, its files fixed: asked at once; bob's stays as it was.
+        let mut feed: Value = serde_json::from_str(&lock(&site.feed)).unwrap();
+        feed["packages"][0]["version"] = json!("1.1.0");
+        *lock(&site.feed) = feed.to_string();
+        lock(&site.files).insert("previews/arthur.webp".into(), WEBP.to_vec());
+        lock(&site.files).insert("previews/arthur-1.opus".into(), OPUS.to_vec());
+        let view = catalog.view(true).await;
+        let arthur = view.packages.iter().find(|entry| entry.id == "arthur").unwrap();
+        assert_eq!(arthur.version, "1.1.0");
+        assert!(arthur.preview.image.is_some() && arthur.preview.samples.len() == 1, "{arthur:?}");
+        assert_eq!(asked(&site), [2, 2, 1]);
+        assert_eq!(lock(&catalog.misses).len(), 1, "only bob's picture is remembered; arthur 1.0.0's are forgotten");
     }
 
     #[tokio::test]

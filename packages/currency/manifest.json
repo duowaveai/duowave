@@ -2,7 +2,7 @@
   "schema": 1,
   "kind": "plugin",
   "id": "p-e28975f15f73",
-  "version": "2.1.1",
+  "version": "2.1.2",
   "title": "Курсы валют",
   "description": "Курсы ЦБ России голосом и виджетом на столе пульта: доллар, евро, юань и другие, на сегодня и как изменились. Открытый источник cbr-xml-daily.ru, без ключа; курс держится час.",
   "api": "^2",
@@ -80,7 +80,7 @@
     "tools": [
       {
         "name": "currency_rates",
-        "description": "Официальные курсы ЦБ России на сегодня: рублей за единицу валюты и изменение к прошлому дню. Без кода — доллар, евро и юань.",
+        "description": "Today's official Bank of Russia rates: roubles per unit and the change since yesterday. No codes — USD, EUR and CNY.",
         "input": {
           "type": "object",
           "properties": {
@@ -89,7 +89,7 @@
               "items": {
                 "type": "string"
               },
-              "description": "Коды валют: USD, EUR, CNY…"
+              "description": "Currency codes: USD, EUR, CNY…"
             }
           }
         },

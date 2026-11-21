@@ -818,10 +818,11 @@ pub fn space_of(path: &Path) -> Option<Space> {
         let unit = stat.f_frsize as u64;
         Some(Space { free_kb: stat.f_bavail as u64 * unit / 1024, total_kb: stat.f_blocks as u64 * unit / 1024 })
     }
+    // Elsewhere (Windows) the disk as the system tells it (operations::system_memory) — it was None there.
     #[cfg(not(unix))]
     {
-        let _ = path;
-        None
+        let (total_mb, free_mb) = crate::operations::system_memory::disk_mb(path)?;
+        Some(Space { free_kb: free_mb * 1024, total_kb: total_mb * 1024 })
     }
 }
 

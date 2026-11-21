@@ -126,7 +126,7 @@ pub fn tools(with_draft: bool) -> Vec<LlmTool> {
         let mut required: Vec<&str> = required.to_vec();
         if with_draft {
             properties["draft"] =
-                json!({ "type": "string", "description": "id черновика — из list_drafts или ответа new_draft" });
+                json!({ "type": "string", "description": "The draft's id: from list_drafts or new_draft's answer" });
             required.insert(0, "draft");
         }
         schema(properties, &required)
@@ -134,123 +134,123 @@ pub fn tools(with_draft: bool) -> Vec<LlmTool> {
     let mut tools = vec![
         LlmTool {
             name: "draft_files".into(),
-            description: "Файлы черновика с размерами, вид пакета, версия и что стоит на шлюзе.".into(),
+            description: "The draft's files with sizes, the package kind, its version and what is installed on the gateway.".into(),
             parameters: draft(json!({}), &[]),
         },
         LlmTool {
             name: "read_file".into(),
-            description: "Читает файл черновика: manifest.json, backend.js, panel.js, panel.css, README.md, SKILL.md или assets/….".into(),
+            description: "Read a draft file: manifest.json, backend.js, panel.js, panel.css, README.md, SKILL.md or assets/….".into(),
             parameters: draft(json!({ "path": { "type": "string" } }), &["path"]),
         },
         LlmTool {
             name: "write_file".into(),
-            description: "Записывает файл черновика целиком (создаёт или заменяет). Большой файл (окошко panel.js, длинный backend.js) пиши частями: первый кусок здесь, следующие — append_file, по 100–200 строк за вызов: длинный файл целиком в один ответ не влезет. Готовый большой файл правь edit_file. После записи — check.".into(),
+            description: "Write a whole draft file (create or replace). A big file (a panel.js window, a long backend.js) goes in parts: the first here, the next ones by append_file, 100–200 lines a call — a long file does not fit one answer. Change a big ready file with edit_file. Then check.".into(),
             parameters: draft(json!({ "path": { "type": "string" }, "content": { "type": "string" } }), &["path", "content"]),
         },
         LlmTool {
             name: "append_file".into(),
-            description: "Дописывает кусок в конец файла черновика, с новой строки (файла нет — создаёт). Так пишется большой файл: первый кусок — write_file, следующие — append_file, по 100–200 строк за вызов. После последнего куска — check.".into(),
+            description: "Append a part to the end of a draft file, on a new line (creates a missing file). A big file: the first part by write_file, the next ones here, 100–200 lines a call. After the last part — check.".into(),
             parameters: draft(
                 json!({
                     "path": { "type": "string" },
-                    "content": { "type": "string", "description": "Следующий кусок файла" }
+                    "content": { "type": "string", "description": "The file's next part" }
                 }),
                 &["path", "content"],
             ),
         },
         LlmTool {
             name: "edit_file".into(),
-            description: "Правит файл черновика куском: заменяет old на new. old — точный кусок файла (с отступами), один на весь файл; добавь строки вокруг, если он повторяется. Несколько правок — несколько вызовов. После правок — check.".into(),
+            description: "Edit a draft file: replace old with new. old is an exact piece of the file (indentation too), found once; add lines around it if it repeats. One edit a call. Then check.".into(),
             parameters: draft(
                 json!({
                     "path": { "type": "string" },
-                    "old": { "type": "string", "description": "Точный кусок, который есть в файле один раз" },
-                    "new": { "type": "string", "description": "Чем заменить" }
+                    "old": { "type": "string", "description": "An exact piece found once in the file" },
+                    "new": { "type": "string", "description": "What replaces it" }
                 }),
                 &["path", "old", "new"],
             ),
         },
         LlmTool {
             name: "delete_file".into(),
-            description: "Удаляет файл черновика.".into(),
+            description: "Delete a draft file.".into(),
             parameters: draft(json!({ "path": { "type": "string" } }), &["path"]),
         },
         LlmTool {
             name: "check".into(),
-            description: "Проверяет черновик: манифест, загрузку кода в песочнице, что все функции на месте, что колонка не сыграет (http, AAC).".into(),
+            description: "Check the draft: the manifest, the code loading in the sandbox, every function in place, what a speaker will not play (http, AAC).".into(),
             parameters: draft(json!({}), &[]),
         },
         LlmTool {
             name: "run_function".into(),
-            description: "Запускает функцию backend.js в песочнице с входом: результат, журнал, что сказала бы, хранилище. example: true — ответы сети из examples.json, в сеть ни шагу: так плитка и «Примерка» показывают черновик до «да».".into(),
+            description: "Run a backend.js function in the sandbox with an input: its result, log, what it would say, storage. example: true — network answers from examples.json, no network: so the tile and «Примерка» show the draft before «да».".into(),
             parameters: draft(
                 json!({
                     "function": { "type": "string" },
-                    "input": { "type": "object", "description": "Аргумент функции" },
-                    "example": { "type": "boolean", "description": "На примере (examples.json), без сети" }
+                    "input": { "type": "object", "description": "The function's argument" },
+                    "example": { "type": "boolean", "description": "On the example (examples.json), no network" }
                 }),
                 &["function"],
             ),
         },
         LlmTool {
             name: "try_phrase".into(),
-            description: "Прогоняет фразу, как её услышит маршрутизатор: какая фраза манифеста подошла, слоты, что ушло бы колонке (речь, play, ссылки), предупреждения. example: true — на примере, без сети.".into(),
+            description: "Run a phrase as the router hears it: which manifest phrase matched, the slots, what would go to the speaker (speech, play, links), warnings. example: true — on the example, no network.".into(),
             parameters: draft(
                 json!({
-                    "text": { "type": "string", "description": "Например «Алиса, включи радио джаз»" },
-                    "example": { "type": "boolean", "description": "На примере (examples.json), без сети" }
+                    "text": { "type": "string", "description": "Like «Алиса, включи радио джаз»" },
+                    "example": { "type": "boolean", "description": "On the example (examples.json), no network" }
                 }),
                 &["text"],
             ),
         },
         LlmTool {
             name: "plugin_journal".into(),
-            description: "Журнал поставленного плагина: его console, вызовы и ошибки, что колонка сказала о его станциях (началa играть, молчит).".into(),
+            description: "The installed plugin's journal: its console, calls and errors, what the speaker said of its streams (started playing, silent).".into(),
             parameters: draft(json!({}), &[]),
         },
         LlmTool {
             name: "install".into(),
-            description: "Ставит черновик новой версией рядом с прежней и перезапускает плагин; не поднялась — работает прежняя. Первую установку и новые права одобряет администратор в пульте.".into(),
+            description: "Install the draft as a new version beside the old one and restart the plugin; if it does not come up, the old one works. The admin approves the first install and new rights in the panel.".into(),
             parameters: draft(json!({}), &[]),
         },
         LlmTool {
             name: "history".into(),
-            description: "История черновика: шаги и версии, новые сверху — id, когда, кто, что просили, версия, метки (draft — черновик, installed — поставлено).".into(),
+            description: "The draft's history, newest first: id, when, who, what was asked, version, labels (draft, installed).".into(),
             parameters: draft(json!({}), &[]),
         },
         LlmTool {
             name: "show_version".into(),
-            description: "Запись истории: её файлы, или один файл (path) — как он был в той записи. record — id или его начало (7 знаков).".into(),
+            description: "A history record: its files, or one file (path) as it was then. record — the id or its first 7 characters.".into(),
             parameters: draft(json!({ "record": { "type": "string" }, "path": { "type": "string" } }), &["record"]),
         },
         LlmTool {
             name: "compare".into(),
-            description: "Разница между записью истории (from) и черновиком сейчас или другой записью (to): файлы, строки, права и фразы манифеста.".into(),
+            description: "The difference between a history record (from) and the draft now or another record (to): files, lines, rights and manifest phrases.".into(),
             parameters: draft(json!({ "from": { "type": "string" }, "to": { "type": "string" } }), &["from"]),
         },
         LlmTool {
             name: "restore_step".into(),
-            description: "Возвращает черновик к записи истории — новым шагом, так что можно вернуться обратно. «Верни как было до этого» — к шагу перед последним.".into(),
+            description: "Bring the draft back to a history record as a new step, so it can be undone. «Верни как было до этого» — the step before the last.".into(),
             parameters: draft(json!({ "record": { "type": "string" } }), &["record"]),
         },
         LlmTool {
             name: "merge".into(),
-            description: "Объединяет запись истории с черновиком: что объединилось само — уже в черновике; спорное — тебе (merge_state). «Возьми из версии от вторника …» — так.".into(),
+            description: "Merge a history record into the draft: what merges by itself is in the draft; conflicts are yours (merge_state). For «Возьми из версии от вторника …».".into(),
             parameters: draft(json!({ "record": { "type": "string" } }), &["record"]),
         },
         LlmTool {
             name: "merge_state".into(),
-            description: "Объединение, которое идёт: почему ты, спорные файлы и их три версии — основа, наша (черновик), другая. path — один файл.".into(),
+            description: "The merge in progress: why you, the conflicting files and their three versions — base, ours (the draft), theirs. path — one file.".into(),
             parameters: draft(json!({ "path": { "type": "string" } }), &[]),
         },
         LlmTool {
             name: "finish_merge".into(),
-            description: "Заканчивает объединение: проверяет черновик и записывает шаг с обеими сторонами. Сначала check.".into(),
+            description: "Finish the merge: checks the draft and records a step with both sides. check first.".into(),
             parameters: draft(json!({}), &[]),
         },
         LlmTool {
             name: "ask_owner".into(),
-            description: "Вопрос владельцу, когда по смыслу непонятно, что оставить при объединении: вопрос и 2–4 варианта. Объединение ждёт ответа — не угадывай.".into(),
+            description: "Ask the owner when the meaning does not tell what to keep in a merge: a question and 2–4 options. The merge waits for the answer — do not guess.".into(),
             parameters: draft(
                 json!({
                     "question": { "type": "string" },
@@ -261,25 +261,25 @@ pub fn tools(with_draft: bool) -> Vec<LlmTool> {
         },
         LlmTool {
             name: "docs".into(),
-            description: "Справочник: authoring — манифест, Host API, шина, лимиты; station — что умеет колонка; cards — карточки виджетов, их вид (сцены, цвета, фото) и когда нужно окошко; panel — SDK пульта (panel.js, окошко); game — образец красивого окошка-игры («Неоновая змейка» целиком); themes — контракт темы: три цвета режима, фон из сцен пульта, палитра.".into(),
+            description: "Reference: authoring — the manifest, Host API, bus, limits; station — what the speaker can do; cards — widget cards, their looks (scenes, colours, photos) and when a window is needed; panel — the panel SDK (panel.js, a window); game — a model of a fine game window (all of «Неоновая змейка»); themes — the theme contract: three colours of a mode, a backdrop from the panel's scenes, the palette.".into(),
             parameters: schema(json!({ "topic": { "type": "string", "enum": ["authoring", "station", "cards", "panel", "game", "themes"] } }), &["topic"]),
         },
     ];
     if with_draft {
         tools.push(LlmTool {
             name: "list_drafts".into(),
-            description: "Черновики мастерской.".into(),
+            description: "The workshop's drafts.".into(),
             parameters: schema(json!({}), &[]),
         });
         tools.push(LlmTool {
             name: "new_draft".into(),
-            description: "Новый черновик: из заготовки (kind plugin, quiz — викторина с таймером хода «Время вышло!», midi — учитель на MIDI-клавиатуре, — или theme), из описания API (openapi — JSON документа OpenAPI) или из своего поставленного пакета (draft — его id). id нового черновика выдаёт мастерская — случайный «p-» и 12 знаков 0–9 a–f, он в ответе (поле id); дальше зовите инструменты с ним. Имя — в title.".into(),
+            description: "A new draft: from a template (kind plugin; quiz — a quiz with a turn timer «Время вышло!»; midi — a MIDI keyboard teacher; folders; theme), from an API description (openapi — an OpenAPI JSON document) or from an own installed package (draft — its id). The workshop gives the new draft's id — a random «p-» and 12 characters 0–9 a–f — in the answer (field id); call the tools with it. The name goes in title.".into(),
             parameters: schema(
                 json!({
-                    "draft": { "type": "string", "description": "Только чтобы открыть свой поставленный пакет; для нового — не называть" },
+                    "draft": { "type": "string", "description": "Only to open an own installed package; none for a new one" },
                     "kind": { "type": "string", "enum": ["plugin", "quiz", "midi", "folders", "theme"] },
                     "title": { "type": "string" },
-                    "openapi": { "type": "string", "description": "Документ OpenAPI в JSON" }
+                    "openapi": { "type": "string", "description": "An OpenAPI document in JSON" }
                 }),
                 &[],
             ),

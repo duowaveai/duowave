@@ -95,19 +95,19 @@ fn object(properties: Value, required: &[&str]) -> Value {
 pub fn remember_tool() -> LlmTool {
     LlmTool {
         name: "remember".into(),
-        description: "Keep a fact about the home and its people for later conversations: who is who, where, with \
-                      whom, habits, dates, likes. Write the fact as one short sentence in the language of the \
-                      conversation."
+        // When to remember is the memory block's rule in the prompt (memory/context.rs): here only what it takes —
+        // every word of a tool goes with every question (docs/plans/fast-tools.md).
+        description: "Keep a fact about the home or its people, one short sentence in the conversation's language."
             .into(),
         parameters: object(
             json!({
-                "fact": { "type": "string", "description": "The fact as one short sentence: «У Маши аллергия на орехи»." },
-                "about": { "type": "string", "description": "Who or what it is about, by name (Маша, кот Барсик, кухня); leave out for the home itself." },
-                "about_kind": { "type": "string", "enum": ["person", "pet", "room", "thing", "place", "org"], "description": "What `about` is." },
-                "relation": { "type": "string", "description": "A short label of the relation or property: «сестра», «работает в», «аллергия»." },
-                "other": { "type": "string", "description": "Another person or thing the fact links to: Петя in «Маша — сестра Пети»." },
+                "fact": { "type": "string", "description": "«У Маши аллергия на орехи»." },
+                "about": { "type": "string", "description": "Whom or what it is about, by name; none for the home." },
+                "about_kind": { "type": "string", "enum": ["person", "pet", "room", "thing", "place", "org"] },
+                "relation": { "type": "string", "description": "A short label: «сестра», «аллергия»." },
+                "other": { "type": "string", "description": "Whom it links to: «Петя» in «Маша — сестра Пети»." },
                 "other_kind": { "type": "string", "enum": ["person", "pet", "room", "thing", "place", "org"] },
-                "replaces": { "type": "string", "description": "An old fact this one replaces, as you know it («плавание по средам»): it is closed with today's date." }
+                "replaces": { "type": "string", "description": "The old fact it replaces." }
             }),
             &["fact"],
         ),
@@ -117,11 +117,9 @@ pub fn remember_tool() -> LlmTool {
 pub fn forget_tool() -> LlmTool {
     LlmTool {
         name: "forget".into(),
-        description: "Close a remembered fact the person asks to forget or says is no longer true; it stays in the \
-                      history, no longer used."
-            .into(),
+        description: "Close a remembered fact that is to be forgotten or is no longer true.".into(),
         parameters: object(
-            json!({ "what": { "type": "string", "description": "The fact, in a few words: «орехи», «Петя плавание»." } }),
+            json!({ "what": { "type": "string", "description": "A few words: «Петя плавание»." } }),
             &["what"],
         ),
     }
@@ -130,11 +128,9 @@ pub fn forget_tool() -> LlmTool {
 pub fn recall_tool() -> LlmTool {
     LlmTool {
         name: "recall".into(),
-        description: "Look up what is remembered about a person, a pet, a place or a topic of this home, beyond the \
-                      lines you already have."
-            .into(),
+        description: "Look up more of what is remembered about someone or something of this home.".into(),
         parameters: object(
-            json!({ "query": { "type": "string", "description": "A name or a few words: «Маша», «аллергия»." } }),
+            json!({ "query": { "type": "string", "description": "A name or a few words." } }),
             &["query"],
         ),
     }

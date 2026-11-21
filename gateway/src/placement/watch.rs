@@ -6,8 +6,9 @@
 //! the station's build takes them. A newer station build inside this one — it offers the update, or installs it when
 //! the household said «автоматически».
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use serde_json::Value;
@@ -28,10 +29,18 @@ use crate::settings::SettingsService;
 use crate::storage::Db;
 use crate::updates::feed::is_newer;
 use crate::updates::{OwnRelease, UpdatesService};
-use crate::utils::time::now_iso;
+use crate::utils::time::{now_iso, now_ms};
 
 /// How often the station's gateway is asked.
 pub const POLL: Duration = Duration::from_secs(30);
+
+/// While the station is away it is tried this often — a look, or a request of the pass —, and between the tries the
+/// pass answers from its copies at once (placement/proxy.rs). A tester's Mini 2, 22.11: its Wi-Fi dropped for minutes
+/// several times a day; every request of the panel waited 3 s for it and wrote a line in the journal.
+pub const AWAY_LOOK: Duration = Duration::from_secs(5);
+
+/// The looks every few seconds go on this long into an outage; after it the 30-s round and the pass's tries do.
+const AWAY_LOOKS_FOR: Duration = Duration::from_secs(10 * 60);
 
 /// What the computer knows of the station's gateway now.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
@@ -45,6 +54,13 @@ pub struct Live {
     pub seen_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Since when the station is away (unix ms): its first try with no answer at all, a look's or the pass's. None while
+    /// it answers.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub away_since: Option<u64>,
+    /// When it was last tried while away.
+    #[serde(skip)]
+    pub tried: Option<Instant>,
     /// The station gateway's /health, as it answered last.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub health: Option<Value>,
@@ -205,6 +221,10 @@ pub struct StationGateway {
     misses: Mutex<(u32, Option<std::time::Instant>)>,
     /// This computer's own updates: what it knows of releases, and its own install for «Обновить компьютер и колонку».
     updates: OnceLock<Arc<UpdatesService>>,
+    /// Itself, for the looks while the station is away: they outlive the request that saw it go.
+    me: Weak<StationGateway>,
+    /// Those looks are going on.
+    looking: AtomicBool,
 }
 
 impl StationGateway {
@@ -217,7 +237,9 @@ impl StationGateway {
         key: &str,
     ) -> Arc<StationGateway> {
         let backups = Backups::for_station(config.skills.state_dir.as_deref(), key);
-        Arc::new(StationGateway {
+        Arc::new_cyclic(|me| StationGateway {
+            me: me.clone(),
+            looking: AtomicBool::new(false),
             key: key.to_string(),
             config,
             db,
@@ -787,7 +809,12 @@ impl StationGateway {
     /// that changed (`signature`).
     async fn look(&self, client: &PeerClient) -> Result<(), String> {
         let before = self.signature();
-        let answer = client.health().await;
+        let answer = client.look().await;
+        // An answer — even one with an error — ends an outage; no answer at all begins one or goes on with it.
+        match &answer {
+            Err(missed) if missed.gone => self.missed(&missed.said, &missed.why),
+            _ => self.answered(),
+        }
         let outcome = {
             let mut live = self.lock();
             live.checked_at = Some(now_iso());
@@ -799,10 +826,10 @@ impl StationGateway {
                     live.health = Some(health);
                     Ok(())
                 }
-                Err(error) => {
+                Err(missed) => {
                     live.reachable = false;
-                    live.error = Some(error.clone());
-                    Err(error)
+                    live.error = Some(missed.said.clone());
+                    Err(missed.said)
                 }
             }
         };
@@ -810,6 +837,99 @@ impl StationGateway {
             self.events.emit(GatewayEvent::PlacementChanged { what: "station".into() });
         }
         outcome
+    }
+
+    /// Nothing answered — a look, or a request of the pass: refused, no route, no answer in time. The first miss of an
+    /// outage marks the station away: one line in the journal with why, the panel told at once, and a look every few
+    /// seconds until it answers. The misses after it say nothing more (a tester's journal, 22.11: 550 of 600 lines were
+    /// «pass to the station: error sending request», one per request, with no cause).
+    pub fn missed(&self, said: &str, why: &str) {
+        let first = {
+            let mut live = self.lock();
+            live.reachable = false;
+            live.error = Some(said.to_string());
+            live.tried = Some(Instant::now());
+            let first = live.away_since.is_none();
+            if first {
+                live.away_since = Some(now_ms());
+            }
+            first
+        };
+        if first {
+            tracing::warn!(target: "placement", "station {}: no link — {why}", self.key);
+            self.events.emit(GatewayEvent::PlacementChanged { what: "station".into() });
+        }
+        self.look_while_away();
+    }
+
+    /// The station answered — a look, or a request of the pass: an outage ends, with one line of how long it lasted.
+    pub fn answered(&self) {
+        let since = {
+            let mut live = self.lock();
+            let since = live.away_since.take();
+            if since.is_some() {
+                live.reachable = true;
+                live.seen_at = Some(now_iso());
+                live.error = None;
+                live.tried = None;
+            }
+            since
+        };
+        if let Some(since) = since {
+            let lasted = lasted(now_ms().saturating_sub(since));
+            tracing::info!(target: "placement", "station {}: link back after {lasted}", self.key);
+            self.events.emit(GatewayEvent::PlacementChanged { what: "station".into() });
+        }
+    }
+
+    /// Since when the station is away (unix ms); None while it answers.
+    pub fn away_since(&self) -> Option<u64> {
+        self.lock().away_since
+    }
+
+    /// The pass may try the station now: it answers, or it has not been tried for a few seconds — then this request is
+    /// the try. Otherwise the pass answers from its copy at once.
+    pub fn worth_a_try(&self) -> bool {
+        let mut live = self.lock();
+        if live.away_since.is_none() {
+            return true;
+        }
+        let due = live.tried.is_none_or(|at| at.elapsed() >= AWAY_LOOK);
+        if due {
+            live.tried = Some(Instant::now());
+        }
+        due
+    }
+
+    /// While the station is away: a look every few seconds, for the first minutes of the outage, so the panel sees it
+    /// back by itself. One such round at a time; the 30-s round goes on as before.
+    fn look_while_away(&self) {
+        if !self.lately_away() || self.looking.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let (Some(me), Ok(runtime)) = (self.me.upgrade(), tokio::runtime::Handle::try_current()) else {
+            self.looking.store(false, Ordering::SeqCst);
+            return;
+        };
+        runtime.spawn(async move {
+            while me.lately_away() {
+                tokio::time::sleep(AWAY_LOOK).await;
+                let Some(client) = me.client() else { break };
+                if me.look(&client).await.is_ok() {
+                    me.tell_news();
+                }
+            }
+            me.looking.store(false, Ordering::SeqCst);
+            // Away again between the last look and here: its round begins.
+            if me.lately_away() && me.client().is_some() {
+                me.look_while_away();
+            }
+        });
+    }
+
+    /// Away, and for less than the minutes the looks every few seconds go on.
+    fn lately_away(&self) -> bool {
+        self.away_since().is_some_and(|since| now_ms().saturating_sub(since) < AWAY_LOOKS_FOR.as_millis() as u64)
     }
 
     /// The home's copy (docs/plans/home-and-devices.md, stage 3): the station's gateway is the home's centre and the
@@ -1336,6 +1456,16 @@ fn older_than(at: &str, age: Duration) -> bool {
         .unwrap_or(true)
 }
 
+/// How long an outage lasted, for the journal: «42 s», «4 min 12 s», «2 h 5 min».
+fn lasted(ms: u64) -> String {
+    let seconds = ms / 1000;
+    match seconds {
+        0..60 => format!("{seconds} s"),
+        60..3600 => format!("{} min {} s", seconds / 60, seconds % 60),
+        _ => format!("{} h {} min", seconds / 3600, seconds % 3600 / 60),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1348,6 +1478,13 @@ mod tests {
     use crate::placement::transfer;
     use crate::settings::definitions::SettingsHome;
     use crate::settings::definitions::{ModeSetting, PanelMode, KEEP_REQUESTS, MODE};
+
+    #[test]
+    fn an_outage_reads_in_seconds_minutes_or_hours() {
+        assert_eq!(lasted(42_400), "42 s");
+        assert_eq!(lasted(252_000), "4 min 12 s");
+        assert_eq!(lasted(7_500_000), "2 h 5 min");
+    }
 
     /// A pretend station gateway of this build: /health with a revision, its settings sealed with the pair's key, and
     /// what it was sent.

@@ -645,7 +645,9 @@ mod tests {
         let calls = spawner.calls();
         assert_eq!(calls.len(), 1);
         let (command, args) = &calls[0];
-        assert!(command.ends_with("env/bin/python") || command.ends_with("env\\Scripts\\python.exe"), "{command}");
+        // By the path's parts, not its text: on Windows the same path is written with «\\» (the lab here is a Mac's).
+        let python = Path::new(command.as_str());
+        assert!(python.ends_with("env/bin/python") || python.ends_with("env/Scripts/python.exe"), "{command}");
         let server_py = fixture.path("clone-server").join("server.py").to_string_lossy().into_owned();
         for expected in
             [server_py.as_str(), "--engine", "omnivoice", "--port", &fixture.port.to_string(), "--device", "mps"]
@@ -701,7 +703,7 @@ mod tests {
         let calls = spawner.calls();
         assert_eq!(calls.len(), 2);
         assert_eq!(calls[0].0, "/usr/sbin/taskpolicy");
-        assert!(calls[1].0.ends_with("env/bin/python"), "then as it is: {}", calls[1].0);
+        assert!(Path::new(&calls[1].0).ends_with("env/bin/python"), "then as it is: {}", calls[1].0);
         assert_eq!(calls[1].1, calls[0].1[calls[0].1.iter().position(|arg| arg == &calls[1].0).unwrap() + 1..]);
     }
 
