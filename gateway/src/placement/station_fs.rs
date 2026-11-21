@@ -1380,6 +1380,7 @@ pub(crate) mod tests {
         assert_eq!(log.matches("no answer on /health").count(), 3, "{log}");
     }
 
+    #[cfg(unix)]
     #[test]
     fn its_stop_ends_every_gateway_of_ours_kills_one_that_hangs_and_its_apps_programs() {
         use std::os::unix::process::ExitStatusExt;
@@ -1413,6 +1414,7 @@ pub(crate) mod tests {
         assert!(log.contains("did not end within 1 s of TERM: killed"), "{log}");
     }
 
+    #[cfg(unix)]
     #[test]
     fn its_stop_is_over_once_the_gateway_is() {
         use std::os::unix::process::ExitStatusExt;
