@@ -344,6 +344,26 @@ impl HostApi for SandboxHost {
     fn call(&self, name: &str, input: Value) -> BoxFuture<'static, Result<Value, String>> {
         use crate::plugins::schedule;
         let field = |key: &str| input.get(key).and_then(Value::as_str).unwrap_or_default().to_string();
+        // The device's state is this machine's own reading and harmless to read: the fitting shows the real numbers
+        // and a graph that grows (an example in examples.json, «bus», answers in its stead).
+        if name == "bus.call" && field("to") == crate::operations::device_state::ADDRESS {
+            const DEVICE: &str = crate::operations::device_state::ADDRESS;
+            let handle = field("handle");
+            let example =
+                self.bus.iter().find(|example| example.to == DEVICE && example.handle == handle).map(|example| {
+                    self.note("bus", crate::tr!("{to}: {handle} — из примера", to = DEVICE, handle = handle));
+                    example.result.clone()
+                });
+            let allowed = self.reaches(DEVICE);
+            let letter = input.get("input").cloned().unwrap_or(Value::Null);
+            return Box::pin(async move {
+                allowed?;
+                match example {
+                    Some(result) => Ok(result),
+                    None => crate::operations::device_state::shared().answer(&handle, &letter).await,
+                }
+            });
+        }
         let answer = match name {
             "bus.call" => {
                 let (to, handle) = (field("to"), field("handle"));
@@ -1323,6 +1343,46 @@ mod tests {
         asked["permissions"] = json!(["call:system/content"]);
         draft(&folder, asked, letter);
         assert!(check(&folder, "jazz", None).await.warnings.is_empty());
+    }
+
+    /// «Сделай график температуры колонки»: the fitting reads this machine's own state by the draft's `see:` right, a
+    /// graph has its first point at once; without the right the letter meets «нет такого».
+    #[tokio::test]
+    async fn a_device_graph_reads_the_real_state_in_the_fitting_by_its_right() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().join("temp");
+        let mut asked = json!({
+            "schema": 1, "id": "temp", "version": "1.0.0", "title": "Температура", "api": "^2",
+            "runs": ["pc", "station"], "permissions": ["see:system/device"],
+            "contributes": { "panel": { "calls": ["card"],
+                "cards": [{ "id": "card", "title": "Температура", "function": "card", "refreshS": 60 }] } }
+        });
+        let code = r#"
+            export async function card() {
+              const now = await host.bus.call("system/device", "state", { device: "station" })
+                .catch(() => host.bus.call("system/device", "state", {}));
+              const history = await host.bus.call("system/device", "history", { minutes: 60 });
+              return {
+                big: now.temperature ? `${now.temperature.celsius}°` : `${now.memory.freeMb} МБ`,
+                cap: now.name,
+                line: { points: history.samples.map((s) => s.temperature ?? s.memoryUsed) },
+              };
+            }
+        "#;
+        draft(&folder, asked.clone(), code);
+        let checked = check(&folder, "temp", None).await;
+        assert!(checked.ok, "{checked:?}");
+        assert!(!checked.warnings.iter().any(|warning| warning.contains("system/device")), "{checked:?}");
+        let kv = Arc::new(Mutex::new(Map::new()));
+        let ran = run(&folder, "temp", "card", json!({}), kv.clone(), None, &Trying::example()).await.unwrap();
+        assert!(ran.ok, "{ran:?}");
+        assert!(ran.result["big"].as_str().is_some_and(|big| !big.is_empty()), "{ran:?}");
+        assert!(ran.result["line"]["points"].as_array().is_some_and(|points| !points.is_empty()), "{ran:?}");
+
+        asked["permissions"] = json!([]);
+        draft(&folder, asked, code);
+        let shut = run(&folder, "temp", "card", json!({}), kv, None, &Trying::example()).await.unwrap();
+        assert!(!shut.ok && shut.error.as_deref().is_some_and(|error| error.contains("нет такого")), "{shut:?}");
     }
 
     /// Stage 3 of docs/plans/voice-creation.md: «Дела на сегодня» without its key shows the example, and nothing goes

@@ -1067,5 +1067,19 @@
   " Колонка говорит: {why}.": " The speaker says: {why}.",
   "Разрешите DuoWave в брандмауэре Windows для частной сети и проверьте, что сеть в Windows — «Частная».": "Allow DuoWave in Windows Firewall for private networks, and check that the network is “Private” in Windows.",
   " Компьютер включён и в той же сети? Не закрывает ли его брандмауэр или VPN?": " Is the computer on and in the same network? Is a firewall or a VPN keeping it closed?",
-  "На Windows поиск колонок может закрывать брандмауэр: введите адрес колонки сами.": "On Windows the firewall may keep the speaker search closed: enter the speaker’s address yourself."
+  "На Windows поиск колонок может закрывать брандмауэр: введите адрес колонки сами.": "On Windows the firewall may keep the speaker search closed: enter the speaker’s address yourself.",
+  "у этого устройства нет датчиков температуры, открытых для чтения": "this device has no temperature sensors open for reading",
+  "температуру этой системы шлюз не читает": "the gateway does not read this system's temperature",
+  "память этой системы шлюз не читает": "the gateway does not read this system's memory",
+  "место на диске этой системы шлюз не читает": "the gateway does not read this system's disk space",
+  "Это устройство": "This device",
+  "у system/device нет умения «{handle}»": "system/device has no handle “{handle}”",
+  "устройства «{device}» не видно; видны: {known}": "the device “{device}” is not visible; visible: {known}",
+  "Состояние устройств: температура, память, место, процессор": "Device state: temperature, memory, storage, processor",
+  "состояние устройства: температура, память, место, процессор, время работы, имя и роль": "the device's state: temperature, memory, storage, processor, uptime, name and role",
+  "все устройства дома, что видны отсюда": "all the home's devices visible from here",
+  "история за несколько часов, точка в минуту — для графика": "a few hours of history, a point a minute — for a graph",
+  "macOS не открывает температуру датчиков другим программам": "macOS does not open its sensors' temperature to other programs",
+  "нет подключения по Wi-Fi или ядро не говорит его сигнал": "no Wi-Fi connection, or the kernel does not tell its signal",
+  "сигнал Wi-Fi этой системы шлюз не читает": "the gateway does not read this system's Wi-Fi signal"
 }

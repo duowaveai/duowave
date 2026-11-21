@@ -14,7 +14,7 @@ import { ApiError, ConnectJob, FoundStation, MoveJob, MoveTo, StationCheck, Stat
 import { tr } from '../../i18n';
 import { drawingOf } from '../../stations';
 import { encodeQr } from '../../ui/qr';
-import { RootPassword, WIKI_SSH, problemText, suggestedGateway } from '../connect';
+import { AllowFirewall, RootPassword, WIKI_SSH, problemText, suggestedGateway } from '../connect';
 import { useOnboarding, useStepNav } from './nav';
 import '../../ui/onboarding-canvas.css';
 import '../../ui/onb-connect.css';
@@ -689,6 +689,20 @@ export function SpeakerStep() {
         };
     }, []);
 
+    /** После «Разрешить в брандмауэре»: та же колонка — проверить снова, никакой — поискать снова. */
+    const searchAgain = async (): Promise<void> => {
+        if (address) return read(address);
+        try {
+            const result = await api.discoverStations();
+            setFound(result.stations);
+            setWhyNone(result.whyNone ?? null);
+            const first = result.stations.find((entry) => entry.ssh) ?? result.stations[0];
+            if (first) void read(first.address);
+        } catch {
+            // Поиск не ответил — остаётся адрес руками.
+        }
+    };
+
     const station = found?.find((entry) => entry.address === address);
     const name = station?.name && station.name !== modelOf(station, check) ? station.name : '';
     const model = modelOf(station, check);
@@ -835,6 +849,7 @@ export function SpeakerStep() {
                     <Problem tone="warn" icon={<IconSearch />} title={t.notFoundTitle}>
                         <p class="small onb-cx-p">{t.notFoundText}</p>
                         {whyNone && <p class="small onb-cx-p">{whyNone}</p>}
+                        <AllowFirewall onAllowed={() => void searchAgain()} />
                         <form
                             class="onb-cx-addr"
                             onSubmit={(e) => {
@@ -1289,6 +1304,7 @@ export function NoArrival({ busy, onRestore }: { busy: boolean; onRestore: () =>
     return (
         <Problem tone="warn" icon={<IconClock />} title={t.noArrivalTitle}>
             <p class="small onb-cx-p">{t.noArrivalText}</p>
+            <AllowFirewall />
             <div class="onb-cx-btns">
                 <button type="button" class="dw-btn dw-btn-dark" disabled={waiting || busy} onClick={waitMore}>
                     {waiting ? t.waitingMore : t.waitMore}

@@ -689,9 +689,12 @@ pub(crate) mod tests {
     }
 
     /// The fields a station of 0.11 reads: the answer without its contract.
+    /// The fields a station of 0.11 and before reads: without the contract and the computer's state
+    /// (`system/device`, operations/device_state.rs), which the station's own home is told besides.
     fn old_fields(status: &Value) -> Value {
         let mut old = status.clone();
         old.as_object_mut().unwrap().remove("contract");
+        old.as_object_mut().unwrap().remove("device");
         old
     }
 
@@ -761,6 +764,7 @@ pub(crate) mod tests {
         provider(&app, "ollama", &ollama.url);
         let body = status(&app).await;
         assert_eq!(old_fields(&body), old(true, true, json!("piper/ru_RU-irina-medium"), true));
+        assert_eq!(body["device"]["kind"], "computer", "its own home's centre reads the computer's state with it");
         assert_eq!(body["contract"]["version"], crate::helpers::contract::VERSION);
         // The status says besides that this computer speaks the link while it helps (stage 7).
         let mut said = body["contract"].clone();

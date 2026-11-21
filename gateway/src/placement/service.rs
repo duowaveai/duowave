@@ -314,6 +314,9 @@ impl PlacementService {
                     "settingsRevision": self.settings_revision(),
                     "data": data,
                     "memory": own_memory(),
+                    // The station's state for the apps of the computer that watches it (`system/device`,
+                    // operations/device_state.rs): read every 30 s with the rest, no request of its own.
+                    "deviceState": crate::operations::device_state::shared().snapshot(),
                     "homeServer": self.home.get().and_then(|home| home.view()),
                     "voice": fs.voice().ok().map(|voice| json!({
                         "url": voice.url,

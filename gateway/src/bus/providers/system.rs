@@ -40,6 +40,9 @@ pub const NETWORK: &str = crate::egress::NETWORK;
 pub const MIC: &str = "system/mic";
 /// A word of an app's own that wakes the station as its button does (src/activator, `contributes.activators`).
 pub const ACTIVATOR: &str = "system/activator";
+/// The device the gateway runs on and the others of the home (operations/device_state.rs): temperature, memory,
+/// storage, processor, uptime — only to see, cheap, for widgets and graphs.
+pub const DEVICE: &str = crate::operations::device_state::ADDRESS;
 /// The household's model answering in an app's words (the answer's `model`, plugins/skill.rs): a participant for the
 /// bus's word on it, not a letter's target.
 pub const BRAIN: &str = "system/brain";
@@ -99,6 +102,7 @@ impl Provider for System {
             (NETWORK, crate::tr!("Сеть центра: выход в интернет через ваши серверы")),
             (MIC, crate::tr!("Микрофон колонки: слышит комнату всё время")),
             (ACTIVATOR, crate::tr!("Слово-активатор: начать разговор с колонкой")),
+            (DEVICE, crate::tr!("Состояние устройств: температура, память, место, процессор")),
         ]
         .iter()
         .filter_map(|(text, title)| Some(Participant::new(Address::parse(text).ok()?, title)))
@@ -154,6 +158,14 @@ impl Provider for System {
                 .standing()],
             ACTIVATOR => vec![Handle::new("wake", Level::Call)
                 .titled(&crate::tr!("разбудить колонку своим словом: она слушает, как после кнопки"))],
+            DEVICE => vec![
+                Handle::new("state", Level::See).titled(&crate::tr!(
+                    "состояние устройства: температура, память, место, процессор, время работы, имя и роль"
+                )),
+                Handle::new("devices", Level::See).titled(&crate::tr!("все устройства дома, что видны отсюда")),
+                Handle::new("history", Level::See)
+                    .titled(&crate::tr!("история за несколько часов, точка в минуту — для графика")),
+            ],
             PUBLISH => vec![
                 Handle::new("publishers", Level::Call)
                     .titled(&crate::tr!("кто может отправить: что берёт, нужно ли подключение")),
@@ -226,6 +238,7 @@ impl Provider for System {
                 (HOME, "news-feeds") => Ok(Value::Array(services.news_feeds())),
                 (NETWORK, "connections") => services.network_connections(&id, input.clone()).map_err(failed),
                 (MIC, "open") => services.mic(&id).map_err(failed),
+                (DEVICE, action) => services.device(&id, action, input.clone()).await.map_err(failed),
                 (ACTIVATOR, "wake") => services.wake(&id, input.clone()).await.map_err(failed),
                 (BRAIN, _) => Err(BusError::Failed(crate::tr!(
                     "модель отвечает словами приложения полем model в ответе на фразу, не письмом"
@@ -262,10 +275,20 @@ mod tests {
             "system/network",
             "system/mic",
             "system/activator",
+            "system/device",
         ] {
             assert!(addresses.iter().any(|known| known == address), "{address}");
         }
         let smart = system.handles(&Address::parse("system/smart-home").unwrap());
         assert!(smart.iter().all(|handle| handle.needs.as_deref() == Some("use:smart_home")));
+    }
+
+    #[test]
+    fn the_devices_state_is_only_to_see_and_never_dangerous() {
+        let handles = System::new().handles(&Address::parse("system/device").unwrap());
+        let names: Vec<&str> = handles.iter().map(|handle| handle.name.as_str()).collect();
+        assert_eq!(names, ["state", "devices", "history"]);
+        assert!(handles.iter().all(|handle| handle.level == Level::See && handle.danger.is_none()));
+        assert!(handles.iter().all(|handle| handle.needs.is_none()), "a guest's widget shows it too");
     }
 }

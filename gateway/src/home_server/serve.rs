@@ -647,7 +647,7 @@ pub(crate) fn status_of(app: &App, given: Option<Given>) -> Value {
         }
     }
     let voice = contract.get(Ability::Voice).and_then(|voice| voice.details.get("voice")).cloned();
-    json!({
+    let mut status = json!({
         "version": crate::VERSION,
         "peerApi": crate::core::build::PEER_API,
         "asr": contract.ready(Ability::Hearing),
@@ -655,7 +655,13 @@ pub(crate) fn status_of(app: &App, given: Option<Given>) -> Value {
         "voice": voice,
         "llm": contract.declares(Ability::Model),
         "contract": contract,
-    })
+    });
+    // This computer's state for the apps of its own home's centre (`system/device`, operations/device_state.rs),
+    // read with the status every 15 s; another home over the link is not told it.
+    if given.is_none_or(|given| given.own_home) {
+        status["device"] = crate::operations::device_state::shared().snapshot();
+    }
+    status
 }
 
 async fn status(State(app): State<Arc<App>>, caller: Caller) -> Result<Response, ApiError> {

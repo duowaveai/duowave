@@ -316,6 +316,8 @@ await host.bus.call("system/smart-home", "devices")                 // call:syst
 await host.bus.call("system/smart-home", "act", { device, action, value })  // on, off, set_brightness, set_temperature, scene
 await host.bus.call("system/content", "music" | "tales", { query, limit })  // call:system/content → готовые элементы для play
 await host.bus.call("system/home", "weather-place" | "news-feeds")  // call:system/home → что выбрано в пульте
+await host.bus.call("system/device", "state", { device })           // see:system/device → температура, память, место, процессор
+await host.bus.call("system/device", "history", { device, minutes }) // see:system/device → точка в минуту для графика
 await host.bus.call("app/p-ad07a08e06e1", "weather_now", { place })  // call:app/<id пакета> → инструмент другого приложения («Погода»)
 ```
 
@@ -382,6 +384,74 @@ await host.bus.call("system/memory", "interests")   // → { enabled, interests:
 
 Нет `setTimeout`, файловой системы и процессов: код работает, только когда его позвали. Ждать ответа человека по
 времени — таймер хода (выше).
+
+### Состояние устройства — температура, память, процессор
+
+`system/device` — то, что устройство говорит о себе: колонка, компьютер, другие устройства дома. Только смотреть:
+право `see:system/device` (нижняя ступень, без опасного; человек видит его при установке в «Связях»). Дёшево для
+колонки: одно чтение на все приложения раз в несколько секунд, одна общая история на шлюз — фоновой работы на каждое
+приложение нет.
+
+```js
+// see:system/device → это устройство или названное: "station" — колонка, "computer" — компьютер, id или имя
+const now = await host.bus.call("system/device", "state", { device: "station" })
+// → { id, name: "Колонка", kind: "station" | "computer", roles: ["centre" | "ear" | "turbo"], itself, at,
+//     temperature: { celsius: 51.5, zones: [{ name: "soc_thermal", celsius: 51.5 }] } | null,
+//     memory: { totalMb, freeMb, usedPercent }, storage: { of: "/data", totalMb, freeMb, usedPercent },
+//     cpu: { percent, load: [1, 5, 15 минут], cores, mhz: { now: 1200, max: 1200 } },
+//     wifi: { interface: "wlan0", dbm: -33, percent: 100 }, uptimeS, gateway: { memoryMb, uptimeS },
+//     missing: { temperature: "macOS не открывает температуру датчиков другим программам" } }
+await host.bus.call("system/device", "devices")    // → [это устройство, потом другие, что видны отсюда]
+// → { device: { id, name, kind }, everyS: 60, samples: [{ at, temperature, cpu, memoryUsed, memoryFreeMb, storageFreeMb,
+//                                                        cpuMhz, wifiDbm }] }
+const history = await host.bus.call("system/device", "history", { device: "station", minutes: 120 })
+```
+
+- Чего устройство не говорит, того нет: поле `null`, причина — в `missing` (на Mac нет температуры, у компьютера
+  по кабелю — Wi-Fi). Колонки разные: у одной есть частота процессора и Wi-Fi, у другой — нет; проверяйте каждое
+  поле (`now.wifi?.dbm`), не выдумывайте число — покажите причину (`empty` карточки или `cap`).
+- **Wi-Fi**: `dbm` — сигнал (−30 — рядом с роутером, −70 — слабый, −80 — вот-вот пропадёт), `percent` — качество
+  0–100. **Частота** `cpu.mhz`: `now` ниже `max` под нагрузкой и жарой — колонка сбрасывает её, когда греется;
+  рядом с температурой на графике это видно. Видеоядра у колонки в этих данных нет: ядро не отдаёт ни его
+  загрузку, ни частоту.
+- **Другое устройство дома** — по связям, что уже есть: компьютер видит свою колонку (её состояние приходит с
+  проверкой колонки раз в 30 с), центр-колонка — свой Турбо (раз в 15 с). `reachable: false` — устройство не
+  ответило на последний взгляд, числа — последние известные (`at`). Ухо центру своё состояние пока не передаёт. На
+  самой колонке `device: "station"` — она сама. Устройства не видно — письмо отвечает ошибкой со списком тех, что
+  видны.
+- **«Турбо»** в просьбе человека — это `device: "computer"`: компьютер, который помогает колонке-центру. Если центр
+  сам компьютер (колонки-центра нет), `"computer"` — и есть центр, отдельного Турбо нет. У Турбо на Mac будут
+  процессор, ОЗУ и диск, а температура — `null` с причиной в `missing`.
+- **История** — общая на шлюз: точка в минуту, до шести часов (`minutes` до 360), пишется, пока приложения
+  спрашивают (сутки без писем — останавливается). Первый вопрос сразу даёт одну точку — график растёт на глазах.
+- **Свежие числа в виджете** — `refreshS` карточки (`docs` «cards»): `refreshS: 60` для графика, 10–30 для числа
+  «сейчас». Функция карточки только читает — в `kv` ничего не пишет.
+- В «Примерке» и песочнице мастерской письма идут к настоящему состоянию этого компьютера (пример в `examples.json`,
+  «bus», отвечает вместо него).
+
+Пример: карточка «Температура колонки» — число сейчас и линия за два часа.
+
+```json
+"permissions": ["see:system/device"],
+"contributes": { "panel": { "calls": ["temperature"],
+  "cards": [{ "id": "temperature", "title": "Температура колонки", "function": "temperature",
+              "size": "large", "initial": true, "refreshS": 60, "icon": "speaker" }] } }
+```
+
+```js
+export async function temperature() {
+  const now = await host.bus.call("system/device", "state", { device: "station" })
+  const { samples } = await host.bus.call("system/device", "history", { device: "station", minutes: 120 })
+  if (!now.temperature) return { empty: now.missing?.temperature ?? "Колонка не говорит температуру" }
+  const points = samples.map((s) => s.temperature).filter((t) => t != null)
+  return {
+    big: `${Math.round(now.temperature.celsius)}°`,
+    cap: `${now.name} · процессор ${now.cpu?.percent ?? "—"}% · свободно ${now.memory?.freeMb ?? "—"} МБ`,
+    line: { points, area: true },
+    say: `Колонка греется до ${Math.round(now.temperature.celsius)} градусов.`,
+  }
+}
+```
 
 ## Слой возможностей шлюза
 
@@ -512,7 +582,8 @@ function Stations() {
 ## Шина: другие приложения, папки, устройства
 
 Всё, что живёт в системе, — участник с адресом (план): приложение `app/<id>`, службы шлюза
-`system/notify`, `system/schedule`, `system/smart-home`, `system/content`, папки `files/…`, устройства `device/midi`,
+`system/notify`, `system/schedule`, `system/smart-home`, `system/content`, `system/device` (состояние устройств),
+папки `files/…`, устройства `device/midi`,
 `device/screen`.
 Приложение пишет другому письмо — шина решает одним правилом, пройдёт ли оно:
 

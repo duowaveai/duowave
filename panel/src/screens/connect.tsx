@@ -112,6 +112,73 @@ export function RootPassword({ address, gateway, onChecked }: { address: string;
     );
 }
 
+/**
+ * «Разрешить в брандмауэре» прямо в мастере: компьютер — Windows, а колонка его не видит или не находится.
+ * Брандмауэр Windows закрывает входящие: поиск колонок не слышит их ответов, а колонка не достучится до центра на
+ * этом компьютере (тест 21.11). Одно разрешение DuoWave для частной сети, Windows спросит права на экране компьютера.
+ * Не на Windows или без права менять настройки — ничего не рисует. `onAllowed` — поискать или проверить снова.
+ */
+export function AllowFirewall({ onAllowed }: { onAllowed?: () => void }) {
+    const [windows, setWindows] = useState(false);
+    const [busy, setBusy] = useState(false);
+    const [done, setDone] = useState<string | null>(null);
+    const [error, setError] = useState<string | null>(null);
+    const allowed = can('settings.edit');
+    useEffect(() => {
+        if (!allowed) return;
+        let alive = true;
+        api.windowsNetwork()
+            .then((view) => alive && setWindows(view.windows))
+            .catch(() => undefined);
+        return () => {
+            alive = false;
+        };
+    }, [allowed]);
+    if (!allowed || !windows) return null;
+    const allow = async (): Promise<void> => {
+        if (busy) return;
+        setBusy(true);
+        setError(null);
+        try {
+            const view = await api.allowWindowsFirewall();
+            // Разрешили, а сеть в Windows «Общедоступная» — входящие всё равно закрыты: совет шлюза, что сделать.
+            setDone(view.likelyClosed && view.advice ? `${tr.connect.firewallDone} ${view.advice}` : tr.connect.firewallDone);
+            onAllowed?.();
+        } catch (e) {
+            setError(problemOf(e));
+        } finally {
+            setBusy(false);
+        }
+    };
+    return (
+        <div class="flex flex-col gap-6">
+            {!done && <span class="win-hint">{tr.connect.firewallHint}</span>}
+            {!done && (
+                <button
+                    type="button"
+                    class="dw-btn dw-btn-light"
+                    style={{ alignSelf: 'flex-start' }}
+                    disabled={busy}
+                    aria-busy={busy || undefined}
+                    onClick={() => void allow()}
+                >
+                    {busy ? tr.connect.firewallAsking : tr.connect.firewallAllow}
+                </button>
+            )}
+            {done && (
+                <p class="win-callout is-calm m-0" role="status">
+                    {done}
+                </p>
+            )}
+            {error && (
+                <p class="win-callout m-0" role="alert">
+                    {error}
+                </p>
+            )}
+        </div>
+    );
+}
+
 /** Что пошло не так — словами, с тем, что делать. Берут и первые шаги (screens/onb/speaker.tsx). */
 export function problemText(problem: string | undefined): string {
     switch (problem) {
@@ -429,10 +496,25 @@ export function ConnectSheet({
                         </div>
                     </WinSection>
                 ) : (
-                    <p class="win-callout is-calm m-0">
-                        {tr.connect.noneFound}
-                        {whyNone && ` ${whyNone}`}
-                    </p>
+                    <>
+                        <p class="win-callout is-calm m-0">
+                            {tr.connect.noneFound}
+                            {whyNone && ` ${whyNone}`}
+                        </p>
+                        {found !== null && (
+                            <AllowFirewall
+                                onAllowed={() =>
+                                    void api
+                                        .discoverStations()
+                                        .then((result) => {
+                                            setFound(result.stations);
+                                            setWhyNone(result.whyNone ?? null);
+                                        })
+                                        .catch(() => undefined)
+                                }
+                            />
+                        )}
+                    </>
                 )}
                 <label class="flex flex-col gap-6">
                     <span class="win-label">{tr.connect.addressLabel}</span>
@@ -573,6 +655,7 @@ export function ConnectSheet({
                         {check.problem === 'auth-failed' && (
                             <RootPassword address={check.address} gateway={gateway.trim() || undefined} onChecked={setCheck} />
                         )}
+                        {(check.problem === 'no-route' || check.problem === 'no-connect') && <AllowFirewall onAllowed={() => void read()} />}
                     </>
                 ) : check.connected ? (
                     <p class="win-lead">{tr.connect.alreadyOnGateway}</p>
@@ -742,6 +825,7 @@ export function ConnectSheet({
                     {problemText('no-arrival')} {tr.connect.timeoutHint(gatewayPort(gateway, ownPort))}
                 </p>
             )}
+            {job?.status === 'timeout' && <AllowFirewall />}
             {job?.status === 'failed' && (
                 <p role="alert" class="win-callout m-0">
                     {problemText(job.error)}

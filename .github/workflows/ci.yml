@@ -8,6 +8,7 @@
 #   panel            the panel's types, its checks without a browser (scripts/panel-check.ts) and build
 #   private          that nothing private (keys, home paths, a household's addresses) is in the tree
 #   docker-context   that Dockerfile.prod's build from source has every file the gateway embeds from outside gateway/
+#   layers           that no module of the gateway reaches a floor above its own (gateway/layers.json)
 #   python           the model servers' syntax
 #   station-scripts  the scripts we ship for the station, under busybox sh
 name: CI
@@ -68,6 +69,22 @@ jobs:
           node-version: 26
       - name: The image's build has what the program carries inside
         run: node scripts/check-docker-context.mjs
+
+  layers:
+    # The floors between the gateway's modules, where its crates will be cut (docs/plans/modular-gateway.md): reads each
+    # `crate::<module>` of gateway/src and fails on a link up a floor that is not a known exception. No cargo, Node's
+    # built-in modules only — under a second.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 26
+      - name: No module reaches a floor above its own
+        run: node scripts/check-layers.mjs
 
   python:
     runs-on: ubuntu-latest

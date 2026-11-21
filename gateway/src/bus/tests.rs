@@ -464,3 +464,47 @@ async fn a_yes_to_a_standing_danger_outlives_a_restart() {
         Err(BusError::NeedsYes { .. })
     ));
 }
+
+/// The gateway's services with nothing behind them but the device's state, which is the gateway's own reading.
+struct DeviceOnly;
+
+impl crate::plugins::host_api::HostServices for DeviceOnly {
+    fn content(&self, _folder: &str, _query: Option<String>, _limit: usize) -> BoxFuture<'static, Vec<Value>> {
+        Box::pin(async { Vec::new() })
+    }
+    fn smart_home_devices(&self) -> BoxFuture<'static, Result<Value, String>> {
+        Box::pin(async { Ok(Value::Null) })
+    }
+    fn smart_home_act(&self, _: String, _: String, _: Option<f64>) -> BoxFuture<'static, Result<String, String>> {
+        Box::pin(async { Ok(String::new()) })
+    }
+    fn weather_place(&self) -> Option<String> {
+        None
+    }
+    fn news_feeds(&self) -> Vec<Value> {
+        Vec::new()
+    }
+}
+
+/// `system/device` (operations/device_state.rs): an app that did not ask does not know it is there; asked for and
+/// approved with the install as `see:` — the lowest step — it reads the device, and nothing more is open with it.
+#[tokio::test]
+async fn the_devices_state_is_seen_only_by_the_app_that_asked_for_it() {
+    let (bus, _) = bus();
+    let system = Arc::new(crate::bus::providers::system::System::new());
+    let services: Arc<dyn crate::plugins::host_api::HostServices> = Arc::new(DeviceOnly);
+    system.set_services(Arc::downgrade(&services));
+    bus.register(system);
+    let device = Address::parse("system/device").unwrap();
+    let shut = bus.call(Trail::app("a"), a(), device.clone(), "state", json!({}), vec![]).await;
+    assert!(matches!(shut, Err(BusError::NotFound(_))), "{shut:?}");
+    assert_eq!(bus.approve_install(&a(), &[(Level::See, Pattern::exact(&device))], None).unwrap(), 1);
+    let state = bus.call(Trail::app("a"), a(), device.clone(), "state", json!({}), vec![]).await.unwrap();
+    assert_eq!(state["itself"], true, "{state}");
+    assert!(state.get("memory").is_some() && state.get("cpu").is_some(), "{state}");
+    let history = bus.call(Trail::app("a"), a(), device.clone(), "history", json!({}), vec![]).await.unwrap();
+    assert!(history["samples"].as_array().is_some_and(|samples| !samples.is_empty()), "a graph has a point at once");
+    // The same right opens nothing else of the gateway's.
+    let voice = bus.call(Trail::app("a"), a(), Address::parse("system/voice").unwrap(), "say", json!({}), vec![]).await;
+    assert!(matches!(voice, Err(BusError::NotFound(_))), "{voice:?}");
+}

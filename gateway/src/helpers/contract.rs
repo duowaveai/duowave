@@ -293,6 +293,9 @@ pub struct HelperStatus {
     pub contract: Contract,
     /// The helper's program version (`version` of the status), when it says one.
     pub program: Option<String>,
+    /// The state of the computer it runs on (`device` of the status, operations/device_state.rs) — its own home's
+    /// gateways only; an older helper says none.
+    pub device: Option<Value>,
 }
 
 impl HelperStatus {
@@ -309,7 +312,8 @@ impl HelperStatus {
             None if fields.get("peerApi").is_some_and(Value::is_u64) => version_0(fields, program.as_deref()),
             None => return None,
         };
-        Some(HelperStatus { contract, program })
+        let device = fields.get("device").filter(|device| device.is_object()).cloned();
+        Some(HelperStatus { contract, program, device })
     }
 }
 

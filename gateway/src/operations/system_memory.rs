@@ -362,6 +362,28 @@ pub fn free_disk_mb(_path: &Path) -> Option<u64> {
     None
 }
 
+/// The whole disk that holds `path` and its free room, MB (`system/device`, operations/device_state.rs); None where it
+/// cannot tell.
+#[cfg(unix)]
+pub fn disk_mb(path: &Path) -> Option<(u64, u64)> {
+    use std::os::unix::ffi::OsStrExt;
+    let existing = path.ancestors().find(|dir| dir.exists())?;
+    let name = std::ffi::CString::new(existing.as_os_str().as_bytes()).ok()?;
+    let mut stats: libc::statvfs = unsafe { std::mem::zeroed() };
+    // SAFETY: a valid C string and a zeroed struct the call fills.
+    if unsafe { libc::statvfs(name.as_ptr(), &mut stats) } != 0 {
+        return None;
+    }
+    #[allow(clippy::unnecessary_cast)]
+    let (blocks, free, size) = (stats.f_blocks as u64, stats.f_bavail as u64, stats.f_frsize as u64);
+    Some((blocks * size / 1_048_576, free * size / 1_048_576))
+}
+
+#[cfg(not(unix))]
+pub fn disk_mb(_path: &Path) -> Option<(u64, u64)> {
+    None
+}
+
 /// What a folder holds, its files counted, MB rounded up.
 pub fn folder_mb(path: &Path) -> u64 {
     fn walk(path: &Path) -> u64 {

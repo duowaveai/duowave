@@ -899,6 +899,12 @@ impl Helpers {
         self.secrets.mask(&key_secret(id))
     }
 
+    /// The entry as this gateway looks at it already, without making it: none before its first look
+    /// (`system/device` reads the Turbo's state from the last look, operations/device_state.rs).
+    pub fn looked(&self, id: &str) -> Option<Arc<RemoteHelper>> {
+        locked(&self.remotes).get(id).cloned()
+    }
+
     /// The entry as this gateway reaches it — over its link when it has a pin; None without a key. Made again when
     /// its address, key or pin changes (its old link stopped).
     pub fn remote(&self, entry: &HelperSetting) -> Option<Arc<RemoteHelper>> {

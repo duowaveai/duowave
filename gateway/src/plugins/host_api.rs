@@ -389,6 +389,15 @@ pub trait HostServices: Send + Sync {
             Err(crate::tr!("будить колонку может только центр на самой колонке"))
         })
     }
+    /// The device the gateway runs on and the others of the home as the links bring them (`system/device`,
+    /// operations/device_state.rs): `state {device?}` — temperature, memory, storage, processor, uptime, name and role;
+    /// `devices` — all of them; `history {device?, minutes?}` — a sample a minute for a graph. Read-only and cheap: one
+    /// reading for all the apps every few seconds.
+    fn device(&self, caller: &str, action: &str, input: Value) -> BoxFuture<'static, Result<Value, String>> {
+        let _ = caller;
+        let action = action.to_string();
+        Box::pin(async move { crate::operations::device_state::shared().answer(&action, &input).await })
+    }
     /// Said aloud by a station without a request, for the plugin `caller` (`system/voice`): whether it was said —
     /// no station on the line, nothing is. `file`: an Ogg/Opus recording in the app's own folder, played after the
     /// words (a voice message).

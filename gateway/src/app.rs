@@ -471,6 +471,75 @@ impl App {
         );
         availability.set_helpers(helpers.clone());
         placement.set_home_server(helpers.clone());
+        // The device's state for the apps (`system/device`, operations/device_state.rs): this machine's reading and who
+        // it is in the home; the other devices from the looks the links already take — the computer's at its station's
+        // /health, the centre's at its Turbo's status.
+        {
+            use crate::operations::device_state::{DeviceState, Machine, Me};
+            let storage = config
+                .data_dir
+                .clone()
+                .unwrap_or_else(|| std::path::PathBuf::from(if profile.station { "/data" } else { "." }));
+            let label = profile.station.then(|| "/data".to_string());
+            let state = DeviceState::new(Box::new(Machine::new(storage, label, Instant::now())));
+            let (who_identity, who_settings) = (Arc::downgrade(&identity), Arc::downgrade(&settings));
+            #[cfg(feature = "pc")]
+            let who_placement = Arc::downgrade(&placement);
+            let station = profile.station;
+            state.set_who(Arc::new(move || {
+                let me = who_identity.upgrade().and_then(|identity| identity.gateway());
+                let roles = if station {
+                    let ear = who_settings
+                        .upgrade()
+                        .is_some_and(|settings| settings.get(&crate::home::ear::HOME_EAR, None).is_some());
+                    vec![if ear { "ear" } else { "centre" }]
+                } else {
+                    // A computer whose station runs a gateway of its own helps that centre: its Turbo.
+                    #[cfg(feature = "pc")]
+                    let turbo = who_placement
+                        .upgrade()
+                        .and_then(|placement| placement.station().cloned())
+                        .is_some_and(|stations| !stations.all().is_empty());
+                    #[cfg(not(feature = "pc"))]
+                    let turbo = false;
+                    vec![if turbo { "turbo" } else { "centre" }]
+                };
+                Me {
+                    id: me.as_ref().map(|me| me.id.clone()).unwrap_or_default(),
+                    name: me.map(|me| me.name).unwrap_or_else(|| crate::tr!("Это устройство")),
+                    kind: if station { "station" } else { "computer" },
+                    roles,
+                }
+            }));
+            let others_helpers = Arc::downgrade(&helpers);
+            #[cfg(feature = "pc")]
+            let others_placement = Arc::downgrade(&placement);
+            state.set_others(Arc::new(move || {
+                let mut found: Vec<serde_json::Value> = Vec::new();
+                #[cfg(feature = "pc")]
+                if let Some(stations) = others_placement.upgrade().and_then(|placement| placement.station().cloned()) {
+                    for station in stations.all() {
+                        let live = station.live();
+                        let state = live.health.as_ref().and_then(|health| health.get("deviceState")).cloned();
+                        if let Some(mut state) = state.filter(serde_json::Value::is_object) {
+                            state["reachable"] = live.reachable.into();
+                            found.push(state);
+                        }
+                    }
+                }
+                if let Some(helpers) = others_helpers.upgrade() {
+                    for entry in helpers.list().into_iter().filter(|entry| entry.enabled && !helpers.is_self(entry)) {
+                        let Some(remote) = helpers.looked(&entry.id) else { continue };
+                        if let Some(mut state) = remote.status().and_then(|status| status.device) {
+                            state["reachable"] = remote.up().into();
+                            found.push(state);
+                        }
+                    }
+                }
+                found
+            }));
+            crate::operations::device_state::set_shared(state);
+        }
         // Our voice through the helpers on every gateway: a computer's own first (its built-in helper), the regulator
         // over a cloud one; only a station leans on them for its «Голос» window (`HomeVoice::leans`).
         voice.set_home(helpers.clone());
