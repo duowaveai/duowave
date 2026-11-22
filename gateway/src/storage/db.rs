@@ -113,8 +113,17 @@ impl Db {
     }
 }
 
+/// A migration's checksum: of its text with LF line ends, whatever the checkout gave the build.
 fn checksum(sql: &str) -> String {
-    hex::encode(Sha256::digest(sql.as_bytes()))
+    hex::encode(Sha256::digest(sql.replace("\r\n", "\n").as_bytes()))
+}
+
+/// Whether a checksum kept in the database is this migration's: of its text with LF ends, or with CRLF ends — a
+/// Windows build before .gitattributes (add93fb0, 21.11) took its migrations with CRLF, and 0.18.1 on Windows then
+/// refused every household's database as «migration 1 (init) was changed» (a tester, 22.11).
+fn same_migration(sql: &str, kept: &str) -> bool {
+    let lf = sql.replace("\r\n", "\n");
+    kept == checksum(&lf) || kept == hex::encode(Sha256::digest(lf.replace('\n', "\r\n").as_bytes()))
 }
 
 fn migrate(connection: &mut Connection, file: Option<&Path>) -> Result<(usize, Option<PathBuf>), DbError> {
@@ -134,8 +143,16 @@ fn migrate(connection: &mut Connection, file: Option<&Path>) -> Result<(usize, O
     };
     for (version, name, sum) in &applied {
         match MIGRATIONS.iter().find(|migration| migration.version == *version) {
-            Some(migration) if checksum(migration.sql) != *sum => {
+            Some(migration) if !same_migration(migration.sql, sum) => {
                 return Err(DbError::Changed { version: *version, name: name.clone() });
+            }
+            // Kept with other line ends (a Windows build of before): the same text — its checksum is the LF one now.
+            Some(migration) if checksum(migration.sql) != *sum => {
+                connection.execute(
+                    "UPDATE schema_migrations SET checksum = ?1 WHERE version = ?2",
+                    params![checksum(migration.sql), version],
+                )?;
+                tracing::info!("database: migration {version} ({name}) was kept with CRLF line ends; now LF");
             }
             Some(_) => {}
             None => tracing::warn!(
@@ -284,6 +301,33 @@ mod tests {
         connection.execute("UPDATE schema_migrations SET checksum = 'other' WHERE version = 1", []).unwrap();
         drop(connection);
         assert!(matches!(Db::open(Some(dir.path())), Err(DbError::Changed { version: 1, .. })));
+    }
+
+    /// A Windows build before .gitattributes kept its migrations' checksums of CRLF text; a build with LF opens that
+    /// database (a tester, 22.11: 0.18.1 on Windows refused it as «migration 1 (init) was changed»), and keeps the LF
+    /// checksum from then on. Another text is still refused.
+    #[test]
+    fn a_database_a_windows_build_made_with_crlf_opens_and_is_kept_with_lf() {
+        let dir = tempfile::tempdir().unwrap();
+        drop(Db::open(Some(dir.path())).unwrap());
+        let connection = Connection::open(dir.path().join(DB_FILE)).unwrap();
+        for migration in MIGRATIONS {
+            let crlf = hex::encode(Sha256::digest(migration.sql.replace('\n', "\r\n").as_bytes()));
+            connection
+                .execute(
+                    "UPDATE schema_migrations SET checksum = ?1 WHERE version = ?2",
+                    params![crlf, migration.version],
+                )
+                .unwrap();
+        }
+        drop(connection);
+        drop(Db::open(Some(dir.path())).expect("the same migrations, with other line ends"));
+        let connection = Connection::open(dir.path().join(DB_FILE)).unwrap();
+        let kept: String = connection
+            .query_row("SELECT checksum FROM schema_migrations WHERE version = 1", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(kept, checksum(MIGRATIONS[0].sql), "kept with the LF checksum now");
+        assert!(same_migration("a\r\nb\n", &checksum("a\nb\n")) && !same_migration("a\nb\n", &checksum("a\nc\n")));
     }
 
     /// A household's database as 0.5.x left it — migrations 1–5 with their checksums, people's settings, packages, a
