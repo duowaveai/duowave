@@ -159,6 +159,9 @@ mod tests {
         let address = listener.local_addr().unwrap();
         drop(listener);
         let error = start_conversation(address).await.unwrap_err();
-        assert!(error.contains("недоступна"), "{error}");
+        // Windows refuses a closed port on 127.0.0.1 only after its SYN retries, about 2 s: as long as CONNECT_WAIT,
+        // so either words may come there (CI 22.11). Both say Alice on the station is not there.
+        let gone = error.contains("недоступна") || (cfg!(windows) && error.contains("не ответила"));
+        assert!(gone, "{error}");
     }
 }
