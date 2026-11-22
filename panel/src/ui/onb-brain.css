@@ -18,10 +18,9 @@
 .onb .ob-brain-text { flex: 1; min-width: 0; }
 .onb .ob-brain-full { flex: 1 0 100%; min-width: 0; }
 .onb .ob-brain-problem { margin: 0; color: var(--bad); }
-/* «Есть код приглашения?» — тихая ссылка под кнопкой; раскрывается в поле кода. */
-.onb .ob-brain-link { align-self: flex-start; padding: 0; border: 0; background: none; color: inherit; opacity: .72; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; text-align: left; }
-.onb .ob-brain-link:hover { opacity: 1; }
+/* DuoWave: сначала «Есть код приглашения?» с полем, под ним «Подключить без кода» и что будет на сайте. */
 .onb .ob-brain-invite { display: flex; align-items: flex-end; flex-wrap: wrap; gap: 12px; }
+.onb .ob-brain-nocode { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
 .onb .ob-brain-key { flex: 1; min-width: 200px; }
 .onb .ob-brain-key-btn { align-self: flex-end; }
 .onb .ob-brain-key-note { width: 260px; align-self: flex-end; }

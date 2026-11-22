@@ -70,6 +70,13 @@ const en: Translation<typeof ru> = {
     settlingNothingToRetry: 'Nothing to retry: the voice no longer waits for the model.',
     pillWaits: (name: string) => `${name} — waiting for the speaker`,
     pillPreparing: (name: string) => `${name} — preparing on the speaker`,
+    pillBlocked: (name: string) => `${name}: the speaker cannot download its set`,
+    blockedTitle: (name: string) => `${name} is not installed yet`,
+    blockedText: (why: string) => `The speaker cannot download the set with this character. I try again every two minutes. The reason: ${why}`,
+    /** The speaker did not say why the feed cannot be read. */
+    blockedAny: 'the feed does not answer',
+    blockedDrop: 'Do not install',
+    blockedKeep: 'Wait',
     pillDone: (name: string) => `Done: ${name}`,
     itemVoiceOn: (name: string, computer: string) => `${name}’s voice — on the computer “${computer}”`,
     engineSection: 'Voice model',

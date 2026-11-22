@@ -114,6 +114,9 @@ pub struct App {
     pub voices: Arc<crate::capabilities::voices::Voices>,
     /// A MIDI keyboard for apps (src/midi): the keyboards plugged into this computer, heard while an app listens.
     pub midi: Arc<crate::midi::MidiService>,
+    /// The home's devices (src/home/turbo_devices.rs, docs/plans/turbo-devices.md): this gateway's own and its Турбо's,
+    /// one `device/<kind>` on the bus each; what this computer gives its home as a Турбо.
+    pub house: Arc<crate::home::turbo_devices::HouseDevices>,
     /// «Связи» (src/bus, docs/plans/bus.md): the bus between everything with an address — apps, the gateway's
     /// services, folders, devices — with its one rule, its questions «да» and its journal.
     pub bus: Arc<crate::bus::Bus>,
@@ -277,6 +280,33 @@ impl App {
         });
         // The keyboards: the system's news of them first (a Mac), then the list and the keeper of idle ports.
         self.midi.start();
+        // The home's devices keep what they saw at the Турбо: at each change of the helpers and every half minute
+        // (a keyboard plugged into a Mac changes its status, not the helpers' list).
+        {
+            let app = Arc::downgrade(self);
+            let mut events = self.events.subscribe();
+            tokio::spawn(async move {
+                let mut tick = tokio::time::interval(std::time::Duration::from_secs(30));
+                loop {
+                    tokio::select! {
+                        event = events.recv() => match event {
+                            Ok(event) if !matches!(&*event, crate::core::events::GatewayEvent::HelpersChanged { .. }) => continue,
+                            Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                            _ => {}
+                        },
+                        _ = tick.tick() => {}
+                    }
+                    let Some(app) = app.upgrade() else { return };
+                    app.house.remember();
+                    // A Турбо's keyboard at home: «MIDI-клавиатура» works through the centre (docs/plans/turbo-devices.md).
+                    let turbo_midi =
+                        app.house.ready("midi").iter().any(|place| place.place != crate::home::turbo_devices::HERE);
+                    if app.availability.set_turbo_midi(turbo_midi) {
+                        app.availability.recheck();
+                    }
+                }
+            });
+        }
         // The bus follows the settings and the apps removed; the folders' `tmp/` and bin are cleaned every hour.
         self.bus.start();
         if self.config.data_dir.is_some() {
@@ -1096,13 +1126,37 @@ impl App {
                 bus.upgrade().and_then(|bus| bus.files()).is_some_and(|files| files.played(token).is_some())
             }));
         }
-        // Devices on the bus: the MIDI keyboard first, the screen; a new device is one more `add`.
-        {
+        // This gateway's devices: the MIDI keyboard first, the screen; a new device is one more `add`. On the bus they are
+        // the home's (docs/plans/turbo-devices.md): `device/<kind>` is this gateway's and every Турбо's that has the kind.
+        let house = {
+            let local = Arc::new(crate::bus::providers::devices::Devices::new());
+            local.add(Arc::new(crate::bus::providers::devices::MidiKeyboard::new(midi.clone())));
+            local.add(Arc::new(crate::screen::device::ScreenDevice::new(screen.clone())));
+            // What is attached — a flash drive, a folder dropped on the window — as one device (`device/storage`).
+            if let Some(files) = bus.files() {
+                local.add(Arc::new(crate::home::turbo_devices::storage::StorageDevice::new(&files)));
+            }
+            let house = crate::home::turbo_devices::HouseDevices::new(local, Some(db.clone()));
+            house.set_source(Arc::new(crate::home::turbo_devices::HelpersSource::new(&helpers)));
+            {
+                let settings = settings.clone();
+                house.set_shares(Arc::new(move || {
+                    settings.get(&crate::settings::definitions::TURBO_SHARES, None).unwrap_or_default()
+                }));
+            }
+            house.set_name_here(&identity.as_helper().name);
             let devices = Arc::new(crate::bus::providers::devices::Devices::new());
-            devices.add(Arc::new(crate::bus::providers::devices::MidiKeyboard::new(midi.clone())));
-            devices.add(Arc::new(crate::screen::device::ScreenDevice::new(screen.clone())));
+            crate::home::turbo_devices::register(&devices, &house);
             bus.register(devices);
-        }
+            // The home's folders at its Турбо are places of the same folders (docs/plans/turbo-devices.md): look
+            // everywhere, act at one place; the gateway's own work on them keeps this gateway's `Files`.
+            if let Some(files) = bus.files() {
+                let placement = placement.clone();
+                let on_station = Arc::new(move || placement.role() == crate::placement::service::Role::Station);
+                bus.register(Arc::new(crate::home::turbo_devices::files::HouseFiles::new(files, &house, on_station)));
+            }
+            house
+        };
 
         // What the station says of our player (stage 5а): into the request's journal and to the plugin whose item it
         // is; a stream it keeps silent on goes the gateway's way — through /media/stream, AAC transcoded by ffmpeg on a
@@ -1124,6 +1178,8 @@ impl App {
         // A teacher for a MIDI keyboard is made only where a keyboard is heard (docs/plans/midi.md).
         workshop.set_midi(midi.available());
         workshop.set_folders(placement.role() != crate::placement::service::Role::Station);
+        // A keyboard or folders at a Турбо are the home's too (docs/plans/turbo-devices.md).
+        workshop.set_house(&house);
         // The agent's steps reach the panel as `workshop.changed` (the plaque «Делаю виджет», the workshop's log).
         workshop.attach_events(events.clone());
         // A trial left running before a restart is still taken back on its time; a run the restart cut is interrupted.
@@ -1131,6 +1187,17 @@ impl App {
         workshop.after_restart();
         // The talk layer (docs/plans/audio-interface.md): the works the workshop does, what the brain knows now.
         let talk = crate::talk::TalkLayer::new(Some(db.clone()), events.clone());
+        // A sleeping Турбо is woken on a «да» (docs/plans/turbo-devices.md, owner 20.11, 5): «…а Mac спит. Разбудить?» —
+        // asked where an app's code at the Турбо could not be reached; the answer read by sense (talk/reader.rs).
+        talk.set_house(&house);
+        {
+            let (house, talk) = (Arc::downgrade(&house), Arc::downgrade(&talk));
+            plugins.set_wake_offer(Arc::new(move |device: &str| {
+                let (house, talk) = (house.upgrade()?, talk.upgrade()?);
+                let (helper, name) = house.sleeping_turbo()?;
+                Some(talk.offer_wake(device, &helper, &name))
+            }));
+        }
         let workshop_executor = crate::talk::workshop::WorkshopExecutor::new(workshop.clone());
         {
             let live = live.clone();
@@ -1459,6 +1526,12 @@ impl App {
         if let Err(error) = connectors.register(Arc::new(crate::screen::tools::ScreenConnector::new(&screen))) {
             tracing::error!("{error}");
         }
+        // The home's devices for the brain (docs/plans/turbo-devices.md): what is plugged in where, use, place, wake.
+        if let Err(error) =
+            connectors.register(Arc::new(crate::home::turbo_devices::tools::DevicesConnector::new(&house, &bus)))
+        {
+            tracing::error!("{error}");
+        }
         // The VPN's switch for the brain: `vpn_on`, `vpn_off`, `vpn_status`, while the app «VPN» is installed
         // (src/egress/tools.rs).
         if let Err(error) = connectors.register(Arc::new(crate::egress::tools::VpnConnector::new(&egress))) {
@@ -1707,6 +1780,7 @@ impl App {
             publishers,
             voices,
             midi,
+            house,
             bus,
             screen,
             catalog,

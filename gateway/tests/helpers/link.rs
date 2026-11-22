@@ -841,7 +841,12 @@ async fn a_home_claimed_without_its_key_is_another_home() {
     let clients = pc.app.clients.view(&[]);
     assert_eq!(clients.len(), 1, "{clients:?}");
     assert!(clients[0].own_home);
-    assert_eq!(clients[0].gives, Ability::V1.to_vec());
+    // Its own home gets contract 1's and the computer's devices and folders (contract 3, docs/plans/turbo-devices.md).
+    let everything: Vec<Ability> = Ability::ALL
+        .into_iter()
+        .filter(|ability| Ability::V1.contains(ability) || Ability::V3.contains(ability))
+        .collect();
+    assert_eq!(clients[0].gives, everything);
     station.stop().await;
     pc.stop().await;
 }

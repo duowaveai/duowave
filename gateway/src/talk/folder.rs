@@ -446,12 +446,12 @@ impl Executor for FolderExecutor {
         let port = self.port().ok_or_else(|| words.no_computer.to_string())?;
         if let (true, Some(target)) = (work.again, work.target.as_deref()) {
             port.again(target, &work.brief, words.resume_prompt)?;
-            return Ok(Started { target: target.to_string(), title: work.title.clone() });
+            return Ok(Started { target: target.to_string(), title: work.title.clone(), note: None });
         }
         let start =
             locked(&self.staged).remove(&work.id).ok_or_else(|| "nothing to begin: the work was lost".to_string())?;
         let target = port.start(start)?;
-        Ok(Started { target, title: work.title.clone() })
+        Ok(Started { target, title: work.title.clone(), note: None })
     }
 
     fn add(&self, work: &Work, text: &str) -> bool {
@@ -475,7 +475,7 @@ impl Executor for FolderExecutor {
             let words = &pack::of(lang).work.folder;
             let port = port.ok_or_else(|| Closed::Failed(words.no_computer.to_string()))?;
             let title = port.can_again(target).map_err(|_| Closed::Failed(words.no_again.to_string()))?;
-            Ok(Started { target: target.to_string(), title })
+            Ok(Started { target: target.to_string(), title, note: None })
         }
         .boxed()
     }

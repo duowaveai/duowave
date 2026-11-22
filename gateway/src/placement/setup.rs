@@ -16,6 +16,7 @@ use std::time::Duration;
 
 use serde_json::Value;
 
+use super::first_code::{code_in, tail, LOG_MARK, TAIL_LINES};
 use super::moves::{NEEDED_KB, NEEDED_MEMORY_KB};
 use super::payload;
 use super::station_fs::{BIN, DATA, DEFAULT_PORT, DIR, SERVICE_COMMAND};
@@ -382,14 +383,31 @@ enum Panel {
     Set,
     /// The panel had its password already (DuoWave was there, with its data).
     Had,
-    /// The panel asks for a password itself, with the first-run code: read from the station's log, or where it is.
+    /// The panel asks for a password itself, with the first-run code: read from the station's log, or where it is
+    /// (the station's shell did not open).
     Code(Option<String>),
+    /// The panel asks for a password itself, and no code came into the station's log in time: the log's last lines.
+    Tail(Vec<String>),
     /// The panel asks for a password itself; whether it has none was not heard, so nothing is said of a code.
     Asks,
 }
 
 /// How many times a panel password is made up before the setup leaves it to the panel.
 const PANEL_TRIES: usize = 3;
+
+/// The station's shell after the reboot: its SSH may come up after its gateway (live 22.11: the owner got the hint
+/// «он в журнале колонки» instead of the code). Tried this many times, `SHELL_PAUSE` apart.
+const SHELL_TRIES: usize = 4;
+/// The first-run code in the station's log: looked for this many times, `CODE_PAUSE` apart, before its last lines.
+const CODE_TRIES: usize = 10;
+#[cfg(not(test))]
+const SHELL_PAUSE: Duration = Duration::from_secs(5);
+#[cfg(not(test))]
+const CODE_PAUSE: Duration = Duration::from_secs(1);
+#[cfg(test)]
+const SHELL_PAUSE: Duration = Duration::ZERO;
+#[cfg(test)]
+const CODE_PAUSE: Duration = Duration::ZERO;
 
 /// The panel's password, once the station is back (docs/plans/home-setup-flow.md, stage 1). Test 21.11: a tester
 /// needed four secrets, and the panel's first-run code lived only in the station's log (test 19.11, remark 19). Made
@@ -410,14 +428,21 @@ async fn panel_password(
         return Panel::Had;
     }
     let unset = configured == Some(false);
-    match opener.open(address, options).await {
-        Ok(shell) => {
-            let panel = on_station(shell.as_ref(), unset, ask).await;
-            shell.close().await;
-            panel
+    for attempt in 1..=SHELL_TRIES {
+        match opener.open(address, options.clone()).await {
+            Ok(shell) => {
+                let panel = on_station(shell.as_ref(), unset, ask).await;
+                shell.close().await;
+                return panel;
+            }
+            Err(_) if attempt < SHELL_TRIES => tokio::time::sleep(SHELL_PAUSE).await,
+            Err(_) => {}
         }
-        Err(_) if unset => Panel::Code(None),
-        Err(_) => Panel::Asks,
+    }
+    if unset {
+        Panel::Code(None)
+    } else {
+        Panel::Asks
     }
 }
 
@@ -455,8 +480,22 @@ async fn on_station(shell: &dyn StationShell, unset: bool, ask: &mut dyn FnMut(&
     if !unset {
         return Panel::Asks;
     }
-    let line = shell.run(&format!("grep 'первая настройка пульта' {DATA}/gateway.log | tail -n 1"), None).await;
-    Panel::Code(line.ok().and_then(|line| code_in(&line.stdout)))
+    // The gateway writes its code as it starts; a moment more for it, then the log's end (owner 22.11: «ну, или,
+    // по крайней мере, … логи последние»).
+    for attempt in 1..=CODE_TRIES {
+        let line = shell.run(&format!("grep '{LOG_MARK}' {DATA}/gateway.log | tail -n 1"), None).await;
+        if let Some(code) = line.ok().and_then(|line| code_in(&line.stdout)) {
+            return Panel::Code(Some(code));
+        }
+        if attempt < CODE_TRIES {
+            tokio::time::sleep(CODE_PAUSE).await;
+        }
+    }
+    let end = shell.run(&format!("tail -n {TAIL_LINES} {DATA}/gateway.log"), None).await;
+    match end.ok().map(|end| tail(&end.stdout, TAIL_LINES)).filter(|lines| !lines.is_empty()) {
+        Some(lines) => Panel::Tail(lines),
+        None => Panel::Code(None),
+    }
 }
 
 /// The panel's password, made up at the terminal: typed twice, the same both times and long enough for the panel —
@@ -497,7 +536,7 @@ fn ending(address: &str, port: u16, panel: &Panel) -> Vec<String> {
     let mut lines = vec![match panel {
         Panel::Set => crate::tr!("Пульт — {url} — вход с этим паролем. Там же выберите, кто отвечает.", url = url),
         Panel::Had => crate::tr!("Пульт — {url} — у него уже есть пароль: входите с ним.", url = url),
-        Panel::Code(_) | Panel::Asks => {
+        Panel::Code(_) | Panel::Tail(_) | Panel::Asks => {
             crate::tr!("Пульт — {url} — задайте в нём пароль и выберите, кто отвечает.", url = url)
         }
     }];
@@ -511,6 +550,10 @@ fn ending(address: &str, port: u16, panel: &Panel) -> Vec<String> {
             address = address,
             log = format!("{DATA}/gateway.log")
         )),
+        Panel::Tail(end) => {
+            lines.push(crate::tr!("Кода первой настройки в журнале колонки пока нет. Последние строки журнала:"));
+            lines.extend(end.iter().map(|line| format!("  {line}")));
+        }
         _ => {}
     }
     lines.push(crate::tr!("Компьютер больше не нужен."));
@@ -518,15 +561,6 @@ fn ending(address: &str, port: u16, panel: &Panel) -> Vec<String> {
         "Чтобы компьютер помогал колонке, откройте приложение DuoWave: оно найдёт дом и попросит код подключения."
     ));
     lines
-}
-
-/// The code `1234-5678` in a log line, if there is one.
-fn code_in(text: &str) -> Option<String> {
-    text.split(|c: char| !(c.is_ascii_digit() || c == '-'))
-        .find(|word| {
-            word.len() == 9 && word.as_bytes()[4] == b'-' && word.chars().filter(char::is_ascii_digit).count() == 8
-        })
-        .map(str::to_string)
 }
 
 fn print_neighbour(neighbour: &Neighbour) {
@@ -771,16 +805,24 @@ mod tests {
     }
 
     /// A station's shell after the install: it keeps each command and what went into its stdin. Its own
-    /// `duowave panel setup` ends with `panel`; the grep of its log finds `log`.
+    /// `duowave panel setup` ends with `panel`; the grep of its log finds `log` from its `late`-th time on, the tail
+    /// of its log is `log`.
     struct Recording {
         given: std::sync::Mutex<Vec<(String, Option<String>)>>,
         panel: i32,
         log: String,
+        late: usize,
+        greps: std::sync::atomic::AtomicUsize,
     }
 
     impl Recording {
         fn new(panel: i32, log: &str) -> Recording {
-            Recording { given: Default::default(), panel, log: log.into() }
+            Recording::late(panel, log, 0)
+        }
+
+        /// The gateway writes its code only after `late` looks at its log.
+        fn late(panel: i32, log: &str, late: usize) -> Recording {
+            Recording { given: Default::default(), panel, log: log.into(), late, greps: Default::default() }
         }
 
         fn given(&self) -> Vec<(String, Option<String>)> {
@@ -799,6 +841,10 @@ mod tests {
                 };
                 ShellResult { code: self.panel, stdout: String::new(), stderr: stderr.into() }
             } else if command.starts_with("grep ") {
+                let looked = self.greps.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let stdout = if looked < self.late { String::new() } else { self.log.clone() };
+                ShellResult { code: 0, stdout, stderr: String::new() }
+            } else if command.starts_with("tail ") {
                 ShellResult { code: 0, stdout: self.log.clone(), stderr: String::new() }
             } else {
                 ShellResult { code: 127, stdout: String::new(), stderr: "not here".into() }
@@ -871,6 +917,33 @@ mod tests {
         assert_eq!(on_station(&station, false, &mut |_| None).await, Panel::Asks);
         assert!(station.given().is_empty());
         assert!(!ending("192.0.2.1", 8790, &Panel::Asks).join("\n").contains("Код первой настройки"));
+    }
+
+    #[tokio::test]
+    async fn a_code_written_a_moment_late_is_waited_for_and_without_one_the_logs_end_is_shown() {
+        // Owner 22.11: the hint «он в журнале колонки» instead of the code. The code that comes on the fourth look.
+        let station = Recording::late(0, LOG, 3);
+        assert_eq!(on_station(&station, true, &mut |_| None).await, Panel::Code(Some("4821-0937".into())));
+        assert_eq!(station.given().len(), 4, "{:?}", station.given());
+        // None in time: the log's last lines instead of a hint, and no way to the log to look up.
+        let log = "safety net: no answer on /health for 60 s; the gateway is restarted\n\nlistening on 0.0.0.0:8790\n";
+        let station = Recording::new(0, log);
+        let panel = on_station(&station, true, &mut |_| None).await;
+        assert_eq!(
+            panel,
+            Panel::Tail(vec![
+                "safety net: no answer on /health for 60 s; the gateway is restarted".into(),
+                "listening on 0.0.0.0:8790".into()
+            ])
+        );
+        let given = station.given();
+        assert_eq!(given.len(), CODE_TRIES + 1, "{given:?}");
+        assert!(given.last().unwrap().0.starts_with(&format!("tail -n {TAIL_LINES} ")), "{given:?}");
+        let said = ending("192.0.2.1", 8790, &panel).join("\n");
+        assert!(said
+            .contains("\nКода первой настройки в журнале колонки пока нет. Последние строки журнала:\n  safety net:"));
+        assert!(said.contains("\n  listening on 0.0.0.0:8790\n"), "{said}");
+        assert!(!said.contains("ssh -p 2222"), "{said}");
     }
 
     #[tokio::test]

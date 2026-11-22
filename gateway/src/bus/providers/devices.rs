@@ -4,14 +4,36 @@
 //!
 //! A new device is one `impl Device` added to the registry: a name, a title, its handles (a step of the ladder each,
 //! a danger when it has one) and what it does on a letter. The MIDI keyboard is the first one.
+//!
+//! The same interface is what a computer gives its home as a Турбо (docs/plans/turbo-devices.md): a device's nature
+//! (a thing at hand, or data), whether it is sensitive (off for the home until ticked on the computer), and the things
+//! of its kind plugged in now. The home's devices (src/home/turbo_devices.rs) gather this gateway's and its Турбо's.
 use std::sync::{Arc, RwLock};
 
 use futures::future::BoxFuture;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::bus::address::{self, Address};
 use crate::bus::provider::{BusError, Handle, Letter, Participant, Provider};
 use crate::bus::Level;
+
+/// What a device is to the home (owner 20.11, 6): a thing at hand — a keyboard, a screen, a flash drive — is the
+/// home's only while its computer is at home; data — a folder — reaches from afar too.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Nature {
+    Physical,
+    Data,
+}
+
+/// One thing of a kind plugged in now: «Keystation 49». Its id is the computer's own (`in-2`); the home adds the
+/// place.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Instance {
+    pub id: String,
+    pub title: String,
+}
 
 /// One device the gateway owns.
 pub trait Device: Send + Sync {
@@ -27,6 +49,19 @@ pub trait Device: Send + Sync {
     }
     /// Carries out a letter the bus let through.
     fn call(&self, handle: &str, input: Value) -> BoxFuture<'static, Result<Value, BusError>>;
+    /// A thing at hand or data: what the home may reach while its computer is away.
+    fn nature(&self) -> Nature {
+        Nature::Physical
+    }
+    /// A camera, a microphone, a keyboard-like thing that hears what is typed: a computer gives it to its home only
+    /// when ticked on the computer (owner 20.11, 3).
+    fn sensitive(&self) -> bool {
+        false
+    }
+    /// The things of its kind plugged in now, as people name them.
+    fn instances(&self) -> Vec<Instance> {
+        Vec::new()
+    }
 }
 
 /// The devices of this gateway: a provider of `device/…`.
@@ -51,13 +86,28 @@ impl Devices {
         if address.kind() != address::DEVICE {
             return None;
         }
-        let name = address.name()?;
+        self.get(address.name()?)
+    }
+
+    /// The device of this name, while it can be reached.
+    pub fn get(&self, name: &str) -> Option<Arc<dyn Device>> {
         self.devices
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .iter()
             .find(|device| device.name() == name && device.available())
             .cloned()
+    }
+
+    /// Every device that can be reached now, in the order they were added.
+    pub fn list(&self) -> Vec<Arc<dyn Device>> {
+        self.devices
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .iter()
+            .filter(|device| device.available())
+            .cloned()
+            .collect()
     }
 }
 
@@ -125,6 +175,8 @@ impl Device for MidiKeyboard {
         vec![
             Handle::new("keyboards", Level::See).titled(&crate::tr!("какие клавиатуры подключены")),
             Handle::new("notes", Level::Listen).titled(&crate::tr!("слышать ноты на своей странице")),
+            Handle::new("play", Level::Call).titled(&crate::tr!("сыграть мелодию на клавиатуре")),
+            Handle::new("stop", Level::Call).titled(&crate::tr!("остановить мелодию на клавиатуре")),
         ]
     }
 
@@ -132,7 +184,18 @@ impl Device for MidiKeyboard {
         self.midi.available()
     }
 
-    fn call(&self, handle: &str, _input: Value) -> BoxFuture<'static, Result<Value, BusError>> {
+    fn instances(&self) -> Vec<Instance> {
+        self.midi
+            .devices()
+            .into_iter()
+            .filter_map(|device| {
+                let id = device.input.clone().or(device.output.clone())?;
+                Some(Instance { id, title: device.name })
+            })
+            .collect()
+    }
+
+    fn call(&self, handle: &str, input: Value) -> BoxFuture<'static, Result<Value, BusError>> {
         let midi = self.midi.clone();
         let handle = handle.to_string();
         Box::pin(async move {
@@ -140,6 +203,22 @@ impl Device for MidiKeyboard {
                 "keyboards" => Ok(json!(midi.devices())),
                 // The notes themselves go by the keyboard's channel: the letter only says the page may open it.
                 "notes" => Ok(json!({ "channel": "/api/v1/midi/ws" })),
+                // A melody with no page (the brain's «сыграй на клавиатуре»): on the keyboard named, or the first one
+                // that sounds.
+                "play" => {
+                    let steps = crate::midi::wire::melody(input.get("notes").unwrap_or(&Value::Null))
+                        .map_err(BusError::Failed)?;
+                    let asked = input.get("device").and_then(Value::as_str).unwrap_or_default();
+                    let port = midi.output_for(asked).ok_or_else(|| {
+                        BusError::Failed(crate::tr!("Клавиатуры, которая звучит, сейчас нет: её отключили?"))
+                    })?;
+                    midi.play_alone(&port, steps).map_err(BusError::Failed)?;
+                    Ok(json!({ "playing": port }))
+                }
+                "stop" => {
+                    midi.stop_alone();
+                    Ok(json!({ "stopped": true }))
+                }
                 other => Err(BusError::NotFound(format!("device/midi: {other}"))),
             }
         })

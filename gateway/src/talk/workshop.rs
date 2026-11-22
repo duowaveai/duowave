@@ -182,13 +182,13 @@ impl Executor for WorkshopExecutor {
                 .workshop
                 .make_for(&work.brief, Some(draft), by, who, Some(&work.id))
                 .map_err(|error| error.message)?;
-            return Ok(Started { target: made.draft, title: made.title });
+            return Ok(Started { target: made.draft, title: made.title, note: made.note });
         }
         let face = draft_face(work.face.unwrap_or(Face::Widget));
         let title = Some(work.title.as_str()).filter(|title| !title.trim().is_empty());
         let made =
             self.workshop.begin(face, title, &work.brief, by, who, Some(&work.id)).map_err(|error| error.message)?;
-        Ok(Started { target: made.draft, title: made.title })
+        Ok(Started { target: made.draft, title: made.title, note: made.note })
     }
 
     fn add(&self, work: &Work, text: &str) -> bool {
@@ -201,10 +201,14 @@ impl Executor for WorkshopExecutor {
         let host = self.workshop.host();
         let id = name.trim().trim_start_matches('[').trim_end_matches(']');
         if let Some(package) = host.visible_all().into_iter().find(|package| package.manifest.id == id) {
-            return Some(Started { target: id.to_string(), title: package.manifest.title.clone() });
+            return Some(Started { target: id.to_string(), title: package.manifest.title.clone(), note: None });
         }
         if let Ok(view) = self.workshop.draft(id) {
-            return Some(Started { target: id.to_string(), title: view.title.unwrap_or_else(|| id.to_string()) });
+            return Some(Started {
+                target: id.to_string(),
+                title: view.title.unwrap_or_else(|| id.to_string()),
+                note: None,
+            });
         }
         let wanted = super::work_tools::stems(name);
         let drafts = self.workshop.drafts().into_iter().filter_map(|view| Some((view.id, view.title?)));
@@ -219,7 +223,7 @@ impl Executor for WorkshopExecutor {
         }
         (found.len() == 1).then(|| {
             let (target, title) = found.remove(0);
-            Started { target, title }
+            Started { target, title, note: None }
         })
     }
 
@@ -228,21 +232,21 @@ impl Executor for WorkshopExecutor {
             let workshop = &self.workshop;
             if let Ok(view) = workshop.draft(target) {
                 let title = view.title.unwrap_or_else(|| target.to_string());
-                return Ok(Started { target: target.to_string(), title });
+                return Ok(Started { target: target.to_string(), title, note: None });
             }
             let host = workshop.host();
             let package = host.installed(target).ok_or_else(|| Closed::Failed(crate::tr!("Такого приложения нет.")))?;
             let title = package.manifest.title.clone();
             if host.origin_of(target).editable() {
                 let view = workshop.open(target).map_err(|error| Closed::Failed(error.message))?;
-                return Ok(Started { target: target.to_string(), title: view.title.unwrap_or(title) });
+                return Ok(Started { target: target.to_string(), title: view.title.unwrap_or(title), note: None });
             }
             if !copy {
                 return Err(Closed::BuiltIn(title));
             }
             let copied = host.fork(target, None, None).await.map_err(|error| Closed::Failed(error.message))?;
             let view = workshop.open(&copied.id).map_err(|error| Closed::Failed(error.message))?;
-            Ok(Started { target: copied.id.clone(), title: view.title.unwrap_or(title) })
+            Ok(Started { target: copied.id.clone(), title: view.title.unwrap_or(title), note: None })
         })
     }
 

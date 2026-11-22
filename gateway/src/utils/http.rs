@@ -53,6 +53,36 @@ pub fn client_without_redirects() -> reqwest::Client {
         .clone()
 }
 
+/// Why a request found no answer, in words and with its real cause: «не удалось соединиться (Connection reset by peer
+/// (os error 104))», not reqwest's «error sending request for url (…)» alone. A tester's Station Mini 2 (22.11) could
+/// not read two feeds while the computer beside it could, and its journal held only reqwest's words: the bottom of the
+/// error's chain tells a refused connection, a reset, a timeout and a broken TLS handshake apart.
+pub fn why_failed(error: &reqwest::Error) -> String {
+    let what = if error.is_timeout() {
+        crate::tr!("нет ответа вовремя")
+    } else if error.is_connect() {
+        crate::tr!("не удалось соединиться")
+    } else {
+        crate::tr!("связь оборвалась")
+    };
+    format!("{what} ({})", deepest_cause(error))
+}
+
+/// The bottom of the error's chain — «Connection refused (os error 111)», «Network unreachable (os error 101)» —, not
+/// reqwest's «error sending request for url (…)» alone; a timeout says so if its bottom does not.
+pub fn deepest_cause(error: &reqwest::Error) -> String {
+    let mut deepest: &dyn std::error::Error = error;
+    while let Some(next) = deepest.source() {
+        deepest = next;
+    }
+    let said = deepest.to_string();
+    if error.is_timeout() && !said.to_lowercase().contains("timed out") {
+        format!("timed out: {said}")
+    } else {
+        said
+    }
+}
+
 /// The WebSocket connector for tokio-tungstenite with the same TLS.
 pub fn ws_connector() -> tokio_tungstenite::Connector {
     tokio_tungstenite::Connector::Rustls(tls_config())

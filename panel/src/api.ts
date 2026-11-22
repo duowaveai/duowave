@@ -360,6 +360,8 @@ export interface ProviderAccount {
  */
 export interface ProviderAccess {
     active: boolean;
+    /** Вид доступа, как его зовёт сервис (у DuoWave `trial` — пробная неделя); шлюз до 0.18.3 его не передаёт. */
+    tier?: string;
     plan?: string;
     endsAt?: string;
     problem?: 'revoked' | 'ended' | 'quota' | 'busy' | 'model';
@@ -612,7 +614,7 @@ export interface BrainView {
     env: { provider: BrainStatus['provider']; title: string; models: { fast: string; smart: string }; usable: boolean; cloud: boolean };
     /** Строка шлюза о запасной: выбрал сам (и что это может стоить денег), нужна, закрыта регулятором. */
     note?: { kind: 'backupAuto' | 'backupNeeded' | 'backupClosed'; text: string };
-    /** Код приглашения DuoWave ждёт следующего входа: показать «Получить неделю бесплатно». Сам код шлюз не отдаёт. */
+    /** Код приглашения DuoWave ждёт следующего входа: показать «Получить подарок». Сам код шлюз не отдаёт. */
     invite?: boolean;
 }
 
@@ -972,8 +974,8 @@ export interface PlacementView {
 
 // ─── Помощники (docs/plans/home-and-helpers.md, блок 1) ───────────────────────────────────────────────────────────
 
-/** Что помощник даёт: умения договора 1. */
-export type Ability = 'hearing' | 'voice' | 'model' | 'messages' | 'apps' | 'history' | 'catalog';
+/** Что помощник даёт: умения договора 1 и договора 3 — устройства и папки компьютера (docs/plans/turbo-devices.md). */
+export type Ability = 'hearing' | 'voice' | 'model' | 'messages' | 'apps' | 'history' | 'catalog' | 'devices' | 'files';
 /** Где помощник, как это говорит человек: дома, мой сервер, облако. */
 export type HelperKind = 'home' | 'own' | 'cloud';
 /** off — выключен в списке; self — это сам этот шлюз; twin — тот же помощник, что выше в списке. */
@@ -1121,6 +1123,61 @@ export interface HomeDevices {
     home: { id?: string; name: string };
     centre: string;
     devices: HomeDevice[];
+}
+
+// ─── Устройства Турбо (docs/plans/turbo-devices.md, «Пульт») ──────────────────────────────────────────────────────
+
+/**
+ * Вещь у места вида сейчас: готова; к компьютеру не подключена; компьютер спит; компьютер не дома (физическое дому
+ * тогда не достаётся, решение владельца 6).
+ */
+export type PluggedState = 'ready' | 'unplugged' | 'asleep' | 'away';
+
+/** Одна вещь вида: «Keystation 49». `id` — с местом (`home-computer:in-2`), у самого шлюза — свой. */
+export interface PluggedThing {
+    id: string;
+    title: string;
+}
+
+/** Одно место вида: сам этот шлюз (`place: ''`) или Турбо по его id; `name` — «Mac». */
+export interface PluggedPlace {
+    place: string;
+    name: string;
+    cloud: boolean;
+    state: PluggedState;
+    /** Что подключено там; пока место не готово — что видели последним. */
+    instances: PluggedThing[];
+}
+
+/** Вид устройств дома («MIDI-клавиатура», «Экран компьютера», «Флешки и диски») со всеми его местами. */
+export interface PluggedKind {
+    kind: string;
+    title: string;
+    nature: 'physical' | 'data';
+    places: PluggedPlace[];
+}
+
+/** `GET /api/v1/home/plugged`: виды дома и спящие компьютеры, которые центр умеет будить. */
+export interface PluggedView {
+    kinds: PluggedKind[];
+    wakeable: string[];
+}
+
+/** Вид устройств этого компьютера в «Что этот компьютер даёт дому»: отдан ли он и что подключено сейчас. */
+export interface ShareKind {
+    kind: string;
+    title: string;
+    nature: 'physical' | 'data';
+    /** Камера, микрофон, устройства-«клавиатуры»: дом получает их, только если включить здесь (решение 3). */
+    sensitive: boolean;
+    given: boolean;
+    /** Как отмечено здесь; null — не трогали, действует умолчание. */
+    ticked: boolean | null;
+    instances: PluggedThing[];
+}
+
+export interface SharesView {
+    kinds: ShareKind[];
 }
 
 /** Ключ подключения, который показывает этот компьютер (только администратору). */
@@ -3991,6 +4048,17 @@ export const api = {
     /** «Сделать центром»: у центра — эта колонка становится центром, а он — её ухом. */
     makeCentre: (device: string) => post<{ centre: { address: string; port: number } }>('/api/v1/home/centre', { device }),
     homeApps: (signal?: AbortSignal) => get<{ apps: HomeApp[]; places: HomeAppPlace[] }>('/api/v1/home/apps', signal),
+    /** Что подключено к компьютерам дома — у центра (в окне колонки — через проход): по видам, у каждого места. */
+    homePlugged: (signal?: AbortSignal) => get<PluggedView>('/api/v1/home/plugged', signal),
+    /** Где дом делает дела вида отныне: `place` — '' (сам центр) или id Турбо; `name` — как его зовут. */
+    choosePlugged: (kind: string, place: string) =>
+        post<{ kind: string; place: string; name: string }>('/api/v1/home/plugged/choice', { kind, place }),
+    /** Разбудить спящий компьютер по домашней сети: ответ — когда он на связи или через 20 с, что нет. */
+    wakePlace: (place: string) => post<{ place: string; awake: boolean }>('/api/v1/home/plugged/wake', { place }),
+    /** «Что этот компьютер даёт дому» — всегда у шлюза этого компьютера, мимо прохода. */
+    pluggedShares: (signal?: AbortSignal) => ownCall<SharesView>('GET', '/api/v1/home/plugged/shares', undefined, signal),
+    /** Все галочки разом: вид, которого нет в списке, вернётся к умолчанию. */
+    setPluggedShares: (kinds: Record<string, boolean>) => ownCall<SharesView>('PUT', '/api/v1/home/plugged/shares', { kinds }),
     helpers: (signal?: AbortSignal) => get<HelpersView>('/api/v1/helpers', signal),
     /**
      * Что даёт помощник по этому адресу и ключу — до сохранения: ничего не записано, ключ подключения не потрачен.
@@ -4453,7 +4521,14 @@ export const api = {
     packageFiles: (id: string) => get<PluginFilesView>(`/api/v1/packages/${encodeURIComponent(id)}/files`),
     pluginFilesSummary: () => get<PluginFilesSummary>('/api/v1/packages/files'),
     midi: () => get<MidiView>('/api/v1/midi'),
-    midiTicket: (pkg: string) => post<{ ticket: string; expiresIn: number }>('/api/v1/midi/ticket', { package: pkg }),
+    /**
+     * Билет канала нот. В окне колонки на компьютере (`?via=`) — у шлюза этого компьютера, мимо прохода: сокет нот
+     * открывается у него же (`location.host`, sdk/midi.ts), а можно ли приложению слушать, он спросит у колонки сам.
+     */
+    midiTicket: (pkg: string) =>
+        VIA
+            ? ownCall<{ ticket: string; expiresIn: number }>('POST', '/api/v1/midi/ticket', { package: pkg, station: VIA })
+            : post<{ ticket: string; expiresIn: number }>('/api/v1/midi/ticket', { package: pkg }),
     /** Файл `.mid` — дорожки с мелодиями; шлюз его не хранит. */
     midiRead: (file: Blob) =>
         fetch(gw('/api/v1/midi/read'), {

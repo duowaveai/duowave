@@ -586,7 +586,12 @@ impl PluginSkill {
                 Some(outcome) => return Ok(outcome),
                 None => None,
             },
-            Err(error) => Some(error),
+            // The app's code is at a Турбо that sleeps: why, and «Разбудить?» — the device's question
+            // (docs/plans/turbo-devices.md, owner 20.11, 5).
+            Err(error) => match host.offer_wake(&plugin, &context.device_tag) {
+                Some(question) => return Ok(Outcome::speech(format!("{error} {question}"))),
+                None => Some(error),
+            },
         };
         if let Some(served) = self.fallback(intent, context).await {
             return served;

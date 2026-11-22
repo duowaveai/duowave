@@ -32,6 +32,11 @@ function PlanLine({ children }: { children: ComponentChildren }) {
 
 export const WIKI_ROOT = 'https://hackalice.me/start/';
 export const WIKI_SSH = 'https://hackalice.me/start/ssh/';
+/**
+ * DuoWave на колонку без компьютера: строка, которую человек вводит на самой колонке, зайдя на неё по SSH
+ * (station-client/station.sh). HTTP, а не HTTPS: в busybox колонки нет TLS.
+ */
+export const STATION_INSTALL_COMMAND = 'wget -qO- http://get.duowave.app/station.sh | sh';
 
 const stepLabels = (): Record<ConnectStepId, string> => ({
     copy: tr.connect.stepCopy,

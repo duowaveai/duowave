@@ -8,15 +8,28 @@ import { useEffect, useState } from 'preact/hooks';
 import { ApiError, api, problemOf } from './api';
 import type { Ability, Away, HelperKind, HelpersView } from './api';
 import { tr } from './i18n';
-import { IconDownload, IconEar, IconGlobe, IconHome, IconLaptop, IconPackage, IconSend, IconSparkle, IconUndo, IconVoice } from './icons';
+import {
+    IconDownload,
+    IconEar,
+    IconFolder,
+    IconGlobe,
+    IconHome,
+    IconLaptop,
+    IconLinks,
+    IconPackage,
+    IconSend,
+    IconSparkle,
+    IconUndo,
+    IconVoice,
+} from './icons';
 import { usePoll } from './poll';
 import { usePanel } from './shell/context';
 import { byMode } from './words';
 
 type Icon = FunctionComponent<{ size?: number }>;
 
-/** Every ability of contract 1, in the order people see them. */
-export const ABILITIES: Ability[] = ['hearing', 'voice', 'model', 'messages', 'apps', 'history', 'catalog'];
+/** Every ability of contracts 1 and 3 (the computer's devices and folders), in the order people see them. */
+export const ABILITIES: Ability[] = ['hearing', 'voice', 'model', 'messages', 'apps', 'devices', 'files', 'history', 'catalog'];
 /**
  * «Где сейчас» on the page, the rows the gateway sends; the widget shows the first three. A catalog row only in the
  * developer layer, and only when the gateway sends one (block 1's gateway does not).
@@ -31,6 +44,8 @@ export const ABILITY_ICONS: Record<Ability, Icon> = {
     apps: IconPackage,
     history: IconUndo,
     catalog: IconDownload,
+    devices: IconLinks,
+    files: IconFolder,
 };
 
 /**
@@ -42,12 +57,32 @@ export function abilityTitle(id: Ability, where = false): string {
     if (where && id === 'model') return t.abilityBrain;
     if (where && id === 'hearing') return t.abilityHears;
     if (where && id === 'voice') return t.abilitySpeaks;
-    return { hearing: t.abilityHearing, voice: t.abilityVoice, model: t.abilityModel, messages: t.abilityMessages, apps: t.abilityApps, history: t.abilityHistory, catalog: t.abilityCatalog }[id];
+    return {
+        hearing: t.abilityHearing,
+        voice: t.abilityVoice,
+        model: t.abilityModel,
+        messages: t.abilityMessages,
+        apps: t.abilityApps,
+        history: t.abilityHistory,
+        catalog: t.abilityCatalog,
+        devices: t.abilityDevices,
+        files: t.abilityFiles,
+    }[id];
 }
 
 export function abilityAbout(id: Ability): string {
     const t = tr.helpers;
-    return { hearing: t.aboutHearing, voice: t.aboutVoice, model: t.aboutModel, messages: t.aboutMessages, apps: t.aboutApps, history: t.aboutHistory, catalog: t.aboutCatalog }[id];
+    return {
+        hearing: t.aboutHearing,
+        voice: t.aboutVoice,
+        model: t.aboutModel,
+        messages: t.aboutMessages,
+        apps: t.aboutApps,
+        history: t.aboutHistory,
+        catalog: t.aboutCatalog,
+        devices: t.aboutDevices,
+        files: t.aboutFiles,
+    }[id];
 }
 
 /** «дома» · «мой сервер» · «облако». */

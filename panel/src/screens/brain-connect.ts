@@ -5,7 +5,8 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
 
 import { BrainPick, BrainView, ProviderAccess, ProviderCheck, ProviderPreset, ProviderView, api, can, problemOf } from '../api';
-import { formatDate, tr } from '../i18n';
+import { inviteCode } from '../invite-code';
+import { tr } from '../i18n';
 import { usePoll } from '../poll';
 import { usePanel } from '../shell/context';
 import { useSignIn } from '../ui/sign-in';
@@ -45,11 +46,15 @@ function keyService(raw: string): string | null {
     return null;
 }
 
-/** Доступ DuoWave строкой карточки: «Пробная неделя до 27 ноября», «доступа пока нет». */
+/**
+ * Доступ DuoWave строкой карточки: «Пробная неделя», «доступа пока нет». По виду доступа, своими словами (и по-английски
+ * «Trial week»); вида шлюз не сказал — название тарифа, как его прислал кабинет. Даты нет (владелец, 22.11: «дату вообще
+ * уберём»): `endsAt` пульт не показывает.
+ */
 export function accessLine(access: ProviderAccess): string {
     if (!access.active) return tr.brain.accessNone;
-    const date = access.endsAt ? formatDate(access.endsAt, { day: 'numeric', month: 'long' }) : null;
-    return date ? tr.brain.accessUntil(access.plan ?? '', date) : tr.brain.accessPlan(access.plan ?? '');
+    if (access.tier === 'trial') return tr.brain.accessTrial;
+    return tr.brain.accessPlan(access.plan ?? '');
 }
 
 /** Что просит последний отказ DuoWave или его доступ: предупреждение карточки; нет — всё в порядке. */
@@ -284,7 +289,7 @@ export function useBrainConnect() {
         setProblem(null);
         setInviteBusy(true);
         try {
-            const fresh = await api.setInvite(code.trim() || null);
+            const fresh = await api.setInvite(inviteCode(code) || null);
             if (alive.current) setView(fresh);
             return true;
         } catch (e) {

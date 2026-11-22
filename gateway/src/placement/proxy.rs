@@ -109,6 +109,21 @@ fn own_row(rest: &str) -> bool {
     matches!(rest, "api/v1/desk/gateway" | "api/v1/panel/state")
 }
 
+/// A request to the station as the person at the computer: their name and role — the station gives that role's
+/// rights — and a person's own id, never a key's: the centre keeps their desk and panel memory under it.
+pub(crate) fn as_person(principal: &Principal, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+    let mut request = request
+        .header(HELPER_PERSON, principal.name.chars().filter(|c| !c.is_control()).collect::<String>())
+        .header(HELPER_ROLE, helper_role(principal).as_str());
+    if principal.kind == PrincipalKind::User {
+        request = request.header(
+            HELPER_PERSON_ID,
+            principal.id.chars().filter(|c| c.is_ascii_graphic()).take(64).collect::<String>(),
+        );
+    }
+    request
+}
+
 /// The role the station gives the person at the computer: a person's own; a key's (no role) — a guest's.
 fn helper_role(principal: &Principal) -> Role {
     match (principal.kind, principal.role) {
@@ -267,18 +282,8 @@ async fn pass(
         }
     }
     // A public file goes as anyone's at home: no key, nobody named.
-    if let (Some(principal), Some(role)) = (&principal, role) {
-        request = request
-            .bearer_auth(peer.key())
-            .header(HELPER_PERSON, principal.name.chars().filter(|c| !c.is_control()).collect::<String>())
-            .header(HELPER_ROLE, role.as_str());
-        // A person's own id — never a key's: the centre keeps their desk and panel memory under it.
-        if principal.kind == PrincipalKind::User {
-            request = request.header(
-                HELPER_PERSON_ID,
-                principal.id.chars().filter(|c| c.is_ascii_graphic()).take(64).collect::<String>(),
-            );
-        }
+    if let Some(principal) = &principal {
+        request = as_person(principal, request.bearer_auth(peer.key()));
     }
     // The change as it came: kept for the centre when it is away (src/home/queue.rs).
     let kept_body = body.clone();

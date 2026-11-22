@@ -44,7 +44,7 @@ import { onComputer } from '../voice-input';
 import { byMode } from '../words';
 import { BackupChoice } from './brain';
 import { HelperCardWidget } from './desk-widgets';
-import { GatewayNameSheet, HelperComputer, HelperSide, NameSheet, TurboPowers } from './helper-pc';
+import { DeviceShares, GatewayNameSheet, HelperComputer, HelperSide, NameSheet, TurboPowers } from './helper-pc';
 import { fallOf, turboOf } from './turbo-model';
 
 /** A card of «Дом»: its title, a role pill («шлюз», «работает»), a quiet line after the title; `turbo` — the Турбо's violet edge. */
@@ -374,13 +374,17 @@ function FallCard({ view, station, children }: { view: HelpersView; station: boo
     );
 }
 
-/** The Турбо's own «Дом» — a computer that only helps: «Мои силы» (what it gives, ready or not) and «Кому помогаю». */
+/**
+ * The Турбо's own «Дом» — a computer that only helps: «Мои силы» (what it gives, ready or not), what of its plugged-in
+ * devices it gives the home, and «Кому помогаю».
+ */
 export function TurboHome() {
     const panel = usePanel();
     return (
         <>
             <p class="w-cap m-0">{tr.helpers.homeLeadTurbo}</p>
             <TurboPowers />
+            <DeviceShares />
             <HelperComputer home />
             {can('station.view') && (
                 <Card id="become" title={tr.helpers.becomeGateway}>

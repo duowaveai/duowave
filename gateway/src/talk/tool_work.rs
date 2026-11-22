@@ -352,7 +352,7 @@ impl Executor for ToolExecutor {
         };
         let lang = self.layer.upgrade().map(|layer| layer.lang(work.device())).unwrap_or(Lang::Ru);
         handle.spawn(me.run(target.clone(), work.title.clone(), lang, call, run));
-        Ok(Started { target, title: work.title.clone() })
+        Ok(Started { target, title: work.title.clone(), note: None })
     }
 
     fn add(&self, _work: &Work, _text: &str) -> bool {

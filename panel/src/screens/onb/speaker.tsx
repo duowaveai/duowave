@@ -14,7 +14,7 @@ import { ApiError, ConnectJob, FoundStation, MoveJob, MoveTo, StationCheck, Stat
 import { tr } from '../../i18n';
 import { drawingOf } from '../../stations';
 import { encodeQr } from '../../ui/qr';
-import { AllowFirewall, RootPassword, WIKI_SSH, problemText, suggestedGateway } from '../connect';
+import { AllowFirewall, RootPassword, STATION_INSTALL_COMMAND, WIKI_SSH, problemText, suggestedGateway } from '../connect';
 import { useOnboarding, useStepNav } from './nav';
 import '../../ui/onboarding-canvas.css';
 import '../../ui/onb-connect.css';
@@ -1108,6 +1108,13 @@ function Plan({ check, only, stay }: { check: StationCheck; only: boolean; stay:
                             <IconLaptop />
                         </span>
                         <span class="small">{t.panelStays}</span>
+                    </div>
+                )}
+                {/* Тот же DuoWave на колонке и без этого компьютера: строка в её собственной консоли. */}
+                {only && !stay && (
+                    <div class="card card-tight" style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                        <span class="small">{t.aloneCommand}</span>
+                        <code class="code-block onb-cx-code">{STATION_INSTALL_COMMAND}</code>
                     </div>
                 )}
             </section>

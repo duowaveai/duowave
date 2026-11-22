@@ -8,8 +8,20 @@
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 
 import { ApiError, api, can, problemOf, sessionStore } from '../api';
-import type { Ability, ClientView, GatewayView, HelperKeyView, HelperPart, HelperServed, PlacedStation, StationGatewayView } from '../api';
+import type {
+    Ability,
+    ClientView,
+    GatewayView,
+    HelperKeyView,
+    HelperPart,
+    HelperServed,
+    PlacedStation,
+    ShareKind,
+    SharesView,
+    StationGatewayView,
+} from '../api';
 import { ABILITIES, ABILITY_ICONS, abilityAbout, abilityTitle, connectionText, readHelpers, useHelperKeyTurn, useHelpers } from '../helpers';
+import { usePluggedTurn } from '../home-devices';
 import { tr } from '../i18n';
 import { usePoll } from '../poll';
 import { usePanel } from '../shell/context';
@@ -96,11 +108,105 @@ export function TurboPowers() {
     );
 }
 
-/** «Этот компьютер» на странице устройства: его силы, «не давать спать», модели слуха и голоса, присмотр за колонкой. */
+/**
+ * «Что этот компьютер даёт дому» (docs/plans/turbo-devices.md, раздел 3; решение владельца 3): по виду его устройств —
+ * отдаёт ли он его дому и что подключено сейчас. Камеру, микрофон и устройства-«клавиатуры» дом получает, только если
+ * включить здесь. Читается у шлюза этого компьютера, мимо прохода; галочки уходят все разом. Меняет тот, кто управляет
+ * подключениями; видов нет — раздела нет.
+ */
+export function DeviceShares() {
+    const turn = usePluggedTurn();
+    const allowed = can('connectors.view');
+    const manage = can('connectors.manage');
+    /** undefined — ещё читаю, null — раздела нет (шлюз постарше или нет права). */
+    const [view, setView] = useState<SharesView | null>();
+    const [busy, setBusy] = useState(false);
+    const [error, setError] = useState<string | null>(null);
+    /** Растёт с каждой правкой: чтение, начатое до её ответа, своё старое не показывает. */
+    const changes = useRef(0);
+    usePoll({
+        on: allowed,
+        version: turn,
+        read: (signal) => {
+            const asked = changes.current;
+            return api.pluggedShares(signal).then(
+                (fresh) => {
+                    if (signal.aborted || asked !== changes.current) return;
+                    setView(fresh);
+                    setError(null);
+                },
+                (e) => {
+                    if (signal.aborted || asked !== changes.current) return;
+                    if (e instanceof ApiError && (e.status === 403 || e.status === 404)) setView(null);
+                    else setError(problemOf(e));
+                },
+            );
+        },
+    });
+    if (!allowed || view === null) return null;
+    // Ещё читаю — пусто, без мигания; видов нет — раздела нет.
+    if (view === undefined ? !error : view.kinds.length === 0) return null;
+    /** Все галочки разом, как видны сейчас, с этой переменой. */
+    const save = async (kinds: ShareKind[], kind: string, on: boolean): Promise<void> => {
+        const ticks = Object.fromEntries(kinds.map((entry) => [entry.kind, entry.kind === kind ? on : entry.given]));
+        setBusy(true);
+        setError(null);
+        try {
+            const fresh = await api.setPluggedShares(ticks);
+            changes.current++;
+            setView(fresh);
+        } catch (e) {
+            setError(problemOf(e));
+        } finally {
+            setBusy(false);
+        }
+    };
+    return (
+        <Card id="shares" title={tr.helperPc.sharesTitle}>
+            {view && (
+                <div class="w-rows">
+                    {view.kinds.map((kind) => {
+                        // Экран называет себя так же, как его вид: тогда подписи нет.
+                        const things = kind.instances.map((thing) => thing.title).filter((title) => title && title !== kind.title);
+                        const plugged =
+                            things.length > 0 ? things.join(', ') : kind.instances.length === 0 ? tr.helperPc.sharesNothing : null;
+                        return (
+                            <label key={kind.kind} class="w-row">
+                                <span class="flex-1 min-w-0 flex flex-col">
+                                    <span class="w-strong">{kind.title}</span>
+                                    {plugged && <span class="w-cap wrap-anywhere">{plugged}</span>}
+                                </span>
+                                <Switch
+                                    on={kind.given}
+                                    label={kind.title}
+                                    disabled={!manage || busy}
+                                    onChange={(on) => void save(view.kinds, kind.kind, on)}
+                                />
+                            </label>
+                        );
+                    })}
+                </div>
+            )}
+            {view?.kinds.some((kind) => kind.sensitive) && <p class="w-cap m-0">{tr.helperPc.sharesSensitive}</p>}
+            {view && !manage && <p class="w-cap m-0">{tr.helperPc.sharesAdminOnly}</p>}
+            {error && (
+                <p class="w-cap m-0 c-dot-offline wrap-anywhere" role="alert">
+                    {error}
+                </p>
+            )}
+        </Card>
+    );
+}
+
+/**
+ * «Этот компьютер» на странице устройства: его силы, что он даёт дому из подключённого, «не давать спать», модели слуха
+ * и голоса, присмотр за колонкой.
+ */
 export function ThisComputer() {
     return (
         <>
             <TurboPowers />
+            <DeviceShares />
             <KeepAwake />
             <HelperComputer home side={false} />
             {isAdmin() && <DeveloperReport />}

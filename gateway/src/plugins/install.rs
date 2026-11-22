@@ -399,8 +399,11 @@ pub async fn fetch(url: &str, max: u64, timeout: Duration) -> Result<Vec<u8>, Fa
         .timeout(timeout)
         .build()
         .map_err(|error| failed(crate::tr!("загрузка: {error}", error = error)))?;
-    let mut response =
-        client.get(url).send().await.map_err(|error| failed(crate::tr!("загрузка: {error}", error = error)))?;
+    let mut response = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|error| failed(crate::tr!("загрузка: {error}", error = crate::utils::http::why_failed(&error))))?;
     let status = response.status();
     if !status.is_success() {
         return Err(Failed {
@@ -416,8 +419,10 @@ pub async fn fetch(url: &str, max: u64, timeout: Duration) -> Result<Vec<u8>, Fa
         return Err(too_big());
     }
     let mut bytes = Vec::new();
-    while let Some(chunk) =
-        response.chunk().await.map_err(|error| failed(crate::tr!("загрузка: {error}", error = error)))?
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|error| failed(crate::tr!("загрузка: {error}", error = crate::utils::http::why_failed(&error))))?
     {
         bytes.extend_from_slice(&chunk);
         if bytes.len() as u64 > max {

@@ -27,6 +27,9 @@ import { type Laid, type Rect, arrange, overlaps, pushApart, underTop } from '..
 import { stationOfferOf, stationUpdatePressable, stationUpdateStep } from '../src/station-update.ts';
 import type { StationUpdatePlan } from '../src/api.ts';
 import { bannerOffer } from '../src/update-offer.ts';
+import { inviteCode } from '../src/invite-code.ts';
+import { blockedOf, sameFeed } from '../src/magicplace/pending-feed.ts';
+import type { CatalogSource } from '../src/api.ts';
 
 const checks: Array<[string, () => void]> = [];
 const check = (name: string, run: () => void): void => void checks.push([name, run]);
@@ -634,6 +637,48 @@ check('the_update_line_speaks_of_this_computer_first_in_the_stations_window', ()
     expect(app.includes('void readOwnUpdateStatus()') && app.includes('OWN_READ_MS'), 'the station’s window reads the computer too');
     expect(app.includes('computer={offered.computer && !!VIA}'), 'the line says it is this computer’s');
     expect(/own \? setOwnUpdateStatus : setUpdateStatus/.test(source('src/screens/house.tsx')), '«Этот компьютер» tells the line');
+});
+
+check('an_invitation_code_reaches_the_gateway_as_the_site_takes_it_whatever_was_typed', () => {
+    expect(inviteCode('s_abc123') === 's_abc123', 'a code with s_ stays as it is');
+    expect(inviteCode('  abc123 ') === 's_abc123', 'a code without s_ gets it, spaces trimmed');
+    expect(inviteCode('S_AbC123') === 's_AbC123', 'a capital S_ is the same s_, the key keeps its letters');
+    expect(inviteCode('https://my.duowave.app/?start=S_abc123') === 's_abc123', 'a link with a capital S_ too');
+    expect(inviteCode('https://my.duowave.app/?start=s_abc123') === 's_abc123', 'the whole link gives its start');
+    expect(inviteCode('my.duowave.app/connect?x=1&start=abc-1_2#top') === 's_abc-1_2', 'a link without https, start later, s_ added');
+    expect(inviteCode('') === '' && inviteCode('   ') === '', 'nothing typed — nothing to keep');
+    expect(inviteCode('https://my.duowave.app/?start=') === '', 'a link with an empty start — nothing to keep');
+    for (const path of ['src/screens/brain-connect.ts', 'src/screens/brain.tsx', 'src/screens/onb/answer.tsx']) {
+        const text = source(path);
+        expect(!/setInvite\([^)]*\.trim\(\)/.test(text), `${path} hands the gateway the cleaned code`);
+        expect(text.includes('inviteCode('), `${path} cleans the code`);
+    }
+});
+
+check('duowaves_access_shows_its_kind_and_never_a_date', () => {
+    const connect = source('src/screens/brain-connect.ts');
+    expect(!connect.includes('formatDate') && !connect.includes('access.endsAt'), 'the access line takes no date');
+    expect(/tier === 'trial'\) return tr\.brain\.accessTrial/.test(connect), 'a trial is worded by its kind');
+    for (const lang of ['ru', 'en']) {
+        const words = source(`src/i18n/locales/${lang}/brain.ts`);
+        expect(!words.includes('accessUntil'), `${lang}: no «until a date» wording is left`);
+    }
+});
+
+check('a_choice_whose_feed_the_speaker_cannot_read_says_why_instead_of_waiting_forever', () => {
+    // A tester's Station Mini 2 (22.11): the demo feed closed to it, the pill said «готовлю у колонки» for ever.
+    const demo = 'https://demo.example.invalid/catalog.json';
+    const feed = (over: Partial<CatalogSource>): CatalogSource => ({ url: demo, publisher: 'demo', title: 'Демо', offline: false, count: 0, ...over });
+    expect(sameFeed(demo, 'https://demo.example.invalid/') && sameFeed(demo, 'https://DEMO.example.invalid'), 'the same feed with or without catalog.json');
+    expect(!sameFeed(demo, 'https://store.example.invalid/catalog.json'), 'another feed is another');
+    expect(blockedOf(undefined, demo, 'не отвечает') === undefined, 'an older speaker says nothing of its feeds: keep waiting');
+    expect(blockedOf([feed({})], demo, 'не отвечает') === undefined, 'read, or not tried yet: keep waiting');
+    expect(blockedOf([feed({ offline: true, problem: 'Лента «Демо» недоступна' })], 'https://demo.example.invalid', 'x') === 'Лента «Демо» недоступна', 'closed: its words');
+    expect(blockedOf([feed({ offline: true })], demo, 'не отвечает') === 'не отвечает', 'closed without words: the general ones');
+    expect(blockedOf([feed({ closed: true, problem: 'закрыт' })], demo, 'x') === 'закрыт', 'an own source taken down');
+    const pending = source('src/magicplace/pending-install.tsx');
+    expect(pending.includes('blockedOf(view?.feeds, chosen.url') && pending.includes('BLOCKED_RETRY_MS'), 'the wait asks it and tries again rarely');
+    expect(source('src/magicplace/wizard.tsx').includes('t.pillBlocked('), 'the pill says it');
 });
 
 let failed = 0;

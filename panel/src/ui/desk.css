@@ -722,6 +722,11 @@ html[data-theme='dark'] .widget.music { background: color-mix(in srgb, var(--mus
 .desk-float:empty { display: none; }
 .desk-float > * { pointer-events: auto; }
 .desk-canvas-banner { position: absolute; top: 16px; left: 50%; transform: translateX(-50%); z-index: 6; width: min(560px, calc(100vw - 32px)); display: flex; flex-direction: column; gap: 10px; }
+/* Баннер — своим слоем над полем, и его карточки непрозрачны (замечание 21 после 0.18.2: раскрытое «Состояние дома»
+   на столе окна приложения рисовалось под кругом колонки, пока поле не сдвинули). Слой — подсказкой transform: баннер не
+   масштабируется, текст не мылится. Фон — цвет карточки поверх цвета страницы: полупрозрачная тема не пропускает сцену. */
+.desk-canvas-banner { isolation: isolate; will-change: transform; }
+.desk-canvas-banner .card.glass { background: linear-gradient(var(--glass-bg), var(--glass-bg)), var(--bg); box-shadow: 0 10px 30px rgba(0, 0, 0, 0.12); }
 /* Поле, опущенное под баннер (desk-canvas.tsx, push): ходит плавно, когда баннер пришёл или ушёл. */
 .desk-push { position: absolute; inset: 0; transition: transform 0.25s ease; }
 @media (prefers-reduced-motion: reduce) { .desk-push { transition: none; } }
@@ -1497,6 +1502,8 @@ html[data-theme='dark'] .voice-strip { box-shadow: 0 10px 40px rgba(0, 0, 0, 0.4
     white-space: nowrap;
 }
 .waiting-pill:hover { border-color: var(--bar-own); }
+/* Набор не скачать (22.11): в тоне предупреждения, причина — по нажатию. */
+.waiting-pill.is-problem { border-color: var(--out-fg, #d97706); color: var(--out-fg, #d97706); }
 /* Вверху у поиска (владелец, 20.11): в рост кнопок шапки; длинный ход установки обрезается, а не теснит поиск. */
 .waiting-pill-top { min-height: 32px; height: 32px; display: inline-flex; align-items: center; max-width: 280px; overflow: hidden; text-overflow: ellipsis; }
 .waiting-pill-count { display: none; }

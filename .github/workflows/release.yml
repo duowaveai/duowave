@@ -536,6 +536,16 @@ jobs:
           stay 'DuoWave_*_x64-setup.exe' DuoWave-windows.exe
           stay 'DuoWave_*_amd64.AppImage' DuoWave-linux-x86_64.AppImage
           stay 'DuoWave_*_aarch64.AppImage' DuoWave-linux-arm.AppImage
+      # The one-line install typed on the station itself (station-client/station.sh): this release's version and the
+      # SHA-256 of its station build written in. The catalog's site takes it with that build once its own build has
+      # checked the build's signature (duowave-packages, pages.yml), and get.duowave.app (a Cloudflare Worker,
+      # scripts/release/cloudflare) serves both over plain HTTP: the station's busybox has no TLS. Before SHA256SUMS, so
+      # station.sh is in it too.
+      - name: The station's one-line install
+        run: |
+          station=$(find release -type f -name duowave-station-aarch64.tar.gz)
+          [ "$(printf '%s\n' "$station" | grep -c .)" = 1 ] || { echo "::error::expected one station build, found: ${station:-none}"; exit 1; }
+          scripts/release/station-script.sh "$station" "${GITHUB_REF_NAME}" release/station.sh
       # The one-line install (scripts/install): its scripts go out with the release, and SHA256SUMS lets them check
       # the gateway they download before running it (the station's build inside it is checked by its signature).
       - name: The one-line install and SHA256SUMS

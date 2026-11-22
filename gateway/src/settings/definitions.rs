@@ -1289,6 +1289,10 @@ pub struct HelperClient {
     /// kept.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub binding: Option<String>,
+    /// `gives` was written knowing the abilities of contract 3 (devices, folders): before it, its own home gets them by
+    /// default and another home does not (docs/plans/turbo-devices.md, owner 20.11, 9).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub v3: bool,
 }
 
 /// Who this computer helps over the link, by client id (`link:<12 hex>`). Each computer's own
@@ -1474,6 +1478,30 @@ pub const TURBO_VOICE_ENGINES: SettingDefinition<BTreeMap<String, String>> = Set
     description: "Модель голоса персонажа, названная хабом",
     sensitive: false,
     parse: as_string_record,
+};
+
+/// On a Турбо: «Что этот компьютер даёт дому» (docs/plans/turbo-devices.md) — by the kind of a device (`midi`, `screen`,
+/// `storage`, `folders`, `camera`, …), whether its home gets it. A kind not named here is given unless it is sensitive
+/// (owner 20.11, 3: everything but the camera, the microphone and keyboard-like things). The computer's own.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TurboShares {
+    #[serde(default)]
+    pub kinds: BTreeMap<String, bool>,
+}
+
+impl TurboShares {
+    /// Whether the home gets this kind: as ticked, or by its default.
+    pub fn gives(&self, kind: &str, sensitive: bool) -> bool {
+        self.kinds.get(kind).copied().unwrap_or(!sensitive)
+    }
+}
+
+pub const TURBO_SHARES: SettingDefinition<TurboShares> = SettingDefinition {
+    key: "turbo_shares",
+    scope: SettingScope::Global,
+    description: "Что этот компьютер даёт дому",
+    sensitive: false,
+    parse: as_serde,
 };
 
 #[cfg(test)]

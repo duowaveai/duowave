@@ -17,7 +17,6 @@ import { usePanel } from '../../shell/context';
 import { VoiceMark, markOf, useMediaUrl } from '../../ui/media';
 import { useNeedsFlow } from '../../ui/needs';
 import { installProgress, onInstallProgress, showInstallWizard } from '../../magicplace/wizard-state';
-import { Invite } from './invite';
 import { linkActive, linkNow, moveNow, useSpeakerLink } from './speaker';
 import { useOnboarding } from './nav';
 import '../../ui/onb-character.css';
@@ -343,18 +342,6 @@ export function CharacterStep() {
                 </h1>
                 <p class="lead">{tr.onbCharacter.lead}</p>
             </div>
-
-            {/* Демо по приглашению (п. 42, 58) — отдельным блоком над карточками; перестанем раздавать ссылку — убрать эту
-                строку и invite.tsx. */}
-            {/* Всегда, и пока колонка настраивается (п. 63): ленту читает этот компьютер, выбор ждёт центр. И когда колонка
-                уже центр — тоже этот компьютер: персонажи сразу, колонка догонит в фоне (замечание 3 теста 19.11). */}
-            <Invite
-                key={stationKey ?? 'own'}
-                centre={stationKey}
-                defer={awaitingCentre}
-                centreProblem={stuck}
-                onInstalled={() => void read().then((next) => next?.active?.id && setSelected(next.active.id))}
-            />
 
             {awaitingCentre && !moving && (
                 <div class="onb-ch-notcentre" role="status">

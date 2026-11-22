@@ -11,9 +11,22 @@
 
 pub mod file;
 pub mod ports;
+pub mod relay;
 pub mod routes;
 pub mod socket;
 pub mod wire;
+
+/// The owner of the home's centre (docs/plans/turbo-devices.md): a channel the centre opens to this computer as its
+/// Турбо (`/home/v1/devices/midi/stream`). The centre has checked the app, the person and the «да»; this computer only
+/// that the home is its own and at home.
+pub const CENTRE: &str = "@centre";
+/// The owner of a melody with no page (`device/midi` `play`, the brain's «сыграй на клавиатуре»).
+pub const ALONE: &str = "@alone";
+
+/// An owner of the gateway's own (`@…`), not an app's: never a package's name, never given a ticket from the panel.
+pub fn own_owner(package: &str) -> bool {
+    package.starts_with('@')
+}
 use std::collections::{BTreeSet, HashMap};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
@@ -235,6 +248,9 @@ impl MidiService {
     }
 
     fn note(&self, package: &str, line: &str) {
+        if own_owner(package) {
+            return;
+        }
         if let Some(journal) = self.journal.get() {
             journal(package, line);
         }
@@ -361,6 +377,10 @@ impl MidiService {
         if zone == Zone::Remote && !self.remote {
             return Err(crate::tr!("Клавиатуру слышно только дома: пульт вне дома её не слышит (MIDI_REMOTE)."));
         }
+        // The gateway's own owners are checked where they are made: the centre's channel by its route.
+        if own_owner(package) {
+            return Ok(());
+        }
         match self.gate.get() {
             Some(gate) => gate(package),
             None => Err(crate::tr!("приложения здесь не запущены")),
@@ -432,12 +452,69 @@ impl MidiService {
                 None => return Err(crate::tr!("канал перешёл на новую страницу")),
             }
         };
+        if own_owner(&package) {
+            return Ok(());
+        }
         match self.gate.get().map(|gate| gate(&package)) {
             Some(Err(why)) => {
                 self.release(owner, &why);
                 Err(why)
             }
             _ => Ok(()),
+        }
+    }
+
+    /// The output to play on: the keyboard named — by its output, or by its input whose keyboard sounds —, or, with
+    /// no name, the first keyboard that sounds.
+    pub fn output_for(&self, asked: &str) -> Option<String> {
+        let devices = self.devices();
+        if asked.is_empty() {
+            return devices.into_iter().find_map(|device| device.output);
+        }
+        devices.into_iter().find_map(|device| {
+            let named = device.output.as_deref() == Some(asked) || device.input.as_deref() == Some(asked);
+            named.then_some(device.output).flatten()
+        })
+    }
+
+    /// A melody with no page to follow it (the brain's «сыграй на клавиатуре»): an owner of its own plays it and goes
+    /// when it ends, letting its notes go. A new one stops the one before.
+    pub fn play_alone(self: &Arc<Self>, port: &str, steps: Vec<Step>) -> Result<(), String> {
+        if let Some(why) = &self.off {
+            return Err(why.clone());
+        }
+        self.stop_alone();
+        let last = steps.iter().map(|step| step.at_ms + step.length_ms.max(1)).max().unwrap_or(0);
+        let (outbox, mut frames) = mpsc::channel::<Value>(64);
+        let (owner, _) = self.attach(ALONE, Zone::Local, outbox)?;
+        if let Err(why) = self.play(owner, "alone", port, steps) {
+            self.release(owner, "мелодия не началась");
+            return Err(why);
+        }
+        let me = Arc::downgrade(self);
+        tokio::spawn(async move {
+            let wait = Duration::from_millis(last) + Duration::from_secs(2);
+            let _ = tokio::time::timeout(wait, async {
+                while let Some(frame) = frames.recv().await {
+                    if matches!(frame.get("t").and_then(Value::as_str), Some("played" | "why")) {
+                        return;
+                    }
+                }
+            })
+            .await;
+            if let Some(service) = me.upgrade() {
+                service.release(owner, "мелодия кончилась");
+            }
+        });
+        Ok(())
+    }
+
+    /// The melody with no page stops, its notes let go.
+    pub fn stop_alone(&self) {
+        let owners: Vec<u64> =
+            self.lock().owners.iter().filter(|(_, owner)| owner.package == ALONE).map(|(id, _)| *id).collect();
+        for owner in owners {
+            self.release(owner, "мелодию остановили");
         }
     }
 

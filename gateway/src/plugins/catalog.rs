@@ -854,7 +854,7 @@ async fn ask(url: &url::Url, etag: Option<&str>) -> Answer {
     }
     let mut response = match request.send().await {
         Ok(response) => response,
-        Err(error) => return Answer::Unreachable(error.to_string()),
+        Err(error) => return Answer::Unreachable(crate::utils::http::why_failed(&error)),
     };
     if response.status() == reqwest::StatusCode::NOT_MODIFIED {
         return Answer::Same;
@@ -873,7 +873,7 @@ async fn ask(url: &url::Url, etag: Option<&str>) -> Answer {
                 }
             }
             Ok(None) => break,
-            Err(error) => return Answer::Broken(error.to_string()),
+            Err(error) => return Answer::Broken(crate::utils::http::why_failed(&error)),
         }
     }
     Answer::Text(String::from_utf8_lossy(&body).into_owned(), etag)
@@ -1772,8 +1772,34 @@ impl PackageCatalog {
         let dir = self.extra_dir(url);
         let known = fetched_in(&dir).filter(|fetched| fetched.url == url.as_str());
         let etag = known.and_then(|fetched| fetched.etag).filter(|_| dir.join("catalog.json").exists());
+        let mut answer = ask(url, etag.as_deref()).await;
+        // Closed to this gateway, open to the computer at home (a tester's Station Mini 2, 22.11: DuoWave Store and the
+        // demo feed did not answer it, the computer beside it read them): the computer's copy, when it reads that feed.
+        // As for the main feed, a server's error too (a proxy in front of the feed answers 5xx when it cannot pass).
+        let mut through_home: Option<Option<String>> = None;
+        let failed = match &answer {
+            Answer::Unreachable(error) | Answer::Broken(error) => Some(error.clone()),
+            Answer::Status(code) if code.is_server_error() => Some(format!("HTTP {code}")),
+            _ => None,
+        };
+        if let Some(error) = failed {
+            match self.extra_through_home(url).await {
+                Ok((text, fetched_at)) => {
+                    through_home = Some(fetched_at);
+                    answer = Answer::Text(text, None);
+                }
+                Err(Some(why)) => {
+                    answer = Answer::Unreachable(crate::tr!(
+                        "{error}. Через компьютер тоже нет: {why}",
+                        error = error,
+                        why = why
+                    ));
+                }
+                Err(None) => {}
+            }
+        }
         // A new copy, or none: (offline, why).
-        let outcome = match ask(url, etag.as_deref()).await {
+        let outcome = match answer {
             Answer::Same => {
                 let fetched = Fetched { url: url.to_string(), etag, fetched_at: now_iso(), closed: false };
                 let _ = write_whole(&dir.join("state.json"), &serde_json::to_vec(&fetched).unwrap_or_default());
@@ -1828,14 +1854,16 @@ impl PackageCatalog {
                         tracing::info!(target: "plugins", "packages catalog: {url}: names feeds of its own — only the main feed's are read");
                     }
                     self.previews(&dir, &feed).await;
-                    let fetched =
-                        Fetched { url: url.to_string(), etag: new_etag, fetched_at: now_iso(), closed: false };
+                    // Through the computer: as old as it says its copy is.
+                    let fetched_at = through_home.clone().flatten().unwrap_or_else(now_iso);
+                    let fetched = Fetched { url: url.to_string(), etag: new_etag, fetched_at, closed: false };
                     let written = write_whole(&dir.join("catalog.json"), text.as_bytes()).and_then(|()| {
                         write_whole(&dir.join("state.json"), &serde_json::to_vec(&fetched).unwrap_or_default())
                     });
                     match written {
                         Ok(()) => {
-                            tracing::info!(target: "plugins", "packages catalog: {} package(s) from {url} ({})", feed.packages.len(), extra.publisher);
+                            let way = if through_home.is_some() { " through the home server" } else { "" };
+                            tracing::info!(target: "plugins", "packages catalog: {} package(s) from {url}{way} ({})", feed.packages.len(), extra.publisher);
                             Ok(true)
                         }
                         Err(error) => Err((
@@ -1875,6 +1903,47 @@ impl PackageCatalog {
             let _ = std::fs::remove_dir_all(folder.path());
         }
         lock(&self.status).extras.retain(|url, _| declared.iter().any(|extra| extra.url.as_str() == url));
+    }
+
+    /// An extra feed through the home server (`/home/v1/catalog/feed`), when this gateway cannot read it itself: the
+    /// computer's copy and when it was read (`fetchedAt`). Err(None) — no computer at home to ask; Err(why) — it was
+    /// asked and has no copy (it does not read that feed, or it is older than this way: 404), or did not answer. Its
+    /// packages are taken as any extra feed's: code only by the main feed's pin of the very archive, which the
+    /// installer checks by its hash.
+    async fn extra_through_home(&self, url: &url::Url) -> Result<(String, Option<String>), Option<String>> {
+        let Some((home, key)) = self.home.as_ref().and_then(|home| home.up()) else { return Err(None) };
+        let answer = crate::utils::http::client_without_redirects()
+            .get(format!("{}/home/v1/catalog/feed", home.trim_end_matches('/')))
+            .query(&[("url", url.as_str())])
+            .bearer_auth(key)
+            .timeout(FEED_TIMEOUT * 2)
+            .send()
+            .await
+            .map_err(|error| Some(crate::utils::http::why_failed(&error)))?;
+        let status = answer.status();
+        if status == reqwest::StatusCode::NOT_FOUND {
+            return Err(Some(crate::tr!("у компьютера её нет")));
+        }
+        if !status.is_success() {
+            return Err(Some(format!("HTTP {status}")));
+        }
+        let body: Value = answer.json().await.map_err(|error| Some(crate::utils::http::why_failed(&error)))?;
+        let body = body.get("message").cloned().unwrap_or(body);
+        let text = body
+            .get("feed")
+            .and_then(Value::as_str)
+            .filter(|_| body.get("url").and_then(Value::as_str) == Some(url.as_str()))
+            .ok_or_else(|| Some(crate::tr!("у компьютера её нет")))?;
+        let fetched_at = body
+            .get("fetchedAt")
+            .and_then(Value::as_str)
+            .filter(|at| {
+                chrono::DateTime::parse_from_rfc3339(at)
+                    .is_ok_and(|at| at.with_timezone(&chrono::Utc) <= chrono::Utc::now())
+            })
+            .map(str::to_string);
+        tracing::info!(target: "plugins", "packages catalog: {url}: closed to this gateway, its copy through the home server");
+        Ok((text.to_string(), fetched_at))
     }
 
     /// The feed through the home server (`/home/v1/catalog`): its copy of the same feed and its signature, written here
@@ -2018,14 +2087,28 @@ impl PackageCatalog {
         }))
     }
 
-    /// A file for the station: only from the origin of a feed this computer reads — the main one, or an extra one it
-    /// names.
+    /// For the station's gateway that cannot read one of its extra feeds itself (a tester's Station Mini 2, 22.11:
+    /// DuoWave Store and the demo feed closed to it, open to the computer beside it): this computer's copy of that
+    /// feed, when it reads it too — one the main feed names or an own source added here — with when it was read. None
+    /// for a feed this computer does not read: it is no proxy for any address.
+    pub fn feed_for_station(&self, wanted: &str) -> Option<Value> {
+        let main = self.url().and_then(Result::ok)?;
+        let wanted = feed_url(wanted).ok()?;
+        let extra = self.extras(&main).into_iter().find(|extra| extra.url == wanted)?;
+        let dir = self.extra_dir(&extra.url);
+        let feed = text_in(&dir, &extra.url)?;
+        let fetched_at = fetched_in(&dir).map(|fetched| fetched.fetched_at);
+        Some(serde_json::json!({ "url": extra.url.as_str(), "feed": feed, "fetchedAt": fetched_at }))
+    }
+
+    /// A file for the station: only from the origin of a feed this computer reads — the main one, an extra one it
+    /// names, or an own source added here (the demo characters' archives, 22.11).
     pub async fn fetch_for_station(&self, wanted: &str) -> Result<Vec<u8>, ApiError> {
         let base = self
             .url()
             .and_then(Result::ok)
             .ok_or_else(|| ApiError::conflict(crate::tr!("Каталог здесь не настроен.")))?;
-        let extras = self.declared(&base).into_iter().map(|extra| extra.url);
+        let extras = self.extras(&base).into_iter().map(|extra| extra.url);
         let url = std::iter::once(base).chain(extras).find_map(|base| same_origin(&base, wanted));
         let url = url.ok_or_else(|| ApiError::forbidden(crate::tr!("Только файлы каталога.")))?;
         install::download(url.as_str(), MAX_ARCHIVE, ARCHIVE_TIMEOUT).await.map_err(ApiError::bad_gateway)
@@ -5195,6 +5278,121 @@ pub mod tests {
         let view = station.catalog.view(true).await;
         assert_eq!(ids(&view), ["arthur"]);
         assert!(view.feeds[0].count == 0 && !view.feeds[0].offline && view.feeds[0].problem.is_none());
+    }
+
+    /// A tester's Station Mini 2 (22.11): its main feed open to it, DuoWave Store and the demo feed (an own source)
+    /// closed to it and open to the computer beside it. The station takes both feeds' copies from the computer, and the
+    /// demo character's archive through it; a computer that does not read a feed has none to give, and says so.
+    #[tokio::test]
+    async fn the_station_takes_a_feed_closed_to_it_from_the_computer_its_own_sources_too() {
+        struct Computer(String);
+        impl crate::plugins::controller::HomeLink for Computer {
+            fn up(&self) -> Option<(String, String)> {
+                Some((self.0.clone(), "pair-key".into()))
+            }
+        }
+        async fn serve(router: Router) -> String {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = format!("http://{}", listener.local_addr().unwrap());
+            tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+            address
+        }
+        let (main, store, demo) = (site().await, site().await, site().await);
+        main.publish(&[character("arthur", "1.0.0")]);
+        store.publish(&[character("bublik", "1.0.0")]);
+        demo.publish(&[character("glados", "1.0.0")]);
+        main.name_feeds(json!([{ "url": store.url, "publisher": "duowave", "title": "DuoWave Store" }]));
+        let computer = fixture(FeedSource::Url(main.url.clone()), Placement::Pc);
+        computer.catalog.add_source(&demo.url, None).await.unwrap();
+        assert_eq!(ids(&computer.catalog.view(true).await), ["arthur", "bublik", "glados"]);
+        // Its copy of each feed it reads, the own source too; none of a feed it does not read.
+        for site in [&store, &demo] {
+            let copy = computer.catalog.feed_for_station(&site.url).expect("a feed it reads");
+            assert_eq!(copy["url"].as_str(), Some(site.url.as_str()));
+            assert!(copy["feed"].as_str().is_some() && copy["fetchedAt"].as_str().is_some(), "{copy}");
+        }
+        assert!(computer.catalog.feed_for_station("http://127.0.0.1:9/catalog.json").is_none());
+        // The own source's archive is a file of a feed it reads: given.
+        let glados = format!("{}/packages/glados-1.0.0.vgp", demo.origin());
+        assert!(computer.catalog.fetch_for_station(&glados).await.is_ok());
+        let (feeds, files) = (computer.catalog.clone(), computer.catalog.clone());
+        let home = serve(
+            Router::new()
+                .route(
+                    "/home/v1/catalog/feed",
+                    get(move |axum::extract::Query(query): axum::extract::Query<BTreeMap<String, String>>| {
+                        let catalog = feeds.clone();
+                        async move {
+                            match catalog.feed_for_station(&query["url"]) {
+                                Some(copy) => axum::Json(copy).into_response(),
+                                None => StatusCode::NOT_FOUND.into_response(),
+                            }
+                        }
+                    }),
+                )
+                .route(
+                    "/home/v1/catalog/file",
+                    get(move |axum::extract::Query(query): axum::extract::Query<BTreeMap<String, String>>| {
+                        let catalog = files.clone();
+                        async move { catalog.fetch_for_station(&query["url"]).await }
+                    }),
+                ),
+        )
+        .await;
+
+        // The station: the main feed in its reach, the demo feed added while it was, then both others closed to it.
+        let station = fixture_with(
+            FeedSource::Url(main.url.clone()),
+            Placement::StationServer,
+            None,
+            Some(Arc::new(Computer(home.clone()))),
+        );
+        station.catalog.add_source(&demo.url, None).await.unwrap();
+        store.down.store(true, Ordering::SeqCst);
+        demo.down.store(true, Ordering::SeqCst);
+        let view = station.catalog.view(true).await;
+        assert_eq!(ids(&view), ["arthur", "bublik", "glados"], "{view:?}");
+        assert!(view.feeds.iter().all(|feed| !feed.offline && feed.problem.is_none() && feed.count == 1), "{view:?}");
+        // The demo character's archive the computer's way: the station's own try is refused.
+        demo.refuse.store(1, Ordering::SeqCst);
+        let installed = station.catalog.install("glados", None, false, None).await.unwrap();
+        assert_eq!(installed.version.as_deref(), Some("1.0.0"));
+
+        // A computer that does not read the demo feed has no copy of it: the station says so beside its own failure.
+        let blind = fixture(FeedSource::Url(main.url.clone()), Placement::Pc);
+        main.down.store(false, Ordering::SeqCst);
+        store.down.store(false, Ordering::SeqCst);
+        blind.catalog.view(true).await;
+        store.down.store(true, Ordering::SeqCst);
+        let feeds = blind.catalog.clone();
+        let blind_home = serve(Router::new().route(
+            "/home/v1/catalog/feed",
+            get(move |axum::extract::Query(query): axum::extract::Query<BTreeMap<String, String>>| {
+                let catalog = feeds.clone();
+                async move {
+                    match catalog.feed_for_station(&query["url"]) {
+                        Some(copy) => axum::Json(copy).into_response(),
+                        None => StatusCode::NOT_FOUND.into_response(),
+                    }
+                }
+            }),
+        ))
+        .await;
+        let lonely = fixture_with(
+            FeedSource::Url(main.url.clone()),
+            Placement::StationServer,
+            None,
+            Some(Arc::new(Computer(blind_home))),
+        );
+        demo.down.store(false, Ordering::SeqCst);
+        lonely.catalog.add_source(&demo.url, None).await.unwrap();
+        demo.down.store(true, Ordering::SeqCst);
+        let view = lonely.catalog.view(true).await;
+        let of_demo = view.feeds.iter().find(|feed| feed.url == demo.url).unwrap();
+        let said = of_demo.problem.clone().unwrap_or_default();
+        assert!(of_demo.offline && said.contains("HTTP 503") && said.contains("Через компьютер тоже нет"), "{said}");
+        // The store came from the blind computer, which reads it.
+        assert!(view.feeds.iter().any(|feed| feed.url == store.url && !feed.offline && feed.count == 1), "{view:?}");
     }
 
     /// The helper's contract declares the catalog by this: it must say what `export_for_station` would give.

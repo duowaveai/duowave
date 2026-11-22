@@ -545,5 +545,8 @@
  "Турбо на связи: {names}.": "Turbos online: {names}.",
  "Не открылись настройки Windows: {error}": "Windows settings did not open: {error}",
  "Голос персонажа на «{name}» не запускается: защита Windows (Smart App Control) не пускает его файлы. Пока отвечает голос Алисы.": "The character's voice on “{name}” cannot start: Windows protection (Smart App Control) blocks its files. Alice's voice answers for now.",
- "Голос персонажа на «{name}» не ответил: {why}. Пока отвечает голос Алисы.": "The character's voice on “{name}” did not answer: {why}. Alice's voice answers for now."
+ "Голос персонажа на «{name}» не ответил: {why}. Пока отвечает голос Алисы.": "The character's voice on “{name}” did not answer: {why}. Alice's voice answers for now.",
+ "У пульта уже есть пароль: входите с ним.": "The panel has its password already: sign in with it.",
+ "Кода первой настройки в журнале пока нет. Последние строки журнала {log}:": "No first-setup code in the log yet. The last lines of the log {log}:",
+ "Кода первой настройки в журнале колонки пока нет. Последние строки журнала:": "No first-setup code in the speaker's log yet. The last lines of the log:"
 }

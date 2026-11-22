@@ -27,7 +27,7 @@ export default {
     pathLocal: 'Модель на компьютере',
     pathLocalNote: 'без интернета',
     signInDw: 'Подключить DuoWave',
-    giftDw: 'Получить неделю бесплатно',
+    giftDw: 'Получить подарок',
     payDw: 'модели встанут сами',
     signInOr: 'Войти через OpenRouter',
     signInGpt: 'Войти через ChatGPT',
@@ -88,12 +88,7 @@ export default {
     made: '✓ сделали',
     pressNote: 'Нажмите — как будто сказали вслух',
 
-    smarterStation: 'Теперь Алиса умнее',
-    smarterComputer: 'Теперь ДиВи умнее',
     smarterConnected: (title: string) => `✓ ${title} подключён`,
     smarterTogether: '✓ «Алиса + ваш ИИ» включён',
     undo: 'Отменить',
-    smarterLeadStation: 'Разговор, виджеты и игры теперь у вашего ИИ. Музыка, будильники и умный дом — как раньше, у Алисы.',
-    smarterLeadComputer: 'ДиВи теперь отвечает сам: разговор, виджеты, игры и память.',
-    sayAndSee: 'Скажите — и посмотрите, что будет',
 };

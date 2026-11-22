@@ -152,10 +152,13 @@ pub struct KeyGrant {
     pub access: Option<GrantAccess>,
 }
 
-/// The access a service says the key has: active or not, the plan's name, until when.
+/// The access a service says the key has: active or not, its kind, the plan's name, until when.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct GrantAccess {
     pub active: bool,
+    /// The access's kind as the service names it (DuoWave's `tier`: `trial`, …): the panel words it by the kind, not
+    /// by the plan's name in the service's language.
+    pub tier: Option<String>,
     pub plan: Option<String>,
     /// ISO 8601, as the service wrote it.
     pub ends_at: Option<String>,
@@ -251,6 +254,7 @@ impl KeyGrant {
         let defaults = answer.get("defaults");
         let access = answer.get("access").filter(|access| access.is_object()).map(|access| GrantAccess {
             active: access.get("active").and_then(Value::as_bool).unwrap_or(false),
+            tier: short(access.get("tier"), 40),
             plan: short(access.get("plan_title"), 80),
             ends_at: short(access.get("ends_at"), 40).filter(|at| chrono::DateTime::parse_from_rfc3339(at).is_ok()),
         });
@@ -268,7 +272,7 @@ impl KeyGrant {
 /// A key's exchange the service refused, in our words: its code expired or used (`INVALID_CODE`), too many keys
 /// (`KEY_LIMIT`), the service busy for a moment (`SERVICE_BUSY`, 503: it keeps the code two more minutes, a new
 /// press in a minute goes through); anything else — it did not confirm. «Нажмите ещё раз» names no button: the panel
-/// has several («Подключить DuoWave», «Получить неделю бесплатно», «войти заново»).
+/// has several («Подключить DuoWave», «Получить подарок», «войти заново»).
 fn exchange_refused(with: &str, error: &CallError) -> ApiError {
     match error.code.as_deref() {
         Some("INVALID_CODE") => ApiError::bad_request(crate::tr!("Ссылка устарела. Нажмите ещё раз.")),
@@ -961,6 +965,7 @@ pub(crate) mod tests {
             grant.access,
             Some(GrantAccess {
                 active: true,
+                tier: Some("trial".into()),
                 plan: Some("Пробная неделя".into()),
                 ends_at: Some("2026-11-27T01:15:00.000Z".into())
             })
@@ -974,7 +979,7 @@ pub(crate) mod tests {
         let grant = KeyGrant::of(&answer, exchange, "DuoWave").unwrap();
         assert_eq!((grant.fast, grant.smart), (None, None));
         assert!(grant.models.is_empty() && grant.base_url.is_none());
-        assert_eq!(grant.access, Some(GrantAccess { active: false, plan: None, ends_at: None }));
+        assert_eq!(grant.access, Some(GrantAccess { active: false, tier: None, plan: None, ends_at: None }));
         assert!(KeyGrant::of(&json!({ "key": "two words" }), exchange, "DuoWave").is_none());
     }
 

@@ -88,6 +88,8 @@ pub struct AvailabilityService {
     transcode_on_station: std::sync::atomic::AtomicBool,
     /// MIDI keyboards are heard here (src/midi).
     midi: std::sync::atomic::AtomicBool,
+    /// A Турбо at home has a MIDI keyboard plugged in now (src/home/turbo_devices.rs).
+    turbo_midi: std::sync::atomic::AtomicBool,
     /// The station's cloud hearing and voice as its panel sets them (src/speech/cloud_speech.rs): read live, over the
     /// flags of the start.
     cloud: OnceLock<Arc<crate::speech::cloud_speech::CloudSpeech>>,
@@ -118,6 +120,7 @@ impl AvailabilityService {
             transcoder: OnceLock::new(),
             transcode_on_station: std::sync::atomic::AtomicBool::new(false),
             midi: std::sync::atomic::AtomicBool::new(false),
+            turbo_midi: std::sync::atomic::AtomicBool::new(false),
             cloud: OnceLock::new(),
             events,
             told: Mutex::new(Vec::new()),
@@ -154,6 +157,12 @@ impl AvailabilityService {
     /// Whether this gateway hears MIDI keyboards (src/midi): its build and `MIDI`.
     pub fn set_midi(&self, midi: bool) {
         self.midi.store(midi, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Whether a Турбо at home has a MIDI keyboard plugged in now: the centre relays it (docs/plans/turbo-devices.md).
+    /// True when it changed.
+    pub fn set_turbo_midi(&self, midi: bool) -> bool {
+        self.turbo_midi.swap(midi, std::sync::atomic::Ordering::Relaxed) != midi
     }
 
     /// Where this gateway runs now: for whoever needs only that (the apps' placement, the schedules, the streams), the
@@ -203,6 +212,7 @@ impl AvailabilityService {
             transcode_on_station: self.transcode_on_station.load(std::sync::atomic::Ordering::Relaxed),
             own_lacks,
             midi: self.midi.load(std::sync::atomic::Ordering::Relaxed),
+            turbo_midi: self.turbo_midi.load(std::sync::atomic::Ordering::Relaxed),
         }
     }
 

@@ -103,6 +103,21 @@ async fn keyed(
     key: &str,
     request: Request,
 ) -> Result<axum::response::Response, ApiError> {
+    // A Турбо's file (docs/plans/turbo-devices.md, «Папки Турбо»): its engine's key named with its place — the fetch
+    // goes to the Турбо's own address, the station passing nothing through.
+    if let Some(rest) = key.strip_prefix(crate::home::turbo_devices::TURBO_KEY) {
+        let (place, key) = rest.split_once('.').ok_or_else(|| ApiError::not_found("Not Found"))?;
+        let mut url = app.house.media_url(place, key).ok_or_else(|| ApiError::not_found("Not Found"))?;
+        if let Some(query) = request.uri().query() {
+            url = format!("{url}?{query}");
+        }
+        return axum::response::Response::builder()
+            .status(axum::http::StatusCode::TEMPORARY_REDIRECT)
+            .header(axum::http::header::LOCATION, url)
+            .header(axum::http::header::CACHE_CONTROL, "no-store")
+            .body(axum::body::Body::empty())
+            .map_err(ApiError::internal);
+    }
     let files = app.bus.files().ok_or_else(|| ApiError::not_found("Not Found"))?;
     let ticket = files.media().ticket(key).ok_or_else(|| ApiError::not_found("Not Found"))?;
     if ticket.home_only && !matches!(caller.zone, Zone::Local | Zone::Home) {

@@ -22,6 +22,7 @@ use std::sync::{OnceLock, RwLock};
 const CATALOGS: &[(&str, &[&str])] = &[(
     "en",
     &[
+        include_str!("../../locales/en/devices.json"),
         include_str!("../../locales/en/models.json"),
         include_str!("../../locales/en/placement.json"),
         include_str!("../../locales/en/plugins.json"),

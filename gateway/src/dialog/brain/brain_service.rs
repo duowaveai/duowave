@@ -70,15 +70,19 @@ fn key_of(id: &str) -> String {
 /// never the panel's to change (`update` keeps them).
 const ACCESS_PREFIX: &str = "access.";
 const ACCESS_ACTIVE: &str = "access.active";
+const ACCESS_TIER: &str = "access.tier";
 const ACCESS_PLAN: &str = "access.plan";
 const ACCESS_ENDS: &str = "access.endsAt";
 
-/// A provider's access as its service told it (DuoWave's): active or not, the plan, until when, and what its last
-/// refusal asks of the owner. The panel: «Бесплатно до 27 ноября», «Доступа пока нет · Кабинет», «Подключить заново».
+/// A provider's access as its service told it (DuoWave's): active or not, its kind, the plan, until when, and what its
+/// last refusal asks of the owner. The panel words it by the kind and shows no date (the owner, 22.11): «Пробная
+/// неделя», «Доступа пока нет · Кабинет», «Подключить заново».
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ServiceAccess {
     pub active: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tier: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub plan: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -826,6 +830,9 @@ impl BrainService {
             .collect();
         if let Some(access) = &grant.access {
             options.insert(ACCESS_ACTIVE.into(), access.active.to_string());
+            if let Some(tier) = &access.tier {
+                options.insert(ACCESS_TIER.into(), tier.clone());
+            }
             if let Some(plan) = &access.plan {
                 options.insert(ACCESS_PLAN.into(), plan.clone());
             }
@@ -1280,6 +1287,7 @@ impl BrainService {
         }
         Some(ServiceAccess {
             active: active.unwrap_or(true),
+            tier: row.options.get(ACCESS_TIER).cloned(),
             plan: row.options.get(ACCESS_PLAN).cloned(),
             ends_at: row.options.get(ACCESS_ENDS).cloned(),
             problem,

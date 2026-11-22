@@ -28,7 +28,7 @@ const en: Translation<typeof ru> = {
     pathLocal: 'Model on this computer',
     pathLocalNote: 'no internet',
     signInDw: 'Connect DuoWave',
-    giftDw: 'Get a free week',
+    giftDw: 'Get your gift',
     payDw: 'the models are set up for you',
     signInOr: 'Sign in with OpenRouter',
     signInGpt: 'Sign in with ChatGPT',
@@ -89,14 +89,9 @@ const en: Translation<typeof ru> = {
     made: '✓ made',
     pressNote: 'Tap — as if you said it',
 
-    smarterStation: 'Alice is smarter now',
-    smarterComputer: 'DiVi is smarter now',
     smarterConnected: (title: string) => `✓ ${title} connected`,
     smarterTogether: '✓ “Alice + your AI” on',
     undo: 'Undo',
-    smarterLeadStation: 'Talk, widgets and games now go to your AI. Music, alarms and the smart home stay with Alice.',
-    smarterLeadComputer: 'DiVi answers on its own now: talk, widgets, games and memory.',
-    sayAndSee: 'Say it — and see what happens',
 };
 
 export default en;

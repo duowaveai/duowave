@@ -238,6 +238,13 @@ impl TalkLayer {
                 Some(asked) => text.push_str(&format!("\nA question waits for its answer: «{asked}».")),
                 None => text.push_str("\nA question about a work waits for its answer."),
             }
+            if question.kind == Kind::Wake {
+                text.push_str(
+                    "\nIt asks whether to wake a sleeping computer over the home network: any agreement («давай», \
+                     «буди», «ага», «конечно») is `answer` yes; a refusal («не надо», «я сам», «потом») is no; anything \
+                     else is what it is.",
+                );
+            }
             if question.kind == Kind::Extra {
                 text.push_str(
                     "\nIt asks whether to add anything to the thing being made: «нет», «не надо», «ничего», «так \

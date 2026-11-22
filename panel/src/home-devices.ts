@@ -56,6 +56,34 @@ export function noteHomeDevicesNews(name: string): void {
     if (name === 'home.devices.changed' || name === 'hello') stale = true;
 }
 
+// Что подключено к компьютерам дома (docs/plans/turbo-devices.md, «Пульт»): меняется, когда Турбо пришёл, ушёл или
+// уснул, когда он говорит, что даёт другое, и когда к этому шлюзу подключили клавиатуру или флешку. «Подключено к
+// компьютерам» и «Что этот компьютер даёт дому» перечитывают своё по этим новостям, а не по каждой перемене пульта.
+const PLUGGED_NEWS = ['hello', 'helpers.up', 'helpers.down', 'helpers.changed', 'home.devices.changed', 'midi.devices', 'folders.changed'];
+let pluggedTurn = 0;
+const pluggedListeners = new Set<() => void>();
+
+/** Новость живого канала (app.tsx): подключённое к компьютерам дома могло поменяться. */
+export function notePluggedNews(name: string): void {
+    if (!PLUGGED_NEWS.includes(name)) return;
+    pluggedTurn++;
+    for (const listener of [...pluggedListeners]) listener();
+}
+
+/** Растёт с каждой новостью о подключённом: `version` для usePoll — перечитать, не чаще раза в 3 с. */
+export function usePluggedTurn(): number {
+    const [turn, setTurn] = useState(pluggedTurn);
+    useEffect(() => {
+        const update = (): void => setTurn(pluggedTurn);
+        update();
+        pluggedListeners.add(update);
+        return () => {
+            pluggedListeners.delete(update);
+        };
+    }, []);
+    return turn;
+}
+
 /** Список дома: читается раз в 30 с и по новостям канала, не чаще раза в 2 с без новостей. */
 export function useHomeDevices(): { view?: HomeDevices; older: boolean; error: string | null } {
     const panel = usePanel();

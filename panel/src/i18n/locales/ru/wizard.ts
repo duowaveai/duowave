@@ -71,6 +71,13 @@ export default {
     settlingNothingToRetry: 'Повторять нечего: голос уже не ждёт модель.',
     pillWaits: (name: string) => `${name} — ждёт колонку`,
     pillPreparing: (name: string) => `${name} — готовлю у колонки`,
+    pillBlocked: (name: string) => `${name}: колонка не может скачать набор`,
+    blockedTitle: (name: string) => `${name} пока не ставится`,
+    blockedText: (why: string) => `Колонка не может скачать набор с этим персонажем. Я пробую снова раз в две минуты. Причина: ${why}`,
+    /** Колонка не сказала, почему лента не читается. */
+    blockedAny: 'лента не отвечает',
+    blockedDrop: 'Не ставить',
+    blockedKeep: 'Ждать',
     itemVoiceOn: (name: string, computer: string) => `Голос «${name}» — на компьютере «${computer}»`,
     engineSection: 'Модель голоса',
     engineOnReady: (engine: string) => `Голос на ${engine} — она уже стоит`,

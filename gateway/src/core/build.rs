@@ -82,6 +82,7 @@ impl ModeGate for Profile {
             transcode_on_station: false,
             own_lacks: None,
             midi: false,
+            turbo_midi: false,
         };
         let state = evaluate(feature(mode_feature(mode)).expect("every mode is a feature"), &context);
         if state.on() {

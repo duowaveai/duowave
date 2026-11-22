@@ -186,6 +186,48 @@ duowave station log [строк]               # конец журнала шл�
   убраны, `/data/opt/duowave` удалена, перезагрузка (`--keep-data` — данные шлюза остаются). Только шлюз, без
   остального: `duowave station point previous --reboot`, затем `duowave station remove`.
 
+## Одна команда на самой колонке
+
+Человек уже зашёл на колонку по SSH и вводит там одну строку. Компьютер не нужен:
+
+```sh
+wget -qO- http://get.duowave.app/station.sh | sh
+```
+
+Скрипт — [station.sh](station.sh). Сначала только смотрит: колонка ли это (`quasar.cfg`), процессор aarch64, root,
+место в `/data` (30 МБ, как у `duowave station setup`) и в `/tmp` (30 МБ на время установки), свободная ОЗУ (20 МБ),
+отключены ли обновления Яндекса. Говорит, что сделает, и до «да» ничего не меняет. Потом:
+
+1. качает `duowave-station-aarch64.tar.gz` своего выпуска в `/tmp` и сверяет SHA-256 и `release.json` внутри;
+2. если DuoWave уже стоит, останавливает его (данные остаются), кладёт программу в `/data/opt/duowave/bin`;
+3. запускает `duowave station install`: `.env`, служба, путь назад (`restore.sh`, `uninstall.sh`), запуск и автозапуск
+   после ответа `/health`. Те же команды, что у пакета YAM. В конце программа печатает код первой настройки пульта, если
+   пароля у пульта ещё нет (кода нет — последние строки журнала);
+4. спрашивает пароль пульта (`duowave panel setup`) и, направить ли голос колонки в DuoWave
+   (`duowave station point local --reboot`, перезагрузка). После перезагрузки код новый: `duowave station code`.
+
+Колонку, где DuoWave поставлен пакетом YAM, скрипт не трогает: её обновляет YAM. `| sh -s -- --yes` отвечает «да» на
+всё (нужно, когда терминала нет), `--lang en` даёт английские слова.
+
+**Почему HTTP.** В busybox колонки нет TLS: `wget https://…` там не работает (так же Entware ставится по HTTP, см.
+[вики](https://hackalice.me/start/packages/)). Поэтому проверка своя. Выпуск вписывает в скрипт свою версию и SHA-256
+сборки для колонки ([scripts/release/station-script.sh](../scripts/release/station-script.sh), `release.yml`). Сайт
+каталога `packages.duowave.app` (GitHub Pages) берёт скрипт и сборку из последнего выпуска, проверяет подпись сборки
+ключом обновлений и выкладывает их: скрипт в `/station.sh`, сборку в `/station/<версия>/`. Каталог остаётся только по
+HTTPS. По простому HTTP их отдаёт `get.duowave.app`: это Cloudflare Worker, он берёт эти два пути с каталога по HTTPS,
+а на всё остальное отвечает 404 ([scripts/release/cloudflare](../scripts/release/cloudflare/README.md)). На колонке
+сумма связывает сборку со скриптом. Сам скрипт по-прежнему идёт без шифрования, и от подмены в сети по дороге HTTP не
+защищает: полностью проверенный путь остаётся установкой с компьютера (`install.sh`, HTTPS и подпись). Адрес за
+Cloudflare: если с колонки в России он не откроется, это видно по первой же строке `wget`.
+
+Для проверки и зеркала: `DUOWAVE_BASE` (где лежит `<версия>/duowave-station-aarch64.tar.gz`), `DUOWAVE_VERSION` и
+`DUOWAVE_SHA256` (скрипт прямо из git их не знает), `DUOWAVE_FILE` (сборка уже на колонке). Тест без колонки —
+[tests/station-install-check.sh](tests/station-install-check.sh): поддельные колонка и зеркало в папке, под busybox:
+
+```sh
+docker run --rm --network none -v "$PWD:/r:ro" busybox:1.36 sh /r/station-client/tests/station-install-check.sh /r
+```
+
 ## Пакет YAM: шлюз на самой колонке
 
 Для тех, у кого на колонке стоит [YAM 0.2](https://hackalice.me/start/packages/): пакет `duowave/gateway`, пока для

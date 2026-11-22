@@ -9,6 +9,7 @@ import { helperOf } from '../shell/role';
 import { stationUpdateStep } from '../station-update';
 import { timeAgo } from '../time';
 import { Host, Solved, solve } from '../truth';
+import { Command, STATION_INSTALL_COMMAND } from './connect';
 import { DashData, ourBrain, scenarioOf } from './dash-model';
 import { Gear, NodeIcon, PlacementMap, WhoThree } from './placement-map';
 import { Action } from '../ui/cards';
@@ -888,6 +889,16 @@ function PlacementChooser({ view, onClose, onStarted }: { view: PlacementView; o
                 ) : (
                     <p class="win-note">{tr.placement.keysOnPc}</p>
                 ))}
+            {/* Ещё один путь на колонку: без этого компьютера, одной строкой в её собственной консоли. */}
+            {picked === 'station' && current === 'pc' && (
+                <details>
+                    <summary class="win-sec-title cursor-pointer">{tr.placement.stationCommandTitle}</summary>
+                    <div class="pt-8 flex flex-col gap-8">
+                        <p class="win-note">{tr.placement.stationCommandAbout}</p>
+                        <Command text={STATION_INSTALL_COMMAND} label={tr.placement.stationCommandTitle} />
+                    </div>
+                </details>
+            )}
             {availability && (
                 <details>
                     <summary class="win-sec-title cursor-pointer">{tr.placement.availabilityDetails}</summary>

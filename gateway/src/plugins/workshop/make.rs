@@ -102,13 +102,53 @@ pub fn template_of(request: &Request, words: &str) -> &'static str {
     }
 }
 
-/// Said when the station's own gateway is asked for an album of the home folder: the folder is a computer's.
+/// Said when the station's own gateway is asked for an album of the home folder and no Турбо gives the home its folders.
 pub const FOLDERS_ELSEWHERE: &str =
-    "Фотоальбому нужен компьютер с DuoWave: домашняя папка с фото — на нём. Попросите в пульте на компьютере.";
+    "Фотоальбому нужен компьютер с DuoWave: домашняя папка с фото — на нём. Подключите компьютер к дому как Турбо.";
 
-/// Said when a gateway that hears no keyboard is asked for a teacher (the station's own, a build without MIDI).
+/// Said when a teacher is asked where no keyboard can ever be heard: no MIDI here and no Турбо in the home
+/// (docs/plans/turbo-devices.md — a Турбо's keyboard is the home's).
 pub const MIDI_ELSEWHERE: &str =
-    "Учителю нужен компьютер с DuoWave: клавиатура подключается к нему. Попросите в пульте на компьютере.";
+    "Учителю нужен компьютер с DuoWave рядом с клавиатурой: подключите компьютер к дому как Турбо.";
+
+/// Whether a template's device is in the home, and what is said of it (docs/plans/turbo-devices.md, «Мастерская»): made
+/// where the device is here or at a Турбо — a sleeping one, one away, one with nothing plugged in said so; refused only
+/// where it can never be: no MIDI here and no Турбо in the home, no folders here and none at a Турбо.
+pub fn reach_of(
+    template: &str,
+    midi_here: bool,
+    folders_here: bool,
+    midi: Option<crate::home::turbo_devices::Whereabouts>,
+    folders_at_turbo: Option<String>,
+) -> Result<Option<String>, ApiError> {
+    use crate::home::turbo_devices::Whereabouts;
+    match template {
+        "midi" if !midi_here => match midi {
+            Some(Whereabouts::Here | Whereabouts::Turbo(_)) => Ok(None),
+            Some(Whereabouts::Asleep(name)) => Ok(Some(crate::tr!(
+                "Клавиатура у {name}, а он сейчас спит: учитель заработает, когда {name} проснётся.",
+                name = name
+            ))),
+            Some(Whereabouts::Away(name)) => Ok(Some(crate::tr!(
+                "Клавиатура у {name}, а он сейчас не дома: учитель заработает, когда {name} вернётся.",
+                name = name
+            ))),
+            Some(Whereabouts::Unplugged(name)) => Ok(Some(crate::tr!(
+                "Клавиатуру сейчас не вижу: подключите её к {name}, и учитель её услышит.",
+                name = name
+            ))),
+            Some(Whereabouts::Never) => Ok(Some(crate::tr!(
+                "Клавиатуры пока не вижу: подключите её к компьютеру с DuoWave, и учитель её услышит."
+            ))),
+            Some(Whereabouts::NoTurbo) | None => Err(ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, MIDI_ELSEWHERE)),
+        },
+        "folders" if !folders_here => match folders_at_turbo {
+            Some(_) => Ok(None),
+            None => Err(ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, FOLDERS_ELSEWHERE)),
+        },
+        _ => Ok(None),
+    }
+}
 
 /// How an earlier wish rides with new words on the same draft.
 const EARLIER: &str = "\n\nРаньше об этой вещи просили: ";
@@ -138,6 +178,10 @@ pub struct Made {
     pub title: String,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub noted: bool,
+    /// What is said with «Делаю»: where the thing's device is when it is not at hand now («Клавиатура у Mac, а он
+    /// сейчас спит…», docs/plans/turbo-devices.md).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 /// The title until the agent gives its own: what was asked, from a capital, up to some 40 letters.
@@ -187,6 +231,23 @@ impl Workshop {
     /// Whether the home folder is here: a computer's gateway, not the station's own.
     pub fn set_folders(&self, here: bool) {
         self.folders.store(here, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// The home's devices: a keyboard or folders at a Турбо are the home's too (docs/plans/turbo-devices.md).
+    pub fn set_house(&self, house: &Arc<crate::home::turbo_devices::HouseDevices>) {
+        let _ = self.house.set(Arc::downgrade(house));
+    }
+
+    /// Whether a template's device is in the home, and what is said of it (`reach_of`).
+    fn reach(&self, template: &str) -> Result<Option<String>, ApiError> {
+        let house = self.house.get().and_then(std::sync::Weak::upgrade);
+        let midi_here = self.midi.load(std::sync::atomic::Ordering::Relaxed);
+        let midi =
+            (template == "midi" && !midi_here).then(|| house.as_ref().map(|house| house.whereabouts("midi"))).flatten();
+        let folders = (template == "folders" && !self.folders_here())
+            .then(|| house.as_ref().and_then(|house| house.folders_at_turbo()))
+            .flatten();
+        reach_of(template, midi_here, self.folders_here(), midi, folders)
     }
 
     fn folders_here(&self) -> bool {
@@ -239,13 +300,14 @@ impl Workshop {
         if words.is_empty() {
             return Err(ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, "Скажите, что сделать."));
         }
+        let mut note = None;
         let (id, kind, title) = match draft.map(str::trim).filter(|draft| !draft.is_empty()) {
             Some(id) => {
                 let view = self.draft(id)?;
                 let title = view.title.unwrap_or_else(|| id.to_string());
                 if self.note(id, &words) {
                     tracing::info!(target: "plugins", "workshop: words added to the work on {id}");
-                    return Ok(Made { draft: id.to_string(), kind: view.meta.kind, title, noted: true });
+                    return Ok(Made { draft: id.to_string(), kind: view.meta.kind, title, noted: true, note: None });
                 }
                 words = with_earlier(&words, &self.card(id).asked);
                 (id.to_string(), view.meta.kind, title)
@@ -264,14 +326,10 @@ impl Workshop {
                     ));
                 }
                 let template = template_of(&request, &words);
-                if template == "midi" && !self.midi.load(std::sync::atomic::Ordering::Relaxed) {
-                    return Err(ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, MIDI_ELSEWHERE));
-                }
+                note = self.reach(template)?;
                 let id = self.new_id();
                 let title = if template == "midi" {
                     "Учитель на MIDI-клавиатуре".to_string()
-                } else if template == "folders" && !self.folders_here() {
-                    return Err(ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, FOLDERS_ELSEWHERE));
                 } else {
                     title_of(request.face, &request.ask)
                 };
@@ -282,6 +340,7 @@ impl Workshop {
         let install = by == By::Panel;
         let work = work.map(str::to_string);
         self.launch(&dialog, Launch { id, words, by, who, kind, title, work, install })
+            .map(|made| Made { note, ..made })
     }
 
     /// A new thing asked for in a conversation (src/talk, `work_start`): its face, its title (none — from the wish),
@@ -305,12 +364,7 @@ impl Workshop {
         }
         let request = Request { face, ask: brief.clone() };
         let template = template_of(&request, &brief);
-        if template == "midi" && !self.midi.load(std::sync::atomic::Ordering::Relaxed) {
-            return Err(ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, MIDI_ELSEWHERE));
-        }
-        if template == "folders" && !self.folders_here() {
-            return Err(ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, FOLDERS_ELSEWHERE));
-        }
+        let note = self.reach(template)?;
         let id = self.new_id();
         let title = match title.map(str::trim).filter(|title| !title.is_empty()) {
             _ if template == "midi" => "Учитель на MIDI-клавиатуре".to_string(),
@@ -320,6 +374,7 @@ impl Workshop {
         self.create(&id, Some(template), Some(&title), None)?;
         let work = work.map(str::to_string);
         self.launch(&dialog, Launch { id, words: brief, by, who, kind: face, title, work, install: false })
+            .map(|made| Made { note, ..made })
     }
 
     /// The card written and the agent at work on the draft in the background: the panel's limits, the conversation
@@ -358,7 +413,7 @@ impl Workshop {
                 }
             }
         });
-        Ok(Made { draft: id, kind, title, noted: false })
+        Ok(Made { draft: id, kind, title, noted: false, note: None })
     }
 }
 
@@ -378,6 +433,25 @@ struct Launch {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The request of 19.11 («Сделай виджет MIDI-клавиатуры…») on the station: refused then by the station's own build;
+    /// now made wherever a keyboard is the home's, and said where it is (docs/plans/turbo-devices.md).
+    #[test]
+    fn a_teacher_is_made_where_the_homes_keyboard_is_and_said_where() {
+        use crate::home::turbo_devices::Whereabouts;
+        let reach = |midi: Option<Whereabouts>| reach_of("midi", false, false, midi, None);
+        assert_eq!(reach_of("midi", true, false, None, None).unwrap(), None, "a computer's own keyboard");
+        assert_eq!(reach(Some(Whereabouts::Turbo("Mac".into()))).unwrap(), None);
+        let asleep = reach(Some(Whereabouts::Asleep("Mac".into()))).unwrap().unwrap();
+        assert!(asleep.contains("Mac") && asleep.contains("спит"), "{asleep}");
+        assert!(reach(Some(Whereabouts::Away("Mac".into()))).unwrap().unwrap().contains("не дома"));
+        assert!(reach(Some(Whereabouts::Unplugged("Mac".into()))).unwrap().unwrap().contains("подключите"));
+        assert!(reach(Some(Whereabouts::Never)).unwrap().unwrap().contains("компьютеру с DuoWave"));
+        assert_eq!(reach(Some(Whereabouts::NoTurbo)).unwrap_err().message, MIDI_ELSEWHERE, "no Турбо at all");
+        assert_eq!(reach_of("folders", false, false, None, Some("Mac".into())).unwrap(), None, "a Турбо's folders");
+        assert_eq!(reach_of("folders", false, false, None, None).unwrap_err().message, FOLDERS_ELSEWHERE);
+        assert_eq!(reach_of("widget", false, false, None, None).unwrap(), None);
+    }
 
     #[test]
     fn new_words_on_a_draft_carry_the_first_wish_once() {

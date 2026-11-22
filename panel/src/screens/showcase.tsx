@@ -1,8 +1,10 @@
 // Витрина стола (docs/plans/start-desk.md; холст «Стартовый стол — лаконично», доски «Б · 1–3» и «Без колонки · 1–2»):
 // под сценой три карточки — «скажи — и сделается». Сначала честно: нет ИИ — шаг 1 «Сделайте Алису умнее» (выбор ИИ той
 // же логикой, что у первых шагов, screens/brain-connect.ts); ИИ есть, а колонка в «Как раньше» — «Включить «Вместе»».
-// Змейка играет кнопкой и до того: ей ИИ не нужен. ИИ подключили здесь — «Вместе» включается сразу (владелец, 16.11),
-// рядом «Отменить», и одна большая карточка «Теперь Алиса умнее» с тремя фразами. Фразу можно сказать или нажать —
+// Змейка играет кнопкой и до того: ей ИИ не нужен. ИИ подключили здесь — «Вместе» включается сразу (владелец, 16.11), и
+// витрина та же: три плитки, на первой — «✓ DuoWave подключён» и, если режим включился сам, маленькое «Отменить».
+// Отдельной карточки «Теперь Алиса умнее» нет (замечание 20 после 0.18.2, владелец: «один вид… эта панелька как будто
+// дублирует»); пройденные плитки — с галочками. Фразу можно сказать или нажать —
 // нажатие уходит в разговор, как сказанная (answerTo). Попробовали всё — витрина уходит сама. Встал на стол первый свой
 // виджет — сделанный или змейка «Оставить на столе» — витрина тоже уходит (решение владельца 18.11, проверка начисто:
 // своё на столе — витрина своё дело сделала, и стол не тесный): так же, как «Скрыть витрину», — как виджет, один раз;
@@ -30,14 +32,16 @@ import '../ui/showcase.css';
 
 type Card = 'talk' | 'play' | 'make';
 
-/** Память витрины у человека: что попробовал, что решил со змейкой, видел ли «Теперь умнее», что вернуть «Отменить». */
+/** Память витрины у человека: что попробовал, что решил со змейкой, кого подключили здесь, что вернуть «Отменить». */
 interface Memo {
     tried?: Card[];
     snake?: 'kept' | 'dropped';
-    smarter?: 'show' | 'seen';
-    /** Режим колонки до «Вместе», который включила витрина: его возвращает «Отменить». */
+    /**
+     * Режим колонки до «Вместе», который включила витрина: его возвращает «Отменить» на первой плитке — пока не
+     * попробовали ни одной.
+     */
     undo?: PanelMode;
-    /** Кем подключили ИИ — для «✓ OpenRouter подключён». */
+    /** ИИ подключили на витрине — первая плитка говорит «✓ … подключён». */
     title?: string;
     /** Витрина ушла сама, когда на стол встал первый свой виджет: второй раз не уходит (её вернули из «+»). */
     left?: boolean;
@@ -64,22 +68,6 @@ const Lock = () => (
     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <rect x="5" y="11" width="14" height="10" rx="2" />
         <path d="M8 11V8a4 4 0 0 1 8 0v3" />
-    </svg>
-);
-const Chat = () => (
-    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" aria-hidden="true">
-        <path d="M4 5h16v11H8l-4 4z" />
-    </svg>
-);
-const Game = () => (
-    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
-        <rect x="3" y="7" width="18" height="10" rx="3" />
-        <path d="M8 12h3M9.5 10.5v3M15 11.5h.01M17 12.5h.01" />
-    </svg>
-);
-const Spark = () => (
-    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" aria-hidden="true">
-        <path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z" />
     </svg>
 );
 
@@ -112,6 +100,8 @@ export function ShowcaseWidget() {
     const [installing, setInstalling] = useState(installProgress);
     useEffect(() => onInstallProgress(() => setInstalling(installProgress())), []);
     const [at, setAt] = useState(0);
+    /** Что вписано в поле кода приглашения у DuoWave (замечание 19 после 0.18.2). */
+    const [inviteDraft, setInviteDraft] = useState('');
     // Приложения пульта приходят позже стола: перерисоваться, когда змейка появится или уйдёт.
     useSlot('desk.widgets');
     const snake = appSectionOf(SNAKE);
@@ -151,9 +141,10 @@ export function ShowcaseWidget() {
     }, [panel.version, installing?.done, installing?.finished]);
 
     const tried = new Set<Card>(memo.tried ?? []);
+    /** Плитку попробовали: галочка; «Отменить» у первой уходит — режим уже в деле. */
     const mark = (card: Card): void => {
         const before = recalled<Memo>(KEY) ?? {};
-        save({ tried: [...new Set([...(before.tried ?? []), card])], smarter: before.smarter === 'show' ? 'seen' : before.smarter });
+        save({ tried: [...new Set([...(before.tried ?? []), card])], undo: undefined });
     };
     // Черновик на столе — «Сделайте своё» уже попробовали, сказали ли фразу голосом или нажали.
     useEffect(() => {
@@ -166,9 +157,9 @@ export function ShowcaseWidget() {
         return view?.providers.find((provider) => provider.id === id)?.title;
     };
 
-    /** ИИ только что подключили здесь: колонка в «Как раньше» — сразу «Вместе», и «Теперь Алиса умнее». */
+    /** ИИ только что подключили здесь: колонка в «Как раньше» — сразу «Вместе»; первая плитка скажет, что подключено. */
     const connected = async (): Promise<void> => {
-        const patch: Partial<Memo> = { smarter: 'show', title: providerTitle() };
+        const patch: Partial<Memo> = { title: providerTitle() };
         if (!computer) {
             try {
                 const view = await api.mode();
@@ -203,13 +194,13 @@ export function ShowcaseWidget() {
     const together = () =>
         void run(async () => {
             setMode((await api.setMode('gateway')).mode);
-            save({ smarter: 'show', undo: 'relay', title: providerTitle() });
+            save({ undo: 'relay', title: providerTitle() });
         });
     const undo = () =>
         void run(async () => {
             if (!memo.undo) return;
             setMode((await api.setMode(memo.undo)).mode);
-            save({ undo: undefined, smarter: 'seen' });
+            save({ undo: undefined });
         });
 
     /** Фраза — в разговор, как сказанная; на компьютере без колонки ответ звучит его голосом. */
@@ -237,7 +228,7 @@ export function ShowcaseWidget() {
     const finished = cards.every((card) => tried.has(card)) && (!snake || !!memo.snake);
     const hasBrain = brain.answering;
     const relay = !computer && mode === 'relay';
-    const phase = !hasBrain ? 'brain' : relay ? 'switch' : memo.smarter === 'show' ? 'smarter' : 'try';
+    const phase = !hasBrain ? 'brain' : relay ? 'switch' : 'try';
     const empty = !brain.view || (!computer && mode === undefined) || finished;
     useWidgetEmpty(empty);
     if (empty) return null;
@@ -268,52 +259,9 @@ export function ShowcaseWidget() {
         </p>
     );
 
-    if (phase === 'smarter')
-        return (
-            <section class="sc sc-card sc-smarter" aria-label={computer ? t.smarterComputer : t.smarterStation}>
-                <div class="sc-smarter-top">
-                    <h2>{computer ? t.smarterComputer : t.smarterStation}</h2>
-                    {memo.title && <span class="sc-chip">{t.smarterConnected(memo.title)}</span>}
-                    {memo.undo && <span class="sc-chip">{t.smarterTogether}</span>}
-                    {memo.undo && (
-                        <button type="button" class="sc-soft" aria-disabled={busy ? 'true' : undefined} onClick={() => !busy && undo()}>
-                            {t.undo}
-                        </button>
-                    )}
-                </div>
-                <p class="sc-lead">{computer ? t.smarterLeadComputer : t.smarterLeadStation}</p>
-                {notes}
-                <span class="sc-label sc-say-and-see">{t.sayAndSee}</span>
-                <div class="sc-tiles">
-                    <button type="button" class="sc-tile" title={t.pressNote} onClick={() => say(t.talkSay, 'talk')}>
-                        <span class="sc-tile-k">
-                            <Chat />
-                            {t.talk}
-                        </span>
-                        <span class="sc-tile-p">«{talkMe}»</span>
-                    </button>
-                    {snake && (
-                        <button type="button" class="sc-tile" onClick={play}>
-                            <span class="sc-tile-k">
-                                <Game />
-                                {t.play}
-                            </span>
-                            <span class="sc-tile-p">{t.playGame}</span>
-                        </button>
-                    )}
-                    <button type="button" class="sc-tile" title={t.pressNote} onClick={() => say(t.makeSay, 'make')}>
-                        <span class="sc-tile-k">
-                            <Spark />
-                            {t.make}
-                        </span>
-                        <span class="sc-tile-p">«{makeMe}»</span>
-                    </button>
-                </div>
-                {failed}
-            </section>
-        );
-
     const done = cards.filter((card) => tried.has(card)).length;
+    /** Кого подключили на витрине — как его зовут сейчас (провайдера могли переименовать или сменить). */
+    const connectedTitle = memo.title ? (providerTitle() ?? memo.title) : null;
     const head =
         phase === 'brain' ? (computer ? t.headComputer : t.headStation) : phase === 'switch' ? t.headSwitch : done ? t.headDone(done, cards.length) : t.headTry;
 
@@ -350,8 +298,50 @@ export function ShowcaseWidget() {
             {t.checking(checking.title)}
         </span>
     ) : brain.path === 'duowave' ? (
-        // С кодом приглашения у шлюза — «Получить неделю бесплатно»; вписать код можно в первых шагах.
-        signInRow('duowave', brain.invite ? t.giftDw : t.signInDw, t.payDw)
+        brain.invite ? (
+            // Код приглашения у шлюза — «Получить подарок».
+            signInRow('duowave', t.giftDw, t.payDw)
+        ) : (
+            // Сначала код — до входа (подарок только при самом первом входе на сайте), как на шаге «Кто думает»
+            // (onb/brain.tsx); кода нет — «Подключить без кода» сразу открывает сайт.
+            <>
+                <span class="sc-note">
+                    <b class="sc-note-strong">{tr.onbBrain.dwInviteAsk}</b> {tr.onbBrain.dwInviteWhy}
+                </span>
+                <form
+                    class="sc-acts"
+                    onSubmit={(e) => {
+                        e.preventDefault();
+                        if (inviteDraft.trim() && !brain.inviteBusy) void brain.saveInvite(inviteDraft).then((saved) => saved && setInviteDraft(''));
+                    }}
+                >
+                    <input
+                        class="sc-key"
+                        autocomplete="off"
+                        spellcheck={false}
+                        aria-label={tr.onbBrain.dwInviteLabel}
+                        placeholder={`${tr.onbBrain.dwInviteLabel}: ${tr.onbBrain.dwInvitePlaceholder}`}
+                        value={inviteDraft}
+                        onInput={(e) => setInviteDraft((e.target as HTMLInputElement).value)}
+                    />
+                    <button type="submit" class="sc-btn" aria-disabled={!inviteDraft.trim() || brain.inviteBusy ? 'true' : undefined}>
+                        {tr.onbBrain.dwInviteSave}
+                    </button>
+                </form>
+                <div class="sc-acts">
+                    <button
+                        type="button"
+                        class="sc-soft sc-soft-line"
+                        aria-disabled={!brain.view || brain.signIn.starting ? 'true' : undefined}
+                        onClick={() => brain.beginSignIn('duowave')}
+                    >
+                        {brain.signIn.starting && brain.signIn.target === 'duowave' ? t.opening : tr.onbBrain.dwNoCode}
+                    </button>
+                    <span class="sc-note">{t.payDw}</span>
+                </div>
+                {brain.signIn.target === 'duowave' && brain.signIn.steps && <div class="sc-steps">{brain.signIn.steps}</div>}
+            </>
+        )
     ) : brain.path === 'openrouter' ? (
         signInRow('openrouter', t.signInOr, t.payOr)
     ) : brain.path === 'chatgpt' ? (
@@ -487,6 +477,18 @@ export function ShowcaseWidget() {
                 </button>
                 {who && <span class="sc-who">{t.answers(who)}</span>}
                 {voiceNote && <span class="sc-who">{t.voiceComing(who)}</span>}
+                {/* Подключили ИИ здесь — что подключено; режим «Вместе» включился сам — маленькое «Отменить». */}
+                {(connectedTitle || memo.undo) && (
+                    <div class="sc-done">
+                        {connectedTitle && <span class="sc-chip">{t.smarterConnected(connectedTitle)}</span>}
+                        {memo.undo && <span class="sc-chip">{t.smarterTogether}</span>}
+                        {memo.undo && (
+                            <button type="button" class="sc-soft sc-soft-sm" aria-disabled={busy ? 'true' : undefined} onClick={() => !busy && undo()}>
+                                {t.undo}
+                            </button>
+                        )}
+                    </div>
+                )}
             </section>
         );
 

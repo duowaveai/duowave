@@ -230,16 +230,7 @@ pub struct Missed {
 /// Why the station was not reached, for the journal: the bottom of the error's chain — «Connection refused (os error
 /// 111)», «Network unreachable (os error 101)» —, not reqwest's «error sending request for url (…)» alone.
 pub fn why(error: &reqwest::Error) -> String {
-    let mut deepest: &dyn std::error::Error = error;
-    while let Some(next) = deepest.source() {
-        deepest = next;
-    }
-    let said = deepest.to_string();
-    if error.is_timeout() && !said.to_lowercase().contains("timed out") {
-        format!("timed out: {said}")
-    } else {
-        said
-    }
+    crate::utils::http::deepest_cause(error)
 }
 
 pub(crate) fn describe(error: &reqwest::Error) -> String {

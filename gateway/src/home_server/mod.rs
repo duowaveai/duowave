@@ -10,6 +10,8 @@
 //! (dialog/brain/brain_service.rs); the station's old row «Модель на компьютере» becomes the computer's.
 
 pub mod chain;
+#[cfg(feature = "pc")]
+pub mod devices;
 pub mod messenger;
 #[cfg(feature = "pc")]
 pub mod serve;

@@ -427,6 +427,12 @@ impl TalkLayer {
         let refused = |refusal: Refusal| refusal.for_person(pack);
         // A wish or a change that waited for this answer: it is done now.
         match (kind, answer.clone()) {
+            // «Разбудить?» — any agreement wakes the Турбо; anything else leaves it to the person (owner 20.11, 5).
+            (Kind::Wake, answer) => {
+                let yes = matches!(answer, Answer::Yes | Answer::Fit);
+                let helper = pending.as_ref().and_then(|pending| pending.thing.clone()).unwrap_or_default();
+                return self.wake_answer(&helper, yes).await;
+            }
             // «Запуск платный: … Запускать?» — `id` is the run's key.
             (Kind::Run, answer) => {
                 let yes = matches!(answer, Answer::Yes | Answer::Fit | Answer::Edit | Answer::New);
@@ -604,6 +610,64 @@ impl TalkLayer {
 mod tests {
     use super::*;
     use crate::memory::text::Lang;
+
+    /// A Турбо that sleeps, a wake that brings it back (or not): docs/plans/turbo-devices.md, owner 20.11, 5.
+    struct Sleeper {
+        wakes: bool,
+    }
+
+    impl crate::home::turbo_devices::TurboSource for Sleeper {
+        fn turbos(&self) -> Vec<crate::home::turbo_devices::TurboAt> {
+            vec![crate::home::turbo_devices::TurboAt {
+                id: "mac".into(),
+                name: "Mac".into(),
+                macs: vec!["a4:83:e7:01:02:03".into()],
+                ..Default::default()
+            }]
+        }
+        fn call(
+            &self,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: serde_json::Value,
+        ) -> futures::future::BoxFuture<'static, Result<serde_json::Value, String>> {
+            Box::pin(async { Err("asleep".to_string()) })
+        }
+        fn look(&self, _: &str) -> futures::future::BoxFuture<'static, bool> {
+            let wakes = self.wakes;
+            Box::pin(async move { wakes })
+        }
+    }
+
+    fn sleeping_house(wakes: bool) -> Arc<crate::home::turbo_devices::HouseDevices> {
+        let house = crate::home::turbo_devices::HouseDevices::new(
+            Arc::new(crate::bus::providers::devices::Devices::new()),
+            None,
+        );
+        house.set_source(Arc::new(Sleeper { wakes }));
+        house.set_waker(Arc::new(|macs: Vec<String>| Box::pin(async move { Ok(macs.len()) })));
+        house
+    }
+
+    /// «…Разбудить Mac?» is the device's question; its «да» wakes the Mac, its «нет» leaves it to the person.
+    #[tokio::test]
+    async fn a_sleeping_turbo_is_woken_on_a_yes_and_left_on_a_no() {
+        let layer = TalkLayer::new(None, crate::core::events::EventBus::new());
+        let house = sleeping_house(true);
+        layer.set_house(&house);
+        let origin = Origin::station("kitchen", true);
+        assert_eq!(layer.offer_wake("kitchen", "mac", "Mac"), "Разбудить Mac?");
+        let question = layer.asked.open("kitchen").unwrap();
+        assert_eq!((question.kind, question.work.as_str()), (Kind::Wake, ""));
+        let said = layer.answer(origin.clone(), &question.work, Kind::Wake, false, Answer::Yes).await;
+        assert_eq!(said, "Mac проснулся. Скажите ещё раз, что хотели.");
+        assert!(layer.asked.open("kitchen").is_none(), "answered");
+
+        layer.offer_wake("kitchen", "mac", "Mac");
+        let said = layer.answer(origin.clone(), "", Kind::Wake, false, Answer::No).await;
+        assert_eq!(said, "Хорошо. Тогда разбудите Mac сами и скажите ещё раз.");
+    }
 
     /// 19.11: OpenAI's «no credits» made a game «не получилось. Подробности в пульте» — the cause is said now.
     #[test]

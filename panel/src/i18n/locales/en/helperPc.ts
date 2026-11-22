@@ -14,6 +14,10 @@ const en: Translation<typeof ru> = {
     hearingAbout: 'recognition models the speaker borrows from the computer',
     voicesTitle: 'Voices on this computer',
     voicesAbout: 'ready-made and your own, which the speaker uses through the computer',
+    sharesTitle: 'What this computer gives the home',
+    sharesNothing: 'nothing plugged in now',
+    sharesSensitive: 'Off by default: the home gets a camera, a microphone and keyboard-like devices only if you turn them on here.',
+    sharesAdminOnly: 'Only an admin can change this.',
 };
 
 export default en;

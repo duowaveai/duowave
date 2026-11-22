@@ -101,7 +101,7 @@ const en: Translation<typeof ru> = {
     signInSayHere: (service: string) => `Sign in on the ${service} page — the hub gets access by itself and the panel will see it.`,
     signInSayCode: (service: string) => `Sign in on the ${service} page: it will show a code — copy it and paste it here.`,
     signInSayAddress: (service: string) => `Sign in on the ${service} page. After signing in the browser will show an error for the address 127.0.0.1 — that’s expected: copy that page’s address and paste it here.`,
-    signInPlaceholderHere: 'Didn’t come back by itself? The page address after signing in',
+    signInPlaceholderHere: 'Didn’t come back by itself? Paste the page address or its code',
     signInCodeFrom: (service: string) => `Code from the ${service} page`,
     signInOpenAgain: (service: string) => `Open the ${service} page again`,
     signInOpen: (service: string) => `Open the ${service} page`,

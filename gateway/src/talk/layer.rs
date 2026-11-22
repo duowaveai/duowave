@@ -65,6 +65,10 @@ pub struct TalkLayer {
     pub(super) planned: std::sync::Mutex<std::collections::HashSet<String>>,
     /// The day (since the epoch) each device last heard how to add on the way.
     hinted: std::sync::Mutex<std::collections::HashMap<String, u64>>,
+    /// What an executor said of a work as it began, until its «Делаю» takes it.
+    notes: std::sync::Mutex<std::collections::HashMap<String, String>>,
+    /// The home's devices: a sleeping Турбо is woken from here on a «да» (docs/plans/turbo-devices.md).
+    house: OnceLock<Weak<crate::home::turbo_devices::HouseDevices>>,
     /// MagicPlace by voice (store.rs): its rule, its questions.
     pub(super) store: super::store::Store,
     /// The background tools' executor (tool_work.rs): a paid run's «да», «подробнее».
@@ -103,6 +107,8 @@ impl TalkLayer {
             reader: OnceLock::new(),
             planned: std::sync::Mutex::new(std::collections::HashSet::new()),
             hinted: std::sync::Mutex::new(std::collections::HashMap::new()),
+            notes: std::sync::Mutex::new(std::collections::HashMap::new()),
+            house: OnceLock::new(),
             background: OnceLock::new(),
             folders: OnceLock::new(),
         });
@@ -226,10 +232,56 @@ impl TalkLayer {
                 work.title = started.title.clone();
             })
             .unwrap_or(work);
+        if let Some(note) = started.note {
+            self.notes.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).insert(work.id.clone(), note);
+        }
         self.told(&work, "started");
         self.warm_ready(&work);
         tracing::info!(target: "talk", "work {} on {}: {} {}", work.id, work.device(), work.executor, started.target);
         Ok(work)
+    }
+
+    /// The home's devices, for a wake on a «да».
+    pub fn set_house(&self, house: &Arc<crate::home::turbo_devices::HouseDevices>) {
+        let _ = self.house.set(Arc::downgrade(house));
+    }
+
+    /// «Разбудить Mac?» — the device's question when a sleeping Турбо can be woken (owner 20.11, 5): its words, to say
+    /// after why the thing is not there. Its answer is read by sense (reader.rs), then `wake_answer`.
+    pub fn offer_wake(&self, device: &str, helper: &str, name: &str) -> String {
+        let question = crate::tr!("Разбудить {name}?", name = name);
+        let pending = super::asked::Pending {
+            thing: Some(helper.to_string()),
+            question: Some(question.clone()),
+            ..Default::default()
+        };
+        self.asked.ask_with(device, "", super::asked::Kind::Wake, pending);
+        question
+    }
+
+    /// The answer to «Разбудить?»: on a «да» the Турбо is woken over the home network and waited for a few seconds — a
+    /// station's answer cannot wait longer —, else the person wakes it.
+    pub(super) async fn wake_answer(&self, helper: &str, yes: bool) -> String {
+        let Some(house) = self.house.get().and_then(Weak::upgrade) else {
+            return crate::tr!("Будить некого: Турбо в доме нет.");
+        };
+        let name = house.name_of(helper).unwrap_or_else(|| crate::tr!("компьютер"));
+        if !yes {
+            return crate::tr!("Хорошо. Тогда разбудите {name} сами и скажите ещё раз.", name = name);
+        }
+        match house.wake(helper, crate::home::turbo_devices::VOICE_WAKE_WAIT).await {
+            Ok(true) => crate::tr!("{name} проснулся. Скажите ещё раз, что хотели.", name = name),
+            Ok(false) => crate::tr!(
+                "Сигнал пробуждения отправлен, но {name} ещё не на связи. Если он не проснётся через минуту, разбудите его сами.",
+                name = name
+            ),
+            Err(why) => crate::tr!("Не разбудить: {why} Разбудите {name} сами.", why = why, name = name),
+        }
+    }
+
+    /// What its executor said of a work as it began, once: where the thing's device is (src/talk/workshop.rs).
+    pub(super) fn take_note(&self, work: &str) -> Option<String> {
+        self.notes.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).remove(work)
     }
 
     /// «Делаю: …» on a device: the first time a day with how to add on the way, then short — every time it is long.

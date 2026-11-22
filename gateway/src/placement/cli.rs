@@ -6,7 +6,10 @@
 //!   duowave station install [--port 8790] [--home-server URL --key KEY] [--peer-key KEY] [--managed pc|yam]
 //!                           [--program PATH] [--in-place] [--no-start]
 //!                                         the program into /data, its .env, the service; started, and once it
-//!                                         answers /health, started with the station (/etc/init.d/S95duowave)
+//!                                         answers /health, started with the station (/etc/init.d/S95duowave);
+//!                                         at the end the panel's first-run code, or the log's last lines
+//!   duowave station code                  the panel's first-run code from this station's log (a new one at every
+//!                                         start while the panel has no password), or the log's last lines
 //!   duowave station point local|yandex|previous|<address[:port]> [--reboot]
 //!                                         where the station's voice goes: our copy of quasar.cfg mounted over the
 //!                                         firmware's own (which stays as it is), mounted again at every boot
@@ -22,8 +25,8 @@ use std::io::Read as _;
 
 use super::station_fs::{InstallOptions, RealSystem, StationFs, Target, DATA};
 
-const USAGE: &str =
-    "duowave station setup|install|point|status|remove|retry|safety|receive-settings|log — see `duowave station help`";
+const USAGE: &str = "duowave station setup|install|point|status|code|remove|retry|safety|receive-settings|log — see \
+                     `duowave station help`";
 
 pub fn command(args: &[String]) -> i32 {
     // On the computer: DuoWave onto the station over SSH, in one go (the one-line install runs it).
@@ -65,10 +68,13 @@ pub fn command(args: &[String]) -> i32 {
             if !fs.is_station() {
                 Err("это не колонка: нет /system/vendor/quasar/quasar.cfg".into())
             } else {
+                // The log's length before the start: the first-run code after it is this start's.
+                let log = fs.path(&format!("{DATA}/gateway.log"));
+                let since = std::fs::metadata(&log).map(|meta| meta.len()).unwrap_or(0);
                 fs.install(&options, &system).map(|installed| {
                     let voice = fs.voice().ok();
                     let local = voice.as_ref().is_some_and(|voice| *voice == fs.local_addresses());
-                    install_message(
+                    let mut message = install_message(
                         &installed.program,
                         installed.port,
                         installed.port_moved,
@@ -76,7 +82,14 @@ pub fn command(args: &[String]) -> i32 {
                         own_address(),
                         voice.as_ref().map(|voice| voice.url.as_str()),
                         local,
-                    )
+                    );
+                    if installed.started {
+                        for line in panel_way(&log, since, installed.port) {
+                            message.push('\n');
+                            message.push_str(&line);
+                        }
+                    }
+                    message
                 })
             }
         }
@@ -167,6 +180,13 @@ pub fn command(args: &[String]) -> i32 {
                 Ok(lines.join("\n"))
             }
         }
+        Some("code") => {
+            if !fs.is_station() {
+                Err("это не колонка: нет /system/vendor/quasar/quasar.cfg".into())
+            } else {
+                Ok(panel_way(&fs.path(&format!("{DATA}/gateway.log")), 0, fs.port()).join("\n"))
+            }
+        }
         Some("remove") => fs.remove(flag("--keep-data"), &system).map(|_| {
             if flag("--keep-data") {
                 format!("gateway removed; its data stays in {DATA}")
@@ -251,6 +271,19 @@ fn install_message(
         (false, None) => "the station's voice: unknown; to this gateway — duowave station point local --reboot".into(),
     };
     format!("gateway installed: {program} on port {port}{moved}{started}\nthe panel: {panel}\n{voice}")
+}
+
+/// The panel's way in, once this station's gateway answers (owner 22.11): its first-run code from the log, or the log's
+/// last lines, so nothing has to be looked for afterwards (first_code.rs). The panel's state comes from the gateway
+/// itself, over loopback.
+fn panel_way(log: &std::path::Path, since: u64, port: u16) -> Vec<String> {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let configured = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .ok()
+        .and_then(|runtime| runtime.block_on(crate::access::cli::configured(port)));
+    super::first_code::station_lines(log, since, configured, super::first_code::WAIT)
 }
 
 /// This station's address on the home network: the source address of the route out (no packet is sent), as

@@ -30,6 +30,21 @@ use crate::utils::time::now_iso;
 
 /// What another home is given until the owner gives more (owner, 15.11): the muscles.
 pub const MUSCLES: Abilities = Abilities::of(&[Ability::Hearing, Ability::Voice, Ability::Model, Ability::Catalog]);
+
+/// What a home gets when it pairs: its own home everything of contract 1 and the computer's devices and folders
+/// (contract 3); another home only the muscles (D31, owner 20.11, 9).
+pub fn given_at_pairing(own_home: bool) -> Abilities {
+    if own_home {
+        Abilities::V1.union(Abilities::of(&Ability::V3))
+    } else {
+        MUSCLES
+    }
+}
+
+/// What the owner may give a home on «Этот компьютер»: contract 1's and contract 3's.
+pub fn givable(ability: Ability) -> bool {
+    Ability::V1.contains(&ability) || Ability::V3.contains(&ability)
+}
 /// The gateways a client keeps; the oldest seen goes.
 pub const GATEWAYS: usize = 16;
 /// The longest name kept of a home or a gateway.
@@ -218,7 +233,7 @@ impl Clients {
     ) -> Result<(String, String), ApiError> {
         let (hex, key) = new_link_key();
         let id = format!("link:{hex}");
-        let gives = if own_home { Abilities::V1 } else { MUSCLES };
+        let gives = given_at_pairing(own_home);
         let client = HelperClient {
             home: HelperIdentity { id: home.chars().take(100).collect(), name: String::new() },
             own_home,
@@ -230,6 +245,7 @@ impl Clients {
             since: now_iso(),
             confirmed: false,
             binding: binding.map(Binding::stored),
+            v3: true,
         };
         self.change(|record| {
             record.insert(id.clone(), client);
@@ -335,13 +351,21 @@ impl Clients {
     /// client while the record does not read.
     pub fn given(&self, client: &str) -> Abilities {
         if client.starts_with("key:") {
-            return Abilities::V1;
+            return given_at_pairing(true);
         }
         self.record()
             .unwrap_or_default()
             .get(client)
             .filter(|client| client.confirmed)
-            .map(|client| client.gives.iter().copied().collect())
+            .map(|client| {
+                let gives: Abilities = client.gives.iter().copied().collect();
+                // A record written before contract 3: its own home gets the devices and folders as a new pairing would.
+                if client.own_home && !client.v3 {
+                    gives.union(Abilities::of(&Ability::V3))
+                } else {
+                    gives
+                }
+            })
             .unwrap_or_default()
     }
 
@@ -352,10 +376,13 @@ impl Clients {
     /// What a link client is given, as the owner set it on «Этот компьютер».
     pub fn set_gives(&self, client: &str, gives: Vec<Ability>, actor: Option<Actor>) -> Result<(), ApiError> {
         let gives: Vec<Ability> =
-            gives.into_iter().filter(|ability| Ability::V1.contains(ability)).collect::<Abilities>().iter().collect();
+            gives.into_iter().filter(|ability| givable(*ability)).collect::<Abilities>().iter().collect();
         let changed = self.change(|record| {
             let found = record.get_mut(client).filter(|found| found.confirmed)?;
-            (found.gives != gives).then(|| found.gives = gives.clone())
+            (found.gives != gives || !found.v3).then(|| {
+                found.gives = gives.clone();
+                found.v3 = true;
+            })
         })?;
         if !self.alive(client) {
             return Err(no_such_client());
@@ -723,7 +750,10 @@ mod tests {
         assert_eq!(app.clients.given(&other), MUSCLES);
         assert!(!app.clients.gives(&other, Ability::Messages) && app.clients.gives(&other, Ability::Voice));
         let (own, own_key) = confirmed(&app, "home-own", "gw-2", true);
-        assert_eq!(app.clients.given(&own), Abilities::V1);
+        assert_eq!(app.clients.given(&own), given_at_pairing(true));
+        // The computer's devices and folders (contract 3): its own home's by default, another home's only when given.
+        assert!(app.clients.gives(&own, Ability::Devices) && app.clients.gives(&own, Ability::Files));
+        assert!(!app.clients.gives(&other, Ability::Devices) && !app.clients.gives(&other, Ability::Files));
         // The owner gives another home more.
         app.clients.set_gives(&other, vec![Ability::Hearing, Ability::Messages], None).unwrap();
         assert!(app.clients.gives(&other, Ability::Messages) && !app.clients.gives(&other, Ability::Voice));

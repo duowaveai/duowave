@@ -211,7 +211,7 @@ pub const PROVIDER_PRESETS: &[ProviderPreset] = &[
     ProviderPreset {
         id: DUOWAVE_PRESET,
         title: "DuoWave",
-        description: "Модели DuoWave. Неделя бесплатно по приглашению, всё настраивается само.",
+        description: "Модели DuoWave. По приглашению вас ждёт подарок. Всё настроится само.",
         base_url: Some("https://api.duowave.dev/v1"),
         key_url: Some("https://my.duowave.app"),
         sign_in: Some(DUOWAVE_SIGN_IN),

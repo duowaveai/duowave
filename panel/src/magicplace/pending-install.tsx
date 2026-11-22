@@ -10,6 +10,7 @@ import { useEffect, useState } from 'preact/hooks';
 import { ApiError, CatalogEntry, installApi, problemOf } from '../api';
 import { tr } from '../i18n';
 import { usePanel } from '../shell/context';
+import { blockedOf } from './pending-feed';
 import { openInstallWizard } from './wizard-state';
 
 /** Что выбрано и где оно сейчас. */
@@ -27,6 +28,11 @@ export interface PendingInstall {
     late?: boolean;
     /** Не вышло — словами; выбор при этом остаётся. */
     problem?: string;
+    /**
+     * Колонка не может скачать набор (у тестера 22.11 Станция Мини 2 не открывала ленты за Cloudflare, а пульт без конца
+     * писал «готовлю у колонки»): её слова о ленте. Повтор идёт сам, раз в `BLOCKED_RETRY_MS`, со свежим чтением лент.
+     */
+    blocked?: string;
 }
 
 const KEY = 'install-pending';
@@ -36,6 +42,9 @@ const RETRY_MS = 4000;
 const READ_LIMIT_MS = 3 * 60_000;
 /** Повтор, когда колонка молчит дольше `READ_LIMIT_MS`. */
 const LATE_RETRY_MS = 15_000;
+/** Повтор, когда колонка не может скачать набор: каждый раз она читает ленты заново, а это не часто. */
+const BLOCKED_RETRY_MS = 2 * 60_000;
+
 
 let pending: PendingInstall | null = (() => {
     try {
@@ -163,11 +172,22 @@ async function land(station: string | undefined): Promise<void> {
         }
         patch({ step: 'reading' });
         let entry: CatalogEntry | undefined;
+        // Первое чтение — свежее: колонка читает ленты заново (и через компьютер, если сама не дотянулась).
+        let fresh = true;
         for (;;) {
             if (!still()) return;
-            const view = await at.packagesCatalog().catch(() => null);
+            const view = await at.packagesCatalog(fresh).catch(() => null);
+            fresh = false;
             entry = view?.packages.find((item) => item.id === chosen.id);
             if (entry) break;
+            // Лента выбора колонке закрыта: говорим это, а не «готовлю у колонки» без конца, и пробуем реже.
+            const blocked = blockedOf(view?.feeds, chosen.url, tr.wizard.blockedAny);
+            if (blocked !== pending?.blocked) patch({ blocked });
+            if (blocked) {
+                fresh = true;
+                await nap(BLOCKED_RETRY_MS);
+                continue;
+            }
             await nap(late() ? LATE_RETRY_MS : 2500);
         }
         if (!still()) return;
@@ -198,6 +218,6 @@ export function PendingInstallRunner() {
 
 /** «Ещё раз» после отказа — снова к центру; «Попробовать сейчас», пока ждём колонку, — не дожидаясь паузы. */
 export function retryPending(): void {
-    if (pending?.late && !pending.problem) return void wake?.();
-    patch({ problem: undefined, step: undefined, late: false });
+    if ((pending?.late || pending?.blocked) && !pending.problem) return void wake?.();
+    patch({ problem: undefined, step: undefined, late: false, blocked: undefined });
 }

@@ -164,6 +164,8 @@ pub enum Need {
     OwnParts,
     /// This gateway hears MIDI keyboards: a computer's build with `midi`, and not `MIDI=0` (src/midi).
     Midi,
+    /// A Турбо at home has a MIDI keyboard plugged in now (docs/plans/turbo-devices.md): the centre relays its notes.
+    TurboMidi,
 }
 
 pub struct Way {
@@ -445,9 +447,10 @@ pub const FEATURES: &[Feature] = &[
         id: "plugins.midi",
         title: "MIDI-клавиатура для приложений",
         group: Group::Skills,
-        ways: &[Way { runs: Runs::Here, needs: &[Need::Midi] }],
-        absent: "Клавиатуру слышит DuoWave на компьютере: в сборке колонки MIDI нет. В «колонка + сервер» — пульт Турбо на компьютере.",
-        table: [yes("да, клавиатура — к компьютеру"), no("нет: в сборке колонки MIDI нет"), no("у колонки нет; у пульта Турбо на компьютере — да")],
+        // At the centre's own keyboard, or at a Турбо's at home: the centre relays its notes (docs/plans/turbo-devices.md).
+        ways: &[Way { runs: Runs::Here, needs: &[Need::Midi] }, Way { runs: Runs::Helper, needs: &[Need::TurboMidi] }],
+        absent: "Клавиатуру подключают к компьютеру с DuoWave, у колонки её нет. Подключите компьютер к дому как Турбо и подключите клавиатуру к нему.",
+        table: [yes("да, клавиатура — к компьютеру"), no("нет: клавиатуру подключают к компьютеру"), partial("клавиатуру подключают к Турбо")],
     },
     Feature {
         id: "offline",
@@ -576,10 +579,10 @@ pub fn no_helper_with(ability: Ability) -> &'static str {
         Ability::Apps => "нет Турбо с приложениями",
         Ability::History => "нет Турбо с историей приложений",
         Ability::Catalog => "нет Турбо с каталогом",
+        Ability::Devices => "нет Турбо с устройствами",
+        Ability::Files => "нет Турбо с папками",
         // The later blocks' abilities: no feature needs them yet.
-        Ability::Tasks | Ability::Vault | Ability::Vectors | Ability::Files | Ability::Panel => {
-            "нет Турбо с этим умением"
-        }
+        Ability::Tasks | Ability::Vault | Ability::Vectors | Ability::Panel => "нет Турбо с этим умением",
     }
 }
 
@@ -607,6 +610,8 @@ pub struct Context {
     pub own_lacks: Option<&'static str>,
     /// This gateway hears MIDI keyboards (src/midi).
     pub midi: bool,
+    /// A Турбо at home has a MIDI keyboard plugged in now (src/home/turbo_devices.rs).
+    pub turbo_midi: bool,
 }
 
 impl Context {
@@ -633,6 +638,7 @@ impl Context {
             transcode_on_station: false,
             own_lacks: None,
             midi: placement == Placement::Pc,
+            turbo_midi: placement == Placement::StationServer,
         }
     }
 
@@ -641,7 +647,7 @@ impl Context {
     fn exists(&self, need: Need) -> bool {
         match need {
             Need::PcBuild | Need::At(_) | Need::Transcode | Need::Midi => self.meets(need),
-            Need::Helper(_) | Need::HelperUp => self.helpers.there(),
+            Need::Helper(_) | Need::HelperUp | Need::TurboMidi => self.helpers.there(),
             _ => true,
         }
     }
@@ -660,6 +666,7 @@ impl Context {
             Need::Transcode => self.transcoder && (self.placement == Placement::Pc || self.transcode_on_station),
             Need::OwnParts => self.own_lacks.is_none(),
             Need::Midi => self.midi,
+            Need::TurboMidi => self.turbo_midi,
         }
     }
 
@@ -682,6 +689,7 @@ impl Context {
             Need::Transcode => "нет перекодировщика",
             Need::OwnParts => self.own_lacks.unwrap_or("компьютер не даёт колонке слух или голос"),
             Need::Midi => "в этой сборке MIDI нет или он выключен (MIDI=0)",
+            Need::TurboMidi => "клавиатура не подключена ни к одному Турбо дома",
         }
     }
 
@@ -882,7 +890,11 @@ mod tests {
     /// The station with its computer, the computer away: set up to give all it may, giving nothing now.
     fn away() -> Context {
         let server = at(Placement::StationServer);
-        Context { helpers: HelperContext { online: false, up: Abilities::NONE, ..server.helpers }, ..server }
+        Context {
+            helpers: HelperContext { online: false, up: Abilities::NONE, ..server.helpers },
+            turbo_midi: false,
+            ..server
+        }
     }
 
     /// A helper on the line that gives what it is set to: these abilities.
@@ -926,7 +938,8 @@ mod tests {
         ("plugins", [HERE, HERE, HERE, HERE]),
         ("plugins.apps", [HERE, HERE, HERE, HERE]),
         ("media.transcode", [HERE, OFF, HELPER, OFF]),
-        ("plugins.midi", [HERE, OFF, OFF, OFF]),
+        // A Турбо's keyboard through the centre since docs/plans/turbo-devices.md.
+        ("plugins.midi", [HERE, OFF, HELPER, OFF]),
         ("offline", [OFF, HERE, HERE, HERE]),
     ];
 

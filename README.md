@@ -77,6 +77,19 @@ irm https://github.com/duowaveai/duowave/releases/latest/download/install.ps1 | 
 Если колонка не находится сама, команда спросит её адрес. На Windows его можно дать заранее:
 `$env:DUOWAVE_STATION = '192.168.1.23'; irm https://github.com/duowaveai/duowave/releases/latest/download/install.ps1 | iex`.
 
+### Прямо на колонке, без компьютера
+
+Если вы уже зашли на колонку по SSH, введите там одну команду:
+
+```sh
+wget -qO- http://get.duowave.app/station.sh | sh
+```
+
+Колонка сама скачает DuoWave, сверит контрольную сумму, покажет, что изменит, и после вашего «да» поставит его. В
+конце команда попросит придумать пароль пульта и спросит, направить ли голос колонки в DuoWave. Адрес начинается с
+`http`, потому что `wget` на колонке не умеет HTTPS. Подпись сборки мы проверяем до того, как она попадает на сайт, а
+колонка сверяет контрольную сумму. Подробнее в [station-client/README.md](station-client/README.md#одна-команда-на-самой-колонке).
+
 ### Приложение для компьютера
 
 Установщики для macOS, Windows и Linux лежат в

@@ -99,7 +99,7 @@ export default {
     signInSayHere: (service: string) => `Войдите на странице ${service} — хаб получит доступ сам, пульт это увидит.`,
     signInSayCode: (service: string) => `Войдите на странице ${service}: она покажет код — скопируйте его и вставьте сюда.`,
     signInSayAddress: (service: string) => `Войдите на странице ${service}. После входа браузер покажет ошибку адреса 127.0.0.1 — так и должно быть: скопируйте адрес той страницы и вставьте сюда.`,
-    signInPlaceholderHere: 'Не вернулось само? Адрес страницы после входа',
+    signInPlaceholderHere: 'Не вернулось само? Вставьте адрес страницы или код с неё',
     signInCodeFrom: (service: string) => `Код со страницы ${service}`,
     signInOpenAgain: (service: string) => `Открыть страницу ${service} ещё раз`,
     signInOpen: (service: string) => `Открыть страницу ${service}`,

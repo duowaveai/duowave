@@ -119,6 +119,15 @@ jobs:
         run: |
           docker run --rm --privileged --network none -v "$PWD/station-client:/w:ro" -e STATION_CHECK_SANDBOX=1 \
             busybox:1.36 sh /w/tests/station-check.sh /w
+      # The one-line install typed on the station (station-client/station.sh) and the release's copy of it
+      # (scripts/release/station-script.sh): a pretend station and mirror in a folder, under busybox, no network.
+      - name: The station's one-line install in a sandbox
+        run: docker run --rm --network none -v "$PWD:/r:ro" busybox:1.36 sh /r/station-client/tests/station-install-check.sh /r
+      - name: shellcheck of the one-line install
+        run: shellcheck -s sh station-client/station.sh station-client/tests/station-install-check.sh scripts/release/station-script.sh
+      # get.duowave.app's Worker (scripts/release/cloudflare): its paths and 404s against a pretend catalog.
+      - name: The Worker that serves it over HTTP
+        run: node scripts/release/cloudflare/get-worker-check.mjs
 
   rust:
     runs-on: ubuntu-latest

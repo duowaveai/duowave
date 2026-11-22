@@ -68,6 +68,10 @@ pub enum Kind {
     /// «Делаю: … Что-то ещё добавить?»: a new work asks for more words. «Нет, не надо» is «nothing to add» — the work
     /// goes on; only words of stopping stop it, anything else goes into the work (owner 20.11).
     Extra,
+    /// «…у Mac, а он спит. Разбудить?»: a sleeping Турбо can be woken over the home network (docs/plans/turbo-devices.md,
+    /// owner 20.11, 5). The question's `work` is empty and `pending.thing` the Турбо; the answer is read by its sense —
+    /// «давай», «ага, буди», «не надо, я сам» —, not by a list of words.
+    Wake,
 }
 
 /// What was asked for before the question, done once it is answered: the wish of «Поправить … или новую?», the change

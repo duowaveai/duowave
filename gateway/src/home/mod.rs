@@ -19,6 +19,8 @@
 //! - announce.rs — «Поиск дома»: a computer's or a server's gateway says on the network what it is in its home
 //!   (`_duowave._tcp`), so another computer finds a home whose centre is not on a station.
 //! - status.rs — «Состояние дома»: one look at what the home needs, a row each with the one thing that fixes it.
+//! - turbo_devices.rs — the home's devices: what is plugged into this gateway and into every Турбо, as one
+//!   `device/<kind>` on the bus each (docs/plans/turbo-devices.md); `/api/v1/home/plugged*`, the brain's tools.
 
 // «Поиск дома»: a computer's or a server's gateway announces itself as _duowave._tcp (stage 6).
 #[cfg(feature = "pc")]
@@ -34,6 +36,7 @@ pub mod queue;
 pub mod rooms;
 pub mod status;
 pub mod telegram;
+pub mod turbo_devices;
 
 pub use devices::watch;
 
@@ -48,4 +51,5 @@ pub fn routes() -> axum::Router<std::sync::Arc<crate::app::App>> {
         .merge(character::routes())
         .merge(join::routes())
         .merge(status::routes())
+        .merge(turbo_devices::routes::routes())
 }

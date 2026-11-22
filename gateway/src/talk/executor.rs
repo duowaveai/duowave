@@ -122,6 +122,8 @@ pub enum Closed {
 pub struct Started {
     pub target: String,
     pub title: String,
+    /// Said before «Делаю»: where the thing's device is when it is not at hand now (docs/plans/turbo-devices.md).
+    pub note: Option<String>,
 }
 
 /// What a background work came to (docs/plans/long-tools.md, point 3): the model's retelling in a sentence or two,
@@ -227,7 +229,7 @@ pub mod fake {
             self.started.lock().unwrap().push(work.brief.clone());
             let target = work.target.clone().unwrap_or_else(|| format!("thing-{}", work.id));
             self.put(&target, &work.title, Presence::Draft);
-            Ok(Started { target, title: work.title.clone() })
+            Ok(Started { target, title: work.title.clone(), note: None })
         }
         fn add(&self, _work: &Work, _text: &str) -> bool {
             false
@@ -238,7 +240,7 @@ pub mod fake {
             let id = name.trim().trim_start_matches('[').trim_end_matches(']');
             let alive = |presence: &Presence| *presence != Presence::Gone;
             if let Some((title, _)) = things.get(id).filter(|(_, presence)| alive(presence)) {
-                return Some(Started { target: id.to_string(), title: title.clone() });
+                return Some(Started { target: id.to_string(), title: title.clone(), note: None });
             }
             let wanted = crate::talk::work_tools::stems(name);
             things
@@ -246,10 +248,10 @@ pub mod fake {
                 .find(|(_, (title, presence))| {
                     alive(presence) && crate::talk::work_tools::alike(&crate::talk::work_tools::stems(title), &wanted)
                 })
-                .map(|(id, (title, _))| Started { target: id.clone(), title: title.clone() })
+                .map(|(id, (title, _))| Started { target: id.clone(), title: title.clone(), note: None })
         }
         fn open<'a>(&'a self, target: &'a str, _copy: bool) -> BoxFuture<'a, Result<Started, Closed>> {
-            Box::pin(async move { Ok(Started { target: target.to_string(), title: target.to_string() }) })
+            Box::pin(async move { Ok(Started { target: target.to_string(), title: target.to_string(), note: None }) })
         }
         fn status(&self, _work: &Work) -> Option<Doing> {
             None

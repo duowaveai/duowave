@@ -24,6 +24,7 @@
 //! - routes.rs — `/api/v1/helpers*`.
 //! - link.rs — the link a gateway opens to its helper: pairing, the pinned TLS, frames, the bridge (stage 7).
 //! - link_serve.rs, clients.rs — the helper's side of the link and «Помогаю» (pc).
+//! - wake.rs — waking a sleeping Турбо over the home network (docs/plans/turbo-devices.md).
 
 #[cfg(feature = "pc")]
 pub mod clients;
@@ -37,6 +38,7 @@ pub mod now;
 pub mod registry;
 pub mod remote;
 pub mod routes;
+pub mod wake;
 
 // The computer's build only: its built-in helper.
 #[cfg(feature = "pc")]

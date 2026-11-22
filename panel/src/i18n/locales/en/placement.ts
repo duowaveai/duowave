@@ -151,6 +151,9 @@ const en: Translation<typeof ru> = {
     keysOnStation: 'The hub on the speaker needs the cloud connection keys: they will be stored on the speaker, whose SSH is open without a password.',
     keysOnPc: 'The cloud connection keys are stored on this computer — they go to the speaker together with the hub.',
     availabilityDetails: 'What’s available — details',
+    stationCommandTitle: 'Or with one command on the speaker',
+    stationCommandAbout:
+        'Log in to the speaker over SSH and type this line. The speaker downloads DuoWave itself and asks «yes» before it changes anything. This computer is not needed for it.',
 
     unlinkTitle: 'Give the speaker back to Yandex?',
     restarting: 'The speaker is rebooting…',

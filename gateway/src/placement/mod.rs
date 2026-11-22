@@ -10,6 +10,7 @@ pub mod availability;
 pub mod backup;
 pub mod carry;
 pub mod cli;
+pub mod first_code;
 #[cfg(feature = "pc")]
 pub mod messages;
 #[cfg(feature = "pc")]

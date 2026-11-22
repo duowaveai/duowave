@@ -85,8 +85,7 @@ export function BrainStep() {
         answering,
         noBackup,
     } = useBrainConnect();
-    /** Поле «Есть код приглашения?» открыто и что в нём. */
-    const [inviteOpen, setInviteOpen] = useState(false);
+    /** Что вписано в поле кода приглашения. */
     const [inviteDraft, setInviteDraft] = useState('');
     useStepNav(answering ? {} : { secondary: { label: t.later, onClick: next } }, [answering]);
 
@@ -158,46 +157,54 @@ export function BrainStep() {
     };
 
     /**
-     * DuoWave: «Подключить DuoWave» или, когда код приглашения уже у шлюза, «Получить неделю бесплатно». Код можно
-     * вписать здесь: шлюз запомнит его и приложит к входу (подарок даётся только при самом первом входе на сайте).
+     * DuoWave: сначала код приглашения — до входа (владелец, 22.11: ушёл на сайт без кода и вошёл — подарка уже не дадут,
+     * подарок только при самом первом входе). Есть код — «Применить», и вход — «Получить подарок»; кода нет —
+     * «Подключить без кода» сразу открывает сайт. Шлюз запомнит код и приложит его ко входу.
      */
-    const duowaveBody = (
+    const duowaveBody = invite ? (
+        signInBody('duowave', t.dwGift, t.dwGiftNote)
+    ) : (
         <>
-            {signInBody('duowave', invite ? t.dwGift : t.dwSignIn, invite ? t.dwGiftNote : t.dwSignInNote)}
-            {!invite &&
-                (inviteOpen ? (
-                    <form
-                        class="ob-brain-full ob-brain-invite"
-                        onSubmit={(e) => {
-                            e.preventDefault();
-                            if (inviteDraft.trim()) void saveInvite(inviteDraft).then((saved) => saved && setInviteDraft(''));
-                        }}
-                    >
-                        <div class="field ob-brain-key">
-                            <label for="dw-invite">{t.dwInviteLabel}</label>
-                            <input
-                                id="dw-invite"
-                                class="input"
-                                autocomplete="off"
-                                spellcheck={false}
-                                placeholder={t.dwInvitePlaceholder}
-                                value={inviteDraft}
-                                onInput={(e) => setInviteDraft((e.target as HTMLInputElement).value)}
-                            />
-                        </div>
-                        <button
-                            type="submit"
-                            class="dw-btn dw-btn-sm dw-btn-light"
-                            aria-disabled={!inviteDraft.trim() || inviteBusy ? 'true' : undefined}
-                        >
-                            {t.dwInviteSave}
-                        </button>
-                    </form>
-                ) : (
-                    <button type="button" class="ob-brain-link small ob-brain-full" onClick={() => setInviteOpen(true)}>
-                        {t.dwInviteAsk}
-                    </button>
-                ))}
+            <span class="ob-brain-text ob-brain-full">
+                <span class="h3">{t.dwInviteAsk}</span>
+                <br />
+                <span class="small">{t.dwInviteWhy}</span>
+            </span>
+            <form
+                class="ob-brain-full ob-brain-invite"
+                onSubmit={(e) => {
+                    e.preventDefault();
+                    if (inviteDraft.trim() && !inviteBusy) void saveInvite(inviteDraft).then((saved) => saved && setInviteDraft(''));
+                }}
+            >
+                <div class="field ob-brain-key">
+                    <label for="dw-invite">{t.dwInviteLabel}</label>
+                    <input
+                        id="dw-invite"
+                        class="input"
+                        autocomplete="off"
+                        spellcheck={false}
+                        placeholder={t.dwInvitePlaceholder}
+                        value={inviteDraft}
+                        onInput={(e) => setInviteDraft((e.target as HTMLInputElement).value)}
+                    />
+                </div>
+                <button type="submit" class="dw-btn dw-btn-lg dw-btn-dark" aria-disabled={!inviteDraft.trim() || inviteBusy ? 'true' : undefined}>
+                    {t.dwInviteSave}
+                </button>
+            </form>
+            <div class="ob-brain-full ob-brain-nocode">
+                <button
+                    type="button"
+                    class="dw-btn dw-btn-sm dw-btn-light"
+                    aria-disabled={!view || signIn.starting ? 'true' : undefined}
+                    onClick={() => beginSignIn('duowave')}
+                >
+                    {signIn.starting && signIn.target === 'duowave' ? t.opening : t.dwNoCode}
+                </button>
+                <span class="small">{t.dwSignInNote}</span>
+            </div>
+            {signIn.target === 'duowave' && signIn.steps && <div class="ob-brain-full ob-brain-steps">{signIn.steps}</div>}
         </>
     );
 

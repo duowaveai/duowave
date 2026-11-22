@@ -417,7 +417,10 @@ impl Files {
     /// The household's word stands before any letter: outside the home a folder opens only with «и вне дома»; a
     /// chain through a model in the cloud reads nothing of a folder without «Модель может читать» — neither names nor
     /// files (the owner's decision 3, 13.11).
-    fn word(&self, spot: &Spot, letter: &Letter) -> Result<(), BusError> {
+    /// What leaves the house, as the household ticked it: a folder kept at home is not there for a chain from afar, and
+    /// a model in the cloud reads only a folder ticked for it. Asked for the home's folders at its Турбо too
+    /// (`home::turbo_devices::files`).
+    pub(crate) fn word(&self, spot: &Spot, letter: &Letter) -> Result<(), BusError> {
         if matches!(spot.kind, Kind::App | Kind::Person) {
             return Ok(());
         }
@@ -836,8 +839,8 @@ impl Provider for Files {
     }
 }
 
-/// What a folder can do, on the ladder.
-fn handles_of(spot: &Spot) -> Vec<Handle> {
+/// What a folder can do, on the ladder (a Турбо's flash drive at the centre too: `home::turbo_devices::files`).
+pub(crate) fn handles_of(spot: &Spot) -> Vec<Handle> {
     let mut handles = vec![
         Handle::new("list", Level::See).titled(&crate::tr!("список")),
         Handle::new("stat", Level::See).titled(&crate::tr!("размер и время")),

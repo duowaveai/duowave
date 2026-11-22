@@ -230,6 +230,9 @@ pub struct Workshop {
     midi: std::sync::atomic::AtomicBool,
     /// Whether the home folder is this computer's (not the station's own gateway): an album of its photos is made here.
     folders: std::sync::atomic::AtomicBool,
+    /// The home's devices (src/home/turbo_devices.rs): a keyboard or a folder at a Турбо is the home's too
+    /// (docs/plans/turbo-devices.md) — a teacher is made for it, a sleeping one said so.
+    house: OnceLock<std::sync::Weak<crate::home::turbo_devices::HouseDevices>>,
 }
 
 /// How long a preview's address works.
@@ -287,6 +290,7 @@ impl Workshop {
             dialog: OnceLock::new(),
             midi: std::sync::atomic::AtomicBool::new(false),
             folders: std::sync::atomic::AtomicBool::new(true),
+            house: OnceLock::new(),
         });
         let _ = workshop.me.set(Arc::downgrade(&workshop));
         // A draft's card follows the agent's work on it: working while it goes on, then ready, failed or stopped.

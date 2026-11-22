@@ -18,7 +18,6 @@ import { BrainStep } from './onb/brain';
 import { CharacterStep } from './onb/character';
 import { Choice, OnboardingContext, StepNav, StepNavContext } from './onb/nav';
 import { SpeakerStep, avoidStations, resumeLink } from './onb/speaker';
-import { steerInvite } from './onb/invite-state';
 import { StoreStep } from './onb/store';
 import { TryStep } from './onb/try';
 import { TurboStep } from './onb/turbo';
@@ -174,11 +173,6 @@ export function Onboarding({ onClose }: { onClose: () => void }) {
     // Подключение и перенос колонки ведёт пульт (screens/onb/speaker.tsx), а не шлюз: уход со шага их не останавливает,
     // а перезагрузка пульта (шлюз перезапустился) теряла — продолжаем по метке, на каком бы шаге ни были (п. 62).
     useEffect(() => void resumeLink().catch(() => undefined), []);
-    // Приглашение ведут первые шаги, а не шаг «Персонаж» (п. 64): набор читает этот компьютер — персонажи видны сразу;
-    // центр-колонка (ключ колонки у помощника) получает его в фоне, «колонка догонит» (замечание 3 теста 19.11).
-    const inviteCentre = (panel.role.role === 'helper' ? panel.role.station?.key : undefined) ?? null;
-    useEffect(() => steerInvite('own', inviteCentre), [inviteCentre]);
-
     // Шаги открыты — пульт помнит это сразу, ещё до «Дальше» (см. Saved). «Пройти заново» — место выбрано по дому.
     useEffect(() => {
         if (again) remember(KEY, { ...saved, ...again, step, again: true } satisfies Saved);

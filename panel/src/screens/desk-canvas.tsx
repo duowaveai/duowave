@@ -199,12 +199,15 @@ export function DeskCanvas({ widgets, layout, actions, scene, addTile, banner, r
     const [live, setLive] = useState<{ key: string; place: WidgetPlace } | null>(null);
     const [map, setMap] = useState<{ items: Array<{ key: string; rect: DOMRect; scene?: boolean }>; view: DOMRect } | null>(null);
     /**
-     * На сколько поле опущено под баннером, точек экрана. Мерится по столу как сначала (стартовый сдвиг, сохранённый
-     * масштаб): у нетронутого стола сцена — сразу под баннером; у сдвинутого всё поле опускается на то же, пока баннер
-     * виден. Сдвиг поля не трогает — ушёл баннер, поле вернулось.
+     * На сколько поле опущено под баннером, точек экрана. Мерится по столу как он стоит сейчас, когда баннер пришёл или
+     * поменял высоту: сцена — сразу под баннером. Раньше мерилось по столу как сначала — у сдвинутого стола раскрытое
+     * «Состояние дома» ложилось на колонку (замечание 21 после 0.18.2). Сдвиг поля не трогает — ушёл баннер, поле
+     * вернулось; сдвинули поле руками — опускание то же, пока баннер не поменялся.
      */
     const [push, setPush] = useState(0);
     const bannerBox = useRef<HTMLDivElement>(null);
+    /** Низ баннера при прошлом замере, точек экрана: смотрели ли на сцену — судим по тому, что было видно до перемены. */
+    const bannerBottom = useRef<number | null>(null);
     /** Что нарисовано в сцене — его высота (без масштаба поля): под ним встаёт широкий виджет. */
     const sceneBox = useRef<HTMLDivElement>(null);
     const [sceneHeight, setSceneHeight] = useState(SCENE_H - 64);
@@ -257,17 +260,26 @@ export function DeskCanvas({ widgets, layout, actions, scene, addTile, banner, r
         };
     }, []);
 
-    // Баннер над столом — поле ниже его на BANNER_GAP: сцена с её строкой («Мозг не выбран…») видна целиком.
+    // Баннер над столом — поле ниже его на BANNER_GAP: сцена с её строкой («Мозг не выбран…») видна целиком. Сцену увели
+    // вверх (смотрят виджеты под ней): под баннером, каким он был до перемены, видно меньше половины сцены, — опускание
+    // прежнее, поле не прыгает назад к колонке.
     useLayoutEffect(() => {
         const node = bannerBox.current;
         const outer = box.current;
         if (!node || !outer) {
+            bannerBottom.current = null;
             setPush(0);
             return;
         }
         const measure = () => {
-            const sceneTop = outer.clientHeight / 2 + startPan.current.y - (SCENE_H / 2) * (layout.zoom ?? startZoom.current);
-            setPush(Math.max(0, Math.round(node.offsetTop + node.offsetHeight + BANNER_GAP - sceneTop)));
+            const { pan: now, zoom: scale, push: was } = view.current;
+            const bottom = node.offsetTop + node.offsetHeight;
+            const before = bannerBottom.current ?? bottom;
+            bannerBottom.current = bottom;
+            const sceneTop = outer.clientHeight / 2 + now.y - (SCENE_H / 2) * scale;
+            const sceneTall = sceneHeight * scale;
+            if (sceneTop + was + sceneTall - before < sceneTall / 2) return;
+            setPush(Math.max(0, Math.round(bottom + BANNER_GAP - sceneTop)));
         };
         measure();
         const sizes = new ResizeObserver(measure);

@@ -21,9 +21,11 @@ use crate::core::identity::home::clean_name;
 
 /// The contract's version this gateway speaks. 2 (docs/plans/home-and-devices.md): the home's character and its voice
 /// (`/home/v1/character`), the home's Telegram (`/home/v1/messenger/bot`), an app's code installed over the link
-/// (`/home/v1/plugins/install`) and every package listed with its kind and state (`/home/v1/plugins`). A helper of
-/// version 1 still gives its abilities; what came with 2 waits for it: «Турбо другой версии — обновите оба».
-pub const VERSION: u32 = 2;
+/// (`/home/v1/plugins/install`) and every package listed with its kind and state (`/home/v1/plugins`). 3
+/// (docs/plans/turbo-devices.md): the computer's devices for its home (`devices`, `/home/v1/devices/*`) and its
+/// folders (`files`, `/home/v1/files/*`). A helper of an older version still gives its abilities; what came later waits
+/// for it: «Турбо другой версии — обновите оба».
+pub const VERSION: u32 = 3;
 /// The longest helper id a contract may name: a gateway's id is a UUID.
 const ID_MAX: usize = 64;
 
@@ -67,6 +69,9 @@ pub enum Ability {
     Files,
     /// The panel from outside the home (block 3).
     Panel,
+    /// What is plugged into the computer, for its home: a MIDI keyboard, its screen, a flash drive
+    /// (docs/plans/turbo-devices.md, `/home/v1/devices/*`). Its details say what and where.
+    Devices,
 }
 
 impl Ability {
@@ -82,7 +87,7 @@ impl Ability {
     ];
 
     /// Every ability this gateway knows.
-    pub const ALL: [Ability; 12] = [
+    pub const ALL: [Ability; 13] = [
         Ability::Hearing,
         Ability::Voice,
         Ability::Model,
@@ -95,7 +100,12 @@ impl Ability {
         Ability::Vectors,
         Ability::Files,
         Ability::Panel,
+        Ability::Devices,
     ];
+
+    /// What came with contract 3 (docs/plans/turbo-devices.md): a computer gives them its own home by default, another
+    /// home only when ticked on «Этот компьютер» (owner 20.11, 9).
+    pub const V3: [Ability; 2] = [Ability::Devices, Ability::Files];
 
     /// By its name or its old part's ("asr", "tts", "llm"); unknown → None.
     pub fn parse(name: &str) -> Option<Ability> {
@@ -116,6 +126,7 @@ impl Ability {
             Ability::Vectors => "vectors",
             Ability::Files => "files",
             Ability::Panel => "panel",
+            Ability::Devices => "devices",
         }
     }
 
@@ -131,10 +142,13 @@ impl Ability {
         }
     }
 
-    /// The contract version that brought it: 1 for `V1`; 2 for the later blocks' until their block sets its own.
+    /// The contract version that brought it: 1 for `V1`; 3 for `V3`; 2 for the later blocks' until their block sets
+    /// its own.
     pub fn since(self) -> u32 {
         if Ability::V1.contains(&self) {
             1
+        } else if Ability::V3.contains(&self) {
+            3
         } else {
             2
         }
@@ -453,7 +467,11 @@ mod tests {
         );
         let bits: Vec<u16> = Ability::ALL.iter().map(|ability| ability.bit()).collect();
         assert!(bits.iter().all(|bit| bit.count_ones() == 1), "one bit each");
-        assert_eq!(bits.iter().fold(0, |all, bit| all | bit).count_ones(), 12, "and never the same one");
+        assert_eq!(
+            bits.iter().fold(0, |all, bit| all | bit).count_ones(),
+            Ability::ALL.len() as u32,
+            "and never the same one"
+        );
     }
 
     #[test]

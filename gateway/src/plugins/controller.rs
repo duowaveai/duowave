@@ -442,6 +442,8 @@ pub struct PluginHost {
     /// The faces whose code the Турбо did not install (home/apps.rs): why in its words, and when (ms) — said when
     /// the face is called, and the install not asked again for a while.
     turbo_notes: Mutex<HashMap<String, (String, u64)>>,
+    /// «Разбудить Mac?» for a device whose face's Турбо sleeps (docs/plans/turbo-devices.md): set once the talk stands.
+    wake_offer: std::sync::OnceLock<WakeOffer>,
 }
 
 /// The gateway's own packages of an earlier build that are not among `kept` go whole (`bundled::retire`): folder, row,
@@ -474,6 +476,9 @@ fn retire_built_ins(
 
 /// May the app `app` reach `to`'s `handle` now (src/bus): its links, the owner's «да» — the reason in words when not.
 pub type Gate = Arc<dyn Fn(&str, &str, &str) -> Result<(), String> + Send + Sync>;
+
+/// A device's question «Разбудить …?» when a sleeping Турбо can be woken: its words, or none.
+pub type WakeOffer = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
 
 impl PluginHost {
     /// The host with what is on disk and in the database; no code is loaded until it is called.
@@ -532,6 +537,7 @@ impl PluginHost {
             gate: std::sync::OnceLock::new(),
             cloud_model: std::sync::OnceLock::new(),
             turbo_notes: Mutex::new(HashMap::new()),
+            wake_offer: std::sync::OnceLock::new(),
             config,
             db,
             settings,
@@ -1257,6 +1263,23 @@ impl PluginHost {
             None if package.manifest.asks(to) > crate::bus::Level::None => Ok(()),
             None => Err(crate::tr!("приложение не просило связь с {to}", to = to)),
         }
+    }
+
+    /// How a device is asked «Разбудить …?» (src/talk).
+    pub fn set_wake_offer(&self, offer: WakeOffer) {
+        let _ = self.wake_offer.set(offer);
+    }
+
+    /// «…Разбудить Mac?»: when an app's face is here and no Турбо is on the line to run its code, and a sleeping one
+    /// can be woken — the device's question and its words, said after why the app is not there
+    /// (docs/plans/turbo-devices.md, owner 20.11, 5).
+    pub fn offer_wake(&self, id: &str, device: &str) -> Option<String> {
+        let here = (self.placement)();
+        let face = self.plugin(id)?.active().is_some_and(|package| package.manifest.face_at(here));
+        if !face || self.home.as_ref().is_some_and(|home| home.up().is_some()) {
+            return None;
+        }
+        self.wake_offer.get().and_then(|offer| offer(device))
     }
 
     /// May a page of this app hear the MIDI keyboard (docs/plans/midi.md): it is on here, and the bus lets it hear

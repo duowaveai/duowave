@@ -234,6 +234,11 @@ impl TalkLayer {
         }
         let work = self.launch(work)?;
         let said = fill(self.started_words(work.device()), &[("title", &in_sentence(&work.title))]);
+        // Where the thing's device is, when it is not at hand now: before «Делаю», so the question stays last.
+        let said = match self.take_note(&work.id) {
+            Some(note) => format!("{note} {said}"),
+            None => said,
+        };
         // «Что-то ещё добавить?» is the device's question: «нет, не надо» answers it, it does not stop the work.
         let asked = Pending { question: Some(said.clone()), ..Pending::default() };
         self.asked.ask_with(work.device(), &work.id, Kind::Extra, asked);

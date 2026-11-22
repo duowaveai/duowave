@@ -22,7 +22,7 @@ import { SectionDef, useSections } from './shell/sections';
 import { Nav, NavEntry, OpenWindow, TopLine } from './shell/shell';
 import { homeWindowKey, ownName, roleOf, RoleInfo } from './shell/role';
 import { HomeBar } from './shell/home-bar';
-import { noteHomeDevicesNews } from './home-devices';
+import { noteHomeDevicesNews, notePluggedNews } from './home-devices';
 import { noteHomeJoinNews } from './home-join';
 import { JoinRequests } from './screens/home-join';
 import { useHomeStationName } from './station-name';
@@ -292,6 +292,8 @@ export function App() {
         noteHomeDevicesNews(name);
         // Просятся в дом по коду: карточка «Разрешить» у администратора перечитывает список (home-join.ts).
         noteHomeJoinNews(name);
+        // Подключено к компьютерам дома: «Устройства» и «Что этот компьютер даёт дому» перечитывают своё (home-devices.ts).
+        notePluggedNews(name);
         // Черновики мастерской: плитка на столе, «Готово» на полосе, «Примерка» по просьбе колонки (voice/drafts.ts).
         if (name === 'workshop.changed' || name === 'hello') noteWorkshopChange(subject, change);
         // Работы разговора: «Готово…» на полосе и голосом компьютера, заметки на плитке (voice/works.ts).

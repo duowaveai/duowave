@@ -26,7 +26,8 @@ import {
     setInstallProgress,
     showInstallWizard,
 } from './wizard-state';
-import { usePendingInstall } from './pending-install';
+import { dropPending, retryPending, usePendingInstall } from './pending-install';
+import { ask } from '../ui/confirm';
 import { settleVoice, settlingLine, showSettling, useSettling } from './settling';
 import { VoiceWaitingPill, useVoiceAttention, useVoiceGoing } from '../voice/pending-voice';
 import { isCallWord } from './filters';
@@ -655,6 +656,20 @@ export function InstallPill({ place }: { place: 'top' | 'side' | 'onb' }) {
                 {settlingLine(settling)}
             </button>
         );
+    // Колонка не может скачать набор выбора (22.11): причина по нажатию, «Не ставить» или ждать — повтор идёт сам.
+    if (!progress && waiting?.blocked) {
+        const { title, blocked } = waiting;
+        const choose = async () => {
+            const drop = await ask({ title: t.blockedTitle(t.quote(title)), text: t.blockedText(blocked), ok: t.blockedDrop, cancel: t.blockedKeep, danger: true });
+            if (drop) dropPending();
+            else retryPending();
+        };
+        return (
+            <button type="button" class={`waiting-pill waiting-pill-${place} is-problem`} title={blocked} onClick={() => void choose()}>
+                {t.pillBlocked(t.quote(title))}
+            </button>
+        );
+    }
     // Выбран, пока колонка не центр (п. 63): «Джарвис» — ждёт колонку; центр готов — «готовлю у колонки».
     if (!progress && waiting)
         return (

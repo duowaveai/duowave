@@ -403,7 +403,7 @@ mod tests {
         assert_eq!(shown_card["models"], json!(["duowave-smart", "duowave-fast"]));
         assert_eq!(
             shown_card["access"],
-            json!({"active": true, "plan": "Пробная неделя", "endsAt": "2026-11-27T01:15:00.000Z"})
+            json!({"active": true, "tier": "trial", "plan": "Пробная неделя", "endsAt": "2026-11-27T01:15:00.000Z"})
         );
         // The fake exchange is not in api.duowave.dev's domain: its address is not taken, the preset's stays.
         assert_eq!(shown_card["baseUrl"], json!("https://api.duowave.dev/v1"));

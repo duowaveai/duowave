@@ -63,6 +63,7 @@ pub fn router() -> Router<Arc<App>> {
         .route("/home/v1/messenger/bot", post(messenger_bot))
         .route("/home/v1/catalog", get(catalog))
         .route("/home/v1/catalog/file", get(catalog_file))
+        .route("/home/v1/catalog/feed", get(catalog_feed))
         .route("/home/v1/plugins/{id}/call", post(plugin_call))
         .route("/home/v1/messenger/contacts", get(messenger_contacts))
         .route("/home/v1/messenger/send", post(messenger_send))
@@ -70,6 +71,7 @@ pub fn router() -> Router<Arc<App>> {
         .route("/home/v1/history/objects", post(history_objects))
         .route("/home/v1/history/lines", post(history_lines))
         .route("/home/v1/history/fetch", post(history_fetch))
+        .merge(super::devices::router())
         .layer(DefaultBodyLimit::max(BODY_LIMIT))
 }
 
@@ -130,7 +132,7 @@ pub(crate) enum Needs {
 /// what this computer gives that home (another home's voice only a stock one, `voice_for_others`); anyone else only
 /// from this computer or the home network (a proxied request is judged by its client), with the right. Then the
 /// caller is seen for «Помогаю».
-fn allowed(caller: &Caller, needs: Needs) -> Result<(), ApiError> {
+pub(crate) fn allowed(caller: &Caller, needs: Needs) -> Result<(), ApiError> {
     let app = caller.app();
     if let Some(link) = caller.link() {
         caller.permitted(HOME_MODELS)?;
@@ -192,8 +194,24 @@ struct FileQuery {
     url: String,
 }
 
+/// One extra feed for the station that cannot read it itself (a tester's Station Mini 2, 22.11: DuoWave Store and the
+/// demo feed closed to it, open to the computer beside it): this computer's copy of it, only of a feed it reads too
+/// (`PackageCatalog::feed_for_station`); none — 404.
+async fn catalog_feed(
+    State(app): State<Arc<App>>,
+    caller: Caller,
+    axum::extract::Query(query): axum::extract::Query<FileQuery>,
+) -> Result<Response, ApiError> {
+    allowed(&caller, Needs::Ability(Ability::Catalog))?;
+    let copy = app
+        .catalog
+        .feed_for_station(&query.url)
+        .ok_or_else(|| ApiError::not_found(crate::tr!("Этой ленты здесь нет.")))?;
+    Ok(axum::Json(copy).into_response())
+}
+
 /// A file of the catalog for the station: an archive, only from the origin of one of the catalog's feeds — the main
-/// one or an extra one it names; the station checks its hash.
+/// one, an extra one it names or an own source; the station checks its hash.
 async fn catalog_file(
     State(app): State<Arc<App>>,
     caller: Caller,
@@ -638,13 +656,18 @@ pub(crate) fn status_of(app: &App, given: Option<Given>) -> Value {
     if app.link.helps() {
         contract.link = Some(crate::helpers::link::VERSION);
     }
-    if let Some(given) = given {
+    if let Some(given) = &given {
         contract.abilities.retain(|state| given.abilities.has(state.id));
         if !given.own_home && !voice_for_others(app) {
             for state in contract.abilities.iter_mut().filter(|state| state.id == Ability::Voice) {
                 state.ready = false;
             }
         }
+    }
+    // A home over the link reaches this computer from outside: its things at hand are not that home's now (owner
+    // 20.11, 6); a home at the home network's address does.
+    for state in contract.abilities.iter_mut().filter(|state| state.id == Ability::Devices) {
+        state.details.insert("home".into(), json!(given.is_none()));
     }
     let voice = contract.get(Ability::Voice).and_then(|voice| voice.details.get("voice")).cloned();
     let mut status = json!({
@@ -1698,6 +1721,7 @@ mod tests {
             ("GET", "/home/v1/plugins"),
             ("GET", "/home/v1/catalog"),
             ("GET", "/home/v1/catalog/file?url=https://packages.example.invalid/a.tgz"),
+            ("GET", "/home/v1/catalog/feed?url=https://store.example.invalid/catalog.json"),
             ("POST", "/home/v1/plugins/weather/call"),
             ("GET", "/home/v1/messenger/contacts"),
             ("POST", "/home/v1/messenger/send"),

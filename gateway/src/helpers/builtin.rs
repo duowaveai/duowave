@@ -371,6 +371,20 @@ impl BuiltinHelper {
     }
 }
 
+/// What this computer gives its home of its devices (docs/plans/turbo-devices.md, contract 3): the kinds it shares with
+/// what is plugged in now, and its hardware addresses for a wake over the home network. Whether the home reaches it from
+/// home is said per caller (`home_server::serve::status_of`).
+fn devices_state(app: &App) -> AbilityState {
+    static MACS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    let macs = MACS.get_or_init(crate::helpers::wake::hardware_addresses);
+    let mut state = AbilityState::new(Ability::Devices, true);
+    state.details.insert("kinds".into(), json!(app.house.given()));
+    if !macs.is_empty() {
+        state.details.insert("wake".into(), json!({ "macs": macs }));
+    }
+    state
+}
+
 impl OwnParts for BuiltinHelper {
     /// What this computer gives as a helper (`/home/v1/status`): the table of the plan's stage 1, the model, the
     /// recognition server and the voice server ready only while their look does not find them closed, the voice only
@@ -425,6 +439,12 @@ impl OwnParts for BuiltinHelper {
             }
             if app.catalog.has_copy_for_station() {
                 abilities.push(AbilityState::new(Ability::Catalog, true));
+            }
+            abilities.push(devices_state(&app));
+            // Its home folder for its home (docs/plans/turbo-devices.md, «Папки Турбо»), while it gives it.
+            let shares = app.settings.get(&crate::settings::definitions::TURBO_SHARES, None).unwrap_or_default();
+            if app.bus.files().is_some() && shares.gives("folders", false) {
+                abilities.push(AbilityState::new(Ability::Files, true));
             }
         }
         Contract::new(self.identity(), abilities)
@@ -777,6 +797,10 @@ pub(crate) mod tests {
         // The status says besides that this computer speaks the link while it helps (stage 7).
         let mut said = body["contract"].clone();
         assert_eq!(said.as_object_mut().unwrap().remove("link"), Some(json!(crate::helpers::link::VERSION)));
+        // A home at the home network's address reaches its things at hand (docs/plans/turbo-devices.md): said per caller.
+        let devices =
+            said["abilities"].as_array_mut().unwrap().iter_mut().find(|state| state["id"] == "devices").unwrap();
+        assert_eq!(devices["details"].as_object_mut().unwrap().remove("home"), Some(json!(true)));
         assert_eq!(said, serde_json::to_value(app.builtin.contract()).unwrap(), "the built-in's");
 
         // Its own engine, its model still loading: nothing ready for a station yet.

@@ -9,7 +9,7 @@ use serde_json::Value;
 
 use super::Screen;
 use crate::bus::provider::{BusError, Handle};
-use crate::bus::providers::devices::Device;
+use crate::bus::providers::devices::{Device, Instance};
 use crate::bus::Level;
 
 pub struct ScreenDevice {
@@ -45,6 +45,15 @@ impl Device for ScreenDevice {
     /// Only where the DuoWave app opens the windows.
     fn available(&self) -> bool {
         self.screen.available()
+    }
+
+    /// The one screen the app opens its windows on.
+    fn instances(&self) -> Vec<Instance> {
+        if self.screen.available() {
+            vec![Instance { id: "screen".into(), title: crate::tr!("Экран компьютера") }]
+        } else {
+            Vec::new()
+        }
     }
 
     fn call(&self, handle: &str, input: Value) -> BoxFuture<'static, Result<Value, BusError>> {

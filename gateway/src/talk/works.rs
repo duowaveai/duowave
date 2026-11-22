@@ -865,7 +865,7 @@ mod many {
         }
         fn listen(&self, _reports: Reporter) {}
         fn start(&self, work: &Work) -> Result<Started, String> {
-            Ok(Started { target: format!("thing-{}", work.id), title: work.title.clone() })
+            Ok(Started { target: format!("thing-{}", work.id), title: work.title.clone(), note: None })
         }
         fn add(&self, work: &Work, text: &str) -> bool {
             self.added.lock().unwrap().push((work.target.clone().unwrap_or_default(), text.to_string()));
@@ -875,7 +875,7 @@ mod many {
             None
         }
         fn open<'a>(&'a self, target: &'a str, _copy: bool) -> BoxFuture<'a, Result<Started, Closed>> {
-            Box::pin(async move { Ok(Started { target: target.to_string(), title: target.to_string() }) })
+            Box::pin(async move { Ok(Started { target: target.to_string(), title: target.to_string(), note: None }) })
         }
         fn status(&self, _work: &Work) -> Option<Doing> {
             Some(Doing::Writing)

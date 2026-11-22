@@ -1,5 +1,5 @@
 /* Витрина стола (docs/plans/start-desk.md) — доски «Б · 1–3» холста «Стартовый стол — лаконично»: под сценой ряд из
-   трёх карточек, «Теперь Алиса умнее» — одной карточкой; на телефоне и в узком окне — лентой вбок с точками. Цвета —
+   трёх карточек, один вид до и после подключения ИИ; на телефоне и в узком окне — лентой вбок с точками. Цвета —
    токены пульта: светлая и тёмная тема, «Минимал» и остальные. Доска игры — тёмная в любой теме: это экран игры. */
 
 .sc { display: flex; flex-direction: column; gap: 10px; width: 100%; container: sc / inline-size; }
@@ -27,6 +27,7 @@
 .sc-hide:hover,
 .sc-soft:hover { background: var(--hover-bg); color: var(--text); }
 .sc-soft[aria-disabled='true'] { opacity: 0.5; cursor: default; }
+.sc-soft.sc-soft-sm { height: 22px; padding: 0 8px; font-size: 12px; }
 
 .sc-row { display: flex; gap: 20px; align-items: stretch; }
 .sc-card {
@@ -90,6 +91,9 @@
 .sc-note-full { flex-basis: 100%; }
 .sc-problem { margin: 0; font-size: 12px; line-height: 16px; color: var(--bad); }
 .sc-steps { font-size: 12px; line-height: 16px; color: var(--sub); }
+/* DuoWave без кода: «Есть код приглашения?» жирнее строки; «Подключить без кода» — тихая кнопка с обводкой. */
+.sc-note-strong { font-weight: 500; color: var(--text); }
+.sc-soft.sc-soft-line { height: 34px; padding: 0 14px; box-shadow: inset 0 0 0 1px var(--glass-border); color: var(--text); }
 .sc-key {
     flex: 1 1 140px;
     min-width: 0;
@@ -134,6 +138,8 @@
 }
 .sc-chip.is-lock { align-self: flex-start; height: 36px; padding: 0 12px; background: var(--chip-bg); color: var(--sub); font-size: 12px; }
 .sc-chip.is-busy { align-self: flex-start; background: var(--pill-agent-bg, var(--chip-bg)); color: var(--pill-agent-fg, var(--sub)); }
+/* Первая плитка после подключения на витрине: «✓ DuoWave подключён» и, если режим включился сам, «Отменить». */
+.sc-done { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: auto; }
 
 .sc-bubbles { display: flex; flex-direction: column; justify-content: center; gap: 6px; padding: 10px 12px; }
 .sc-bub { max-width: 88%; padding: 6px 10px; border-radius: 12px; font-size: 12px; line-height: 16px; }
@@ -153,33 +159,6 @@
 .sc-make { display: flex; flex-direction: column; justify-content: center; gap: 8px; padding: 12px 14px; }
 .sc-bar { display: block; height: 8px; border-radius: 4px; background: var(--track); }
 .sc-bar.is-big { height: 20px; border-radius: 6px; }
-
-/* «Теперь Алиса умнее» — одна большая карточка вместо ряда. */
-.sc-smarter { padding: 22px 24px; gap: 0; }
-/* Под кольцом орбиты, на шаг ниже: у большой карточки нет строки «С чего начать» над ней. */
-.widget-bare > .sc.sc-smarter { margin-top: 30px; }
-.sc-smarter-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.sc-smarter h2 { margin: 0 auto 0 0; font: 300 34px/40px 'Inter Tight', var(--font); letter-spacing: -0.025em; color: var(--text); }
-.sc-lead { margin: 8px 0 0; font-size: 14px; line-height: 20px; color: var(--sub); }
-.sc-say-and-see { display: block; margin-top: 16px; }
-.sc-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(0, 1fr)); grid-auto-flow: column; gap: 14px; margin-top: 8px; }
-.sc-tile {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    padding: 12px 14px;
-    border: 0;
-    border-radius: 12px;
-    background: var(--glass-bg);
-    box-shadow: inset 0 0 0 1px var(--glass-border);
-    color: var(--text);
-    font: inherit;
-    text-align: left;
-    cursor: pointer;
-}
-.sc-tile:hover { background: var(--hover-bg); }
-.sc-tile-k { display: flex; align-items: center; gap: 6px; font-size: 12px; line-height: 16px; color: var(--sub); }
-.sc-tile-p { font-size: 15px; line-height: 21px; }
 
 .sc-dots { display: none; gap: 6px; justify-content: center; }
 .sc-dots i { width: 6px; height: 6px; border-radius: 50%; background: var(--glass-border); }
@@ -202,11 +181,6 @@
     .sc-card { flex: 0 0 min(300px, 86%); scroll-snap-align: start; }
     .sc-card.is-wide { flex-grow: 0; }
     .sc-dots { display: flex; }
-    .sc-smarter { padding: 16px; }
-    .sc-smarter h2 { font-size: 28px; line-height: 34px; }
-    .sc-tiles { grid-auto-flow: row; grid-template-columns: 1fr; gap: 8px; }
-    .sc-tile { gap: 2px; padding: 9px 12px; }
-    .sc-tile-p { font-size: 14px; line-height: 20px; }
 }
 @media (max-width: 1099px) {
     .sc-row { overflow-x: auto; scroll-snap-type: x mandatory; gap: 12px; padding: 4px 2px 8px; scrollbar-width: none; }
@@ -214,9 +188,4 @@
     .sc-card { flex: 0 0 min(300px, 86%); scroll-snap-align: start; }
     .sc-card.is-wide { flex-grow: 0; }
     .sc-dots { display: flex; }
-    .sc-smarter { padding: 16px; }
-    .sc-smarter h2 { font-size: 28px; line-height: 34px; }
-    .sc-tiles { grid-auto-flow: row; grid-template-columns: 1fr; gap: 8px; }
-    .sc-tile { gap: 2px; padding: 9px 12px; }
-    .sc-tile-p { font-size: 14px; line-height: 20px; }
 }

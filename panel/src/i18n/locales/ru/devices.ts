@@ -121,4 +121,22 @@ export default {
     earJoined: 'Колонка в доме ухом хаба: выберите её комнату.',
     earNeedsRoot: 'нужен root: без него DuoWave на колонку не поставить',
     earCancel: 'Отмена',
+
+    // «Подключено к компьютерам» (docs/plans/turbo-devices.md, «Пульт»; решение владельца 8): по видам, у каждой вещи
+    // её компьютер — «Keystation 49 · Mac»; спящий — серым, «Mac спит».
+    pluggedTitle: 'Подключено к компьютерам',
+    pluggedSub: 'Пока компьютер включён и дома, этим пользуется весь дом.',
+    pluggedReading: 'Смотрю, что подключено…',
+    pluggedNone: 'К компьютерам дома пока ничего не подключено.',
+    pluggedUnplugged: (name: string) => `к ${name} сейчас не подключено`,
+    pluggedAway: (name: string) => `${name} не дома`,
+    pluggedAsleep: (name: string) => `${name} спит`,
+    pluggedCloud: 'в облаке',
+    wake: 'Разбудить',
+    waking: 'Бужу…',
+    woke: 'Проснулся',
+    notWoke: 'Не проснулся. Разбудите его сами.',
+    actOn: 'Делать на:',
+    actOnLabel: (kind: string) => `${kind}: где делать`,
+    actingOn: (name: string) => `Теперь делаю на ${name}`,
 };

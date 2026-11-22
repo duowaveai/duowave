@@ -16,6 +16,7 @@ import { ask } from '../ui/confirm';
 import { byMode } from '../words';
 import { formatNumber, tr } from '../i18n';
 import { accessLine, accessWarning } from './brain-connect';
+import { inviteCode } from '../invite-code';
 import { DuoWaveMark } from '../ui/duowave';
 
 /**
@@ -136,6 +137,11 @@ export function BrainTab({ spend, first = false }: { spend?: preact.ComponentChi
     const [keyDraft, setKeyDraft] = useState('');
     const [typed, setTyped] = useState<Record<string, string>>({});
     const [asking, setAsking] = useState(false);
+    /**
+     * Код приглашения у карточки DuoWave, что ещё не вошёл (слова владельца после 0.18.2: «на все настройки должны
+     * вернуть это»; код — до входа, подарок только при самом первом входе на сайте): что вписано в поле.
+     */
+    const [inviteDraft, setInviteDraft] = useState('');
     const mayManage = can('connectors.manage');
     const mayChoose = can('models.manage');
 
@@ -222,6 +228,21 @@ export function BrainTab({ spend, first = false }: { spend?: preact.ComponentChi
             setKeyDraft('');
             say(provider.id, { notice: key ? tr.brain.keySaved : tr.brain.keyRemoved });
             await load();
+        } catch (e) {
+            say(provider.id, { error: problemOf(e) });
+        } finally {
+            mark(provider.id, false);
+        }
+    };
+
+    /** «Применить» у кода приглашения: шлюз запомнит код и приложит его ко входу DuoWave; кнопка входа — подарок. */
+    const saveInvite = async (provider: ProviderView) => {
+        if (!inviteDraft.trim()) return;
+        mark(provider.id, true);
+        say(provider.id, {});
+        try {
+            setView(await api.setInvite(inviteCode(inviteDraft) || null));
+            setInviteDraft('');
         } catch (e) {
             say(provider.id, { error: problemOf(e) });
         } finally {
@@ -424,7 +445,7 @@ export function BrainTab({ spend, first = false }: { spend?: preact.ComponentChi
                     const via = preset?.signIn;
                     const account = provider.account;
                     const access = provider.access;
-                    // DuoWave: its access in words («Пробная неделя до 27 ноября») in place of the key's tail.
+                    // DuoWave: its access in words («Пробная неделя», no date) in place of the key's tail.
                     const keyLine = access
                         ? accessLine(access)
                         : account
@@ -437,6 +458,10 @@ export function BrainTab({ spend, first = false }: { spend?: preact.ComponentChi
                               ? tr.brain.noKey
                               : tr.brain.keyless;
                     const noKey = via ? tr.brain.noKeyVia(via.with) : tr.brain.noKeyPlain;
+                    const signedIn = account ? account.signedIn : provider.key.set;
+                    // DuoWave, в который ещё не входили: код приглашения можно вписать здесь, а вписан — вход приносит подарок.
+                    const dwFresh = provider.preset === 'duowave' && !signedIn && !access;
+                    const gift = dwFresh && !!view.invite;
                     // A helper's model: the gateway keeps its row (address and key live in «Помощники»); this computer's
                     // own model server keeps its card, with whether it answers.
                     const mark = provider.helper;
@@ -495,8 +520,8 @@ export function BrainTab({ spend, first = false }: { spend?: preact.ComponentChi
                                     <Action label={tr.brain.check} tone="on" busy={busy[provider.id]} onClick={() => void check(provider.id)} />
                                     {via && (
                                         <Action
-                                            label={(account ? account.signedIn : provider.key.set) ? tr.brain.signInAgain : tr.brain.signInAction}
-                                            tone={(account ? account.signedIn : provider.key.set) ? 'off' : 'on'}
+                                            label={gift ? tr.brain.inviteGift : dwFresh ? tr.brain.inviteNoCodeShort : signedIn ? tr.brain.signInAgain : tr.brain.signInAction}
+                                            tone={signedIn ? 'off' : 'on'}
                                             busy={signIn.starting && signIn.target === provider.id}
                                             disabled={busy[provider.id]}
                                             onClick={() => signIn.start(provider.id, via.with, () => api.signInProvider(provider.id))}
@@ -523,6 +548,35 @@ export function BrainTab({ spend, first = false }: { spend?: preact.ComponentChi
                                         </a>
                                     )}
                                     <Action label={tr.brain.remove} disabled={busy[provider.id]} onClick={() => void remove(provider)} />
+                                </div>
+                            )}
+                            {mayManage && gift && <p class="t-caption m-0 pl-50">{tr.brain.inviteHere}</p>}
+                            {/* Ещё не входили и кода нет: сначала «Есть код приглашения?» с полем; «войти без кода» — в ряду. */}
+                            {mayManage && dwFresh && !gift && (
+                                <div class="flex flex-col gap-6 pl-50">
+                                    <p class="t-caption m-0">
+                                        <b class="c-text">{tr.brain.inviteAsk}</b> {tr.brain.inviteWhy}
+                                    </p>
+                                    <form
+                                        class="flex gap-8 flex-wrap"
+                                        onSubmit={(e) => {
+                                            e.preventDefault();
+                                            void saveInvite(provider);
+                                        }}
+                                    >
+                                        <input
+                                            class="field flex-1-1-200 min-w-0"
+                                            autocomplete="off"
+                                            spellcheck={false}
+                                            aria-label={tr.brain.inviteLabel}
+                                            placeholder={`${tr.brain.inviteLabel}: s_…`}
+                                            value={inviteDraft}
+                                            onInput={(e) => setInviteDraft((e.target as HTMLInputElement).value)}
+                                        />
+                                        <button type="submit" class="btn btn-main btn-sm" disabled={!inviteDraft.trim() || busy[provider.id]}>
+                                            {tr.brain.inviteSave}
+                                        </button>
+                                    </form>
                                 </div>
                             )}
                             {signIn.target === provider.id && signIn.steps && <div class="pl-50">{signIn.steps}</div>}
@@ -595,9 +649,9 @@ export function BrainTab({ spend, first = false }: { spend?: preact.ComponentChi
             {asking && <AskSheet onClose={() => setAsking(false)} />}
             {adding && (
                 <AddProvider
-                    // DuoWave спрятан, пока его не показали (shell/dev.ts); уже добавленный виден в списке провайдеров.
                     presets={presets}
                     firstOne={!choice.fast}
+                    invite={!!view.invite}
                     onClose={() => setAdding(false)}
                     onDone={(fresh) => {
                         if (fresh) setView(fresh);
@@ -761,11 +815,14 @@ export function BackupChoice() {
 function AddProvider({
     presets,
     firstOne,
+    invite,
     onClose,
     onDone,
 }: {
     presets: ProviderPreset[];
     firstOne: boolean;
+    /** Код приглашения DuoWave уже у шлюза: вход DuoWave — «Получить подарок». */
+    invite: boolean;
     onClose: () => void;
     onDone: (fresh?: BrainView) => void;
 }) {
@@ -779,6 +836,13 @@ function AddProvider({
     const [result, setResult] = useState<{ provider: ProviderView; check: ProviderCheck } | null>(null);
     /** Провайдер, уже добавленный входом: ключ, вставленный потом, ложится на него, а не на второго такого же. */
     const [created, setCreated] = useState<ProviderView | null>(null);
+    /**
+     * Код приглашения DuoWave (замечание 19 после 0.18.2: здесь его было негде ввести): что в поле, идёт ли сохранение.
+     * Код — до входа: подарок даётся только при самом первом входе на сайте. Шлюз запомнит код и приложит его к входу
+     * DuoWave (PUT /api/v1/brain/invite).
+     */
+    const [inviteDraft, setInviteDraft] = useState('');
+    const [inviteBusy, setInviteBusy] = useState(false);
 
     const checked = async (provider: ProviderView) => {
         setBusy(true);
@@ -821,6 +885,20 @@ function AddProvider({
             onDone();
             return api.signInProvider(provider.id);
         });
+
+    const saveInvite = async () => {
+        if (!inviteDraft.trim() || inviteBusy) return;
+        setInviteBusy(true);
+        setError(null);
+        try {
+            onDone(await api.setInvite(inviteCode(inviteDraft) || null));
+            setInviteDraft('');
+        } catch (e) {
+            setError(problemOf(e));
+        } finally {
+            setInviteBusy(false);
+        }
+    };
 
     const save = async () => {
         if (!preset) return;
@@ -873,6 +951,7 @@ function AddProvider({
 
     const words = result ? checkWords(result.check) : null;
     const keyless = !!preset.signIn?.keyless;
+    const duowave = preset.id === 'duowave';
     const spin = (on: boolean) => on && <span class="spinner spinner-sm" aria-hidden="true" />;
     const signInButton = (main: boolean) =>
         preset.signIn && (
@@ -884,7 +963,13 @@ function AddProvider({
                 onClick={() => preset.signIn && beginSignIn(preset, preset.signIn.with)}
             >
                 {spin(signIn.starting)}
-                {signIn.starting ? tr.brain.opening : (preset.signIn.label ?? tr.brain.signInWith(preset.signIn.with))}
+                {signIn.starting
+                    ? tr.brain.opening
+                    : duowave
+                      ? invite
+                          ? tr.brain.inviteGift
+                          : tr.brain.inviteNoCode
+                      : (preset.signIn.label ?? tr.brain.signInWith(preset.signIn.with))}
             </button>
         );
     // Внизу: «Назад» к выбору и главное — «Проверить и сохранить» или, когда ключ не нужен, «Войти через …»;
@@ -936,6 +1021,45 @@ function AddProvider({
                     {preset.signIn && (
                         <WinSection group>
                             <div class="win-row is-col">
+                                {/* DuoWave: сначала код приглашения — над входом, до него; принят — строкой, и вход приносит
+                                    подарок. Кода нет — «Войти через DuoWave без кода». */}
+                                {duowave &&
+                                    (invite ? (
+                                        <span class="win-row-s" role="status">
+                                            {tr.brain.inviteHere}
+                                        </span>
+                                    ) : (
+                                        <form
+                                            class="flex gap-6"
+                                            style={{ alignItems: 'flex-end' }}
+                                            onSubmit={(e) => {
+                                                e.preventDefault();
+                                                void saveInvite();
+                                            }}
+                                        >
+                                            <label class="flex flex-col gap-6 flex-1">
+                                                <span class="win-label">{tr.brain.inviteAsk}</span>
+                                                <span class="win-row-s">{tr.brain.inviteWhy}</span>
+                                                <input
+                                                    class="field"
+                                                    autocomplete="off"
+                                                    spellcheck={false}
+                                                    placeholder="s_…"
+                                                    value={inviteDraft}
+                                                    onInput={(e) => setInviteDraft((e.target as HTMLInputElement).value)}
+                                                />
+                                            </label>
+                                            <button
+                                                type="submit"
+                                                class="btn btn-main btn-sm"
+                                                disabled={!inviteDraft.trim() || inviteBusy}
+                                                aria-busy={inviteBusy || undefined}
+                                            >
+                                                {spin(inviteBusy)}
+                                                {tr.brain.inviteSave}
+                                            </button>
+                                        </form>
+                                    ))}
                                 {!keyless && signInButton(false)}
                                 {keyless ? (
                                     <span class="win-row-s">

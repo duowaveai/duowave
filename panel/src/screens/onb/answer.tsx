@@ -1,9 +1,11 @@
 // Первые шаги → «Кто отвечает на колонке?» — доски Answer / AnswerOnly холста «Онбординг» 1:1 (на узком — одной
 // колонкой, как PhoneAnswer). Режимы «Как раньше · Вместе · Своё» — тот же режим колонки, что переключатель на столе
 // (api.mode / api.setMode; DuoWave уже на колонке — через проход помощника к её шлюзу). «Чей ИИ отвечает» — те же
-// вызовы, что у «Мозга» (screens/brain.tsx): добавить провайдера, войти через OpenRouter, ключ, модель на компьютере,
-// проверить и выбрать. DuoWave уже на колонке — вход и ключ уходят к ней (у «Только колонка» отсюда предупреждение
-// доски про SSH); модель на компьютере остаётся у компьютера.
+// вызовы, что у «Мышления» (screens/brain.tsx): добавить провайдера, войти через DuoWave или OpenRouter, ключ, модель на
+// компьютере, проверить и выбрать. DuoWave первым, с тихой ссылкой «Есть код приглашения?», как на шаге «Кто думает»
+// пути компьютера (onb/brain.tsx; замечание 19 после 0.18.2: по пути через колонку код было негде ввести). DuoWave уже
+// на колонке — вход, ключ и код уходят к ней (у «Только колонка» отсюда предупреждение доски про SSH); модель на
+// компьютере остаётся у компьютера.
 // Пока колонка перезагружается после «Дальше, не ждать», здесь видно, пришла ли она (onb/speaker.tsx).
 
 import { useEffect, useRef, useState } from 'preact/hooks';
@@ -25,6 +27,7 @@ import {
     stationCall,
 } from '../../api';
 import { tr } from '../../i18n';
+import { inviteCode } from '../../invite-code';
 import { usePanel } from '../../shell/context';
 import { NoArrival, linkActive, restoreLink, useSpeakerLink } from './speaker';
 import { useOnboarding, useStepNav } from './nav';
@@ -44,6 +47,8 @@ interface Gate {
     signInStatus: (id: string) => Promise<SignInStatus>;
     completeSignIn: (id: string, text: string) => Promise<{ title: string }>;
     chooseBrain: (choice: { fast?: BrainPick | null; smart?: BrainPick | null }) => Promise<BrainView>;
+    /** Код приглашения DuoWave: шлюз приложит его к следующему входу DuoWave; null — забыть. */
+    setInvite: (code: string | null) => Promise<BrainView>;
 }
 
 const direct: Gate = {
@@ -58,6 +63,7 @@ const direct: Gate = {
     signInStatus: (id) => api.signInStatus(id),
     completeSignIn: (id, text) => api.completeSignIn(id, text),
     chooseBrain: (choice) => api.chooseBrain(choice),
+    setInvite: (code) => api.setInvite(code),
 };
 
 function viaStation(key: string): Gate {
@@ -75,12 +81,16 @@ function viaStation(key: string): Gate {
         signInStatus: (id) => stationCall<SignInStatus>(key, 'GET', `/api/v1/oauth/${enc(id)}`),
         completeSignIn: (id, text) => stationCall<{ title: string }>(key, 'POST', '/api/v1/oauth/complete', { id, text }),
         chooseBrain: (choice) => stationCall<BrainView>(key, 'PUT', '/api/v1/brain/choice', choice),
+        setInvite: (code) => stationCall<BrainView>(key, 'PUT', '/api/v1/brain/invite', { code }),
     };
 }
 
 const MODES: PanelMode[] = ['relay', 'gateway', 'own'];
 
-type ModelPath = 'openrouter' | 'key' | 'local';
+type ModelPath = 'duowave' | 'openrouter' | 'key' | 'local';
+/** Пути, где вход — на странице сервиса. */
+type SignInPath = 'duowave' | 'openrouter';
+const DUOWAVE = 'duowave';
 
 /**
  * Сервис по виду ключа (как у шага «Кто думает»): sk-ant- — Anthropic, sk-or- — OpenRouter, sk- и 32 шестнадцатеричных
@@ -98,9 +108,10 @@ function keyService(raw: string): string | null {
     return null;
 }
 
-/** Какой путь у провайдера: вход OpenRouter, модель на компьютере или свой ключ. */
+/** Какой путь у провайдера: вход DuoWave или OpenRouter, модель на компьютере или свой ключ. */
 function pathOf(provider: ProviderView | undefined): ModelPath | null {
     if (!provider) return null;
+    if (provider.preset === DUOWAVE) return 'duowave';
     if (provider.preset === 'openrouter') return 'openrouter';
     return provider.local ? 'local' : 'key';
 }
@@ -131,7 +142,7 @@ export function AnswerStep() {
     const [mode, setMode] = useState(1);
     const [current, setCurrent] = useState<PanelMode | null>(null);
     const [view, setView] = useState<BrainView | null>(null);
-    const [path, setPath] = useState<ModelPath>('openrouter');
+    const [path, setPath] = useState<ModelPath>('duowave');
     const [busy, setBusy] = useState(false);
     const [note, setNote] = useState<{ text: string; bad?: boolean } | null>(null);
     const [keyOpen, setKeyOpen] = useState(false);
@@ -142,8 +153,11 @@ export function AnswerStep() {
     const [extra, setExtra] = useState<Record<string, string>>({});
     /** Модель своего сервиса — если он сам моделей не называет (Anthropic-совместимый адрес часто так). */
     const [model, setModel] = useState('');
-    const [signin, setSignin] = useState<{ start: SignInStart; provider: string } | null>(null);
+    /** Вход идёт: его начало, провайдер и имя сервиса для строк («Откройте DuoWave…»). */
+    const [signin, setSignin] = useState<{ start: SignInStart; provider: string; service: string } | null>(null);
     const [pasted, setPasted] = useState('');
+    /** Что вписано в поле кода приглашения. */
+    const [inviteDraft, setInviteDraft] = useState('');
     const [restoring, setRestoring] = useState(false);
     const picked = useRef(false);
 
@@ -165,6 +179,8 @@ export function AnswerStep() {
                 setView(fresh);
                 const chosen = pathOf(fresh.providers.find((provider) => provider.id === fresh.choice.fast?.provider));
                 if (chosen && (chosen !== 'local' || !only)) setPath(chosen);
+                // Шлюз колонки старше DuoWave — первым остаётся OpenRouter.
+                else if (!fresh.presets.some((preset) => preset.id === DUOWAVE)) setPath((now) => (now === DUOWAVE ? 'openrouter' : now));
             })
             .catch(() => undefined);
         return () => {
@@ -225,16 +241,20 @@ export function AnswerStep() {
         };
     }, [signin?.start.id]);
 
-    /** «Войти через OpenRouter»: окно открывается сразу по нажатию, адрес страницы приходит от шлюза. */
-    const signIn = () => {
+    /**
+     * «Подключить DuoWave» или «Войти через OpenRouter»: окно открывается сразу по нажатию, адрес страницы приходит от
+     * шлюза. Код приглашения, если он вписан, шлюз приложит к входу DuoWave сам.
+     */
+    const signIn = (which: SignInPath) => {
         const page = window.open('about:blank', '_blank');
         if (page) page.opener = null;
+        const service = presetOf(which)?.signIn?.with ?? (which === DUOWAVE ? t.optDuowave : t.optOpenRouter);
         void work(async () => {
             try {
-                const provider = view?.providers.find((entry) => entry.preset === 'openrouter') ?? (await modelGate.addProvider({ preset: 'openrouter' }));
+                const provider = view?.providers.find((entry) => entry.preset === which) ?? (await modelGate.addProvider({ preset: which }));
                 const start = await modelGate.signInProvider(provider.id);
                 setPasted('');
-                setSignin({ start, provider: provider.id });
+                setSignin({ start, provider: provider.id, service });
                 if (page && !page.closed) page.location.href = start.url;
             } catch (e) {
                 page?.close();
@@ -308,8 +328,18 @@ export function AnswerStep() {
             throw new Error(t.localNone);
         });
 
+    /**
+     * «Применить» у кода приглашения: шлюз запомнит код до удачного входа DuoWave; кнопка станет «Получить
+     * подарок», строка под ней — «Код приглашения уже здесь…».
+     */
+    const saveInvite = () =>
+        void work(async () => {
+            setView(await modelGate.setInvite(inviteCode(inviteDraft) || null));
+            setInviteDraft('');
+        });
+
     const act = () => {
-        if (path === 'openrouter') signIn();
+        if (path === 'duowave' || path === 'openrouter') signIn(path);
         else if (path === 'key') setKeyOpen((open) => !open);
         else pickLocal();
     };
@@ -377,12 +407,23 @@ export function AnswerStep() {
             ],
         },
     ];
+    // DuoWave — пока шлюз колонки не сказал, что его не знает (он старше DuoWave).
+    const hasDuowave = !view || !!presetOf(DUOWAVE);
     const paths: Array<{ id: ModelPath; title: string; sub: string }> = [
+        ...(hasDuowave ? [{ id: 'duowave' as const, title: t.optDuowave, sub: t.optDuowaveSub }] : []),
         { id: 'openrouter', title: t.optOpenRouter, sub: t.optOpenRouterSub },
         { id: 'key', title: t.optKey, sub: t.optKeySub },
         ...(only ? [] : [{ id: 'local' as const, title: t.optLocal, sub: t.optLocalSub }]),
     ];
-    const actions: Record<ModelPath, string> = { openrouter: t.actSignIn, key: t.actKey, local: t.actLocal };
+    const invited = !!view?.invite;
+    /** DuoWave ещё не вошёл и кода нет: сначала «Есть код приглашения?», кнопка ряда — не нужна. */
+    const askCode = path === 'duowave' && !signed && !invited;
+    const actions: Record<ModelPath, string> = {
+        duowave: invited ? t.actDuowaveGift : t.actDuowave,
+        openrouter: t.actSignIn,
+        key: t.actKey,
+        local: t.actLocal,
+    };
     const needModel = mode !== 0;
 
     return (
@@ -460,30 +501,32 @@ export function AnswerStep() {
                                 </button>
                             ))}
                         </div>
-                        <button type="button" class="dw-btn dw-btn-lg dw-btn-dark" disabled={busy || !mayModel || !view} onClick={act}>
-                            {busy && !keyOpen ? t.checkingModel : signed ? t.actDone : actions[path]}
-                        </button>
+                        {!askCode && (
+                            <button type="button" class="dw-btn dw-btn-lg dw-btn-dark" disabled={busy || !mayModel || !view} onClick={act}>
+                                {busy && !keyOpen ? t.checkingModel : signed ? t.actDone : actions[path]}
+                            </button>
+                        )}
                     </div>
 
                     {signin && (
                         <div class="onb-cx-form">
                             <span class="small" style={{ flexBasis: '100%' }}>
                                 {signin.start.mode === 'code'
-                                    ? tr.ui.signInSayCode(t.optOpenRouter)
+                                    ? tr.ui.signInSayCode(signin.service)
                                     : signin.start.mode === 'address'
-                                      ? tr.ui.signInSayAddress(t.optOpenRouter)
-                                      : tr.ui.signInSayHere(t.optOpenRouter)}{' '}
+                                      ? tr.ui.signInSayAddress(signin.service)
+                                      : tr.ui.signInSayHere(signin.service)}{' '}
                                 <a href={signin.start.url} target="_blank" rel="noopener noreferrer">
-                                    {tr.ui.signInOpen(t.optOpenRouter)}
+                                    {tr.ui.signInOpen(signin.service)}
                                 </a>
                             </span>
                             <input
                                 class="input"
                                 autocomplete="off"
-                                aria-label={signin.start.mode === 'code' ? tr.ui.signInCodeFrom(t.optOpenRouter) : tr.ui.signInAddressAfter}
+                                aria-label={signin.start.mode === 'code' ? tr.ui.signInCodeFrom(signin.service) : tr.ui.signInAddressAfter}
                                 placeholder={
                                     signin.start.mode === 'code'
-                                        ? tr.ui.signInCodeFrom(t.optOpenRouter)
+                                        ? tr.ui.signInCodeFrom(signin.service)
                                         : signin.start.mode === 'address'
                                           ? tr.ui.signInAddressAfter
                                           : tr.ui.signInPlaceholderHere
@@ -495,6 +538,43 @@ export function AnswerStep() {
                                 {tr.ui.signInFinish}
                             </button>
                         </div>
+                    )}
+
+                    {/* DuoWave: сначала код приглашения — до входа, как на шаге «Кто думает»; кода нет — «Подключить без
+                        кода» сразу открывает сайт. Код вписан — кнопка в ряду: «Получить подарок». */}
+                    {path === 'duowave' && !signed && !signin && invited && <p class="small onb-cx-p">{t.duowaveGiftNote}</p>}
+                    {askCode && !signin && (
+                        <>
+                            <p class="small onb-cx-p">
+                                <b>{t.inviteAsk}</b> {t.inviteWhy}
+                            </p>
+                            <form
+                                class="onb-cx-form"
+                                onSubmit={(e) => {
+                                    e.preventDefault();
+                                    if (inviteDraft.trim() && !busy) saveInvite();
+                                }}
+                            >
+                                <input
+                                    class="input"
+                                    autocomplete="off"
+                                    spellcheck={false}
+                                    aria-label={t.inviteLabel}
+                                    placeholder={t.invitePlaceholder}
+                                    value={inviteDraft}
+                                    onInput={(e) => setInviteDraft((e.target as HTMLInputElement).value)}
+                                />
+                                <button type="submit" class="dw-btn dw-btn-dark" disabled={!inviteDraft.trim() || busy || !mayModel}>
+                                    {t.inviteSave}
+                                </button>
+                            </form>
+                            <div class="onb-cx-btns">
+                                <button type="button" class="dw-btn dw-btn-light" disabled={busy || !mayModel || !view} onClick={() => signIn('duowave')}>
+                                    {busy ? t.checkingModel : t.actDuowaveNoCode}
+                                </button>
+                                <span class="small">{t.duowaveNote}</span>
+                            </div>
+                        </>
                     )}
 
                     {path === 'key' && keyOpen && (

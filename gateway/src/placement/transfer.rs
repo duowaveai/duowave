@@ -153,6 +153,8 @@ pub const LOCAL_SETTINGS: &[&str] = &[
     "home_ear",
     // The model a Турбо's centre named for a character's voice (src/home_server/voice_plan.rs): the Турбо's own.
     "turbo_voice_engines",
+    // What a Турбо gives its home of its devices and folders (docs/plans/turbo-devices.md): the computer's own.
+    "turbo_shares",
 ];
 
 /// Of each side's own settings (`LOCAL_SETTINGS`), what a schema brought: an import of an earlier schema does not know

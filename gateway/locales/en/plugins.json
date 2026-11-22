@@ -929,5 +929,11 @@
  "budget.memoryMbFor: объект «что использует → МБ», например {{\"WireGuard\": 24}}": "budget.memoryMbFor: an object “what it uses → MB”, for example {{\"WireGuard\": 24}}",
  "колонке не хватает ОЗУ, чтобы загрузить приложение: нужно {need_mb} МБ, а приложениям всего {budget_mb} МБ — остальное занято системой и Алисой (запас {reserve_mb} МБ). Помогут меньше приложений на колонке или перезагрузка колонки.": "the speaker lacks the memory to load the app: {need_mb} MB needed, and the apps have only {budget_mb} MB in all — the rest is held by the system and Alice (reserve {reserve_mb} MB). Fewer apps on the speaker or a restart of the speaker will help.",
  " и ещё {more}": " and {more} more",
- "колонке не хватает ОЗУ, чтобы загрузить приложение: нужно {need_mb} МБ, свободно {free_mb} из {budget_mb} МБ для приложений; сейчас заняли (МБ): {list}.": "the speaker lacks the memory to load the app: {need_mb} MB needed, {free_mb} of {budget_mb} MB for apps free; taken now (MB): {list}."
+ "колонке не хватает ОЗУ, чтобы загрузить приложение: нужно {need_mb} МБ, свободно {free_mb} из {budget_mb} МБ для приложений; сейчас заняли (МБ): {list}.": "the speaker lacks the memory to load the app: {need_mb} MB needed, {free_mb} of {budget_mb} MB for apps free; taken now (MB): {list}.",
+ "нет ответа вовремя": "no answer in time",
+ "не удалось соединиться": "could not connect",
+ "связь оборвалась": "the connection broke off",
+ "{error}. Через компьютер тоже нет: {why}": "{error}. Not through the computer either: {why}",
+ "у компьютера её нет": "the computer does not have it",
+ "Этой ленты здесь нет.": "This feed is not here."
 }

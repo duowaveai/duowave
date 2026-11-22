@@ -55,12 +55,21 @@
 .onb .onb-cx-note { margin: 0; display: flex; gap: 8px; align-items: flex-start; }
 .onb .onb-cx-status { display: flex; align-items: center; gap: 10px; }
 
+/* Четыре пути (с DuoWave), подпись и кнопка в одну строку не входят уже у 1320: кнопка — своей строкой под путями,
+   иначе ряд растягивал весь шаг шире окна. */
+@media (max-width: 1320px) {
+    .onb .onb-cx-model-row { flex-wrap: wrap; }
+    .onb .onb-cx-model-opts { flex-basis: calc(100% - 164px); }
+}
+
 @media (max-width: 1100px) {
     .onb .onb-cx { padding: 24px 32px; }
     .onb .onb-cx-check, .onb .onb-cx-plan, .onb .onb-cx-conn { gap: 28px; }
     .onb .onb-cx-ans { padding: 24px 40px; }
     .onb .onb-cx-model-row { flex-wrap: wrap; }
     .onb .onb-cx-model-row > .h3 { width: 100%; }
+    /* Четыре пути (с DuoWave) во всю ширину, кнопка — своей строкой: иначе она ложилась на «Модель на компьютере». */
+    .onb .onb-cx-model-opts { flex-basis: 100%; }
 }
 
 /* Узко — одна колонка, как телефонные доски (PhoneAnswer). */

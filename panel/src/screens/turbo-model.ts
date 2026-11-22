@@ -20,7 +20,7 @@ export interface TurboView {
     abilities: AbilityView[];
 }
 
-const ORDER: Ability[] = ['model', 'hearing', 'voice', 'apps', 'messages', 'history', 'catalog'];
+const ORDER: Ability[] = ['model', 'hearing', 'voice', 'apps', 'messages', 'devices', 'files', 'history', 'catalog'];
 
 const givenBy = (now: WhereRow[], id: string): Ability[] => now.filter((row) => row.by === 'helper' && row.helper === id).map((row) => row.ability);
 

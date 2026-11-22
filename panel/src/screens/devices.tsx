@@ -2,16 +2,28 @@
 // устройства дома одним списком — центр, колонки, что слышат для него, и Турбо, — и страница каждого, только его вещи.
 // Колонка-центр: «Обзор · Комната · Устройство»; колонка, что только слышит: «Обзор · Комната»; компьютер:
 // «Обзор · Этот компьютер · Другие дома · Устройство». Домашние разделы (персонаж, «Мозг», люди, подключения)
-// показывают дом, здесь — только своё у устройства. Адрес страницы — `#/settings/devices/<id>?view=<вкладка>`.
+// показывают дом, здесь — только своё у устройства. Адрес страницы — `#/settings/devices/<id>?view=<вкладка>`. Под
+// списком — что подключено к компьютерам дома, по видам (docs/plans/turbo-devices.md, «Пульт»).
 
 import type { ComponentChildren, FunctionComponent } from 'preact';
 import { useState } from 'preact/hooks';
 
-import { api, can, ownCall, problemOf } from '../api';
+import { ApiError, api, can, ownCall, problemOf } from '../api';
 import { ask } from '../ui/confirm';
-import type { HomeDevice, HomeDevices } from '../api';
+import type { HomeDevice, HomeDevices, PluggedKind, PluggedPlace, PluggedView } from '../api';
 import { ABILITY_ICONS, abilityTitle, useHelpers } from '../helpers';
-import { centreOf, deviceDot, deviceStateWords, readHomeDevices, useHomeDevices, useOwnHealth, useThisDevice, useThisDeviceProbe } from '../home-devices';
+import {
+    centreOf,
+    deviceDot,
+    deviceStateWords,
+    readHomeDevices,
+    useHomeDevices,
+    useOwnHealth,
+    usePluggedTurn,
+    useThisDevice,
+    useThisDeviceProbe,
+} from '../home-devices';
+import { usePoll } from '../poll';
 import { useDevMode } from '../shell/dev';
 import { viewsOf, type DeviceView } from '../home-model';
 import { tr } from '../i18n';
@@ -149,6 +161,7 @@ function DeviceList({ view, onOpen }: { view: HomeDevices; onOpen: (device: Home
                     )}
                 </div>
             </Card>
+            <Plugged />
             <OtherStations view={view} onJoined={(device) => onOpen(device)} />
             {/* Колонки в сети не в доме — уши одной кнопкой (этап 5 плана home-setup-flow): ищет компьютер-Турбо. */}
             <FoundStationsHere />
@@ -224,6 +237,212 @@ function OtherStations({ view, onJoined }: { view: HomeDevices; onJoined: (devic
                 </p>
             )}
         </Card>
+    );
+}
+
+/** Разбудить компьютер: бужу, проснулся, не проснулся или отказ словами центра. */
+type Waking = { state: 'waking' } | { state: 'woke' } | { state: 'slept' } | { state: 'failed'; why: string };
+
+/**
+ * «Подключено к компьютерам» (docs/plans/turbo-devices.md, «Пульт»; решение владельца 8): что подключено к компьютерам
+ * дома — по видам, у каждой вещи её компьютер: «Keystation 49 · Mac». Спящий компьютер — серым, с «Разбудить», когда
+ * центр умеет его будить. Читается с экраном, по новостям о подключённом и раз в минуту: что воткнули в Турбо, центр
+ * узнаёт при опросе, без новости. Центр постарше или вход без права пользоваться приложениями — раздела нет.
+ */
+function Plugged() {
+    const turn = usePluggedTurn();
+    /** undefined — ещё читаю, null — раздела нет. */
+    const [view, setView] = useState<PluggedView | null>();
+    const [error, setError] = useState<string | null>(null);
+    const [waking, setWaking] = useState<Record<string, Waking>>({});
+    const reread = usePoll({
+        every: 60_000,
+        version: turn,
+        read: (signal) =>
+            api.homePlugged(signal).then(
+                (fresh) => {
+                    if (signal.aborted) return;
+                    setView(fresh);
+                    setError(null);
+                },
+                (e) => {
+                    if (signal.aborted) return;
+                    if (e instanceof ApiError && (e.status === 403 || e.status === 404)) setView(null);
+                    else setError(problemOf(e));
+                },
+            ),
+    });
+    if (view === null) return null;
+    const wake = async (place: PluggedPlace): Promise<void> => {
+        const set = (next: Waking): void => setWaking((now) => ({ ...now, [place.place]: next }));
+        set({ state: 'waking' });
+        try {
+            set({ state: (await api.wakePlace(place.place)).awake ? 'woke' : 'slept' });
+        } catch (e) {
+            set({ state: 'failed', why: problemOf(e) });
+        }
+        reread();
+    };
+    return (
+        <Card id="plugged" title={tr.devices.pluggedTitle} sub={tr.devices.pluggedSub}>
+            {!view ? (
+                <p class="w-cap m-0 wrap-anywhere" role={error ? 'alert' : undefined}>
+                    {error ?? tr.devices.pluggedReading}
+                </p>
+            ) : view.kinds.length === 0 ? (
+                <p class="w-cap m-0">{tr.devices.pluggedNone}</p>
+            ) : (
+                view.kinds.map((kind) => (
+                    <PluggedKindRows
+                        key={kind.kind}
+                        kind={kind}
+                        wakeable={view.wakeable}
+                        waking={waking}
+                        onWake={(place) => void wake(place)}
+                    />
+                ))
+            )}
+            {view && error && (
+                <p class="w-cap m-0 c-dot-offline wrap-anywhere" role="alert">
+                    {error}
+                </p>
+            )}
+        </Card>
+    );
+}
+
+/**
+ * Один вид: строка на место — что подключено там и чей это компьютер. Готов у двух мест и больше — «Делать на: Mac ·
+ * ПК»: где дом делает дела вида отныне (решение 1). Какое место делает сейчас, центр не говорит: ничего не отмечено,
+ * пока не выбрали здесь, а выбранное подтверждено его именем из ответа центра.
+ */
+function PluggedKindRows({
+    kind,
+    wakeable,
+    waking,
+    onWake,
+}: {
+    kind: PluggedKind;
+    wakeable: string[];
+    waking: Record<string, Waking>;
+    onWake: (place: PluggedPlace) => void;
+}) {
+    const t = tr.devices;
+    const ready = kind.places.filter((place) => place.state === 'ready');
+    const [chosen, setChosen] = useState<{ place: string; name: string } | null>(null);
+    const [busy, setBusy] = useState(false);
+    const [error, setError] = useState<string | null>(null);
+    // Выбранное здесь — пока оно среди готовых мест; ушло — снова ничего не отмечено.
+    const picked = ready.length >= 2 && chosen && ready.some((place) => place.place === chosen.place) ? chosen : null;
+    const choose = async (place: PluggedPlace): Promise<void> => {
+        setBusy(true);
+        setError(null);
+        try {
+            const answer = await api.choosePlugged(kind.kind, place.place);
+            setChosen({ place: answer.place, name: answer.name });
+        } catch (e) {
+            setError(problemOf(e));
+        } finally {
+            setBusy(false);
+        }
+    };
+    return (
+        <div class="flex flex-col gap-4">
+            <span class="w-strong">{kind.title}</span>
+            <div class="w-rows">
+                {kind.places.map((place) => (
+                    <PluggedRow
+                        key={place.place}
+                        kind={kind}
+                        place={place}
+                        waking={waking[place.place]}
+                        onWake={place.state === 'asleep' && wakeable.includes(place.place) ? () => onWake(place) : undefined}
+                    />
+                ))}
+            </div>
+            {ready.length >= 2 && (
+                <div class="flex items-center gap-8 flex-wrap">
+                    <span class="w-cap">{t.actOn}</span>
+                    <div class="seg" role="group" aria-label={t.actOnLabel(kind.title)}>
+                        {ready.map((place) => (
+                            <button
+                                key={place.place}
+                                type="button"
+                                aria-pressed={picked?.place === place.place}
+                                disabled={busy}
+                                onClick={() => void choose(place)}
+                            >
+                                {place.name}
+                            </button>
+                        ))}
+                    </div>
+                </div>
+            )}
+            {picked && (
+                <p class="w-cap m-0" role="status">
+                    {t.actingOn(picked.name)}
+                </p>
+            )}
+            {error && (
+                <p class="w-cap m-0 c-dot-offline wrap-anywhere" role="alert">
+                    {error}
+                </p>
+            )}
+        </div>
+    );
+}
+
+/** «Keystation 49 · Mac»; не готово — серым, со словами почему; спит — «Разбудить», если центр умеет. */
+function PluggedRow({ kind, place, waking, onWake }: { kind: PluggedKind; place: PluggedPlace; waking?: Waking; onWake?: () => void }) {
+    const t = tr.devices;
+    const ready = place.state === 'ready';
+    // Экран компьютера называет себя так же, как его вид: тогда строка — просто компьютер.
+    const things = place.instances.map((thing) => thing.title).filter((title) => title && title !== kind.title);
+    const why =
+        place.state === 'unplugged'
+            ? t.pluggedUnplugged(place.name)
+            : place.state === 'away'
+              ? t.pluggedAway(place.name)
+              : place.state === 'asleep'
+                ? t.pluggedAsleep(place.name)
+                : null;
+    const caption = [why, place.cloud ? t.pluggedCloud : null].filter(Boolean).join(' · ');
+    // Чем кончилось «Разбудить» — пока это правда: проснулся — пока не спит; не проснулся и отказ — пока спит.
+    const asleep = place.state === 'asleep';
+    const result =
+        waking?.state === 'woke' && !asleep
+            ? { ok: true, text: t.woke }
+            : waking?.state === 'slept' && asleep
+              ? { ok: true, text: t.notWoke }
+              : waking?.state === 'failed' && asleep
+                ? { ok: false, text: waking.why }
+                : null;
+    return (
+        <div class="w-row">
+            <span aria-hidden="true" class={`w-dot ${ready ? 'w-dot-own' : 'w-dot-off'}`} />
+            <span class="flex-1 min-w-0 flex flex-col">
+                <span class="wrap-anywhere">
+                    <span class={`w-strong${ready ? '' : ' c-sub'}`}>{things.length > 0 ? things.join(', ') : place.name}</span>
+                    {things.length > 0 && <span class="w-cap"> · {place.name}</span>}
+                </span>
+                {caption && <span class="w-cap">{caption}</span>}
+                {result && (
+                    <span class={`w-cap wrap-anywhere${result.ok ? '' : ' c-dot-offline'}`} role={result.ok ? 'status' : 'alert'}>
+                        {result.text}
+                    </span>
+                )}
+            </span>
+            {onWake && (
+                <button
+                    class="w-btn flex-none"
+                    disabled={waking?.state === 'waking'}
+                    aria-busy={waking?.state === 'waking' || undefined}
+                    onClick={onWake}
+                >
+                    {waking?.state === 'waking' ? t.waking : t.wake}
+                </button>
+            )}
+        </div>
     );
 }
 

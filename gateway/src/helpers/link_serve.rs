@@ -55,8 +55,8 @@ use tokio::time::{Instant, Sleep};
 use tokio_rustls::server::TlsStream;
 use tokio_util::sync::CancellationToken;
 
-use super::clients::{kept_name, Clients, LinkClient, Names, MUSCLES};
-use super::contract::{Abilities, HelperIdentity};
+use super::clients::{kept_name, Clients, LinkClient, Names};
+use super::contract::HelperIdentity;
 use super::link::{
     answer, bound_host, decode_chunk, headers_from, link_proof, read_text, same, sha256, up_piece, wrapped_link_key,
     Binding, ConnectionKey, Out, Session, Transcript, Way, Wire, WireSink, WireStream, BODY_MAX, BUSY, CARRIED, DONE,
@@ -1487,7 +1487,7 @@ async fn exchange(
     }
     let own_home =
         app.secrets.get(HOME_KEY).is_some_and(|home_key| same(&field("homeMac"), &transcript.home_proof(&home_key)));
-    let given = Given { abilities: if own_home { Abilities::V1 } else { MUSCLES }, own_home };
+    let given = Given { abilities: super::clients::given_at_pairing(own_home), own_home };
     let mut paired = json!({
         "t": "paired",
         "mac": b64(&transcript.proof(key.bytes(), "helper")),
