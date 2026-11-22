@@ -261,7 +261,7 @@ mod connect {
     fn gateway_host(body: &Value, key: &str, port: u16) -> Result<GatewayHost, ApiError> {
         body.get(key).and_then(Value::as_str).and_then(|text| parse_gateway_host_or(text, port)).ok_or_else(|| {
             ApiError::bad_request(crate::tr!(
-                "Адрес центра — IP или имя в домашней сети, можно с портом: 192.168.1.50 или duowave.local:8080."
+                "Адрес хаба — IP или имя в домашней сети, можно с портом: 192.168.1.50 или duowave.local:8080."
             ))
         })
     }

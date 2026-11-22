@@ -47,6 +47,11 @@ pub struct BundledPackage {
 
 /// The packages built into this gateway, as `packages/bundled.json` names them; one that does not read is left out
 /// with a warning (the build's tests keep that from happening).
+/// A built-in package's text file as it is embedded (`weather/backend.js`): the workshop shows it as an example.
+pub fn embedded_text(path: &str) -> Option<String> {
+    Embedded::get(path).and_then(|file| String::from_utf8(file.data.into_owned()).ok())
+}
+
 pub fn packages() -> Vec<BundledPackage> {
     let Some(index) = Embedded::get("bundled.json") else { return Vec::new() };
     let index: Value = match serde_json::from_slice(&index.data) {

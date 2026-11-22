@@ -233,6 +233,23 @@ pub fn routes() -> Router<Arc<App>> {
     Router::new()
         .route("/api/v1/system/windows-network", get(read))
         .route("/api/v1/system/windows-network/allow", post(allow))
+        .route("/api/v1/system/windows-security/open", post(open_app_control))
+}
+
+/// «Открыть настройки Windows» (owner 22.11): Windows Security on «App & browser control», where Smart App Control
+/// is — the person decides there; nothing is changed from here.
+async fn open_app_control(State(_app): State<Arc<App>>, caller: Caller) -> ApiResult<serde_json::Value> {
+    caller.permitted(SETTINGS_EDIT)?;
+    if !cfg!(windows) {
+        return Err(crate::platform::http::ApiError::conflict(crate::tr!("Это нужно только на Windows.")));
+    }
+    std::process::Command::new("explorer.exe").arg("windowsdefender://appbrowser").spawn().map_err(|error| {
+        crate::platform::http::ApiError::conflict(crate::tr!(
+            "Не открылись настройки Windows: {error}",
+            error = error.to_string()
+        ))
+    })?;
+    Ok(ok(serde_json::json!({ "opened": true })))
 }
 
 async fn read(State(_app): State<Arc<App>>, caller: Caller) -> ApiResult<NetworkView> {

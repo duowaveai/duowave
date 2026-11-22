@@ -15,7 +15,7 @@ const en: Translation<typeof ru> = {
     more: 'more',
     adminSwitches: ' An administrator switches this.',
     yandexEar: 'Yandex hearing',
-    yandexEarNote: 'With no hearing of your own, Yandex recognizes the question and your brain answers. The voice goes to Yandex’s cloud for that.',
+    yandexEarNote: 'With no hearing of your own, Yandex recognizes the question and your AI answers. The voice goes to Yandex’s cloud for that.',
     autoNow: (mode, reason, since, from) => `Now “${mode}”: ${reason} since ${since}. I’ll go back to “${from}” when it’s available again.`,
     stayIn: (mode) => `Stay in “${mode}”`,
     warnTitle: 'Alice’s voice is chosen — it won’t sound without Yandex',

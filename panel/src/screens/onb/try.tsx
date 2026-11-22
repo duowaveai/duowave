@@ -12,7 +12,8 @@ import type { ComponentChildren } from 'preact';
 import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
 
 import { tr } from '../../i18n';
-import { useCallWord } from '../call-word';
+import { setupLines, wakeNow } from '../setup-notes';
+import { useSetupTruth } from '../setup-truth';
 import { useOnboarding, useStepNav } from './nav';
 
 import '../../ui/onb-try.css';
@@ -82,9 +83,11 @@ export function TryStep() {
     const { wake } = useOnboarding();
     const station = wake === 'station';
     const t = tr.onbTry;
-    // Слово, которое на деле зовёт (п. 54): стоит приложение-слово — его, иначе прежнее «Алиса» / «ДиВи».
-    const word = useCallWord();
-    const name = (station && word) || t.wake[wake];
+    // Слово, которое на деле зовёт (п. 54): стоит приложение-слово — его, иначе прежнее «Алиса» / «ДиВи». Пока слово
+    // ставится или его не слышно (режим «Алиса», мышления нет) — прежнее, и над примерами сказано почему (п. 17).
+    const truth = useSetupTruth();
+    const name = station ? wakeNow(truth, t.wake[wake]) : t.wake[wake];
+    const notReady = station ? setupLines(truth, t.wake[wake], undefined) : [];
     const ask = (text: string) => t.ask(name, text);
 
     // Показ: какая фраза и какой ход
@@ -225,6 +228,16 @@ export function TryStep() {
             <section class="ot-side">
                 <h1 class="h2">{t.title}</h1>
                 <p class="small ot-how">{station ? t.howStation : t.howComputer}</p>
+                {notReady.length > 0 && (
+                    <div class="card card-tight ot-not-ready" role="status">
+                        <span class="h3">{t.readyTitle}</span>
+                        {notReady.map((line) => (
+                            <span key={line} class="small">
+                                {line}
+                            </span>
+                        ))}
+                    </div>
+                )}
                 <div class="ot-rows">
                     {DEMOS.map((id, i) => (
                         <button

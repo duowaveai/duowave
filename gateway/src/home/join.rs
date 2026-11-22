@@ -326,9 +326,10 @@ impl Joins {
     }
 
     fn find<'a>(requests: &'a mut [JoinRequest], id: &str) -> Result<&'a mut JoinRequest, ApiError> {
-        requests.iter_mut().find(|request| request.id == id).ok_or_else(|| {
-            ApiError::not_found(crate::tr!("Такого запроса нет: он закончился или центр перезапустился."))
-        })
+        requests
+            .iter_mut()
+            .find(|request| request.id == id)
+            .ok_or_else(|| ApiError::not_found(crate::tr!("Такого запроса нет: он закончился или хаб перезапустился.")))
     }
 
     /// The asker's own request: its token proves it.
@@ -509,7 +510,7 @@ fn changed(app: &App, id: &str, change: &str, actor: Option<Actor>) {
 fn centre_here(app: &App) -> Result<(), ApiError> {
     if let Some((ear, _)) = super::ear::centre(app) {
         return Err(ApiError::conflict(crate::tr!(
-            "Это не центр дома: подключайтесь к центру, {address}.",
+            "Это не хаб дома: подключайтесь к хабу, {address}.",
             address = ear.address
         )));
     }
@@ -517,7 +518,7 @@ fn centre_here(app: &App) -> Result<(), ApiError> {
     if let Some(centre) = super::devices::centre_elsewhere(app) {
         let address = centre.record().map(|record| record.address).unwrap_or_default();
         return Err(ApiError::conflict(crate::tr!(
-            "Это не центр дома: подключайтесь к центру, {address}.",
+            "Это не хаб дома: подключайтесь к хабу, {address}.",
             address = address
         )));
     }
@@ -663,7 +664,7 @@ async fn deny(State(app): State<Arc<App>>, caller: Caller, Path(id): Path<String
 /// centre opens to the asker's own connection key. A failure closes the request and says why.
 async fn join(app: &Arc<App>, id: &str, actor: Option<Actor>) -> Result<Value, ApiError> {
     let Some((kind, link, name)) = app.joins.kind_and_link(id) else {
-        return Err(ApiError::not_found(crate::tr!("Такого запроса нет: он закончился или центр перезапустился.")));
+        return Err(ApiError::not_found(crate::tr!("Такого запроса нет: он закончился или хаб перезапустился.")));
     };
     let made = grant(app, kind, link, &name, actor).await;
     match made {
@@ -699,10 +700,10 @@ async fn grant(
             Ok(json!({ "helper": id }))
         }
         (JoinKind::Turbo, None) => Err(ApiError::bad_request(crate::tr!(
-            "Центр дома — компьютер: Турбо подключается к нему своим ключом подключения. Обновите DuoWave на этом компьютере."
+            "Хаб дома — компьютер: Турбо подключается к нему своим ключом подключения. Обновите DuoWave на этом компьютере."
         ))),
         (JoinKind::Ear, _) => Err(ApiError::conflict(crate::tr!(
-            "Ухом колонка подключается к центру на колонке, а центр этого дома — компьютер."
+            "Ухом колонка подключается к хабу на колонке, а хаб этого дома — компьютер."
         ))),
     }
 }

@@ -38,7 +38,7 @@ export default {
     faceSchedule: 'Расписание',
     placeLabel: 'Где работает',
     placeAny: 'Где угодно',
-    placeGateway: 'В центре',
+    placeGateway: 'В хабе',
     placeComputer: 'На компьютере',
     placeStation: 'На колонке',
     placeNetwork: 'В сети',

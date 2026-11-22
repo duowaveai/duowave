@@ -128,6 +128,9 @@ html[data-theme='light'] .onb {
 .onb .input { height: 46px; width: 100%; padding: 0 14px; border-radius: var(--radius-inner); border: 1px solid var(--line); background: var(--paper); color: var(--text); font: 400 15px/1 var(--font-ui); }
 .onb .input::placeholder { color: var(--mute); }
 .onb .input:focus { outline: none; border-color: var(--ink); }
+/* Поле, которое просят заполнить (код подключения пуст или неполон), и строка под ним — что ввести и где взять. */
+.onb .input[aria-invalid='true'] { border-color: var(--bad); box-shadow: 0 0 0 3px color-mix(in srgb, var(--bad) 18%, transparent); }
+.onb .onb-code-shy { color: var(--bad); }
 .onb .input-done { display: flex; align-items: center; gap: 10px; height: 46px; padding: 0 14px; border-radius: var(--radius-inner); background: var(--own-bg); border: 1px solid #d6ecb4; font: 500 15px/1 var(--font-mono); }
 .onb .checks { display: flex; flex-direction: column; gap: 2px; margin: 0; padding: 0; list-style: none; }
 .onb .checks li { display: flex; gap: 12px; align-items: flex-start; padding: 10px 0; border-bottom: 1px solid var(--line-soft); }

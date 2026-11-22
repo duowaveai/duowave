@@ -4,22 +4,26 @@
 
 import { useEffect, useRef, useState } from 'preact/hooks';
 
-import { BrainPick, BrainView, ProviderAccess, ProviderCheck, ProviderPreset, ProviderView, api, problemOf } from '../api';
+import { BrainPick, BrainView, ProviderAccess, ProviderCheck, ProviderPreset, ProviderView, api, can, problemOf } from '../api';
 import { formatDate, tr } from '../i18n';
-import { duowaveShown, useDuowaveShown } from '../shell/dev';
+import { usePoll } from '../poll';
+import { usePanel } from '../shell/context';
 import { useSignIn } from '../ui/sign-in';
 
-/** Пути доски по порядку карточек. */
+/** Пути доски по порядку карточек: DuoWave первым, виден всем (владелец 22.11 — без скрытой отметки). */
 export type Path = 'duowave' | 'openrouter' | 'chatgpt' | 'key' | 'local';
 export const PATHS: Path[] = ['duowave', 'openrouter', 'chatgpt', 'key', 'local'];
-/** Пути без DuoWave: пока он спрятан (shell/dev.ts `duowaveShown`), доска — прежние четыре. */
-export const PATHS_PLAIN: Path[] = PATHS.filter((path) => path !== 'duowave');
 /** Пути со входом через сервис. */
 export type SignInPath = 'duowave' | 'openrouter' | 'chatgpt';
 
 /** Сервисы «Своего ключа» (пресеты шлюза) и модели на компьютере. */
 export const KEY_PRESETS = ['claude', 'openai', 'deepseek', 'gemini', 'groq', 'mistral', 'yandexgpt'];
 export const LOCAL_PRESETS = ['ollama', 'lmstudio'];
+/** Сервис, которого нет среди пресетов: свой адрес, OpenAI-совместимый. Его и Anthropic-совместимый путь «Свой ключ» тоже считает своими. */
+const CUSTOM_PRESET = 'custom-openai';
+const CUSTOM_PRESETS = [CUSTOM_PRESET, 'custom-anthropic'];
+/** Короче — ключ ещё вписывают: поле адреса не мигает на первых знаках. */
+const KEY_MIN = 8;
 
 
 /**
@@ -110,8 +114,7 @@ function picksFor(provider: ProviderView, preset: ProviderPreset | undefined, ch
 /** Выбор ИИ: что подключено, какой путь отмечен, вход, ключ, поиск модели на компьютере. */
 export function useBrainConnect() {
     const [view, setView] = useState<BrainView | null>(null);
-    const shown = useDuowaveShown();
-    const [path, setPath] = useState<Path>(() => (duowaveShown() ? 'duowave' : 'openrouter'));
+    const [path, setPath] = useState<Path>('duowave');
     /** Какой путь сейчас проверяет провайдера (после входа или ключа). */
     const [checking, setChecking] = useState<{ path: Path; title: string } | null>(null);
     const [problem, setProblem] = useState<{ path: Path; text: string } | null>(null);
@@ -134,10 +137,24 @@ export function useBrainConnect() {
         };
     }, []);
 
+    /** Идёт своё дело хука (проверка ключа, вход): тогда «выбрать за человека» не вмешивается. */
+    const acting = useRef(false);
+    /** Первый взгляд прочитан: какой путь уже отвечает — тот и отмечен (вернулись на шаг), иначе DuoWave — первый. */
+    const looked = useRef(false);
+    /** «Выбрать за человека» уже было: один раз на открытие. */
+    const adopted = useRef(false);
+
     const load = async (): Promise<BrainView | null> => {
         try {
             const fresh = await api.brain();
-            if (alive.current) setView(fresh);
+            if (!alive.current) return fresh;
+            setView(fresh);
+            if (!looked.current) {
+                looked.current = true;
+                const answering = fresh.providers.find((provider) => provider.id === fresh.choice.fast?.provider);
+                if (answering) setPath(pathOf(answering));
+            }
+            void adopt(fresh);
             return fresh;
         } catch (e) {
             if (alive.current) setProblem({ path, text: problemOf(e) });
@@ -145,14 +162,30 @@ export function useBrainConnect() {
         }
     };
 
-    // Первый взгляд: какой путь уже отвечает — тот и отмечен (вернулись на шаг), иначе DuoWave — первый на доске.
-    useEffect(() => {
-        void load().then((fresh) => {
-            if (!fresh) return;
-            const answering = fresh.providers.find((provider) => provider.id === fresh.choice.fast?.provider);
-            if (answering) setPath(pathOf(answering));
-        });
-    }, []);
+    // Сразу и по новостям шлюза (`brain.changed` растит panel.version): провайдера добавили в «Мозге», пока стол открыт, —
+    // витрина и первые шаги видят это, а не снимок с открытия.
+    const panel = usePanel();
+    usePoll({ version: panel.version, read: () => load() });
+
+    /**
+     * Провайдер работает, а модель не выбрана: добавили его в «Персонаж» → «Мозг» и закрыли лист, не нажав «Отвечать
+     * им». Шлюз без выбора отвечает только моделью из .env — для человека ИИ нет, хотя он его подключил, и шаг 1 не
+     * засчитан. Выбираем за него, как после входа здесь («Выбрали за вас»): один раз и только тому, кто выбирает модели.
+     */
+    const adopt = async (fresh: BrainView) => {
+        if (adopted.current || acting.current || signing.current || searching.current) return;
+        if (fresh.choice.fast || fresh.env.usable || !can('models.manage')) return;
+        const provider = fresh.providers.find((entry) => ready(entry) && !!(entry.check?.model ?? entry.models[0]));
+        if (!provider) return;
+        adopted.current = true;
+        const which = pathOf(provider);
+        setPath(which);
+        try {
+            await answerWith(provider, fresh);
+        } catch (e) {
+            if (alive.current) setProblem({ path: which, text: problemOf(e) });
+        }
+    };
 
     const presetOf = (id: string, from: BrainView | null = viewRef.current) => from?.presets.find((preset) => preset.id === id);
 
@@ -162,7 +195,7 @@ export function useBrainConnect() {
         const answering = from.choice.fast?.provider;
         const fits = (provider: ProviderView) =>
             which === 'key'
-                ? provider.id === keyAdded || KEY_PRESETS.includes(provider.preset)
+                ? provider.id === keyAdded || KEY_PRESETS.includes(provider.preset) || CUSTOM_PRESETS.includes(provider.preset)
                 : which === 'local'
                   ? LOCAL_PRESETS.includes(provider.preset)
                   : provider.preset === which;
@@ -180,15 +213,19 @@ export function useBrainConnect() {
         if (alive.current) setView(fresh);
     };
 
-    /** После входа или ключа: проверить провайдера, затем отвечать им. true — работает и отвечает. */
-    const settle = async (target: Pick<ProviderView, 'id' | 'preset' | 'title'>, which: Path): Promise<boolean> => {
+    /**
+     * После входа или ключа: проверить провайдера, затем отвечать им. true — работает и отвечает. `given` — модель,
+     * которую назвал человек (свой адрес): проверяется она.
+     */
+    const settle = async (target: Pick<ProviderView, 'id' | 'preset' | 'title'>, which: Path, given?: string): Promise<boolean> => {
         const { id } = target;
         setChecking({ path: which, title: target.title });
         setProblem(null);
+        acting.current = true;
         try {
-            let model: string | undefined;
+            let model: string | undefined = given;
             // OpenRouter моделей не советует: сначала его список, проверяем ту, что выберем быстрой.
-            if (target.preset === 'openrouter') {
+            if (!model && target.preset === 'openrouter') {
                 const listed = await api.providerModels(id).catch(() => ({ models: [] as string[] }));
                 model = newest(listed.models, OPENROUTER_FAST) ?? undefined;
             }
@@ -208,6 +245,7 @@ export function useBrainConnect() {
             if (alive.current) setProblem({ path: which, text: problemOf(e) });
             return false;
         } finally {
+            acting.current = false;
             if (alive.current) setChecking(null);
         }
     };
@@ -257,31 +295,55 @@ export function useBrainConnect() {
         }
     };
 
-    /** «Проверить» у своего ключа: сервис по ключу, провайдер (или новый ключ прежнему), проверка, выбор. */
+    /**
+     * «Проверить» у своего ключа: сервис по ключу, провайдер (или новый ключ прежнему), проверка, выбор. Не узнали
+     * сервис по ключу — человек вписывает его адрес (OpenAI-совместимый) и, если сервис сам моделей не называет, модель:
+     * провайдер «Свой, OpenAI-совместимый» добавляется прямо здесь, без похода в «Мозг».
+     */
+    const [keyUrl, setKeyUrl] = useState('');
+    const [keyModel, setKeyModel] = useState('');
     const service = keyService(key);
     const keyPreset = service ? presetOf(service) : undefined;
     const keyFields = keyPreset?.fields ?? [];
-    const keyReady = !!key.trim() && keyFields.every((field) => (fields[field.id] ?? '').trim());
+    /** Ключ вписан, а сервис по нему не узнан: нужен адрес. */
+    const keyUnknown = !keyPreset && key.trim().length >= KEY_MIN && !!presetOf(CUSTOM_PRESET, view);
+    const urlOk = /^https?:\/\/[^\s/]+/i.test(keyUrl.trim());
+    const keyReady = !!key.trim() && (keyPreset ? keyFields.every((field) => (fields[field.id] ?? '').trim()) : keyUnknown && urlOk);
     const saveKey = async () => {
         if (!key.trim()) return;
-        if (!keyPreset) {
-            setProblem({ path: 'key', text: tr.onbBrain.keyUnknown });
+        if (!keyPreset && !(keyUnknown && urlOk)) {
+            setProblem({ path: 'key', text: keyUnknown ? tr.onbBrain.keyNeedsUrl : tr.onbBrain.keyUnknown });
             return;
         }
+        const baseUrl = keyUrl.trim().replace(/\/+$/, '');
+        const title = keyPreset ? keyPreset.title : hostOf(baseUrl);
         setProblem(null);
-        setChecking({ path: 'key', title: keyPreset.title });
+        setChecking({ path: 'key', title });
+        acting.current = true;
         try {
-            const given = { key: key.trim(), ...(keyFields.length ? { options: fields } : {}) };
-            const existing = viewRef.current?.providers.find((provider) => provider.preset === keyPreset.id);
-            const provider = existing ? await api.updateProvider(existing.id, given) : await api.addProvider({ preset: keyPreset.id, ...given });
+            const given = keyPreset ? { key: key.trim(), ...(keyFields.length ? { options: fields } : {}) } : { key: key.trim(), baseUrl, title };
+            // Свой адрес: прежняя строка — добавленная здесь же (поправили адрес или ключ) или с тем же адресом.
+            const existing = viewRef.current?.providers.find((provider) =>
+                keyPreset
+                    ? provider.preset === keyPreset.id
+                    : provider.preset === CUSTOM_PRESET && (provider.id === keyAdded || provider.baseUrl?.replace(/\/+$/, '') === baseUrl),
+            );
+            const preset = keyPreset ? keyPreset.id : CUSTOM_PRESET;
+            const provider = existing ? await api.updateProvider(existing.id, given) : await api.addProvider({ preset, ...given });
             if (!alive.current) return;
             setKeyAdded(provider.id);
-            if (await settle(provider, 'key')) setKey('');
+            if (await settle(provider, 'key', keyPreset ? undefined : keyModel.trim() || undefined)) {
+                setKey('');
+                setKeyUrl('');
+                setKeyModel('');
+            }
         } catch (e) {
             if (alive.current) {
                 setProblem({ path: 'key', text: problemOf(e) });
                 setChecking(null);
             }
+        } finally {
+            acting.current = false;
         }
     };
 
@@ -375,20 +437,6 @@ export function useBrainConnect() {
         }
     };
 
-    /** DuoWave на доске: показан или уже отвечает (тогда его путь — правда о том, кто думает). */
-    const duowave = shown || (!!view && view.providers.some((provider) => provider.preset === 'duowave' && provider.id === view.choice.fast?.provider));
-    const paths = duowave ? PATHS : PATHS_PLAIN;
-
-    // Показали DuoWave — он и отмечен, если ничего ещё не отвечает; спрятали — назад к OpenRouter.
-    const wasShown = useRef(shown);
-    useEffect(() => {
-        if (wasShown.current === shown) return;
-        wasShown.current = shown;
-        setProblem(null);
-        if (shown && !(view && (view.choice.fast || view.env.usable))) setPath('duowave');
-        if (!duowave && path === 'duowave') setPath('openrouter');
-    }, [shown, duowave]);
-
     /** Отметить путь. Его провайдер уже работает — отвечать им (радио доски = кто думает). */
     const choosePath = (which: Path) => {
         setPath(which);
@@ -414,14 +462,18 @@ export function useBrainConnect() {
         setFields,
         keyPreset,
         keyFields,
+        keyUnknown,
+        keyUrl,
+        setKeyUrl,
+        keyModel,
+        setKeyModel,
         keyReady,
         saveKey,
         local,
         findLocal,
         signIn,
         beginSignIn,
-        paths,
-        duowave,
+        paths: PATHS,
         invite: !!view?.invite,
         inviteBusy,
         saveInvite,
@@ -432,6 +484,15 @@ export function useBrainConnect() {
 }
 
 export type BrainConnect = ReturnType<typeof useBrainConnect>;
+
+/** Имя своего сервиса по адресу: «api.together.xyz»; не разобрали — адрес как есть. */
+function hostOf(url: string): string {
+    try {
+        return new URL(url).host || url;
+    } catch {
+        return url;
+    }
+}
 
 export /** Путь карточки, которому принадлежит провайдер. */
 function pathOf(provider: ProviderView): Path {

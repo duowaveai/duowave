@@ -250,7 +250,7 @@ export function personaNode(data: DashData, brain: NodeView): NodeView {
 const cloudOf = (data: DashData, id: string): boolean =>
     data.connectors?.find((entry) => entry.manifest.id === id)?.manifest.cloud ?? false;
 
-/** Короткое имя карточки для узла: «GigaAM v3 — конец-в-конец» → «GigaAM v3». */
+/** Короткое имя карточки для узла: «Parakeet TDT v3 — 25 языков» → «Parakeet TDT v3». */
 export const shortTitle = (title: string): string => title.split(' — ')[0];
 
 /** Слух — что распознаёт речь сейчас: модель, которую загрузил сервер, а не только выбранная. */

@@ -1733,7 +1733,7 @@ fn contributes(value: Option<&Value>, permissions: &[Permission], problems: &mut
             .take(1024)
             .collect();
         if description.is_empty() {
-            problems.push(crate::tr!("{at}: нужно description — по нему мозг выбирает инструмент", at = at));
+            problems.push(crate::tr!("{at}: нужно description — по нему модель выбирает инструмент", at = at));
         }
         let input = match item.get("input").or_else(|| item.get("inputSchema")) {
             None => json!({ "type": "object", "properties": {} }),

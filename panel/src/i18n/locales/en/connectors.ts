@@ -14,7 +14,7 @@ const en: Translation<typeof ru> = {
     tapToSetUp: 'tap to set up',
     mcpBelow: 'MCP servers are below',
     askingGateway: 'Asking the hub…',
-    inBrain: ' · in “Brain”',
+    inBrain: ' · in “Thinking”',
     inVoice: ' · in “Voice”',
     viaInternet: 'over the internet',
     sheetTitle: 'Connection',

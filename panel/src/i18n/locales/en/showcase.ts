@@ -20,7 +20,6 @@ const en: Translation<typeof ru> = {
     pathDw: 'DuoWave',
     pathDwNote: 'easiest',
     pathOr: 'OpenRouter',
-    pathOrNote: 'easiest',
     pathOrNoteMany: 'many models',
     pathGpt: 'ChatGPT plan',
     pathGptNote: 'Plus or Pro',

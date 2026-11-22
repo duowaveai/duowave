@@ -71,7 +71,7 @@ const en: Translation<typeof ru> = {
     knownContentNote: 'find and play',
     knownHome: 'Weather city and news feeds',
     knownHomeNote: 'what is chosen in the panel',
-    knownBrain: 'Answer with the “Brain” model',
+    knownBrain: 'Answer with the “Thinking” model',
     knownBrainNote: 'using the words of its request',
     knownVoiceCloud: 'Cloud voices',
     knownVoiceCloudNote: 'the lines’ text goes to the provider and spends your plan',

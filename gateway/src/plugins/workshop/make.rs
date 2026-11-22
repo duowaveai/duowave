@@ -234,7 +234,7 @@ impl Workshop {
     ) -> Result<Made, ApiError> {
         let mut words: String = words.trim().chars().take(4000).collect();
         let dialog = self.dialog.get().cloned().filter(|dialog| dialog.enabled()).ok_or_else(|| {
-            ApiError::conflict(crate::tr!("Модель не выбрана: добавьте провайдера в «Персонаж» → «Мозг»."))
+            ApiError::conflict(crate::tr!("Модель не выбрана: добавьте провайдера в «Персонаж» → «Мышление»."))
         })?;
         if words.is_empty() {
             return Err(ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, "Скажите, что сделать."));
@@ -298,7 +298,7 @@ impl Workshop {
     ) -> Result<Made, ApiError> {
         let brief: String = brief.trim().chars().take(4000).collect();
         let dialog = self.dialog.get().cloned().filter(|dialog| dialog.enabled()).ok_or_else(|| {
-            ApiError::conflict(crate::tr!("Модель не выбрана: добавьте провайдера в «Персонаж» → «Мозг»."))
+            ApiError::conflict(crate::tr!("Модель не выбрана: добавьте провайдера в «Персонаж» → «Мышление»."))
         })?;
         if brief.is_empty() {
             return Err(ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, "Скажите, что сделать."));
@@ -411,7 +411,7 @@ mod tests {
         let station = request_of("сделай виджет громкости миди").unwrap();
         assert_eq!(template_of(&station, "сделай виджет громкости миди"), "widget", "«Миди» alone is a station");
         let game = request_of("сделай игру на пианино").unwrap();
-        assert_eq!(template_of(&game, "сделай игру на пианино"), "quiz", "a game keeps its own face");
+        assert_eq!(template_of(&game, "сделай игру на пианино"), "game", "a game starts blank, from no quiz");
         // The home folder's photos (docs/plans/shared-folders.md): from the album's template.
         let album = request_of("Сделай виджет: фото дня из папки Фото").unwrap();
         assert_eq!(template_of(&album, "Сделай виджет: фото дня из папки Фото"), "folders");

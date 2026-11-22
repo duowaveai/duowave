@@ -328,7 +328,7 @@ async fn character_plan(State(app): State<Arc<App>>, caller: Caller, body: Bytes
 /// The voice waiting on this computer (voice_plan.rs, `waiting`): `{pending: … | null, computer}`. Only its own home.
 async fn voice_pending(State(app): State<Arc<App>>, caller: Caller) -> Result<Response, ApiError> {
     own_home_only(&caller)?;
-    Ok(axum::Json(waiting_answer(&app)).into_response())
+    Ok(axum::Json(waiting_answer(&app).await).into_response())
 }
 
 /// The owner's answer to the waiting voice, from the home's centre: `{"answer": "anyway" | "retry" | "cancel"}` →
@@ -339,12 +339,12 @@ async fn voice_pending_answer(State(app): State<Arc<App>>, caller: Caller, body:
         .map_err(|_| ApiError::bad_request(r#"JSON: {"answer": "anyway" | "retry" | "cancel"}"#.to_string()))?;
     let answer = request.get("answer").and_then(Value::as_str).unwrap_or_default();
     super::voice_plan::answer(&app, answer, caller.actor()).await?;
-    Ok(axum::Json(waiting_answer(&app)).into_response())
+    Ok(axum::Json(waiting_answer(&app).await).into_response())
 }
 
-fn waiting_answer(app: &App) -> Value {
+async fn waiting_answer(app: &App) -> Value {
     json!({
-        "pending": super::voice_plan::waiting(app),
+        "pending": super::voice_plan::waiting(app).await,
         "computer": app.identity.gateway().map(|me| me.name).unwrap_or_default(),
     })
 }
@@ -1414,7 +1414,7 @@ mod tests {
         assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
         assert_eq!(
             body["message"],
-            "Не поставлено: архив «arthur» от центра не совпал по sha256 — он подменён или испорчен."
+            "Не поставлено: архив «arthur» от хаба не совпал по sha256 — он подменён или испорчен."
         );
         assert!(app.plugins.installed("arthur").is_none(), "nothing installed");
         assert!(!app.config.plugins.packages_dir.join("arthur").join("1.2.0").exists());

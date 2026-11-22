@@ -29,9 +29,9 @@ export default {
     // media, moved-banner, code-editor, confirm
     stop: 'Остановить',
     listen: (label: string) => `Послушать: ${label}`,
-    movedLabel: 'Колонка ждёт центр по старому адресу',
-    movedTitle: (name: string) => `${name}: не слышит центр`,
-    movedAbout: (was: string, now: string) => `ходит на ${was}, а центр теперь на ${now}`,
+    movedLabel: 'Колонка ждёт хаб по старому адресу',
+    movedTitle: (name: string) => `${name}: не слышит хаб`,
+    movedAbout: (was: string, now: string) => `ходит на ${was}, а хаб теперь на ${now}`,
     reconnect: 'Переподключить',
     fileLabel: (path: string) => `Файл ${path}`,
     yes: 'Да',
@@ -96,7 +96,7 @@ export default {
     loadFailed: 'Не прочиталось — попробуйте ещё раз',
     retry: 'Ещё раз',
     // sign-in, tabs, update-banner, widget
-    signInSayHere: (service: string) => `Войдите на странице ${service} — центр получит доступ сам, пульт это увидит.`,
+    signInSayHere: (service: string) => `Войдите на странице ${service} — хаб получит доступ сам, пульт это увидит.`,
     signInSayCode: (service: string) => `Войдите на странице ${service}: она покажет код — скопируйте его и вставьте сюда.`,
     signInSayAddress: (service: string) => `Войдите на странице ${service}. После входа браузер покажет ошибку адреса 127.0.0.1 — так и должно быть: скопируйте адрес той страницы и вставьте сюда.`,
     signInPlaceholderHere: 'Не вернулось само? Адрес страницы после входа',

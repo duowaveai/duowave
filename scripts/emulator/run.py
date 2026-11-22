@@ -34,7 +34,7 @@ def shell(command, timeout=120):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--board", choices=("station2", "yandexmini"), required=True)
+    parser.add_argument("--board", choices=("station2", "yandexmini", "yandexmicro", "yandexmini2"), required=True)
     parser.add_argument("--emulator", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()

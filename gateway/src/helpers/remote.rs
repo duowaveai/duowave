@@ -345,7 +345,9 @@ impl RemoteHelper {
                 Err(_) => Err(not_a_helper()),
             },
             Ok(response) if matches!(response.status().as_u16(), 401 | 403) => {
-                Err(crate::tr!("Турбо не принимает ключ: сделайте новый на нём в «Доступ» → «Ключи»"))
+                // The station's key is not this computer's any more (it joined again, or another took its place):
+                // its own switch brings a new one — not a key made by hand (22.11: «Доступ» → «Ключи» meant nothing).
+                Err(crate::tr!("не узнал ключ колонки. На нём: «Этот компьютер» → «Кому помогаю» → «Помогать»"))
             }
             Ok(response) => Err(crate::tr!("Турбо ответило {status}", status = response.status().as_u16())),
             Err(error) if error.is_timeout() => {

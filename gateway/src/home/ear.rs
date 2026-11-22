@@ -53,7 +53,7 @@ pub struct EarOf {
 pub const HOME_EAR: SettingDefinition<EarOf> = SettingDefinition {
     key: "home_ear",
     scope: SettingScope::Global,
-    description: "Центр дома",
+    description: "Хаб дома",
     sensitive: false,
     parse: |value| serde_json::from_value(value.clone()).ok(),
 };
@@ -253,7 +253,7 @@ pub async fn guard(
         if let Some(ear) = app.settings.get(&HOME_EAR, None) {
             let name = ear.name.unwrap_or(ear.address);
             return ApiError::conflict(crate::tr!(
-                "Это устройство слышит для центра дома «{name}»: дом правят в его пульте, здесь правка потерялась бы.",
+                "Это устройство слышит для хаба дома «{name}»: дом правят в его пульте, здесь правка потерялась бы.",
                 name = name
             ))
             .into_response();
@@ -308,10 +308,10 @@ async fn set(State(app): State<Arc<App>>, caller: Caller, Body(body): Body<Value
         since: now_iso(),
     };
     if ear.address.is_empty() || wanted.key.trim().len() < 16 {
-        return Err(ApiError::bad_request(crate::tr!("Нужны адрес центра и его ключ пары.")));
+        return Err(ApiError::bad_request(crate::tr!("Нужны адрес хаба и его ключ пары.")));
     }
     let probe = client(&ear, wanted.key.trim());
-    probe.settings().await.map_err(|_| ApiError::conflict(crate::tr!("Центр не принял ключ пары.")))?;
+    probe.settings().await.map_err(|_| ApiError::conflict(crate::tr!("Хаб не принял ключ пары.")))?;
     app.secrets.set(KEY_SECRET, Some(wanted.key.trim()))?;
     app.settings.set(&HOME_EAR, &ear, caller.actor())?;
     app.events.emit(GatewayEvent::HomeDevicesChanged { reason: "ear".into() });
@@ -339,13 +339,11 @@ struct MakeCentre {
 async fn make_centre(State(app): State<Arc<App>>, caller: Caller, Body(body): Body<Value>) -> ApiResult<Value> {
     caller.permitted(SETTINGS_EDIT)?;
     if centre(&app).is_some() {
-        return Err(ApiError::conflict(crate::tr!(
-            "Это устройство не центр: сделать центром может только центр дома."
-        )));
+        return Err(ApiError::conflict(crate::tr!("Это устройство не хаб: сделать хабом может только хаб дома.")));
     }
     let wanted: MakeCentre = serde_json::from_value(body).map_err(|_| ApiError::bad_request("{device}".to_string()))?;
     let held = super::copy::holder_of_device(&app.settings, &wanted.device)
-        .ok_or_else(|| ApiError::not_found(crate::tr!("У этой колонки нет копии дома — она не ухо этого центра.")))?;
+        .ok_or_else(|| ApiError::not_found(crate::tr!("У этой колонки нет копии дома — она не ухо этого хаба.")))?;
     let key = app
         .secrets
         .get(&ear_key_secret(&wanted.device))
@@ -374,7 +372,7 @@ async fn make_centre(State(app): State<Arc<App>>, caller: Caller, Body(body): Bo
 /// At an ear, from its centre: it becomes the centre with the copy it has; the old centre becomes its ear.
 async fn become_centre(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<Value> {
     if !from_peer(&caller, app.placement.peer_key()) {
-        return Err(ApiError::forbidden(crate::tr!("Сделать центром просит только центр этого дома.")));
+        return Err(ApiError::forbidden(crate::tr!("Сделать хабом просит только хаб этого дома.")));
     }
     if centre(&app).is_some() {
         // The newest of the home first, then no more an ear.
@@ -411,11 +409,11 @@ async fn join(State(app): State<Arc<App>>, caller: Caller, Body(body): Body<Valu
 #[cfg(feature = "pc")]
 pub fn centre_for_ear(app: &App) -> Result<(String, u16, String, Option<String>), ApiError> {
     let centre = super::devices::centre_elsewhere(app)
-        .ok_or_else(|| ApiError::conflict(crate::tr!("Центр дома не на колонке: подключать ухом не к чему.")))?;
+        .ok_or_else(|| ApiError::conflict(crate::tr!("Хаб дома не на колонке: подключать ухом не к чему.")))?;
     let record = centre
         .record()
-        .ok_or_else(|| ApiError::conflict(crate::tr!("Центр дома не на колонке: подключать ухом не к чему.")))?;
-    let key = centre.pair_key().ok_or_else(|| ApiError::conflict(crate::tr!("Нет ключа пары центра.")))?;
+        .ok_or_else(|| ApiError::conflict(crate::tr!("Хаб дома не на колонке: подключать ухом не к чему.")))?;
+    let key = centre.pair_key().ok_or_else(|| ApiError::conflict(crate::tr!("Нет ключа пары хаба.")))?;
     Ok((record.address, record.port, key, centre.name()))
 }
 
@@ -424,14 +422,14 @@ pub fn centre_for_ear(app: &App) -> Result<(String, u16, String, Option<String>)
 pub async fn join_station(app: &App, station: &str) -> Result<(), ApiError> {
     let wanted = Join { station: station.to_string() };
     let centre = super::devices::centre_elsewhere(app)
-        .ok_or_else(|| ApiError::conflict(crate::tr!("Центр дома не на колонке: подключать ухом не к чему.")))?;
+        .ok_or_else(|| ApiError::conflict(crate::tr!("Хаб дома не на колонке: подключать ухом не к чему.")))?;
     if centre.key() == wanted.station {
-        return Err(ApiError::conflict(crate::tr!("Это и есть центр дома.")));
+        return Err(ApiError::conflict(crate::tr!("Это и есть хаб дома.")));
     }
     let record = centre
         .record()
-        .ok_or_else(|| ApiError::conflict(crate::tr!("Центр дома не на колонке: подключать ухом не к чему.")))?;
-    let key = centre.pair_key().ok_or_else(|| ApiError::conflict(crate::tr!("Нет ключа пары центра.")))?;
+        .ok_or_else(|| ApiError::conflict(crate::tr!("Хаб дома не на колонке: подключать ухом не к чему.")))?;
+    let key = centre.pair_key().ok_or_else(|| ApiError::conflict(crate::tr!("Нет ключа пары хаба.")))?;
     let found = app
         .station_gateway
         .find(&wanted.station)
@@ -439,7 +437,7 @@ pub async fn join_station(app: &App, station: &str) -> Result<(), ApiError> {
     // The same station under a second record (by its device and «at:<address>»): still the centre itself — an ear of
     // itself would send its voice in a circle (Windows test 21.11 offered the centre among «not in the home»).
     if found.record().is_some_and(|other| other.address == record.address) {
-        return Err(ApiError::conflict(crate::tr!("Это и есть центр дома.")));
+        return Err(ApiError::conflict(crate::tr!("Это и есть хаб дома.")));
     }
     let station =
         found.client().ok_or_else(|| ApiError::not_found(crate::tr!("Такой колонки у этого компьютера нет.")))?;

@@ -71,12 +71,12 @@ impl Placement {
     /// For the choice of placement: what it gives, and the risk taken.
     pub fn summary(self) -> &'static str {
         match self {
-            Placement::Pc => "Колонка говорит с центром на компьютере. Всё своё: распознавание, голос, модели, звонки.",
+            Placement::Pc => "Колонка говорит с хабом на компьютере. Всё своё: распознавание, голос, модели, звонки.",
             Placement::Station => {
-                "Центр на самой колонке: работает без компьютера, с облачными подключениями или Яндексом. Без своих моделей и звонков."
+                "Хаб на самой колонке: работает без компьютера, с облачными подключениями или Яндексом. Без своих моделей и звонков."
             }
             Placement::StationServer => {
-                "Центр на колонке, а тяжёлое — распознавание, свой голос, модели — он берёт у компьютера, пока тот на связи. Компьютер спит — работает через облако или Яндекс."
+                "Хаб на колонке, а тяжёлое — распознавание, свой голос, модели — он берёт у компьютера, пока тот на связи. Компьютер спит — работает через облако или Яндекс."
             }
         }
     }
@@ -124,7 +124,7 @@ impl Group {
         match self {
             Group::Modes => "Режимы",
             Group::Voice => "Голос",
-            Group::Brain => "Мозг",
+            Group::Brain => "Мышление",
             Group::Skills => "Навыки",
             Group::House => "Дом",
             Group::System => "Система",
@@ -291,7 +291,7 @@ pub const FEATURES: &[Feature] = &[
     },
     Feature {
         id: "brain.cloud",
-        title: "Мозг: облачные модели",
+        title: "Мышление: облачные модели",
         group: Group::Brain,
         ways: &[Way { runs: Runs::Cloud, needs: &[Need::Clouds] }],
         absent: "",
@@ -299,7 +299,7 @@ pub const FEATURES: &[Feature] = &[
     },
     Feature {
         id: "brain.local",
-        title: "Мозг: модель на компьютере",
+        title: "Мышление: модель на компьютере",
         group: Group::Brain,
         ways: &[Way { runs: Runs::Helper, needs: &[Need::Helper(Ability::Model)] }],
         absent: "Своя модель работает на компьютере: на колонке ей не хватит ни ОЗУ, ни процессора.",
@@ -454,7 +454,7 @@ pub const FEATURES: &[Feature] = &[
         title: "Работает, когда компьютер спит",
         group: Group::System,
         ways: &[Way { runs: Runs::Here, needs: &[Need::At(ON_STATION)] }],
-        absent: "Центр на компьютере: компьютер спит — колонка молчит.",
+        absent: "Хаб на компьютере: компьютер спит — колонка молчит.",
         table: [no("нет"), yes("да"), partial("да, урезанно")],
     },
 ];

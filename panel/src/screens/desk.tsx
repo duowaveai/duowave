@@ -173,20 +173,25 @@ export function DeskScreen() {
     const notesFolded = notesChoice ?? (layout.added.length > 0 || layout.hidden.length > 0);
     // Без колонки столу нечего показать: режимы и орбита были бы о колонке, которой нет. Виджеты «под сценой» —
     // приложения этого компьютера («Лента») — стоят и здесь, под первыми шагами: им колонка не нужна.
+    // Широкий виджет «под сценой» (витрина) — во всю свою ширину, под столбцом: в столбце в 560 точек он сжимался
+    // (замечание 18 после 0.18.1).
+    const soloUnder = (wide: boolean) =>
+        ordered
+            .filter((widget) => widget.under && !!widget.wide === wide)
+            .map((widget) => <WidgetOnDesk key={widget.key} widget={widget} menu={{ hide: () => actions.hide(widget.key) }} fresh={isFresh(layout, widget.key)} />);
     if (panel.noStation)
         return (
-            <div class="desk-solo">
-                {banner}
-                <Shortcuts layout={layout} actions={actions} place="row" />
-                <FirstRun />
-                <ConnectFirstCard onConnect={panel.openConnect} />
-                <MicFirstCard />
-                {ordered
-                    .filter((widget) => widget.under)
-                    .map((widget) => (
-                        <WidgetOnDesk key={widget.key} widget={widget} menu={{ hide: () => actions.hide(widget.key) }} fresh={isFresh(layout, widget.key)} />
-                    ))}
-            </div>
+            <>
+                <div class="desk-solo">
+                    {banner}
+                    <Shortcuts layout={layout} actions={actions} place="row" />
+                    <FirstRun />
+                    <ConnectFirstCard onConnect={panel.openConnect} />
+                    <MicFirstCard />
+                    {soloUnder(false)}
+                </div>
+                <div class="desk-solo-wide">{soloUnder(true)}</div>
+            </>
         );
     // Виджеты «под сценой» (`under`) — сразу под колонкой или ДиВи: в ленте телефона первыми после сцены, в столбце —
     // первыми; на свободном столе их ставит DeskCanvas.
@@ -209,7 +214,7 @@ export function DeskScreen() {
             <>
                 {banner}
                 <Shortcuts layout={layout} actions={actions} place="row" />
-                <Scene />
+                <Scene notesFolded={notesChoice === true} />
                 <div class="desk-column">{shown.map((widget) => tile(widget, true))}</div>
             </>
         );
@@ -225,7 +230,8 @@ export function DeskScreen() {
                 <Shortcuts layout={layout} actions={actions} place="row" />
                 <FeedDraft drafts={drafts} />
                 {above.length > 0 && <div class="desk-feed-grid">{above.map((widget) => tile(widget, true))}</div>}
-                <Scene room={420} />
+                {/* Здесь подписи сворачиваются только крестиком: сами — лишь на свободном столе со своими виджетами. */}
+                <Scene room={420} notesFolded={notesChoice === true} />
                 <div class="desk-feed-grid">
                     {below.map((widget) => tile(widget, true))}
                     <AddTile onAdd={panel.openAdd} />

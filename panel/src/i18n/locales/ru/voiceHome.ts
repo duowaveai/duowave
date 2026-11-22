@@ -16,6 +16,11 @@ export default {
     // Голос просто ставится — спокойная пилюля, без точки: «Рик: ставлю CosyVoice 3 · 37 %».
     waitPillModel: (name: string, model: string) => `${name}: ставлю ${model}`,
     waitPillAnyModel: (name: string) => `${name}: ставлю модель голоса`,
+    // Запасной голос персонажа (замечание 14 после 0.18.1: «Дмитрий: ставлю модель голоса» не говорил, зачем он).
+    waitPillBackup: (name: string) => `${name}: ставлю запасной голос`,
+    backupCant: (name: string) => `Голос персонажа ${name} на этом компьютере не запустится.`,
+    backupInstall: (name: string, voice: string) => `Ставлю запасной голос ${voice}. Здесь ${name} будет говорить им.`,
+    backupChip: (name: string) => `${name} · запасной голос`,
     waitPillFile: (name: string) => `${name}: скачиваю голос`,
     waitPillImprint: (name: string) => `${name}: снимаю голос`,
     waitPillPercent: (line: string, percent: number) => `${line} · ${percent} %`,

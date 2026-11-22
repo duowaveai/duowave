@@ -93,7 +93,7 @@ impl Workspace for GitWorkspace {
 
 /// Whether a path is inside another (both as they are on disk).
 pub fn inside(path: &Path, of: &Path) -> bool {
-    let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-    let of = std::fs::canonicalize(of).unwrap_or_else(|_| of.to_path_buf());
+    let path = crate::utils::files::canonical(path).unwrap_or_else(|_| path.to_path_buf());
+    let of = crate::utils::files::canonical(of).unwrap_or_else(|_| of.to_path_buf());
     path.starts_with(&of)
 }

@@ -103,7 +103,7 @@ const en: Translation<typeof ru> = {
     protocols: 'Protocols',
     subscriptions: 'Subscriptions',
     subscriptionsAbout: 'an https://… link from 3x-ui, Marzban, Remnawave and the like; the server list updates itself every 6 hours',
-    subsIntro: 'Connect your own VPN with a subscription or links. What does not work from your country goes through it: the Brain’s models, cloud hearing and voice, apps, Alice’s talk.',
+    subsIntro: 'Connect your own VPN with a subscription or links. What does not work from your country goes through it: Thinking’s models, cloud hearing and voice, apps, Alice’s talk.',
     add: 'Add a subscription',
     addTitle: 'New subscription',
     name: 'Name',
@@ -138,9 +138,9 @@ const en: Translation<typeof ru> = {
 
     sections: {
         alice: 'Alice',
-        brain: 'Brain',
+        brain: 'Thinking',
         voice: 'Hearing and voice',
-        mcp: 'Brain tools (MCP)',
+        mcp: '“Thinking” tools (MCP)',
         apps: 'Apps',
         own: 'Own addresses',
         other: 'Everything else',

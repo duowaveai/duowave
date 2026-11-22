@@ -1065,7 +1065,7 @@ async fn adding_checks_the_contract_first_and_stores_nothing_on_a_wrong_key_or_i
     let input = |key: &str| AddInput { url: computer.url.clone(), key: key.into(), ..AddInput::default() };
     let wrong = station.helpers.add(input("vgw_wrong"), None).await.unwrap_err();
     assert_eq!(wrong.status, StatusCode::BAD_GATEWAY);
-    assert!(wrong.message.contains("не принимает ключ"), "{}", wrong.message);
+    assert!(wrong.message.contains("не узнал ключ"), "{}", wrong.message);
     assert!(station.helpers.list().is_empty() && station.secrets.ids("helper:").is_empty(), "nothing stored");
 
     let id = station.helpers.add(input(KEY), None).await.unwrap();
@@ -1088,7 +1088,7 @@ async fn adding_checks_the_contract_first_and_stores_nothing_on_a_wrong_key_or_i
         .await
         .unwrap_err();
     assert_eq!(refused.status, StatusCode::CONFLICT);
-    assert!(refused.message.contains("сам этот центр"), "{}", refused.message);
+    assert!(refused.message.contains("сам этот хаб"), "{}", refused.message);
     assert_eq!(station.helpers.list().len(), 1);
 
     // Nothing answering is no helper either; a dry run stores nothing.
@@ -1274,7 +1274,7 @@ async fn the_pairing_check_refuses_this_gateway_the_pairs_door_and_a_listed_help
     let me = station.helpers.me().unwrap();
     assert_eq!(
         words(check(&helper(&me), &pin("b"))),
-        Err((409, "Это сам этот центр: себя в Турбо не добавляют.".into()))
+        Err((409, "Это сам этот хаб: себя в Турбо не добавляют.".into()))
     );
     assert_eq!(
         words(check(&helper("the-computer"), &pin("b"))),

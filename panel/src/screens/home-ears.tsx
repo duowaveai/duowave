@@ -6,7 +6,7 @@
 
 import { useEffect, useState } from 'preact/hooks';
 
-import { FoundStation, MoveJob, PairCodeAsked, PairCodeLook, can, ownCall, problemOf } from '../api';
+import { ApiError, FoundStation, MoveJob, PairCodeAsked, PairCodeLook, can, ownCall, problemOf } from '../api';
 import { readHomeDevices } from '../home-devices';
 import { tr } from '../i18n';
 import { IconSpeaker } from '../icons';
@@ -181,16 +181,27 @@ function EarByCode({ station, onDone, onCancel }: { station: Found; onDone: () =
         }
     };
     const digits = code.replace(/\D/g, '');
+    /** «Подключить к дому» с пустым или неполным кодом: поле подсвечено, под ним — что ввести и где взять (как в первых шагах). */
+    const [codeShy, setCodeShy] = useState(false);
+    /** Код не подошёл: слова дома («Код не подошёл. Осталось попыток: 2.») — под полем, поле подсвечено, введённое на месте. */
+    const [wrong, setWrong] = useState<string | null>(null);
     const enter = async (): Promise<void> => {
-        if (!asked || digits.length !== 6 || busy) return;
+        if (!asked || busy) return;
+        if (digits.length !== 6) {
+            setCodeShy(true);
+            return;
+        }
         setBusy(true);
         setError(null);
         try {
             await ownCall('POST', `/api/v1/placement/pair-code/${encodeURIComponent(asked.id)}`, { code: digits });
             onDone();
         } catch (e) {
-            setError(problemOf(e));
-            setCode('');
+            if (e instanceof ApiError && e.status === 403) setWrong(problemOf(e));
+            else {
+                setError(problemOf(e));
+                setCode('');
+            }
         } finally {
             setBusy(false);
         }
@@ -215,13 +226,30 @@ function EarByCode({ station, onDone, onCancel }: { station: Found; onDone: () =
                             placeholder="•• •• ••"
                             value={code}
                             disabled={busy}
-                            style={{ fontSize: '22px', lineHeight: '26px', letterSpacing: '0.2em', fontVariantNumeric: 'tabular-nums' }}
-                            onInput={(event) => setCode((event.target as HTMLInputElement).value)}
+                            aria-invalid={codeShy || !!wrong || undefined}
+                            style={{
+                                fontSize: '22px',
+                                lineHeight: '26px',
+                                letterSpacing: '0.2em',
+                                fontVariantNumeric: 'tabular-nums',
+                                ...(codeShy || wrong ? { borderColor: 'var(--dot-offline)' } : {}),
+                            }}
+                            onInput={(event) => {
+                                setCode((event.target as HTMLInputElement).value);
+                                setCodeShy(false);
+                                setWrong(null);
+                            }}
                             onKeyDown={(event) => event.key === 'Enter' && void enter()}
                         />
                     </label>
+                    {(codeShy || wrong) && (
+                        <p class="w-cap m-0 c-dot-offline" role="alert">
+                            {wrong ?? (digits.length ? tr.onboarding.helperCodeShort(digits.length) : tr.onboarding.helperCodeEmpty)}{' '}
+                            {asked.told?.spoken ? t.earCodeWhere(name) : t.earCodeSilent(name)}
+                        </p>
+                    )}
                     <div class="flex flex-wrap gap-8">
-                        <button type="button" class="btn btn-main" disabled={busy || digits.length !== 6} onClick={() => void enter()}>
+                        <button type="button" class="btn btn-main" disabled={busy} onClick={() => void enter()}>
                             {t.joinByCode}
                         </button>
                         <button type="button" class="btn btn-ghost" onClick={onCancel}>

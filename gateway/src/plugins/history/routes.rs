@@ -272,7 +272,9 @@ async fn restore_draft(
 /// The agent's work on a draft in the background, as the panel's chat starts it: the plaque and the log follow it.
 pub fn start_agent(app: &App, caller: &Caller, id: &str, message: String) -> Result<(), ApiError> {
     if !app.dialog.enabled() {
-        return Err(ApiError::conflict(crate::tr!("Модель не выбрана: добавьте провайдера в «Персонаж» → «Мозг».")));
+        return Err(ApiError::conflict(crate::tr!(
+            "Модель не выбрана: добавьте провайдера в «Персонаж» → «Мышление»."
+        )));
     }
     let principal = caller.principal().map(|principal| principal.id.clone()).unwrap_or_default();
     let key = format!("workshop:{principal}:{id}");

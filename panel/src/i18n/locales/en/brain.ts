@@ -130,7 +130,7 @@ const en: Translation<typeof ru> = {
     keyStored: 'The key is stored encrypted in the hub; the panel will show only its last characters.',
     savedOk: (text: string) => `Saved. Check: ${text}.`,
     savedFailed: (text: string) => `Saved, but the check failed: ${text}`,
-    nowTitle: 'What the Brain knows now',
+    nowTitle: 'What the AI knows now',
     nowRefresh: 'Refresh',
     nowReading: 'Reading…',
     nowEmpty: 'Nothing is going on now: the block is empty and goes into no request.',

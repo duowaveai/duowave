@@ -219,14 +219,42 @@ function useAnswer(): { busy: HomeVoiceAnswer | null; error: string | null; answ
     return { busy, error, answer };
 }
 
+/**
+ * Запасной голос персонажа (замечание 14 после 0.18.1): не «Дмитрий ставится», а чей он и зачем — «Голос персонажа
+ * «Рик» на этом компьютере не запустится. На Windows нужна видеокарта NVIDIA. Ставлю запасной голос «Дмитрий (Piper)».
+ * Здесь «Рик» будет говорить им».
+ */
+function BackupWhy({ pending }: { pending: Waiting }) {
+    const backup = pending.backupOf;
+    if (!backup) return null;
+    const who = tr.wizard.quote(plainName(backup.title));
+    return (
+        <p class="m-0 t-body-sm">
+            {tr.voiceHome.backupCant(who)}
+            {backup.why ? ` ${backup.why}` : ''} {tr.voiceHome.backupInstall(who, tr.models.quoted(pending.title))}
+        </p>
+    );
+}
+
+/** Подпись окна и карточки: имя голоса, у запасного — персонаж («Рик» · запасной голос). */
+const waitingChip = (pending: Waiting): string =>
+    pending.backupOf ? tr.voiceHome.backupChip(tr.wizard.quote(plainName(pending.backupOf.title))) : tr.models.quoted(pending.title);
+
 /** Текст, ход и подробность ждущего голоса. */
 function WaitingText({ waiting, pending }: { waiting: HomeVoiceWaiting; pending: Waiting }) {
     const going = !asksOwner(pending);
     return (
         <>
-            <p class={`m-0 t-body-sm${pending.state === 'tight' ? ' c-pill-yandex-fg' : pending.state === 'failed' ? ' c-dot-offline' : ''}`} role={pending.state === 'failed' ? 'alert' : 'status'}>
-                {pendingWords(pending, pending.title)}
-            </p>
+            <BackupWhy pending={pending} />
+            {/* Запасной ставится — его слова выше; ждёт ответа (память, не вышло) — и слова шлюза об этом. */}
+            {!(pending.backupOf && going) && (
+                <p
+                    class={`m-0 t-body-sm${pending.state === 'tight' ? ' c-pill-yandex-fg' : pending.state === 'failed' ? ' c-dot-offline' : ''}`}
+                    role={pending.state === 'failed' ? 'alert' : 'status'}
+                >
+                    {pendingWords(pending, pending.title)}
+                </p>
+            )}
             {going && pending.progress !== undefined && pending.progress !== null && <Progress percent={pending.progress} label={tr.models.installProgress(pending.title)} />}
             {pending.detail && <span class="t-caption">{pending.detail}</span>}
             {asksOwner(pending) && <span class="t-caption">{tr.voiceHome.waitMeanwhile}</span>}
@@ -245,7 +273,7 @@ function WaitingSheet({ waiting, pending }: { waiting: HomeVoiceWaiting; pending
     return (
         <Sheet
             title={tr.voiceHome.waitTitle}
-            meta={<span class="win-chip">{tr.models.quoted(pending.title)}</span>}
+            meta={<span class="win-chip">{waitingChip(pending)}</span>}
             about={waiting.turbo ? tr.voiceHome.waitOn(waiting.turbo.name) : undefined}
             onClose={closeVoiceWaiting}
             footer={
@@ -300,7 +328,7 @@ export function WaitingCard() {
                 <h2 id="voice-wait-h" class="t-title-xs m-0">
                     {tr.voiceHome.waitTitle}
                 </h2>
-                <span class="t-meta">{tr.models.quoted(pending.title)}</span>
+                <span class="t-meta">{waitingChip(pending)}</span>
             </div>
             <div class="pending-row">
                 <WaitingText waiting={waiting} pending={pending} />
@@ -326,7 +354,15 @@ function goingLine(pending: Waiting, name: string): string {
     const t = tr.voiceHome;
     const kind = pending.waitFor?.kind ?? 'engine';
     const model = modelTitle(pending);
-    const line = kind === 'file' ? t.waitPillFile(name) : kind === 'imprint' ? t.waitPillImprint(name) : model ? t.waitPillModel(name, model) : t.waitPillAnyModel(name);
+    const line = pending.backupOf
+        ? t.waitPillBackup(tr.wizard.quote(plainName(pending.backupOf.title)))
+        : kind === 'file'
+          ? t.waitPillFile(name)
+          : kind === 'imprint'
+            ? t.waitPillImprint(name)
+            : model
+              ? t.waitPillModel(name, model)
+              : t.waitPillAnyModel(name);
     return pending.progress !== undefined && pending.progress !== null ? t.waitPillPercent(line, Math.round(pending.progress)) : line;
 }
 
@@ -338,7 +374,8 @@ export function VoiceWaitingPill({ place }: { place: 'top' | 'side' | 'onb' }) {
     const waiting = useVoiceWaiting();
     const pending = waiting?.pending;
     if (!pending) return null;
-    const name = tr.wizard.quote(plainName(pending.title));
+    // Запасной голос ждёт — пилюля о персонаже, которому он нужен: «Рик ждёт вашего решения», а не «Дмитрий».
+    const name = tr.wizard.quote(plainName(pending.backupOf?.title ?? pending.title));
     if (!asksOwner(pending))
         return (
             <button type="button" class={`waiting-pill waiting-pill-${place}`} onClick={showVoiceWaiting}>

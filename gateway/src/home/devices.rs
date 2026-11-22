@@ -367,7 +367,7 @@ fn as_link_turbo(app: &App, client: &crate::helpers::clients::ClientView) -> Opt
     let home = client.home.clone()?;
     let id = format!("home:{}", home.id);
     let mut hub =
-        HomeDevice::new(id.clone(), DeviceKind::Computer, crate::tr!("Центр дома «{name}»", name = home.name.clone()));
+        HomeDevice::new(id.clone(), DeviceKind::Computer, crate::tr!("Хаб дома «{name}»", name = home.name.clone()));
     hub.roles.push(DeviceRole::Centre);
     hub.state =
         if client.gateways.iter().any(|gateway| gateway.online) { DeviceState::Online } else { DeviceState::Offline };

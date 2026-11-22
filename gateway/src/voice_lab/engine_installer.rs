@@ -679,7 +679,9 @@ mod tests {
         let target = root.path().join("runtime").join("omnivoice");
         assert!(calls.contains(&format!("venv --python 3.11 {}", target.join("env").display())), "{calls}");
         assert!(calls.contains("torch==2.8.0 torchaudio==2.8.0"), "{calls}");
-        assert!(calls.contains("requirements/omnivoice.txt"), "{calls}");
+        // As the system spells a path: `requirements\omnivoice.txt` on Windows (CI 0.18.1).
+        let requirements = Path::new("requirements").join("omnivoice.txt");
+        assert!(calls.contains(&requirements.display().to_string()), "{calls}");
         let ready: ReadyInfo =
             serde_json::from_str(&std::fs::read_to_string(target.join("ready.json")).unwrap()).unwrap();
         assert_eq!((ready.device.as_str(), ready.source), ("mps", InstallSource::Download));

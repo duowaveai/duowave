@@ -4700,7 +4700,8 @@ mod tests {
 
         // The Турбо said why it did not install it: the card hears it at once (20.11 — before, only a call that
         // failed said it), the call answers with it, and it is not asked again at once.
-        let why = "Не поставлено: каталог этого компьютера не проверял «tube» из ленты центра — код из неё здесь не ставится.";
+        let why =
+            "Не поставлено: каталог этого компьютера не проверял «tube» из ленты хаба — код из неё здесь не ставится.";
         host.note_turbo("tube", Some(why.into()));
         assert_eq!(changes(&mut events), ["failed"], "the card and the journal hear the refusal, once");
         assert_eq!(host.view_one("tube").await.unwrap().turbo.as_deref(), Some(why), "the card says it");

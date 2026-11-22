@@ -31,7 +31,7 @@ export default {
     voiceReady: 'свой голос готов',
     voiceStarting: 'голос запускается…',
     voiceFix: 'Выбрать голос',
-    brainTitle: 'Мозг',
+    brainTitle: 'Мышление',
     brainChosen: 'модель выбрана',
     brainNone: 'модель не выбрана',
     brainFix: 'Выбрать модель',

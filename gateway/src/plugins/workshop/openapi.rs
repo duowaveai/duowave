@@ -214,7 +214,7 @@ pub fn draft_from(id: &str, title: Option<&str>, document: &str) -> Result<Vec<(
         .collect();
     let mut settings = Vec::new();
     if key.is_some() {
-        settings.push(json!({ "key": "apiKey", "type": "string", "title": "Ключ API", "description": "Выдаёт сервис; хранится в центре, не в коде" }));
+        settings.push(json!({ "key": "apiKey", "type": "string", "title": "Ключ API", "description": "Выдаёт сервис; хранится в хабе, не в коде" }));
     }
     let manifest = json!({
         "schema": 1,
@@ -222,7 +222,7 @@ pub fn draft_from(id: &str, title: Option<&str>, document: &str) -> Result<Vec<(
         "id": id,
         "version": "0.1.0",
         "title": title,
-        "description": spec.pointer("/info/description").and_then(Value::as_str).unwrap_or("Инструменты API для «Мозга»").chars().take(300).collect::<String>(),
+        "description": spec.pointer("/info/description").and_then(Value::as_str).unwrap_or("Инструменты API для «Мышления»").chars().take(300).collect::<String>(),
         "api": "^2",
         "runs": ["pc", "station", "stationServer"],
         "budget": { "memoryMb": 4, "storageMb": 1 },
@@ -260,7 +260,7 @@ pub fn draft_from(id: &str, title: Option<&str>, document: &str) -> Result<Vec<(
         })
         .collect();
     let backend = format!(
-        r#"// {title}: инструменты «Мозга» из описания API (OpenAPI). Каждая функция зовёт свою операцию через host.http.fetch —
+        r#"// {title}: инструменты для «Мышления» из описания API (OpenAPI). Каждая функция зовёт свою операцию через host.http.fetch —
 // только к {host} (право net:{host}). Ключ API — в настройках плагина, не в коде.
 
 const BASE = {base};

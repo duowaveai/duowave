@@ -55,7 +55,7 @@ use crate::platform::http::ApiError;
 /// A phrase at most this long: a question, not a document.
 pub const MAX_TEXT: usize = 1000;
 
-pub const NO_MODEL: &str = "Модель не выбрана: добавьте провайдера в «Персонаж» → «Мозг».";
+pub const NO_MODEL: &str = "Модель не выбрана: добавьте провайдера в «Персонаж» → «Мышление».";
 
 /// Where the phrase was recognized before it came here (the panel's `POST /api/v1/listen`), for the journal's step.
 #[derive(Debug, Clone, PartialEq, Eq)]

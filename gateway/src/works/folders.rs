@@ -194,12 +194,12 @@ async fn checked_path(asked: &str, guarded: &Guarded) -> Result<PathBuf, ApiErro
     if !expanded.is_absolute() {
         return Err(ApiError::field("path", crate::tr!("Нужен полный путь к папке, от корня диска.")));
     }
-    let path = std::fs::canonicalize(&expanded)
+    let path = crate::utils::files::canonical(&expanded)
         .map_err(|_| ApiError::field("path", crate::tr!("Такой папки нет на этом компьютере.")))?;
     if !path.is_dir() {
         return Err(ApiError::field("path", crate::tr!("Это файл, а нужна папка.")));
     }
-    let home = guarded.home.as_ref().and_then(|home| std::fs::canonicalize(home).ok());
+    let home = guarded.home.as_ref().and_then(|home| crate::utils::files::canonical(home).ok());
     if path.parent().is_none() || home.as_deref() == Some(path.as_path()) {
         return Err(ApiError::field(
             "path",
@@ -216,7 +216,7 @@ async fn checked_path(asked: &str, guarded: &Guarded) -> Result<PathBuf, ApiErro
             crate::tr!("В этой папке нет git. Работа в папке — это своя ветка, поэтому нужна папка с git: выполните в ней «git init» и сделайте первый коммит."),
         ));
     };
-    let top = std::fs::canonicalize(&top).unwrap_or(top);
+    let top = crate::utils::files::canonical(&top).unwrap_or(top);
     if top != path {
         return Err(ApiError::field(
             "path",

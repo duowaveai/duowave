@@ -55,7 +55,7 @@ const en: Translation<typeof ru> = {
     pendingLate: 'The speaker is not answering yet — it goes on by itself as soon as it does',
     pendingTryNow: 'Try now',
     pendingDrop: 'Don’t install',
-    inviteBlockDemos: 'Characters from the invitation: listen and install — the wizard puts the voice on the computer too.',
+    inviteBlockDemos: 'Characters from the invitation. Listen and install the one you like, its voice is installed on the computer too.',
     inviteChooseFirst: 'Decide here first: paste the link and “Add” — or “Skip”.',
     inviteSkip: 'Skip',
     inviteAddingSet: 'Link accepted — adding the set…',

@@ -33,7 +33,7 @@ pub struct Change<'a> {
 /// Keeps a change for the centre. Refused when the queue is full or the body too big: the panel says so.
 pub fn keep(db: &Db, change: &Change<'_>) -> Result<i64, String> {
     if change.body.len() > MAX_BODY {
-        return Err(crate::tr!("Центр не на связи, а правка слишком большая, чтобы ждать его."));
+        return Err(crate::tr!("Хаб не на связи, а правка слишком большая, чтобы ждать его."));
     }
     db.transaction(|transaction| {
         let waiting: i64 =
@@ -58,7 +58,7 @@ pub fn keep(db: &Db, change: &Change<'_>) -> Result<i64, String> {
         Ok(Some(transaction.last_insert_rowid()))
     })
     .map_err(|error| error.to_string())?
-    .ok_or_else(|| crate::tr!("Центр давно не на связи: правок накопилось слишком много. Подождите его."))
+    .ok_or_else(|| crate::tr!("Хаб давно не на связи: правок накопилось слишком много. Подождите его."))
 }
 
 /// A waiting change as the panel lists it.

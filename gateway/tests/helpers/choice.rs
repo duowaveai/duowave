@@ -483,7 +483,7 @@ async fn a_dry_run_shows_what_the_helper_gives_and_stores_nothing() {
     let wrong = json!({"url": computer.url, "key": "vgw_wrong", "dryRun": true});
     let (status, body) = send(station.post("/api/v1/helpers").header(header, auth).json(&wrong)).await;
     assert_eq!(status, StatusCode::BAD_GATEWAY);
-    assert!(body["message"].as_str().unwrap_or_default().contains("не принимает ключ"), "{body}");
+    assert!(body["message"].as_str().unwrap_or_default().contains("не узнал ключ"), "{body}");
     station.stop().await;
 }
 

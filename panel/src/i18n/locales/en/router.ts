@@ -1,5 +1,5 @@
 // Texts of the router and the works (docs/plans/router-and-works.md): the page «Works» (screens/works.tsx), one work
-// (screens/work.tsx), the desk widget «Works» (screens/desk-widgets.tsx), «Spending» in «Brain» (screens/spend.tsx).
+// (screens/work.tsx), the desk widget «Works» (screens/desk-widgets.tsx), «Spending» in “Thinking” (screens/spend.tsx).
 import { plural } from '../../format';
 import type { Translation } from '../../types';
 import type ru from '../ru/router';
@@ -172,9 +172,9 @@ const en: Translation<typeof ru> = {
     widgetMore: (n: number) => `and ${n} more ${works(n)}`,
     widgetAsking: 'waiting for an answer',
     widgetQueuedRow: 'in the queue',
-    // «Spending» (screens/spend.tsx): «Character» → «Brain» → «Spending»
+    // «Spending» (screens/spend.tsx): «Character» → “Thinking” → «Spending»
     spendTitle: 'Spending',
-    spendBack: 'Brain',
+    spendBack: 'Thinking',
     spendRowSub: 'tokens and dollars by day, seat and model',
     spendToday: (usd: string, tokens: string) => `today ${usd} · ${tokens}`,
     spendTodayNone: 'no models called today',
@@ -303,7 +303,7 @@ const en: Translation<typeof ru> = {
     keySet: 'the key is saved',
     keyPlaceholder: 'sk-ant-…',
     keySave: 'Save the key',
-    keyFromBrain: "Take a provider's key from «Brain»",
+    keyFromBrain: "Take a provider's key from “Thinking”",
     pathLabel: 'Where the program is',
     pathHint: 'empty — find it by itself',
     pathSave: 'Remember the path',

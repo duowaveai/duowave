@@ -10,7 +10,7 @@ const en: Translation<typeof ru> = {
     stateOff: 'off',
 
     title: 'MCP servers',
-    askBrain: 'ask the Brain',
+    askBrain: 'ask the AI',
     add: 'add',
     toolsOverLimit: (on: number, limit: number) =>
         `Tools enabled: ${on}. Above ${limit}, the model reads them on every question and answers slower; turn off the extras.`,

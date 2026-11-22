@@ -136,9 +136,9 @@ struct Pick {
 
 #[cfg(feature = "pc")]
 fn chosen(app: &App, pick: &Pick) -> Result<Arc<super::watch::StationGateway>, ApiError> {
-    app.station_gateway.pick(pick.station.as_deref()).ok_or_else(|| {
-        ApiError::conflict(crate::tr!("Какая колонка? Центр есть на нескольких — укажите её (station)."))
-    })
+    app.station_gateway
+        .pick(pick.station.as_deref())
+        .ok_or_else(|| ApiError::conflict(crate::tr!("Какая колонка? Хаб есть на нескольких — укажите её (station).")))
 }
 
 #[cfg_attr(not(feature = "pc"), allow(unused_variables))]
@@ -197,7 +197,7 @@ async fn safety(
             {
                 let client = chosen(&app, &pick)?
                     .client()
-                    .ok_or_else(|| ApiError::conflict(crate::tr!("Центр не на колонке.")))?;
+                    .ok_or_else(|| ApiError::conflict(crate::tr!("Хаб не на колонке.")))?;
                 client.post("/api/v1/placement/safety", json!({ "on": on })).await.map_err(ApiError::unavailable)?;
             }
             Ok(created(json!({ "on": on })))
@@ -207,7 +207,7 @@ async fn safety(
 
 fn on_station(app: &App) -> Result<(), ApiError> {
     if app.placement.role() != Role::Station {
-        return Err(ApiError::conflict(crate::tr!("Это делает центр на самой колонке.")));
+        return Err(ApiError::conflict(crate::tr!("Это делает хаб на самой колонке.")));
     }
     Ok(())
 }
@@ -447,7 +447,7 @@ mod pc {
         chosen(app, pick)?
             .record()
             .map(|record| record.address)
-            .ok_or_else(|| ApiError::conflict(crate::tr!("Центр не на колонке.")))
+            .ok_or_else(|| ApiError::conflict(crate::tr!("Хаб не на колонке.")))
     }
 
     /// «Что случилось»: the station's own account, over SSH.
@@ -472,7 +472,7 @@ mod pc {
             _ => return Err(ApiError::bad_request(crate::tr!("to: local или yandex"))),
         };
         let client =
-            chosen(&app, &pick)?.client().ok_or_else(|| ApiError::conflict(crate::tr!("Центр не на колонке.")))?;
+            chosen(&app, &pick)?.client().ok_or_else(|| ApiError::conflict(crate::tr!("Хаб не на колонке.")))?;
         let answer = client.post(path, json!({})).await.map_err(ApiError::unavailable)?;
         Ok(created(answer))
     }
@@ -700,7 +700,7 @@ mod pc {
         let answer = request
             .send()
             .await
-            .map_err(|_| ApiError::unavailable(crate::tr!("Центр дома не отвечает по этому адресу.")))?;
+            .map_err(|_| ApiError::unavailable(crate::tr!("Хаб дома не отвечает по этому адресу.")))?;
         let status = answer.status();
         let value: Value = answer.json().await.unwrap_or(Value::Null);
         if status.is_success() {
@@ -709,7 +709,7 @@ mod pc {
         let said = value.get("message").and_then(Value::as_str).map(str::to_string);
         Err(ApiError::new(
             status,
-            said.unwrap_or_else(|| crate::tr!("Центр дома отказал: {status}.", status = status.as_u16())),
+            said.unwrap_or_else(|| crate::tr!("Хаб дома отказал: {status}.", status = status.as_u16())),
         ))
     }
 
@@ -747,7 +747,7 @@ mod pc {
             return Ok(json!({ "joined": true, "helper": true, "address": outgoing.address, "port": outgoing.port }));
         }
         let key = grant.get("key").and_then(Value::as_str).filter(|key| key.len() >= 16).ok_or_else(|| {
-            ApiError::conflict(crate::tr!("Центр дома впустил, но не дал ключ пары: обновите DuoWave на нём."))
+            ApiError::conflict(crate::tr!("Хаб дома впустил, но не дал ключ пары: обновите DuoWave на нём."))
         })?;
         if outgoing.kind == crate::home::join::JoinKind::Ear {
             return joined_as_ear(app, outgoing, key, actor).await;
@@ -783,7 +783,7 @@ mod pc {
     ) -> Result<Value, ApiError> {
         let (address, port, centre_key, name) = crate::home::ear::centre_for_ear(app)?;
         if address == outgoing.address && port == outgoing.port {
-            return Err(ApiError::conflict(crate::tr!("Это и есть центр дома.")));
+            return Err(ApiError::conflict(crate::tr!("Это и есть хаб дома.")));
         }
         let view =
             app.station_gateway.link(&outgoing.address, outgoing.port, key, actor).await.map_err(ApiError::conflict)?;
@@ -843,7 +843,7 @@ mod pc {
             let host = mine
                 .as_deref()
                 .map(link_host)
-                .ok_or_else(|| ApiError::conflict(crate::tr!("Не нашёл адрес этого компьютера в сети центра.")))?;
+                .ok_or_else(|| ApiError::conflict(crate::tr!("Не нашёл адрес этого компьютера в сети хаба.")))?;
             Some(json!({ "url": format!("https://{host}:{link_port}"), "key": app.link.connection_key(true).shown() }))
         } else {
             None
@@ -864,7 +864,7 @@ mod pc {
         let id = asked.get("id").and_then(Value::as_str).unwrap_or_default().to_string();
         let token = asked.get("token").and_then(Value::as_str).unwrap_or_default().to_string();
         if id.is_empty() || token.is_empty() {
-            return Err(ApiError::conflict(crate::tr!("Центр дома ответил без запроса: обновите DuoWave на нём.")));
+            return Err(ApiError::conflict(crate::tr!("Хаб дома ответил без запроса: обновите DuoWave на нём.")));
         }
         let expires_ms = asked
             .get("expiresAt")

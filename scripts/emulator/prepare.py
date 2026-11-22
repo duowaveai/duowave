@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """A station's firmware for the emulator, from a public OTA pinned by SHA-256: its root file system read out of the
 OTA (an SWUpdate CPIO with a UBIFS image in it) with the files' modes kept, handed to `kuyase prepare`. The OTA's own
-installer never runs. The images are the ones Quasar Bridge tests on (its scripts/kuyase/prepare.py, Apache-2.0).
+installer never runs. The Станция 2 and Мини images are the ones Quasar Bridge tests on (its scripts/kuyase/prepare.py,
+Apache-2.0); the Лайт 1 and Мини 2 links are the official ones of the emulator author's catalog
+(huggingface.co/datasets/vypivshiy/iot-quasar-dataset), downloaded from Yandex itself. The Лайт 2 has no public OTA
+link. The board names are the emulator's own.
 
     python3 scripts/emulator/prepare.py --board station2 --emulator <kuyase folder> --output <folder>
 
@@ -28,6 +31,18 @@ FIRMWARE = {
         "d165ea71-76cd-4df5-84f8-0441526d1124/1.373.4.13.4819025044.20261030.zip",
         "80ca52832f78403335faa45e050c5828d63facdd89dba9f456de5d82fd20c98f",
         "c057fbafcd960f0f0329400040cf974a749b74f8261be2e858d164ee7087c1c4",
+    ),
+    "yandexmicro": (  # Лайт 1
+        "https://quasar.s3.yandex.net/yandexmicro/ota/user/"
+        "dbb517ff-eac2-4ba7-acb6-da7f21c3de80/0.372.1.8.4790672876.20261019.300.zip",
+        "713b0d7110bf87201d3d2eca61785fed9c6305fa98d7f459eb0db72624b0a8ce",
+        "227b37c5d771415bdfdb4dcfe978f537b6bbb52ba1f20293670a0bb12cde5601",
+    ),
+    "yandexmini2": (  # Мини 2 (the firmware is yandexmini_2, the same with and without the clock)
+        "https://quasar.s3.yandex.net/yandexmini_2/ota/user/"
+        "07756f40-2d2c-4d08-83be-5c35372c5e7c/0.372.1.8.4790679165.20261019.302.zip",
+        "7255b82c4bd71d925f634a06247c80464667d03ebe65af5b9491e7f7f847c95f",
+        "78aee6f52d865609049a56ce4d8dcf0ea4882dd62f526495893835390c34785e",
     ),
 }
 

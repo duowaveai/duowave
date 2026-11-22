@@ -25,7 +25,7 @@ import {
     IconVoice,
 } from '../icons';
 import { usePanel, useSectionTab } from '../shell/context';
-import { setDevMode, setDuowaveShown, setHiddenDevOptions, tapDev, useDevMode, useDuowaveShown, useHiddenDevOptions } from '../shell/dev';
+import { setDevMode, setHiddenDevOptions, tapDev, useDevMode, useHiddenDevOptions } from '../shell/dev';
 import { Switch } from '../ui/switch';
 import { useOfferedVersion } from '../updates';
 import { ModeWidget, WatchWidget, useStationOffer } from './desk-widgets';
@@ -287,11 +287,9 @@ function DevPage() {
 /**
  * Скрытые возможности разработчика (восемь нажатий на «Для разработчиков»). «Показывать скрытые пакеты» — настройка
  * шлюза packages.show_hidden: пакеты, которые ленты держат скрытыми (`unlisted`), видны в MagicPlace, в каталоге
- * персонажей и голосом — из главного каталога, магазинов и своих источников. Меняет администратор. «Показывать
- * DuoWave» — вид пульта у этого человека (shell/dev.ts): наши модели в «Мозге» и в первых шагах.
+ * персонажей и голосом — из главного каталога, магазинов и своих источников. Меняет администратор.
  */
 function HiddenDevOptions() {
-    const duowave = useDuowaveShown();
     const [view, setView] = useState<CatalogView | null>(null);
     const [busy, setBusy] = useState(false);
     const [problem, setProblem] = useState<string | null>(null);
@@ -338,13 +336,6 @@ function HiddenDevOptions() {
                     {problem}
                 </p>
             )}
-            <label class="w-toggle">
-                <span class="flex-1 min-w-0 flex flex-col">
-                    <span class="w-strong">{tr.places.showDuowave}</span>
-                    <span class="w-cap">{tr.places.showDuowaveAbout}</span>
-                </span>
-                <Switch on={duowave} label={tr.places.showDuowave} onChange={setDuowaveShown} />
-            </label>
             <button class="w-btn" onClick={() => setHiddenDevOptions(false)}>
                 {tr.places.hiddenClose}
             </button>

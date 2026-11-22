@@ -239,6 +239,13 @@ const FOR_A_PART: [&str; 6] =
     [NO_HEARING, NO_VOICE, HEARING_NOT_READY, VOICE_NOT_READY, "слух компьютера выключен", "голос компьютера выключен"];
 
 /// The secret a helper's key lives under.
+/// A short tag of a helper's address, as the station's health shows it instead of the address: the computer compares
+/// it with its own address's tag.
+pub fn url_tag(url: &str) -> String {
+    use sha2::{Digest, Sha256};
+    hex::encode(Sha256::digest(url.trim().trim_end_matches('/').as_bytes()))[..12].to_string()
+}
+
 pub fn key_secret(id: &str) -> String {
     format!("helper:{id}:key")
 }
@@ -363,6 +370,16 @@ pub struct DoorInput {
     pub enabled: Option<bool>,
     /// "asr", "tts", "llm", "messages".
     pub without: Option<Vec<String>>,
+    /// The computer that calls, as it names itself (0.18.2): its own entry is the one written, so a home keeps a Turbo
+    /// per computer (door.rs, `door_target`). None — an older computer: the door `home-computer`, as before.
+    pub helper: Option<DoorHelper>,
+}
+
+/// A computer at the door: its own id (`gateway_self`, the id its contract names) and the name people see.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DoorHelper {
+    pub id: String,
+    pub name: Option<String>,
 }
 
 /// The list, the regulator and the linked helpers' pins as last read: no choice of road reads the settings table.
@@ -927,8 +944,13 @@ impl Helpers {
     /// (clean-path check 18.11, item 48: «Турбо · Home computer» in a Russian panel, «Мак» in the workshop).
     fn note_helper_id(&self, id: &str, url: &str, named: &str, own_name: &str) {
         let own_name = own_name.trim();
+        // A home computer still under the default name takes its own; one found where another computer was takes its
+        // own too (22.11: Windows took the door, and the station called it «Компьютер Mac» on).
         let renamed = |entry: &HelperSetting| {
-            entry.id == HOME_COMPUTER && !own_name.is_empty() && default_name(&entry.name) && entry.name != own_name
+            entry.kind == HelperKind::Home
+                && !own_name.is_empty()
+                && entry.name != own_name
+                && (default_name(&entry.name) || entry.helper_id.as_deref().is_some_and(|was| was != named))
         };
         let noted = |entry: &HelperSetting| {
             entry.id == id && entry.url == url && entry.helper_id.as_deref() == Some(named) && !renamed(entry)
@@ -1415,7 +1437,7 @@ impl Helpers {
         let status = remote.look().await.map_err(ApiError::bad_gateway)?;
         let named = status.contract.helper.id.clone();
         if !named.is_empty() && self.me().as_deref() == Some(named.as_str()) {
-            return Err(ApiError::conflict(crate::tr!("Это сам этот центр: себя в Турбо не добавляют.")));
+            return Err(ApiError::conflict(crate::tr!("Это сам этот хаб: себя в Турбо не добавляют.")));
         }
         let mut draft = draft;
         draft.helper_id = (!named.is_empty()).then_some(named);
@@ -1490,7 +1512,7 @@ impl Helpers {
                 return Err(ApiError::bad_gateway(crate::tr!("По этому адресу не Турбо DuoWave.")));
             }
             if me.as_deref() == Some(helper.id.as_str()) {
-                return Err(ApiError::conflict(crate::tr!("Это сам этот центр: себя в Турбо не добавляют.")));
+                return Err(ApiError::conflict(crate::tr!("Это сам этот хаб: себя в Турбо не добавляют.")));
             }
             if let Some(replace) = replace.as_deref() {
                 let entry = snap.list.iter().find(|entry| entry.id == replace).ok_or_else(no_such_helper)?;
@@ -1843,6 +1865,14 @@ impl Helpers {
     /// `/health` `placement.helpers`: the regulator and each helper in brief — what it declares and is not kept from,
     /// and whether the regulator lets it out (`allowed`, judged as the gateway judges it: by its kind and its address).
     pub fn health(&self) -> Value {
+        // Who each computer of the home is (0.18.2): a Turbo finds its own entry by its id and keeps only that one's
+        // address right (placement/watch.rs, `own_entry`) — a home may have several Turbos.
+        let named: BTreeMap<String, String> = self
+            .list()
+            .into_iter()
+            .filter(|entry| entry.kind == HelperKind::Home)
+            .filter_map(|entry| Some((entry.id, entry.helper_id?)))
+            .collect();
         let list: Vec<Value> = self
             .views()
             .into_iter()
@@ -1863,10 +1893,17 @@ impl Helpers {
                 if let Some(since) = view.since {
                     brief["since"] = Value::String(since);
                 }
+                // No address in the brief: a tag of it, by which the computer knows its own is right.
+                if let Some(helper_id) = named.get(&view.id) {
+                    brief["helperId"] = Value::String(helper_id.clone());
+                    brief["urlTag"] = view.url.as_deref().map(url_tag).map(Value::String).unwrap_or(Value::Null);
+                    brief["without"] = json!(door::to_legacy(&view.without));
+                }
                 brief
             })
             .collect();
-        json!({ "away": self.away(), "list": list })
+        // `perComputer`: this station keeps a Turbo per computer (0.18.2) — a computer not in the list is none of its.
+        json!({ "away": self.away(), "list": list, "perComputer": true })
     }
 
     /// `/health` `placement.homeServer`, the old shape a 0.11 computer reads: the pair's door, while its key is stored.

@@ -22,7 +22,7 @@ use serde::Serialize;
 use crate::core::availability::HomeServer;
 use crate::core::events::Actor;
 use crate::helpers::contract::Ability;
-use crate::helpers::{door, DoorInput, Helpers, HOME_COMPUTER};
+use crate::helpers::{door, DoorHelper, DoorInput, Helpers, HOME_COMPUTER};
 use crate::platform::http::ApiError;
 use crate::secrets::SecretMask;
 use crate::settings::definitions::HomeServerSetting;
@@ -35,7 +35,7 @@ pub use crate::helpers::{AWAY, BACK, CHECK_EVERY, DOWN_AFTER, GIVEN, NO_HEARING,
 /// The pair's door's words (the station's old panel, a 0.11 computer): «Модель» off while «Мозг» on the station answers
 /// with the computer's model — its row cannot leave while a choice answers with it, so the switch is refused.
 pub fn model_answers() -> String {
-    crate::tr!("Модель компьютера сейчас отвечает в «Мозге» колонки — сначала выберите там другую модель.")
+    crate::tr!("Модель компьютера сейчас отвечает в «Мышлении» колонки — сначала выберите там другую модель.")
 }
 
 /// The connection and its state, for both panels.
@@ -124,10 +124,12 @@ impl HomeServerService {
     ) -> Result<HomeServerStatus, ApiError> {
         match url.map(str::trim).filter(|url| !url.is_empty()) {
             None => self.helpers.close_door(actor)?,
-            Some(url) => self.helpers.door(
-                DoorInput { url: Some(url.to_string()), key: key.map(str::to_string), ..DoorInput::default() },
-                actor,
-            )?,
+            Some(url) => {
+                self.helpers.door(
+                    DoorInput { url: Some(url.to_string()), key: key.map(str::to_string), ..DoorInput::default() },
+                    actor,
+                )?;
+            }
         }
         Ok(self.status())
     }
@@ -143,9 +145,23 @@ impl HomeServerService {
         without: Option<Vec<String>>,
         actor: Option<Actor>,
     ) -> Result<HomeServerStatus, ApiError> {
-        let input = DoorInput { url: url.map(str::to_string), key: key.map(str::to_string), enabled, without };
-        self.helpers.door(input, actor)?;
+        self.link_of(url, key, enabled, without, None, actor)?;
         Ok(self.status())
+    }
+
+    /// The same, from a computer that names itself (`helper`, 0.18.2): its own entry is written — a home may have
+    /// several Turbos. The entry written is returned.
+    pub fn link_of(
+        &self,
+        url: Option<&str>,
+        key: Option<&str>,
+        enabled: Option<bool>,
+        without: Option<Vec<String>>,
+        helper: Option<DoorHelper>,
+        actor: Option<Actor>,
+    ) -> Result<String, ApiError> {
+        let input = DoorInput { url: url.map(str::to_string), key: key.map(str::to_string), enabled, without, helper };
+        self.helpers.door(input, actor)
     }
 
     /// One look at the computer now, while the station leans on it.
@@ -205,7 +221,7 @@ pub fn check_model_kept(
     if model_kept(helpers, brain, id, without) {
         let name = helpers.entry(id).map(|entry| entry.name).unwrap_or_default();
         return Err(ApiError::conflict(crate::tr!(
-            "Модель Турбо «{name}» сейчас отвечает в «Мозге» — сначала выберите там другую модель.",
+            "Модель Турбо «{name}» сейчас отвечает в «Мышлении» — сначала выберите там другую модель.",
             name = name
         )));
     }
@@ -305,15 +321,22 @@ mod routes {
         if let Some(without) = &without {
             super::check_parts(&app.home_server, &app.brain, without)?;
         }
-        let status = app.home_server.link(
+        // The computer as it names itself (0.18.2): its own entry, so a home keeps a Turbo per computer.
+        let helper = body.get("helper").and_then(|helper| {
+            let id = helper.get("id").and_then(Value::as_str)?.trim();
+            let name = helper.get("name").and_then(Value::as_str).map(str::trim).filter(|name| !name.is_empty());
+            (!id.is_empty()).then(|| crate::helpers::DoorHelper { id: id.to_string(), name: name.map(str::to_string) })
+        });
+        let target = app.home_server.link_of(
             body.get("url").and_then(Value::as_str),
             body.get("key").and_then(Value::as_str),
             body.get("enabled").and_then(Value::as_bool),
             without,
+            helper,
             caller.actor(),
         )?;
-        if status.enabled {
-            app.home_server.check().await;
+        if app.helpers.entry(&target).is_some_and(|entry| entry.enabled) {
+            let _ = app.helpers.check(&target).await;
         }
         Ok(ok(app.home_server.status()))
     }
@@ -371,7 +394,7 @@ mod tests {
         let page = check_model_kept(&station.helpers, &brain, HOME_COMPUTER, &[Ability::Model]).unwrap_err();
         assert_eq!(
             (page.status.as_u16(), page.message.as_str()),
-            (409, "Модель Турбо «Турбо a» сейчас отвечает в «Мозге» — сначала выберите там другую модель."),
+            (409, "Модель Турбо «Турбо a» сейчас отвечает в «Мышлении» — сначала выберите там другую модель."),
             "the new page's «Не брать у него: модель» too, naming the helper (as it names itself, item 48)"
         );
         assert!(check_model_kept(&station.helpers, &brain, "home-b", &[Ability::Model]).is_ok(), "another helper's");

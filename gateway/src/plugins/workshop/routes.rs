@@ -405,7 +405,7 @@ async fn set_agent_model(State(app): State<Arc<App>>, caller: Caller, Body(body)
                 return Err(ApiError::field("model", crate::tr!("выберите модель")));
             }
             if !app.brain.view().providers.iter().any(|provider| provider.id == pick.provider) {
-                return Err(ApiError::field("provider", crate::tr!("такого провайдера нет в «Мозге»")));
+                return Err(ApiError::field("provider", crate::tr!("такого провайдера нет в «Мышлении»")));
             }
             app.settings.set(&WORKSHOP_AGENT, &pick, actor)?;
         }
@@ -447,7 +447,9 @@ async fn chat(
         return Err(ApiError::bad_request(crate::tr!("Напишите, что сделать.")));
     }
     if !app.dialog.enabled() {
-        return Err(ApiError::conflict(crate::tr!("Модель не выбрана: добавьте провайдера в «Персонаж» → «Мозг».")));
+        return Err(ApiError::conflict(crate::tr!(
+            "Модель не выбрана: добавьте провайдера в «Персонаж» → «Мышление»."
+        )));
     }
     let key = format!("workshop:{principal}:{id}");
     if body.fresh {

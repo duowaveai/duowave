@@ -2,9 +2,12 @@
 //! many times a day — the gateway itself was fine —, and every voice request then waited about 10 s for the cloud and
 //! ended in «Не получилось получить ответ» («tcp connect error: Network unreachable (os error 101)»).
 //!
-//! - `online_now()`: whether the device has a way out now — a default route (/proc/net/route) on an interface whose
-//!   link is up (/sys/class/net/<if>/operstate). Read at once, nothing sent: the voice path asks it before it waits
-//!   for anything outside. None where the kernel does not say it (not Linux): then nobody assumes «offline».
+//! - `online_now()`: whether the device has a way out now — a default route through a router (/proc/net/route) on
+//!   an interface whose link is up (/sys/class/net/<if>/operstate). Read at once, nothing sent: the voice path asks
+//!   it before it waits for anything outside. None where the kernel does not say it (not Linux): then nobody assumes
+//!   «offline». A default route with no router counts for nothing: the Lite 2 keeps one on `p2p0` (Wi-Fi Direct,
+//!   169.254.x.x, its link «unknown») whether its Wi-Fi is there or not (22.11: the router's Wi-Fi off, the watch saw
+//!   no outage).
 //! - `NetworkWatch`: a look every few seconds on the station; an outage begins when the way out goes and ends when it
 //!   is back. The outages of the last days are kept in the state folder (`network-outages.json`, a few KB), so «за
 //!   сегодня теряла Wi-Fi 4 раза, всего 12 минут» outlives a restart, and one that began before a reboot ends after it.
@@ -45,7 +48,8 @@ pub struct Outages {
     pub ended: VecDeque<Outage>,
 }
 
-/// The interfaces with a default route in /proc/net/route: destination and mask 0, the route up (flag 1).
+/// The interfaces with a default route through a router in /proc/net/route: destination and mask 0, the route up
+/// (flag 1) and through a gateway (flag 2).
 pub fn default_routes(table: &str) -> Vec<String> {
     table
         .lines()
@@ -54,7 +58,8 @@ pub fn default_routes(table: &str) -> Vec<String> {
             let fields: Vec<&str> = line.split_whitespace().collect();
             let (interface, destination, flags, mask) =
                 (fields.first()?, fields.get(1)?, fields.get(3)?, fields.get(7)?);
-            let up = u32::from_str_radix(flags, 16).is_ok_and(|flags| flags & 1 == 1);
+            // RTF_UP | RTF_GATEWAY.
+            let up = u32::from_str_radix(flags, 16).is_ok_and(|flags| flags & 3 == 3);
             (up && *destination == "00000000" && *mask == "00000000").then(|| interface.to_string())
         })
         .collect()
@@ -207,6 +212,29 @@ mod tests {
                           wlan0\t0001A8C0\t00000000\t0001\t0\t0\t0\t00FFFFFF\n";
         assert!(!online_by(no_default, |_| Some("up".into())));
         assert!(!online_by("Iface\tDestination\n", |_| Some("up".into())), "an empty table");
+    }
+
+    /// The Lite 2's table, 22.11: a default route on `p2p0` with no router (Wi-Fi Direct, its link «unknown») stays
+    /// there with the Wi-Fi gone — it is no way out.
+    #[test]
+    fn a_default_route_with_no_router_is_no_way_out() {
+        let with_wifi = "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n\
+                         wlan0\t00000000\t0101A8C0\t0003\t0\t0\t3005\t00000000\t0\t0\t0\n\
+                         p2p0\t00000000\t00000000\t0001\t0\t0\t1003006\t00000000\t0\t0\t0\n\
+                         lo\t0000007F\t00000000\t0001\t0\t0\t0\t000000FF\t0\t0\t0\n\
+                         p2p0\t0000FEA9\t00000000\t0001\t0\t0\t3006\t0000FFFF\t0\t0\t0\n\
+                         wlan0\t0001A8C0\t00000000\t0001\t0\t0\t3005\t00FFFFFF\t0\t0\t0\n";
+        let state = |interface: &str| Some(if interface == "p2p0" { "unknown" } else { "up" }.to_string());
+        assert_eq!(default_routes(with_wifi), vec!["wlan0".to_string()]);
+        assert!(online_by(with_wifi, state));
+        let wifi_gone = "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n\
+                         p2p0\t00000000\t00000000\t0001\t0\t0\t1003006\t00000000\t0\t0\t0\n\
+                         lo\t0000007F\t00000000\t0001\t0\t0\t0\t000000FF\t0\t0\t0\n\
+                         p2p0\t0000FEA9\t00000000\t0001\t0\t0\t3006\t0000FFFF\t0\t0\t0\n";
+        assert!(!online_by(wifi_gone, state));
+        assert!(!online_by(with_wifi, |interface| Some(
+            if interface == "wlan0" { "dormant" } else { "unknown" }.into()
+        )));
     }
 
     /// A real time: 22.11.2026, 18:00 UTC.

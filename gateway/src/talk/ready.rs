@@ -620,7 +620,7 @@ mod tests {
         assert_eq!(failure_why("Anthropic stream broke: 14029 tokens", say), None);
         assert_eq!(
             fill(say.failed_why_line, &[("title", "Новая игра"), ("why", say.why_money)]),
-            "Новая игра: не получилось — на ключе «Мозга» кончились деньги. Подробности в пульте."
+            "Новая игра: не получилось — на ключе «Мышления» кончились деньги. Подробности в пульте."
         );
     }
 

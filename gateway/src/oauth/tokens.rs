@@ -320,7 +320,7 @@ impl TokenAccess {
     fn signed_out(&self, detail: impl Into<String>) -> anyhow::Error {
         *self.problem() = Some(Problem::Signin);
         anyhow::Error::new(SpokenFailure {
-            phrase: format!("Вход в {} закончился. Войдите снова в пульте, в «Мозге».", self.with),
+            phrase: format!("Вход в {} закончился. Войдите снова в пульте, в «Мышлении».", self.with),
             detail: format!("{}: {}", self.with, detail.into()),
         })
     }
@@ -328,7 +328,7 @@ impl TokenAccess {
     /// Never signed in yet: the same, in other words.
     fn not_signed_in(&self) -> anyhow::Error {
         anyhow::Error::new(SpokenFailure {
-            phrase: format!("Нужно войти в {}: в пульте, в «Мозге».", self.with),
+            phrase: format!("Нужно войти в {}: в пульте, в «Мышлении».", self.with),
             detail: format!("{}: no sign-in", self.with),
         })
     }

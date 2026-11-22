@@ -715,7 +715,18 @@ export interface VoicePlan {
  */
 export interface HomeVoiceWaiting {
     turbo: { id: string; name: string; up: boolean } | null;
-    pending: (TtsPending & { title: string; character?: string | null; package?: string | null }) | null;
+    /**
+     * `backupOf` — голос запасной: персонаж, которому он нужен, и почему свой голос персонажа тут не запустится
+     * (`why` — слова шлюза: «На Windows нужна видеокарта NVIDIA.»); шлюз постарше его не присылает.
+     */
+    pending:
+        | (TtsPending & {
+              title: string;
+              character?: string | null;
+              package?: string | null;
+              backupOf?: { title: string; why?: string | null } | null;
+          })
+        | null;
 }
 
 /** Ответ владельца ждущему голосу: включить при ОЗУ впритык, повторить не вышедшее, забыть. */
@@ -933,7 +944,10 @@ export interface HomeStatusRow {
     id: 'voice' | 'brain' | 'turbo' | 'characterVoice' | 'mode' | 'stations' | 'wifi';
     state: 'ok' | 'warn' | 'bad';
     text: string;
-    action?: 'pointLocal' | 'brain' | 'turbo' | 'firewall' | 'voice' | 'mode' | 'station' | 'addStations';
+    /** `windowsVoice` — голос персонажа на Турбо не пускает защита Windows (Smart App Control): что сделать, с предупреждением. */
+    action?: 'pointLocal' | 'brain' | 'turbo' | 'firewall' | 'voice' | 'mode' | 'station' | 'addStations' | 'windowsVoice';
+    /** Чей это брандмауэр: id шлюза того компьютера-Турбо. Кнопка «Разрешить в брандмауэре» — только на нём. */
+    turbo?: string;
 }
 
 export interface HomeStatusView {
@@ -4036,11 +4050,15 @@ export const api = {
     /** Подключённые колонки, которые всё ещё ходят на прежний порт этого компьютера: шлюз с тех пор сменил порт. */
     movedGateway: () => get<MovedGateway[]>('/api/v1/stations/connect/moved'),
     /** Windows: профиль сети, брандмауэр и правила для DuoWave — что мешает колонке и другим достучаться до компьютера. */
-    windowsNetwork: () => get<WindowsNetworkView>('/api/v1/system/windows-network'),
+    // Брандмауэр — этого компьютера: из окна дома (`?via=`) запрос идёт его шлюзу мимо прохода, не центру (22.11: в окне
+    // дома на Windows кнопка «Разрешить в брандмауэре» ничего не делала — вопрос уходил колонке).
+    windowsNetwork: () => ownCall<WindowsNetworkView>('GET', '/api/v1/system/windows-network'),
     /** «Отчёт для разработчика»: версия, система, сеть Windows и конец журнала шлюза — без секретов и личных путей. */
     developerReport: () => get<{ text: string }>('/api/v1/system/report'),
     /** Windows: одно разрешение DuoWave в брандмауэре для частной сети — Windows спросит права на экране компьютера. */
-    allowWindowsFirewall: () => post<WindowsNetworkView>('/api/v1/system/windows-network/allow'),
+    allowWindowsFirewall: () => ownCall<WindowsNetworkView>('POST', '/api/v1/system/windows-network/allow', {}),
+    /** «Безопасность Windows» на странице, где Smart App Control: решает человек, шлюз ничего не меняет. */
+    openWindowsSecurity: () => ownCall<{ opened: boolean }>('POST', '/api/v1/system/windows-security/open', {}),
     /** `password` — свой пароль root колонки, когда пустой не подошёл: шлюз хранит его зашифрованным, только если подошёл. */
     checkStation: (address: string, gateway?: string, password?: string) =>
         post<StationCheck>('/api/v1/stations/connect/check', { address, gateway, password }),

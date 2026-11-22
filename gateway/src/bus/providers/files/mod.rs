@@ -429,7 +429,7 @@ impl Files {
             matches!(letter.handle.as_str(), "list" | "stat" | "read" | "copy" | "find" | "text" | "preview" | "media");
         if reads && letter.trail.through_cloud() && !rule.model {
             return Err(BusError::Denied(crate::tr!(
-                "модель «Мозга» в облаке, а папка «{name}» ей закрыта: галочка «Модель может читать» в разделе «Папки»",
+                "модель «Мышления» в облаке, а папка «{name}» ей закрыта: галочка «Модель может читать» в разделе «Папки»",
                 name = self.title(&spot.folder)
             )));
         }

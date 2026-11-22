@@ -54,7 +54,7 @@ export default {
 
     // draft-preview
     callFailed: (fn: string) => `${fn} не отработала`,
-    codeChanged: 'panel.js поменялся, пока центр отвечал, — нажмите «Показать заново».',
+    codeChanged: 'panel.js поменялся, пока хаб отвечал, — нажмите «Показать заново».',
     noDeskWidget: 'В черновике нет виджета стола (слот desk.widgets).',
     loadingWidget: 'Загружаю виджет…',
 

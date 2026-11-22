@@ -33,7 +33,7 @@ const en: Translation<typeof ru> = {
     voiceReady: 'own voice is ready',
     voiceStarting: 'the voice is starting…',
     voiceFix: 'Choose a voice',
-    brainTitle: 'Brain',
+    brainTitle: 'Thinking',
     brainChosen: 'model selected',
     brainNone: 'no model selected',
     brainFix: 'Choose a model',

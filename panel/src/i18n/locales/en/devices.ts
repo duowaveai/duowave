@@ -114,6 +114,7 @@ export default {
     askCode: 'Ask for a code',
     earCodeLead: (name: string) => `The speaker “${name}” is about to say a code — type it here.`,
     earCodeSilent: (name: string) => `The speaker “${name}” won’t say the code aloud: open its panel — the request is there with its code and an “Allow” button.`,
+    earCodeWhere: (name: string) => `The speaker “${name}” says them; didn’t catch it — open its panel: the same code and “Allow” are there.`,
     earCodeLabel: 'Code from the speaker',
     earJoined: 'The speaker is in the home as the hub’s ear: choose its room.',
     earNeedsRoot: 'needs root: DuoWave can’t go on the speaker without it',

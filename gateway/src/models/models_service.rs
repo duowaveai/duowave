@@ -1032,13 +1032,13 @@ impl ModelsService {
                 group: None,
                 source: Some(record.source.clone()),
                 own: None,
-                title: record.title.clone(),
-                description: record.description.clone(),
-                badge: record.badge.clone(),
-                license: record.license.clone(),
+                title: shown(&record.title),
+                description: shown(&record.description),
+                badge: record.badge.as_deref().map(shown),
+                license: record.license.as_deref().map(shown),
                 locale: record.locale.clone(),
                 quality: record.quality.clone(),
-                size: record.size.clone(),
+                size: record.size.as_deref().map(shown),
                 url: record.url.clone(),
                 file: record.file.clone(),
                 voice: record.voices.first().map(|voice| voice.short.clone().unwrap_or_else(|| voice.name.clone())),
@@ -1150,7 +1150,13 @@ impl ModelsService {
                             installed: local.installed.contains(&entry.model),
                         }
                     }),
-                    record: entry,
+                    record: AsrModelRecord {
+                        title: shown(&entry.title),
+                        description: shown(&entry.description),
+                        badge: entry.badge.as_deref().map(shown),
+                        license: entry.license.as_deref().map(shown),
+                        ..entry
+                    },
                 })
                 .collect(),
             tts,
@@ -2440,6 +2446,12 @@ fn showcase_voice_model(entry: &ShowcaseTts) -> VoiceModelRecord {
     }
 }
 
+/// A catalog card's words in the reader's language. The showcase writes them in Russian and their English is in
+/// locales/en/models.json; a text no catalog knows (an open-registry voice's) goes out as it is.
+fn shown(text: &str) -> String {
+    crate::locale::text::translate_str(text)
+}
+
 /// Alice's own voice: not a catalog row — the provider flips to Yandex and the station answers itself.
 fn yandex_card(active: bool) -> TtsCard {
     TtsCard {
@@ -2449,7 +2461,7 @@ fn yandex_card(active: bool) -> TtsCard {
         source: None,
         own: None,
         title: crate::tr!("Яндекс — голос Алисы"),
-        description: crate::tr!("Как на колонке из коробки: отвечает голосом Алисы, своим движком Яндекса."),
+        description: crate::tr!("Отвечает голосом Алисы, как колонка из коробки. Озвучивает сам Яндекс."),
         badge: Some(crate::tr!("как было")),
         license: None,
         locale: None,
@@ -2636,6 +2648,28 @@ mod tests {
         assert_eq!(advised_ids(Some("ru")), gigaam);
         assert_eq!(advised_ids(Some("en")), ["parakeet-v3"]);
         assert_eq!(advised_ids(Some("ja")), ["whisper-large-v3-turbo"]);
+    }
+
+    /// Every Russian word of the showcase's cards has its English (locales/en/models.json): the panel shows them as
+    /// they are, in the reader's language.
+    #[test]
+    fn every_showcase_text_has_its_english() {
+        let russian = |text: &&'static str| text.chars().any(|c| matches!(c, 'А'..='я' | 'Ё' | 'ё'));
+        let mut texts: Vec<&'static str> = Vec::new();
+        for entry in &SHOWCASE.asr {
+            texts.extend([entry.title.as_str(), entry.description.as_str()]);
+            texts.extend([&entry.badge, &entry.license].into_iter().flatten().map(String::as_str));
+        }
+        for entry in &SHOWCASE.tts {
+            texts.extend([entry.title.as_str(), entry.description.as_str()]);
+            texts.extend([&entry.badge, &entry.license, &entry.size].into_iter().flatten().map(String::as_str));
+        }
+        let missing: Vec<&str> = texts
+            .into_iter()
+            .filter(russian)
+            .filter(|text| crate::locale::text::translated(text, Some("en")) == *text)
+            .collect();
+        assert!(missing.is_empty(), "showcase texts without English:\n{}", missing.join("\n"));
     }
 
     /// The voice as VoiceService decides it, without the synthesis: whose voice, which pair, what it was told.
@@ -3193,10 +3227,10 @@ mod tests {
             json!({
                 "id": "gigaam-v3-e2e",
                 "model": "v3_e2e_rnnt",
-                "title": "GigaAM v3 — конец-в-конец",
-                "description": "Пунктуация и заглавные из коробки, самый точный из быстрых. Рекомендуемый.",
+                "title": "GigaAM v3 e2e RNNT",
+                "description": "Распознаёт русскую речь и сразу ставит знаки препинания и заглавные буквы.",
                 "badge": "рекомендуем",
-                "license": "MIT · Сбережение (Сбер)",
+                "license": "MIT · Сбер",
                 "source": "huggingface:salute-developers/GigaAM",
                 "recommended": true,
                 "active": true,

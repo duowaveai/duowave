@@ -1,15 +1,16 @@
 // Свободный стол (docs/plans/desk.md, этап 3; макеты SpaceGateway, SpaceHelper): поле без краёв, колонка — в начале
 // координат, виджеты — где их поставили. Виджет перетаскивают за шапку и растягивают за угол; поле сдвигают
-// перетаскиванием фона и колесом, масштаб — кнопками, ⌘/Ctrl + колесом (щипок на тачпаде); мини-карта показывает,
+// перетаскиванием фона и колесом (Shift + колесо — вбок: у обычной мыши колесо только вверх-вниз), масштаб — кнопками,
+// ⌘/Ctrl + колесом (щипок на тачпаде); мини-карта показывает,
 // что есть за краем, и ведёт туда. У каждого виджета своё место (desk-places.ts): новый встаёт на первое свободное у
 // колонки — столбцами по сторонам — и дальше его держит. Колесо над списком в виджете, который ещё есть куда листать,
 // листает его, а не поле. Над полем, у правого края, — то, что висит поверх стола и места на нём не берёт (DeskFloat:
 // карточка Турбо).
-// Замок в углу закрепляет раскладку: виджеты не двигаются и не тянутся, поле не масштабируется и не тащится мышью, пункты
-// раскладки в меню виджетов не нажимаются. Смотреть стол колесом и тачпадом можно и у закреплённого (проверка начисто
-// 18.11: витрина была видна наполовину, а вниз не листалось); такой сдвиг не хранится — открыли стол снова, он как
-// сначала. Стол начинается закреплённым, и тогда в углу только замок; открыли — рядом появляются
-// «Расставить заново», масштаб и мини-карта. Места, масштаб, сдвиг и замок — в раскладке стола: её хранит шлюз, свою у
+// Замок в углу закрепляет раскладку: виджеты не двигаются и не тянутся, поле не масштабируется, пункты раскладки в меню
+// виджетов не нажимаются. Смотреть стол — колесом, тачпадом и перетаскиванием фона — можно и у закреплённого (проверка
+// начисто 18.11: витрина была видна наполовину, а вниз не листалось; после 0.18.1: вбок обычной мышью было никак); такой
+// сдвиг не хранится — открыли стол снова, он как сначала. Стол начинается открытым (владелец, 22.11): рядом с замком
+// «Расставить заново», масштаб и мини-карта; закрепили — в углу только замок. Места, масштаб, сдвиг и замок — в раскладке стола: её хранит шлюз, свою у
 // каждой роли (shell/widgets.ts). Плашки над столом (баннер: «Готовлю слух», флешка…) опускают поле, пока видны: сцена
 // стоит под ними, а не за ними.
 
@@ -77,8 +78,7 @@ const clamp = (value: number, min: number, max: number) => Math.min(max, Math.ma
 /**
  * Вид поля, пока его не трогали, когда под колонкой стоит виджет (`under`: витрина, «Лента»): колонка поднимается к
  * верху поля (24 точки от него, не выше чем на 240), а если виджет под ней и тогда не влезает над доком — стол
- * уменьшается, но не мельче MIN_FIT. Так виджет под колонкой виден весь сразу: у закреплённого стола (как он
- * начинается) иначе до его низа не добраться было бы. `height` — высота поля, `room` — сколько точек экрана от верха
+ * уменьшается, но не мельче MIN_FIT. Так виджет под колонкой виден весь сразу, без поиска колесом. `height` — высота поля, `room` — сколько точек экрана от верха
  * поля до дока, `head` — где может начаться сцена (ниже баннера), `need` — от верха сцены до низа виджета под ней,
  * точки стола.
  */
@@ -219,7 +219,7 @@ export function DeskCanvas({ widgets, layout, actions, scene, addTile, banner, r
     }, []);
     const view = useRef({ zoom, pan, push });
     view.current = { zoom, pan, push };
-    const locked = layout.locked !== false;
+    const locked = layout.locked === true;
     /** Для слушателей, поставленных один раз (колесо, прокрутка). */
     const lockedNow = useRef(locked);
     lockedNow.current = locked;
@@ -373,14 +373,20 @@ export function DeskCanvas({ widgets, layout, actions, scene, addTile, banner, r
             const target = event.target as HTMLElement;
             if (target.closest('.widget-menu, input, textarea, select')) return;
             const zooming = event.ctrlKey || event.metaKey;
-            if (!zooming && scrollsItself(target, node, event.deltaX, event.deltaY)) return;
+            // Колесо в строках или страницах (обычная мышь в Firefox): в точки, иначе щелчок колеса сдвигает на 3 точки.
+            const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? node.clientHeight : 1;
+            // Shift + колесо — вбок. macOS сама отдаёт его как deltaX; Windows и Linux — как deltaY с Shift.
+            const sideways = event.shiftKey && !event.deltaX;
+            const dx = (sideways ? event.deltaY : event.deltaX) * unit;
+            const dy = (sideways ? 0 : event.deltaY) * unit;
+            if (!zooming && scrollsItself(target, node, dx, dy)) return;
             event.preventDefault();
             if (zooming) {
-                if (!lockedNow.current) zoomAt(view.current.zoom * Math.exp(-event.deltaY * 0.0025), event.clientX, event.clientY);
+                if (!lockedNow.current) zoomAt(view.current.zoom * Math.exp(-event.deltaY * unit * 0.0025), event.clientX, event.clientY);
                 return;
             }
             touched.current = true;
-            setPan((old) => ({ x: old.x - event.deltaX, y: old.y - event.deltaY }));
+            setPan((old) => ({ x: old.x - dx, y: old.y - dy }));
         };
         node.addEventListener('wheel', onWheel, { passive: false });
         return () => node.removeEventListener('wheel', onWheel);
@@ -404,9 +410,9 @@ export function DeskCanvas({ widgets, layout, actions, scene, addTile, banner, r
         return () => node.removeEventListener('scroll', onScroll);
     }, []);
 
-    // Фон тащат — поле едет.
+    // Фон тащат — поле едет; у закреплённого тоже (посмотреть, как колесом: сдвиг не хранится).
     const onBackground = (event: PointerEvent) => {
-        if (locked || event.button !== 0) return;
+        if (event.button !== 0) return;
         if ((event.target as HTMLElement).closest('.widget, .widget-bare, .desk-scene, .desk-add-tile, .desk-zoom, .desk-map, .desk-float, .desk-slot, button, a, input')) return;
         const from = view.current.pan;
         touched.current = true;

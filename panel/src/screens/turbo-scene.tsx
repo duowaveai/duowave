@@ -8,7 +8,7 @@ import type { FunctionComponent } from 'preact';
 import type { Ability } from '../api';
 import { ABILITY_ICONS, abilityTitle, placeTitle } from '../helpers';
 import { tr } from '../i18n';
-import { IconBolt } from '../icons';
+import { IconBolt, IconClose } from '../icons';
 import { since } from '../time';
 import type { FallItem, TurboView } from './turbo-model';
 
@@ -32,8 +32,35 @@ function stateOf(turbo: TurboView): string {
     return tr.dashboard.turboAsleep;
 }
 
+/**
+ * Крестик «Скрыть Турбо» в углу блока — у колонки в узком окне (лента, столбец), где блок стоит под сценой, а не висит
+ * над свободным столом со своим крестиком (замечание 6 после 0.18.1). Скрыт — у колонки точка-молния, как на столе.
+ */
+function HideCross({ onHide }: { onHide: () => void }) {
+    return (
+        <button type="button" class="desk-float-close" aria-label={tr.desk.turboHide} title={tr.desk.turboHide} onClick={onHide}>
+            <IconClose size={14} />
+        </button>
+    );
+}
+
 /** Тёмный блок Турбо: имя и где он, на связи ли, его силы — что даёт сейчас светится, остальное — тише. */
-export function TurboBody({ turbo, onOpen, title: named, sub: told, state: shown }: { turbo: TurboView; onOpen: () => void; title?: string; sub?: string; state?: string }) {
+export function TurboBody({
+    turbo,
+    onOpen,
+    onHide,
+    title: named,
+    sub: told,
+    state: shown,
+}: {
+    turbo: TurboView;
+    onOpen: () => void;
+    /** Есть — в углу блока крестик «Скрыть». */
+    onHide?: () => void;
+    title?: string;
+    sub?: string;
+    state?: string;
+}) {
     const { helper } = turbo;
     const title = named ?? (turbo.builtin ? tr.dashboard.turboBuiltin : tr.dashboard.turboTitle(helper.name));
     const sub = told ?? (turbo.builtin
@@ -43,68 +70,85 @@ export function TurboBody({ turbo, onOpen, title: named, sub: told, state: shown
           : placeTitle(helper.kind));
     const state = shown ?? stateOf(turbo);
     const link = linkOf(turbo);
-    const chips = CHIPS.flatMap((id) => turbo.abilities.filter((ability) => ability.id === id));
+    const body = <TurboButton turbo={turbo} title={title} sub={sub} state={state} onOpen={onOpen} />;
     return (
         <div class={`turbo-side${turbo.builtin ? ' is-builtin' : ''}`}>
             <span class={`turbo-link ${link.cls}`} aria-hidden="true">
                 <span>{link.words}</span>
             </span>
-            <button class={`turbo-body${turbo.up ? '' : ' is-off'}${turbo.builtin ? ' is-inner' : ''}`} aria-label={tr.dashboard.turboAria(title, state)} onClick={onOpen}>
-                <span class="turbo-head">
-                    <span class="turbo-icon" aria-hidden="true">
-                        <IconBolt size={18} />
-                    </span>
-                    <span class="turbo-names">
-                        <b>{title}</b>
-                        <span>{sub}</span>
-                    </span>
-                    <span class="turbo-state">
-                        <i aria-hidden="true" />
-                        {state}
-                    </span>
+            {onHide ? (
+                <span class="turbo-card">
+                    {body}
+                    <HideCross onHide={onHide} />
                 </span>
-                {chips.length > 0 && (
-                    <span class="turbo-chips">
-                        {chips.map((ability) => {
-                            const ChipIcon: Icon = ABILITY_ICONS[ability.id];
-                            const taken = turbo.gives.includes(ability.id);
-                            const skipped = helper.without.includes(ability.id);
-                            const details = ability.details;
-                            const what = !ability.ready
-                                ? ability.id === 'voice' && !turbo.builtin
-                                    ? tr.dashboard.turboVoiceInstall
-                                    : tr.dashboard.turboNotReady
-                                : skipped
-                                  ? tr.dashboard.turboNotTaken
-                                  : ability.id === 'voice'
-                                    ? (details?.voice ?? details?.model)
-                                    : details?.model;
-                            return (
-                                <span key={ability.id} class={`turbo-chip${taken || (turbo.up && !skipped && ability.ready) ? '' : ' is-idle'}`}>
-                                    <ChipIcon size={15} />
-                                    {abilityTitle(ability.id, true)}
-                                    {what && <em>{what}</em>}
-                                </span>
-                            );
-                        })}
-                    </span>
-                )}
-            </button>
+            ) : (
+                body
+            )}
         </div>
     );
 }
 
+/** Сам блок: кнопка с шапкой и силами. */
+function TurboButton({ turbo, title, sub, state, onOpen }: { turbo: TurboView; title: string; sub: string; state: string; onOpen: () => void }) {
+    const { helper } = turbo;
+    const chips = CHIPS.flatMap((id) => turbo.abilities.filter((ability) => ability.id === id));
+    return (
+        <button class={`turbo-body${turbo.up ? '' : ' is-off'}${turbo.builtin ? ' is-inner' : ''}`} aria-label={tr.dashboard.turboAria(title, state)} onClick={onOpen}>
+            <span class="turbo-head">
+                <span class="turbo-icon" aria-hidden="true">
+                    <IconBolt size={18} />
+                </span>
+                <span class="turbo-names">
+                    <b>{title}</b>
+                    <span>{sub}</span>
+                </span>
+                <span class="turbo-state">
+                    <i aria-hidden="true" />
+                    {state}
+                </span>
+            </span>
+            {chips.length > 0 && (
+                <span class="turbo-chips">
+                    {chips.map((ability) => {
+                        const ChipIcon: Icon = ABILITY_ICONS[ability.id];
+                        const taken = turbo.gives.includes(ability.id);
+                        const skipped = helper.without.includes(ability.id);
+                        const details = ability.details;
+                        const what = !ability.ready
+                            ? ability.id === 'voice' && !turbo.builtin
+                                ? tr.dashboard.turboVoiceInstall
+                                : tr.dashboard.turboNotReady
+                            : skipped
+                              ? tr.dashboard.turboNotTaken
+                              : ability.id === 'voice'
+                                ? (details?.voice ?? details?.model)
+                                : details?.model;
+                        return (
+                            <span key={ability.id} class={`turbo-chip${taken || (turbo.up && !skipped && ability.ready) ? '' : ' is-idle'}`}>
+                                <ChipIcon size={15} />
+                                {abilityTitle(ability.id, true)}
+                                {what && <em>{what}</em>}
+                            </span>
+                        );
+                    })}
+                </span>
+            )}
+        </button>
+    );
+}
+
 /** Пустое место для Турбо у колонки без него: что он даст и куда идти. */
-export function TurboSlot({ onAdd }: { onAdd: () => void }) {
+export function TurboSlot({ onAdd, onHide }: { onAdd: () => void; onHide?: () => void }) {
     return (
         <div class="turbo-side">
             <span class="turbo-link is-empty" aria-hidden="true" />
-            <div class="turbo-slot">
+            <div class={`turbo-slot${onHide ? ' is-hideable' : ''}`}>
                 <b>{tr.dashboard.slotTitle}</b>
                 <span>{tr.dashboard.slotAbout}</span>
                 <button class="w-btn" onClick={onAdd}>
                     {tr.dashboard.slotAdd}
                 </button>
+                {onHide && <HideCross onHide={onHide} />}
             </div>
         </div>
     );

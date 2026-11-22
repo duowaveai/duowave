@@ -1,10 +1,10 @@
 // Тексты: screens/trip.ts, screens/to-station.ts.
 
 export default {
-    // Где был шаг — для «Наружу: мозг и голос».
+    // Где был шаг — для «Наружу: ИИ и голос».
     quoted: (text: string) => `«${text}»`,
     nodeEar: 'слух',
-    nodeBrain: 'мозг',
+    nodeBrain: 'ИИ',
     nodeTool: 'справка',
     nodeVoice: 'голос',
     nodePlayer: 'плеер',
@@ -21,8 +21,8 @@ export default {
     looking: 'Смотрит…',
     toolDefault: 'справка',
     yandexSuffix: ' · Яндекс',
-    labelTool: 'Мозг наводит справку',
-    labelToolWhat: (what: string) => `Мозг наводит справку: ${what}`,
+    labelTool: 'ИИ наводит справку',
+    labelToolWhat: (what: string) => `ИИ наводит справку: ${what}`,
     answering: 'Отвечает…',
     speaksLine: (what: string) => `говорит ${what}`,
     labelAnswering: (device: string) => `${device} отвечает`,
@@ -69,7 +69,7 @@ export default {
     modelHome: 'модель · дома',
     gatewaySkill: 'свой навык',
     notYet: 'пока не умеем',
-    gateway: 'центр',
+    gateway: 'хаб',
     going: 'идёт',
     answer: 'ответ',
     silence: 'тишина',

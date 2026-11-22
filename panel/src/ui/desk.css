@@ -117,6 +117,12 @@ html[data-theme='dark'] {
 .home-status .dot-ok { background: #65a30d; }
 .home-status .dot-warn { background: #f59e0b; }
 .home-status .dot-offline { background: var(--dot-offline); }
+/* Свёрнутая — одна строка; крестик в шапке сворачивает; оставленная как есть строка — серая (замечание 4 после 0.18.1). */
+.home-status-line { display: flex; align-items: center; gap: 10px; width: 100%; padding: 10px 16px; font: inherit; font-size: 13px; line-height: 18px; color: var(--text); text-align: left; cursor: pointer; }
+.home-status-line:hover { background: var(--hover-bg); }
+.home-status-fold { flex: none; width: 24px; height: 24px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 50%; background: none; color: var(--sub); cursor: pointer; }
+.home-status-fold:hover { background: var(--hover-bg); color: var(--text); }
+.home-status .w-row.is-kept .w-text { color: var(--sub); }
 .home-bar.is-short .home-bar-name { display: none; }
 .home-bar.is-short .home-role { display: none; }
 .home-bar.is-short .home-chip-name { max-width: 12ch; }
@@ -207,6 +213,9 @@ html[data-backdrop='on'] .desk-canvas { background-color: transparent; backgroun
 .desk-feed-grid > .widget-bare.widget-large,
 .desk-feed-grid > .desk-add-tile { grid-column: span 2; }
 .desk-solo { max-width: 560px; margin: 0 auto; display: flex; flex-direction: column; gap: 16px; }
+/* Широкие виджеты «под сценой» стола без колонки (витрина) — под столбцом, своей ширины. */
+.desk-solo-wide { max-width: 908px; margin: 16px auto 0; display: flex; flex-direction: column; gap: 16px; }
+.desk-solo-wide:empty { display: none; }
 
 /* Боковая панель: колонка, под ней виджеты столбцом. */
 .desk-column { display: flex; flex-direction: column; gap: 16px; }
@@ -718,8 +727,8 @@ html[data-theme='dark'] .widget.music { background: color-mix(in srgb, var(--mus
 @media (prefers-reduced-motion: reduce) { .desk-push { transition: none; } }
 
 /* Замок, масштаб и мини-карта — справа внизу, над полем: ряд с замком в углу — на линии дока, серединой к его середине,
-   карта — над рядом. Закреплённый стол (как он начинается) показывает в углу только замок: «Расставить заново» и
-   масштаб не видны, но держат место — замок не прыгает, когда стол открывают, — а карты нет. */
+   карта — над рядом. Закреплённый стол показывает в углу только замок: «Расставить заново» и масштаб не видны, но
+   держат место — замок не прыгает, когда стол открывают, — а карты нет. Стол начинается открытым (22.11). */
 .desk-tools { position: absolute; right: 20px; bottom: calc(var(--dock-gap) + (var(--dock-h) - 32px) / 2 + env(safe-area-inset-bottom)); z-index: 6; display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
 .desk-tools.is-locked .desk-tool { visibility: hidden; }
 .desk-zoom { display: flex; align-items: center; gap: 6px; }
@@ -737,17 +746,15 @@ html[data-theme='dark'] .widget.music { background: color-mix(in srgb, var(--mus
 .desk-zoom-btn:hover { background: var(--hover-bg); }
 .desk-zoom-level { min-width: 52px; height: 32px; border-radius: 999px; font-size: 13px; line-height: 18px; color: var(--text); font-variant-numeric: tabular-nums; }
 .desk-zoom-level:hover { background: var(--hover-bg); }
-/* Замок: закреплённый стол — обычный тихий круг (так стол живёт всегда), открытый для правки — чёрный (выбранное в
-   «Минимале» — чернилами): видно, что стол сейчас можно двигать, и закрыть его — там же. У закреплённого поле и виджеты
-   не обещают курсором, что их можно тащить. */
-.desk-lock[aria-pressed='false'] { background: var(--ink-bg); border-color: var(--ink-bg); color: var(--ink-fg); }
-.desk-lock[aria-pressed='false']:hover { background: var(--ink-hi); border-color: var(--ink-hi); }
+/* Замок: открытый стол (как он начинается) — обычный тихий круг, закреплённый — чёрный (выбранное в «Минимале» —
+   чернилами): видно, что раскладка сейчас закреплена, и открыть её — там же. Поле тащится и у закреплённого (посмотреть),
+   поэтому курсор у фона — «рука» всегда. */
+.desk-lock[aria-pressed='true'] { background: var(--ink-bg); border-color: var(--ink-bg); color: var(--ink-fg); }
+.desk-lock[aria-pressed='true']:hover { background: var(--ink-hi); border-color: var(--ink-hi); }
 .desk-zoom-btn:disabled,
 .desk-zoom-level:disabled { opacity: 0.45; cursor: default; }
 .desk-zoom-btn:disabled:hover { background: linear-gradient(var(--strong-bg), var(--strong-bg)), var(--bg); }
 .desk-zoom-level:disabled:hover { background: none; }
-.desk-canvas.is-locked,
-.desk-canvas.is-locked:active { cursor: default; }
 .desk-map { position: relative; width: 132px; height: 84px; border-radius: 12px; background: linear-gradient(var(--strong-bg), var(--strong-bg)), var(--bg); border: 1px solid var(--glass-border); overflow: hidden; cursor: pointer; display: block; }
 .desk-map-item { position: absolute; border-radius: 2px; background: #e4e0db; }
 html[data-theme='dark'] .desk-map-item { background: #3a3734; }
@@ -1813,6 +1820,9 @@ span.waiting-pill:hover { border-color: var(--glass-border); }
 /* На свободном столе карточка Турбо не стоит рядом с колонкой, а висит у правого края поверх поля: места у виджетов не
    берёт, не двигается с полем. Крестик в углу закрывает; закрыта — у колонки справа точка-молния. */
 .desk-float-card { position: relative; width: 340px; max-width: calc(100vw - 40px); }
+/* Блок Турбо под сценой в узком окне — со своим крестиком в углу (замечание 6 после 0.18.1). */
+.turbo-card { position: relative; display: flex; flex: 1 1 auto; width: 100%; min-width: 0; }
+.turbo-slot.is-hideable { position: relative; }
 .desk-float-card .turbo-side { max-width: none; }
 .desk-float-card .turbo-link { display: none; }
 .desk-float-card .turbo-slot { background: var(--bg); box-shadow: 0 10px 30px rgba(0, 0, 0, 0.12); }
@@ -1892,7 +1902,7 @@ span.waiting-pill:hover { border-color: var(--glass-border); }
     transform: translateX(-50%);
     z-index: 17;
     width: max-content;
-    max-width: 720px;
+    max-width: min(720px, calc(100vw - 32px));
     display: flex;
     flex-direction: column;
     align-items: center;

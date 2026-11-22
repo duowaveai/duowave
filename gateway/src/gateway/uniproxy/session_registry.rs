@@ -361,7 +361,7 @@ impl crate::activator::WakeStation for RegistrySpeaker {
         match self.0.upgrade().and_then(|registry| registry.local_station()) {
             Some(station) => station.wake_by_activator(wake, starter),
             None => async {
-                crate::activator::WakeOutcome::Failed(crate::tr!("колонка не подключена к этому центру"))
+                crate::activator::WakeOutcome::Failed(crate::tr!("колонка не подключена к этому хабу"))
             }
             .boxed(),
         }

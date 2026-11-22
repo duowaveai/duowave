@@ -65,6 +65,16 @@ pub fn kept(voice: &str) -> Option<Bytes> {
     kept.as_ref().filter(|(label, _)| label.voice == voice && label.text == text).map(|(_, audio)| audio.clone())
 }
 
+/// What to play with no way out: the recording kept, in whatever voice, with today's words. The voice that answers
+/// may have changed with the outage — the Turbo went with the Wi-Fi, Alice's voice answers now (22.11: the phrase was
+/// kept in the Turbo's voice, the station looked for one in Alice's and said nothing). The phrase in another voice is
+/// better than silence.
+pub fn to_play() -> Option<Bytes> {
+    let text = words();
+    let kept = keeper().kept.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    kept.as_ref().filter(|(label, _)| label.text == text).map(|(_, audio)| audio.clone())
+}
+
 /// Whether the phrase is to be recorded in this voice now: none kept for it, and not tried lately. True takes the try.
 pub fn wanted(voice: &str) -> bool {
     if kept(voice).is_some() {
@@ -122,6 +132,8 @@ mod tests {
         assert_eq!(kept(voice).as_deref(), Some(&b"OggS-pretend-opus"[..]));
         assert_eq!(kept("own:ermil"), None, "another voice has its own recording");
         assert!(!wanted(voice));
+        // With no way out the voice that answers may be another one: the kept phrase plays all the same.
+        assert_eq!(to_play().as_deref(), Some(&b"OggS-pretend-opus"[..]));
 
         // Kept in the state folder: a new process reads it back.
         let label: Label = serde_json::from_slice(&std::fs::read(state.path().join(LABEL)).unwrap()).unwrap();

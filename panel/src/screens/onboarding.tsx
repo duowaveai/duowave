@@ -6,7 +6,7 @@
 
 import { useEffect, useRef, useState } from 'preact/hooks';
 
-import { FoundStation, PairCodeAsked, PairCodeLook, StationGatewayView, api, can, problemOf, stationCall } from '../api';
+import { ApiError, FoundStation, PairCodeAsked, PairCodeLook, StationGatewayView, api, can, problemOf, stationCall } from '../api';
 import { LANGUAGES, setLanguage, tr, useLanguage } from '../i18n';
 import { usePanel } from '../shell/context';
 import { flushPanelMemory, recalled, remember } from '../shell/memory';
@@ -162,8 +162,13 @@ export function Onboarding({ onClose }: { onClose: () => void }) {
     const [busy, setBusy] = useState(false);
     const [problem, setProblem] = useState<string | null>(null);
     const [nav, setNav] = useState<StepNav | null>(null);
-    // Компьютер вошёл в дом по коду: шаг «Что даёт этот компьютер» (этап 3 плана home-setup-flow), потом стол дома.
-    const [turbo, setTurbo] = useState<{ key: string; name: string; status?: boolean } | null>(null);
+    // Компьютер вошёл в дом по коду: шаг «Что даёт этот компьютер» (этап 3 плана home-setup-flow), потом «Ваш дом» и стол
+    // дома. Место держит запись шагов (`joined`): повторный вход после копии дома продолжает отсюда.
+    const [turbo, setTurboNow] = useState<{ key: string; name: string; status?: boolean } | null>(again ? null : (saved?.joined ?? null));
+    const setTurbo = (next: { key: string; name: string; status?: boolean }) => {
+        setTurboNow(next);
+        patchRecord({ joined: next });
+    };
     const main = useRef<HTMLElement>(null);
 
     // Подключение и перенос колонки ведёт пульт (screens/onb/speaker.tsx), а не шлюз: уход со шага их не останавливает,
@@ -182,6 +187,22 @@ export function Onboarding({ onClose }: { onClose: () => void }) {
 
     // Колонки дома: поиск начинается сразу; выбор он не меняет (см. выше).
     const scan = useScan(!onStation);
+
+    // Компьютер уже в доме, а шаги ещё на «Где живёт» (дом настроили в пульте колонки, потом вошли сюда по паролю или
+    // коду — замечание 5 после 0.18.1): шаги колонки — её, пройдены там. Сразу последний шаг — «Ваш дом: что работает», с
+    // кнопками у того, что не так; центр — компьютер — сразу стол. Свой путь «колонка + Турбо» (компьютер сам переносит
+    // шлюз на колонку) сюда не попадает: он становится Турбо на шаге «Колонка», уже после «Где живёт». «Пройти заново» —
+    // тоже нет: там человек сам идёт по шагам.
+    const helperKey = panel.role.role === 'helper' ? (panel.role.station?.key ?? null) : undefined;
+    useEffect(() => {
+        if (onStation || again || turbo || helperKey === undefined || step !== 'where' || done.includes('speaker')) return;
+        if (helperKey === null) {
+            finish();
+            panel.go('home');
+            return;
+        }
+        setTurbo({ key: helperKey, name: panel.role.station?.name ?? '', status: true });
+    }, [helperKey]);
 
     const index = Math.max(0, steps.indexOf(step));
     const go = (next: StepId) => {
@@ -757,6 +778,8 @@ function HelperStep({
         onLinked({ key: 'key' in view && view.key ? view.key : '', name, computer: 'helper' in view && !!view.helper });
     const askNow = async (): Promise<void> => {
         setError(null);
+        setWrong(null);
+        setCodeShy(false);
         setLook(null);
         setCode('');
         try {
@@ -790,16 +813,46 @@ function HelperStep({
     }, [asked?.id, mode]);
     const digits = code.replace(/\D/g, '');
     const closed = !!look && (look.status === 'denied' || look.status === 'closed');
+    /**
+     * «Подключить к дому» с пустым или неполным кодом (замечание 13 после 0.18.1: кнопка была выключена, и нажатие
+     * молчало): поле подсвечено, под ним — что ввести и где этот код взять. Начали вводить снова — подсветка уходит.
+     */
+    const [codeShy, setCodeShy] = useState(false);
+    /**
+     * Код не подошёл (замечание 13: неверный код тоже молчал — ответ дома был мелко внизу, а поле пустело): ответ — под
+     * полем, поле подсвечено, введённое остаётся выделенным, чтобы поправить цифру. Третий неверный закрывает запрос —
+     * тогда строка «закрыт» и что делать дальше.
+     */
+    const [wrong, setWrong] = useState<string | null>(null);
+    const codeWhere = !asked
+        ? ''
+        : asked.told?.spoken
+          ? t.helperCodeWhereSpoken(name)
+          : asked.told?.window
+            ? t.helperCodeWhereWindow
+            : asked.told?.printed
+              ? t.helperCodeWherePrinted
+              : t.helperCodeWhereSilent;
     const enter = async (): Promise<void> => {
-        if (!asked || digits.length !== 6 || busy) return;
+        if (!asked || busy) return;
+        if (digits.length !== 6) {
+            setCodeShy(true);
+            document.getElementById('onb-code')?.focus();
+            return;
+        }
         setBusy(true);
         setError(null);
         try {
             linked(await api.pairCodeEnter(asked.id, digits));
         } catch (e) {
-            setError(problemOf(e));
-            setCode('');
-            void api.pairCodeLook(asked.id).then(setLook).catch(() => undefined);
+            const fresh = await api.pairCodeLook(asked.id).catch(() => null);
+            if (fresh) setLook(fresh);
+            if (e instanceof ApiError && e.status === 403) {
+                // Закрыт третьим неверным — это скажет строка «закрыт»; иначе — сколько попыток осталось.
+                if (fresh?.status !== 'closed' && fresh?.status !== 'denied')
+                    setWrong(fresh?.status === 'pending' ? t.helperCodeWrong(fresh.triesLeft) : problemOf(e));
+            } else setError(problemOf(e));
+            window.setTimeout(() => (document.getElementById('onb-code') as HTMLInputElement | null)?.select(), 0);
         } finally {
             setBusy(false);
         }
@@ -891,9 +944,14 @@ function HelperStep({
                             {closed ? (look?.why ?? t.helperAskAgain) : lead}
                         </p>
                         {closed ? (
-                            <button type="button" class="dw-btn dw-btn-light" onClick={() => void askNow()}>
-                                {t.helperAskAgain}
-                            </button>
+                            <>
+                                <button type="button" class="dw-btn dw-btn-light" onClick={() => void askNow()}>
+                                    {t.helperAskAgain}
+                                </button>
+                                <p class="small" style={{ margin: 0 }}>
+                                    {t.helperClosedNext}
+                                </p>
+                            </>
                         ) : (
                             <div class="field">
                                 <label for="onb-code">{t.helperCodeLabel}</label>
@@ -908,11 +966,26 @@ function HelperStep({
                                     placeholder="•• •• ••"
                                     disabled={!asked || busy}
                                     value={code}
+                                    aria-invalid={codeShy || !!wrong || undefined}
+                                    aria-describedby={codeShy || wrong ? 'onb-code-shy' : undefined}
                                     style={{ fontSize: '22px', lineHeight: '26px', letterSpacing: '0.2em', fontVariantNumeric: 'tabular-nums' }}
-                                    onInput={(event) => setCode((event.target as HTMLInputElement).value)}
+                                    onInput={(event) => {
+                                        setCode((event.target as HTMLInputElement).value);
+                                        setCodeShy(false);
+                                        setWrong(null);
+                                    }}
                                     onKeyDown={(event) => event.key === 'Enter' && void enter()}
                                 />
-                                <span class="small">{look ? `${t.helperCodeHint} · ${t.helperWaiting}` : t.helperCodeHint}</span>
+                                {(codeShy || wrong) && (
+                                    <span id="onb-code-shy" class="small onb-code-shy" role="alert">
+                                        {wrong ?? (digits.length ? t.helperCodeShort(digits.length) : t.helperCodeEmpty)} {codeWhere}
+                                    </span>
+                                )}
+                                <span class="small">
+                                    {/* После неверного кода — сколько попыток осталось (ответ дома: «Код не подошёл. Осталось попыток: 2.»). */}
+                                    {look && look.triesLeft < 3 ? t.helperCodeTries(look.triesLeft) : t.helperCodeHint}
+                                    {look ? ` · ${t.helperWaiting}` : ''}
+                                </span>
                             </div>
                         )}
                         <div class="onb-row-between" style={{ flexWrap: 'wrap', gap: '8px' }}>
@@ -965,7 +1038,7 @@ function HelperStep({
                     <button
                         type="button"
                         class="dw-btn dw-btn-lg dw-btn-accent"
-                        disabled={busy || (mode === 'code' ? digits.length !== 6 || !asked || closed : !password)}
+                        disabled={busy || (mode === 'code' ? !asked || closed : !password)}
                         aria-busy={busy || undefined}
                         onClick={() => void (mode === 'code' ? enter() : byPassword())}
                     >

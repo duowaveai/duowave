@@ -7,6 +7,12 @@ const en: Translation<typeof ru> = {
     howComputer: 'Say it yourself or tap a line — I will show what it looks like. While DuoWave works, you can keep talking.',
     howStation: 'Say it to the speaker — the result shows up here, on the desk. Tap a line to see what it looks like.',
     wake: { station: 'Alice', computer: 'Deevi' },
+    readyTitle: 'Not everything is ready yet',
+    setupInstalling: (title: string, done: number, total: number) => `${title} is still installing: ${done} of ${total} done.`,
+    setupWakeMeanwhile: (wake: string) => `Meanwhile, say “${wake}”.`,
+    setupWordWaits: (word: string) => `The word “${word}” starts working once you choose Thinking: it is heard only in “Alice + your AI” mode.`,
+    setupNoThinking: (name: string) => `The character “${name}” is chosen, but Alice answers for now. It speaks once you choose Thinking.`,
+    setupVoiceAway: (name: string) => `The voice of “${name}” plays only from a Turbo computer. Until there is one, answers use Alice’s voice.`,
     ask: (name: string, text: string) => `“${name}, ${text}”`,
 
     keyAlt: '⌥',

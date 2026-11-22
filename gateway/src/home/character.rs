@@ -239,7 +239,7 @@ async fn waiting_at(remote: &RemoteHelper) -> Option<Value> {
 /// `{turbo: {id, name, up} | null, pending: {…, title, character?} | null}`.
 async fn waiting(app: &App) -> Value {
     #[cfg(feature = "pc")]
-    if let Some(pending) = crate::home_server::voice_plan::waiting(app) {
+    if let Some(pending) = crate::home_server::voice_plan::waiting(app).await {
         return json!({ "turbo": null, "pending": pending });
     }
     let remote = voice_turbo(app).or_else(|| app.helpers.offering(Ability::Voice).into_iter().next());

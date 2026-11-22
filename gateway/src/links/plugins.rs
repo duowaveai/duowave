@@ -374,7 +374,7 @@ impl HostServices for PluginServices {
                 _ => return Err("агента для приложений здесь нет".into()),
             };
             if !dialog.tools_enabled() {
-                return Err("модель «Мозга» не умеет звать инструменты — агенту нужна другая".into());
+                return Err("модель «Мышления» не умеет звать инструменты — агенту нужна другая".into());
             }
             let field = |key: &str| input.get(key).and_then(Value::as_str).map(str::trim).unwrap_or("").to_string();
             let task = field("task");
@@ -774,7 +774,7 @@ impl HostServices for PluginServices {
 
     fn mic(&self, caller: &str) -> Result<Value, String> {
         let activator =
-            self.activator.get().ok_or_else(|| crate::tr!("микрофон колонки слышит только центр на самой колонке"))?;
+            self.activator.get().ok_or_else(|| crate::tr!("микрофон колонки слышит только хаб на самой колонке"))?;
         tracing::info!(target: "plugins", "{caller}: opens the station's microphone");
         activator.mic()
     }
@@ -790,8 +790,7 @@ impl HostServices for PluginServices {
             .unwrap_or_default();
         let caller = caller.to_string();
         Box::pin(async move {
-            let activator =
-                activator.ok_or_else(|| crate::tr!("будить колонку может только центр на самой колонке"))?;
+            let activator = activator.ok_or_else(|| crate::tr!("будить колонку может только хаб на самой колонке"))?;
             activator.wake(&caller, &words, &input).await
         })
     }

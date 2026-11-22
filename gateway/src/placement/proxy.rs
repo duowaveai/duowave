@@ -197,10 +197,7 @@ fn keep_newest(dir: &FsPath, kept: usize) {
 
 /// A change kept for the centre while it is away.
 fn queued(name: &str) -> String {
-    crate::tr!(
-        "«{name}» сейчас не на связи: правка сохранена здесь и дойдёт до центра, когда он вернётся.",
-        name = name
-    )
+    crate::tr!("«{name}» сейчас не на связи: правка сохранена здесь и дойдёт до хаба, когда он вернётся.", name = name)
 }
 
 fn away(name: &str) -> String {
@@ -458,19 +455,16 @@ async fn link_pass(app: &Arc<App>, caller: &Caller, client: &str, asked: Asked<'
     };
     let name = if record.home.name.trim().is_empty() { client.to_string() } else { record.home.name };
     if body.len() > BODY_MAX {
-        return Err(ApiError::new(
-            StatusCode::PAYLOAD_TOO_LARGE,
-            crate::tr!("Запрос слишком большой для центра дома."),
-        ));
+        return Err(ApiError::new(StatusCode::PAYLOAD_TOO_LARGE, crate::tr!("Запрос слишком большой для хаба дома.")));
     }
     let Some(calls) = app.link.up_of(client) else {
         return Err(match app.link.takes_up(client) {
             Some(false) => ApiError::conflict(crate::tr!(
-                "Центр дома «{name}» не открывает свой пульт через этот компьютер: на нём DuoWave постарше, или этот компьютер для него не Турбо дома.",
+                "Хаб дома «{name}» не открывает свой пульт через этот компьютер: на нём DuoWave постарше, или этот компьютер для него не Турбо дома.",
                 name = name
             )),
             _ => ApiError::unavailable(crate::tr!(
-                "Центр дома «{name}» не на связи: его пульт откроется, когда он вернётся.",
+                "Хаб дома «{name}» не на связи: его пульт откроется, когда он вернётся.",
                 name = name
             )),
         });
@@ -496,20 +490,17 @@ async fn link_pass(app: &Arc<App>, caller: &Caller, client: &str, asked: Asked<'
         Ok(response) => response,
         Err(LinkError::Away) => {
             return Err(ApiError::unavailable(crate::tr!(
-                "Центр дома «{name}» не на связи: его пульт откроется, когда он вернётся.",
+                "Хаб дома «{name}» не на связи: его пульт откроется, когда он вернётся.",
                 name = name
             )))
         }
         Err(LinkError::Busy) => {
-            return Err(ApiError::unavailable(crate::tr!(
-                "Центр дома «{name}» занят — попробуйте ещё раз.",
-                name = name
-            )))
+            return Err(ApiError::unavailable(crate::tr!("Хаб дома «{name}» занят — попробуйте ещё раз.", name = name)))
         }
         Err(LinkError::Broken(why)) => {
             tracing::info!(target: "placement", "pass to the home's centre over the link: {why}");
             return Err(ApiError::bad_gateway(crate::tr!(
-                "Центр дома «{name}» не ответил — попробуйте ещё раз.",
+                "Хаб дома «{name}» не ответил — попробуйте ещё раз.",
                 name = name
             )));
         }
@@ -517,7 +508,7 @@ async fn link_pass(app: &Arc<App>, caller: &Caller, client: &str, asked: Asked<'
     // A bare refusal is the centre's own door: this computer is not its Turbo at home (any more).
     if response.status() == StatusCode::FORBIDDEN && axum::body::HttpBody::is_end_stream(response.body()) {
         return Err(ApiError::forbidden(crate::tr!(
-            "Центр дома «{name}» не пускает этот компьютер к своему пульту: в его списке Турбо он не «дома».",
+            "Хаб дома «{name}» не пускает этот компьютер к своему пульту: в его списке Турбо он не «дома».",
             name = name
         )));
     }

@@ -2256,7 +2256,10 @@ pub(crate) mod tests {
         let place: Value =
             serde_json::from_str(&s.mcp.try_tool(&server.id, "where", None).await.unwrap().content).unwrap();
         let folder = s.dir.path().join("mcp").join(&server.id);
-        assert_eq!(place["cwd"], json!(std::fs::canonicalize(&folder).unwrap().display().to_string()));
+        // The same place, however it is spelt: Windows gives the program the temp folder's short name (RUNNER~1),
+        // canonicalize its long one with `\\?\` (CI 0.18.1).
+        let cwd = place["cwd"].as_str().unwrap_or_default();
+        assert_eq!(std::fs::canonicalize(cwd).unwrap(), std::fs::canonicalize(&folder).unwrap(), "{place}");
         let pid: i32 = std::fs::read_to_string(folder.join("fixture.pid")).unwrap().trim().parse().unwrap();
         assert!(alive(pid));
         s.mcp.remove(&server.id, None).await.unwrap();

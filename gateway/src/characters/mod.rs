@@ -245,6 +245,12 @@ impl CharactersService {
         }
     }
 
+    /// How a character's voice stands on this computer — its own, or the fallback and why its own does not go here.
+    #[cfg(feature = "pc")]
+    pub async fn voice_here(&self, character: &Character) -> Option<VoiceView> {
+        Some(self.voices()?.plan(character).await)
+    }
+
     /// On a Турбо: the model its centre named for a character's voice is kept, and the voice goes with it.
     #[cfg(feature = "pc")]
     pub fn name_engine(&self, character: &str, engine: &str) -> Result<(), ApiError> {

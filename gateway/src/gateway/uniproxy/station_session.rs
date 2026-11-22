@@ -4586,7 +4586,12 @@ impl StationSession {
         let provider = self.tts_provider();
         if matches!(provider, TtsProvider::Mixed | TtsProvider::Own) {
             return match self.deps.voice.speaker() {
-                Some(own) => own_synthesizer(own),
+                // A refusal of the Turbo's voice is not silence: the phrase goes to Alice's voice (22.11: Windows'
+                // Smart App Control blocked a Windows Turbo's voice engine, and every answer was silent).
+                Some(own) => match inner.yandex.clone() {
+                    Some(yandex) => with_alice_after(own_synthesizer(own), yandex),
+                    None => own_synthesizer(own),
+                },
                 None => {
                     let reason = format!("TTS_PROVIDER={} without TTS_OWN_URL", provider.as_str());
                     failing(reason)
@@ -5096,12 +5101,13 @@ impl StationSession {
         format!("{place:?}:{}", voice.unwrap_or_default())
     }
 
-    /// No way out (operations/network_watch.rs): the station says so at once, in the voice that answers, recorded while
-    /// it was online — not 10 s of waiting for the cloud and then silence or «Не получилось получить ответ» (a tester's
-    /// Mini 2, 22.11). Called where the request's voice is over and an empty answer would go. False — nothing recorded
-    /// for that voice: the caller answers as before.
+    /// No way out (operations/network_watch.rs): the station says so at once, in the voice that answered while it was
+    /// online — not 10 s of waiting for the cloud and then silence or «Не получилось получить ответ» (a tester's Mini 2,
+    /// 22.11). The voice that answers now may be another (the Turbo gone with the Wi-Fi): the phrase kept plays all the
+    /// same. Called where the request's voice is over and an empty answer would go. False — nothing recorded: the
+    /// caller answers as before.
     fn answer_offline(self: &Arc<Self>, inner: &mut Inner, r#ref: &str, request: &AliceRequest) -> bool {
-        let Some(audio) = super::offline_phrase::kept(&self.voice_key()) else { return false };
+        let Some(audio) = super::offline_phrase::to_play() else { return false };
         self.note("offline", "no way out: the phrase recorded for it, at once", None);
         let mut options = self.answer_options(inner, r#ref, request);
         options.listen = ListenMode::Never;
@@ -5211,6 +5217,33 @@ fn own_synthesizer(own: Arc<crate::speech::tts::own_speech::OwnSpeech>) -> Synth
             let spoken = own.synthesize(&text, &cancel).await?;
             let audio = futures::stream::once(async move { Ok::<Bytes, anyhow::Error>(spoken.audio) });
             Ok(Synthesis { format: spoken.format, audio: audio.boxed() })
+        }
+        .boxed()
+    })
+}
+
+/// Our voice first; when it refuses (before any sound), the phrase in Alice's voice — and «Состояние дома» says why
+/// (home/status.rs, `note_turbo_voice`). After a refusal our voice rests a couple of minutes: the phrases go to
+/// Alice's at once rather than wait for the same refusal each time.
+fn with_alice_after(own: Synthesize, yandex: Arc<YandexSession>) -> Synthesize {
+    Arc::new(move |text: String, cancel: CancellationToken| -> BoxFuture<'static, anyhow::Result<Synthesis>> {
+        let (own, yandex) = (own.clone(), yandex.clone());
+        async move {
+            if crate::home::status::turbo_voice_failed(crate::home::status::VOICE_REST).is_none() {
+                match own(text.clone(), cancel.clone()).await {
+                    Ok(synthesis) => {
+                        crate::home::status::note_turbo_voice(None);
+                        return Ok(synthesis);
+                    }
+                    Err(error) if cancel.is_cancelled() => return Err(error),
+                    Err(error) => {
+                        let why = format!("{error:#}");
+                        tracing::warn!(target: "session", "our voice refused, the phrase in Alice's voice: {why}");
+                        crate::home::status::note_turbo_voice(Some(&why));
+                    }
+                }
+            }
+            yandex.synthesize(&text, &cancel).await
         }
         .boxed()
     })

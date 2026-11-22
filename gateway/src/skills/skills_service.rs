@@ -760,7 +760,12 @@ impl SkillsService {
         // «продолжить» starts ours again. The panel sends «stop» for it; a «pause» is taken the same.
         let playing = self.now_playing(device, now);
         let radio = playing.kind.as_deref() == Some("FmRadio");
-        let action = if action == "pause" && radio { "stop" } else { action };
+        // An app's own sound (`/media/apps/…`) is the same to the station: YouTube's first track comes while yt-dlp still
+        // fetches it, a stream with no length, and the panel's pause left it playing (the owner, 22.11, YouTube on a
+        // Windows Turbo). It stops as radio does; «продолжить» plays ours again where it stood.
+        let app_sound = playing.source == "own"
+            && self.player.current(device).is_some_and(|(item, _)| item.url.contains("/media/apps/"));
+        let action = if action == "pause" && (radio || app_sound) { "stop" } else { action };
         let mut intent = Intent::new(CapabilityName::Playback, action);
         if action == "like" || action == "dislike" {
             intent.params.insert("ours".into(), Value::Bool(true));
@@ -1670,6 +1675,27 @@ mod tests {
         };
         skills.note_device_state("office", Some(&track), now);
         assert_eq!(names(&skills.player_command("office", "pause", false).await.unwrap()), ["player_pause"]);
+    }
+
+    /// The owner, 22.11: YouTube's track (an app's own sound, a stream with no length while it is fetched) played on
+    /// through the panel's pause. It stops as live radio does, and «продолжить» goes on where it stood.
+    #[tokio::test]
+    async fn the_panels_pause_stops_an_apps_own_sound_and_it_goes_on_where_it_stood() {
+        let built = build(&[]);
+        let skills = &built.service;
+        let now = now_ms();
+        skills.player.play("kitchen", vec![media("apps/p-youtube/abc.mp3", "Track", Some(240_000))], 0, 0);
+        let play = skills.player.current("kitchen").unwrap().1.play_id;
+        skills.player_memory.note_callback("kitchen", "vgw_media_on_started", Utc::now());
+        skills.player.on_event("kitchen", PlayerEvent::Started, &play, now - 30_000);
+        let paused = skills.player_command("kitchen", "pause", true).await.unwrap();
+        let names: Vec<_> = paused.iter().map(|directive| directive.name.clone()).collect();
+        assert_eq!(names, ["player_pause", "clear_queue"]);
+        skills.player.on_event("kitchen", PlayerEvent::Stopped, &play, now);
+        assert_eq!(skills.now_playing("kitchen", now + 1000).state, "paused");
+        let resumed = skills.player_command("kitchen", "resume", true).await.unwrap();
+        assert_eq!(resumed[0].name, "audio_play");
+        assert_eq!(resumed[0].payload.as_ref().unwrap()["stream"]["id"], "apps/p-youtube/abc.mp3");
     }
 
     /// Review G8: after a restart the states the requests carried are gone; the widgets still find the station — the

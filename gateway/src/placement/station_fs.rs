@@ -547,7 +547,7 @@ impl StationFs {
     pub fn remove(&self, keep_data: bool, system: &dyn System) -> Result<(), String> {
         if self.voice().is_ok_and(|voice| voice == self.local_addresses()) {
             return Err(crate::tr!(
-                "Голос колонки идёт в этот центр: сначала верните его — duowave station point previous --reboot."
+                "Голос колонки идёт в этот хаб: сначала верните его — duowave station point previous --reboot."
             ));
         }
         if self.exists(SERVICE) {

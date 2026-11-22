@@ -244,7 +244,7 @@ impl Reflection {
             if let MemoryModel::Pick { provider, model } = &model {
                 let none = matches!(self.model.pick(provider, model), Err(None));
                 if provider.trim().is_empty() || model.trim().is_empty() || none {
-                    return Err(ApiError::bad_request(crate::tr!("Такой модели нет в «Мозге».")));
+                    return Err(ApiError::bad_request(crate::tr!("Такой модели нет в «Мышлении».")));
                 }
             }
             self.settings.set(&MEMORY_MODEL, &model, actor.clone())?;
@@ -265,11 +265,11 @@ impl Reflection {
     fn pick(&self) -> Result<ModelSlot, String> {
         match self.model_choice() {
             MemoryModel::Brain => {
-                self.model.brain().ok_or_else(|| crate::tr!("Ждёт модель: в «Мозге» ничего не выбрано.").to_string())
+                self.model.brain().ok_or_else(|| crate::tr!("Ждёт модель: в «Мышлении» ничего не выбрано.").to_string())
             }
             MemoryModel::Pick { provider, model } => self.model.pick(&provider, &model).map_err(|why| match why {
                 Some(why) => crate::tr!("Ждёт модель «{model}»: {why}.", model = model, why = why),
-                None => crate::tr!("Ждёт модель: «{model}» больше нет в «Мозге». Выберите модель памяти в её настройках.", model = model),
+                None => crate::tr!("Ждёт модель: «{model}» больше нет в «Мышлении». Выберите модель памяти в её настройках.", model = model),
             }),
             MemoryModel::Home => self.model.home().ok_or_else(|| {
                 crate::tr!("Ждёт свою модель: дома её нет. Выберите модель памяти, домашнюю или облачную, в настройках памяти.")
@@ -1495,7 +1495,7 @@ mod tests {
         assert_eq!(view.waiting.as_deref(), Some("Ждёт модель «qwen2.5»: Компьютер дома не на связи."));
         let gone = MemoryModel::Pick { provider: "helper-gone".into(), model: "qwen2.5".into() };
         let refused = reflection.change(ReflectionChange { model: Some(gone), ..Default::default() }, None);
-        assert_eq!(refused.unwrap_err().message, "Такой модели нет в «Мозге».");
+        assert_eq!(refused.unwrap_err().message, "Такой модели нет в «Мышлении».");
         helpers.up("home-computer", true);
         let view = reflection.view();
         assert_eq!((view.using.map(|using| using.model), view.waiting), (Some("qwen2.5".to_string()), None));

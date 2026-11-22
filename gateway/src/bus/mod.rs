@@ -286,7 +286,7 @@ impl Bus {
         if let Some(principal_like) = PEOPLE.iter().find(|kind| **kind == address.kind()) {
             return match *principal_like {
                 address::HOME => crate::tr!("Дом"),
-                address::GATEWAY => crate::tr!("Центр"),
+                address::GATEWAY => crate::tr!("Хаб"),
                 _ => address.to_string(),
             };
         }

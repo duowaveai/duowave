@@ -198,7 +198,7 @@ async fn ask(State(app): State<Arc<App>>, caller: Caller, Body(body): Body<AskBo
         return Err(ApiError::bad_request(crate::tr!("Напишите вопрос.")));
     }
     let dialog = app.mcp.dialog().filter(|dialog| dialog.enabled()).ok_or_else(|| {
-        ApiError::conflict(crate::tr!("Модель не выбрана: добавьте провайдера в «Персонаж» → «Мозг»."))
+        ApiError::conflict(crate::tr!("Модель не выбрана: добавьте провайдера в «Персонаж» → «Мышление»."))
     })?;
     let key = format!("panel:{}", principal.id);
     if body.fresh.as_ref().and_then(Json::as_bool) == Some(true) {
@@ -414,7 +414,7 @@ mod tests {
         let none =
             ask(State(app.clone()), member(&app), question(json!({ "question": "Ты здесь?" }))).await.err().unwrap();
         assert_eq!(none.status, StatusCode::CONFLICT);
-        assert_eq!(none.message, "Модель не выбрана: добавьте провайдера в «Персонаж» → «Мозг».");
+        assert_eq!(none.message, "Модель не выбрана: добавьте провайдера в «Персонаж» → «Мышление».");
         let guest = Caller::local(app.clone(), Some(user_principal("g", "Гость", Role::Guest, None)));
         let refused = ask(State(app.clone()), guest, question(json!({ "question": "Ты здесь?" }))).await.err().unwrap();
         assert_eq!(refused.status, StatusCode::FORBIDDEN, "the servers' tools are for the household");

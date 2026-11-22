@@ -379,14 +379,14 @@ pub trait HostServices: Send + Sync {
     /// src/activator): `{port, channel, rate}`.
     fn mic(&self, caller: &str) -> Result<Value, String> {
         let _ = caller;
-        Err(crate::tr!("микрофон колонки слышит только центр на самой колонке"))
+        Err(crate::tr!("микрофон колонки слышит только хаб на самой колонке"))
     }
     /// The app `caller` heard a word of its own (`system/activator` → `wake`, src/activator): the station is woken as
     /// by its button, its request starting with the sound before the word — `{started, reason?}`.
     fn wake(&self, caller: &str, input: Value) -> BoxFuture<'static, Result<Value, String>> {
         let _ = (caller, input);
         Box::pin(async {
-            Err(crate::tr!("будить колонку может только центр на самой колонке"))
+            Err(crate::tr!("будить колонку может только хаб на самой колонке"))
         })
     }
     /// The device the gateway runs on and the others of the home as the links bring them (`system/device`,

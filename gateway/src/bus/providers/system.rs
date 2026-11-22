@@ -95,11 +95,11 @@ impl Provider for System {
             (SMART_HOME, crate::tr!("Умный дом")),
             (CONTENT, crate::tr!("Музыка и сказки семьи")),
             (HOME, crate::tr!("Дом: место погоды, ленты новостей")),
-            (BRAIN, crate::tr!("Модель «Мозга»")),
+            (BRAIN, crate::tr!("Модель «Мышления»")),
             (MEMORY, crate::tr!("Память: интересы дома")),
             (HEARING, crate::tr!("Слух: распознать речь в своём файле")),
             (PUBLISH, crate::tr!("Публикация: Telegram, страница «смотри и выбирай», страницы площадок")),
-            (NETWORK, crate::tr!("Сеть центра: выход в интернет через ваши серверы")),
+            (NETWORK, crate::tr!("Сеть хаба: выход в интернет через ваши серверы")),
             (MIC, crate::tr!("Микрофон колонки: слышит комнату всё время")),
             (ACTIVATOR, crate::tr!("Слово-активатор: начать разговор с колонкой")),
             (DEVICE, crate::tr!("Состояние устройств: температура, память, место, процессор")),
@@ -151,7 +151,7 @@ impl Provider for System {
             HEARING => vec![Handle::new("recognize", Level::Call)
                 .titled(&crate::tr!("распознать речь в своём файле: слова со временем"))],
             NETWORK => vec![Handle::new("connections", Level::Call)
-                .titled(&crate::tr!("дать центру свои подключения: через них он ходит в интернет по вашим правилам"))],
+                .titled(&crate::tr!("дать хабу свои подключения: через них он ходит в интернет по вашим правилам"))],
             MIC => vec![Handle::new("open", Level::Call)
                 .titled(&crate::tr!("слушать микрофон колонки: узнать, где его звук"))
                 .dangerous(Some(crate::bus::danger::Danger::Camera))
@@ -174,7 +174,7 @@ impl Provider for System {
             ],
             BRAIN => vec![
                 Handle::new("speak", Level::Call).titled(&crate::tr!("ответить моделью словами приложения")),
-                Handle::new("write", Level::Call).titled(&crate::tr!("написать текст моделью «Мозга»")),
+                Handle::new("write", Level::Call).titled(&crate::tr!("написать текст моделью «Мышления»")),
                 Handle::new("models", Level::Call).titled(&crate::tr!("какие модели есть, чтобы выбрать свою")),
                 Handle::new("agent", Level::Call).titled(&crate::tr!("агент приложения: модель с файлами его папки")),
             ],

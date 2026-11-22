@@ -1132,7 +1132,7 @@ async fn a_computer_never_pairs_with_itself_and_an_entry_that_names_it_is_itself
     let (status, body) = add(&pc, &pc_admin, json!({ "url": url, "key": key })).await;
     assert_eq!(
         (status, body["message"].as_str()),
-        (StatusCode::CONFLICT, Some("Это сам этот центр: себя в Турбо не добавляют.")),
+        (StatusCode::CONFLICT, Some("Это сам этот хаб: себя в Турбо не добавляют.")),
         "{body}"
     );
     assert!(pc.app.helpers.list().is_empty() && pc.app.clients.view(&[]).is_empty(), "nothing stored, no client");

@@ -3,7 +3,7 @@ import type { Translation } from '../../types';
 import type ru from '../ru/ask';
 
 const en: Translation<typeof ru> = {
-    title: 'Ask the Brain',
+    title: 'Ask the AI',
     aboutStation: 'the same model and tools as the speaker, without the speaker',
     aboutComputer: 'the same conversation as by voice, as text and with all connected servers',
     metaModel: 'model',

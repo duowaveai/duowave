@@ -676,7 +676,7 @@ impl BrainService {
             let gateways_pick = answering(&choice.backup) && choice.backup_by == Some(BackupBy::Gateway);
             if answering(&choice.backup) && !gateways_pick {
                 return Err(ApiError::conflict(crate::tr!(
-                    "Этот провайдер — запасная модель. Сначала выберите в «Запасной» другую модель, «пусть выберет центр» или «не нужна»."
+                    "Этот провайдер — запасная модель. Сначала выберите в «Запасной» другую модель, «пусть выберет хаб» или «не нужна»."
                 )));
             }
             let flow = self.stored_row(id)?.and_then(|row| token_flow(&row.preset));
@@ -2382,7 +2382,7 @@ impl BrainService {
         let usable = backup.as_ref().is_some_and(|backup| backup.judged != Judged::Shut) && !beside_main;
         if main && !usable && !declined && !seen.lets(Reach::Foreign) {
             let text = crate::tr!(
-                "Облака закрыты регулятором «Что может уходить из дома»: когда основная модель не на связи, мозг скажет об этом словами."
+                "Облака закрыты регулятором «Что может уходить из дома»: когда основная модель не на связи, ИИ скажет об этом словами."
             );
             return Some(BrainNote { kind: "backupClosed", text });
         }
@@ -2393,7 +2393,7 @@ impl BrainService {
                 .map(|row| title_of(row, seen))
                 .unwrap_or_else(|| pick.provider.clone());
             let text = crate::tr!(
-                "Запасную модель центр выбрал сам: {model} ({provider}). Она отвечает, когда основная не на связи. Это облако по вашему ключу: ответы могут стоить денег, а папки без галочки «Модель может читать имена и файлы» модель теперь не читает.",
+                "Запасную модель хаб выбрал сам: {model} ({provider}). Она отвечает, когда основная не на связи. Это облако по вашему ключу: ответы могут стоить денег, а папки без галочки «Модель может читать имена и файлы» модель теперь не читает.",
                 model = pick.model,
                 provider = provider
             );
@@ -2407,11 +2407,11 @@ impl BrainService {
         {
             let text = if beside_main {
                 crate::tr!(
-                    "«Запасная» стоит у того же Турбо, что и основная модель: пропадёт Турбо — пропадут обе. Выберите другую «Запасную» — иначе в это время мозг только скажет, что модели нет."
+                    "«Запасная» стоит у того же Турбо, что и основная модель: пропадёт Турбо — пропадут обе. Выберите другую «Запасную» — иначе в это время ИИ только скажет, что модели нет."
                 )
             } else {
                 crate::tr!(
-                    "Основная модель бывает не на связи, а запасной нет, и центру не из чего выбрать её самому: нужен ключ облака, чью быструю модель он знает по имени (Claude, OpenAI, Gemini…). Выберите «Запасную» сами — иначе в это время мозг только скажет, что модели нет."
+                    "Основная модель бывает не на связи, а запасной нет, и хабу не из чего выбрать её самому: нужен ключ облака, чью быструю модель он знает по имени (Claude, OpenAI, Gemini…). Выберите «Запасную» сами — иначе в это время ИИ только скажет, что модели нет."
                 )
             };
             return Some(BrainNote { kind: "backupNeeded", text });
@@ -3721,7 +3721,7 @@ pub(crate) mod tests {
         choose(&brain, json!({"backup": {"provider": next.provider, "model": next.model}}));
         let refused = brain.remove(&next.provider, None).unwrap_err();
         assert_eq!(refused.status, axum::http::StatusCode::CONFLICT);
-        assert!(refused.message.contains("«пусть выберет центр»"), "{}", refused.message);
+        assert!(refused.message.contains("«пусть выберет хаб»"), "{}", refused.message);
         assert!(brain.view().choice.backup.is_some());
     }
 

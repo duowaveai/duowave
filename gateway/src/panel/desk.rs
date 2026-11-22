@@ -29,7 +29,7 @@ pub fn routes() -> Router<Arc<App>> {
 /// The row of the caller's desk for the role: a person's (or the household's, without people), never a key's.
 fn row_of(caller: &Caller, role: &str) -> Result<String, ApiError> {
     if role != "gateway" && role != "helper" {
-        return Err(ApiError::not_found(crate::tr!("Стол бывает у центра (gateway) и у Турбо (helper).")));
+        return Err(ApiError::not_found(crate::tr!("Стол бывает у хаба (gateway) и у Турбо (helper).")));
     }
     let principal = caller.signed_in()?;
     match principal.kind {

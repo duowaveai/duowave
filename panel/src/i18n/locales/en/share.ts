@@ -58,7 +58,7 @@ const en: Translation<typeof ru> = {
     notNow: 'Not now',
     leavesHouse: ' · leaves the house',
     leavesHouseShort: 'leaves the house',
-    rightBrain: 'the “Brain” model: writes texts',
+    rightBrain: 'the “Thinking” model: writes texts',
     rightVoice: 'voice: speak and voice lines into its own folder',
     rightVoiceCloud: 'cloud voices (ElevenLabs): the lines’ text goes to the provider and spends your plan',
     rightNotify: 'messages to the owner',

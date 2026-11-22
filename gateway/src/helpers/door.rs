@@ -94,29 +94,87 @@ pub fn merged(old: &[String], stored: &[Ability]) -> Vec<Ability> {
 }
 
 impl Helpers {
-    /// The pair's door (`/api/v1/home-server*`): the entry `home-computer` in the old names and words — a new address
-    /// or key (created first, switched on, «Компьютер дома»), the switch «ПК помогает колонке», «Что даю колонке».
-    /// What is not given stays.
-    pub fn door(&self, input: DoorInput, actor: Option<Actor>) -> Result<(), ApiError> {
+    /// The pair's door (`/api/v1/home-server*`): the calling computer's entry in the old names and words — a new
+    /// address or key (created, switched on), the switch «ПК помогает колонке», «Что даю колонке». What is not given
+    /// stays. A home may have several Turbos (22.11, owner): a computer that names itself writes its own entry only.
+    /// The entry written is returned: the computer's own.
+    pub fn door(&self, input: DoorInput, actor: Option<Actor>) -> Result<String, ApiError> {
+        let target = self.door_target(&input)?;
         let mut changed = false;
-        let done = self.door_steps(input, actor.clone(), &mut changed);
+        let done = self.door_steps(&target, input, actor.clone(), &mut changed);
         // What a step changed before a later one was refused is told all the same.
         if changed {
-            self.changed(Some(HOME_COMPUTER), "door", actor);
+            self.changed(Some(&target), "door", actor);
         }
-        done
+        done.map(|()| target)
+    }
+
+    /// Whose entry the call writes. A computer that does not name itself (before 0.18.2): the door `home-computer`.
+    /// One that does: the entry that knows it; else the door while it is free (no key) or this very computer's (the
+    /// same address, nobody named there yet); else, bringing a key, a Turbo of its own after the others. Without a key
+    /// another computer's entry is never written (22.11, a Mac and a Windows rewrote the one door every second): the
+    /// computer is told the station does not know it, and its «Помогать колонке» brings a key again.
+    fn door_target(&self, input: &DoorInput) -> Result<String, ApiError> {
+        let Some(helper) = input.helper.as_ref().filter(|helper| !helper.id.trim().is_empty()) else {
+            return Ok(HOME_COMPUTER.into());
+        };
+        let list = self.list();
+        if let Some(entry) = list
+            .iter()
+            .find(|entry| entry.kind == HelperKind::Home && entry.helper_id.as_deref() == Some(helper.id.as_str()))
+        {
+            return Ok(entry.id.clone());
+        }
+        let url = input.url.as_deref().map(|url| url.trim().trim_end_matches('/'));
+        let key_given = input.key.as_deref().is_some_and(|key| !key.trim().is_empty());
+        // The door is this computer's to take: nobody's (no key), or of nobody known — at this computer's own address,
+        // with nobody answering there when this computer brings its key (a move's door it never looked at), or for the
+        // switch and the parts alone, which move no address (as before 0.18.2).
+        let door_free = match list.iter().find(|entry| entry.id == HOME_COMPUTER) {
+            None => true,
+            Some(door) => {
+                !self.secrets.has(&key_secret(HOME_COMPUTER))
+                    || (door.helper_id.is_none()
+                        && (url.is_some_and(|url| url == door.url)
+                            || self.door_answers_as(door, &helper.id)
+                            || (key_given && !self.door_up(door))
+                            || (url.is_none() && !key_given)))
+            }
+        };
+        if door_free {
+            return Ok(HOME_COMPUTER.into());
+        }
+        let own = turbo_id(&helper.id).ok_or_else(|| {
+            ApiError::bad_request(crate::tr!("Компьютер назвал себя непонятно: обновите DuoWave на нём."))
+        })?;
+        if key_given || list.iter().any(|entry| entry.id == own) {
+            return Ok(own);
+        }
+        Err(not_this_computer())
+    }
+
+    /// The computer at the door said at its last look it is this one (the station has not kept its id yet).
+    fn door_answers_as(&self, door: &HelperSetting, id: &str) -> bool {
+        self.remote(door).and_then(|remote| remote.status()).is_some_and(|status| status.contract.helper.id == id)
     }
 
     /// The door's steps in the old order — the address and the key, the switch, the parts —, each refused in the old
     /// words; `changed` says whether any of them wrote.
-    fn door_steps(&self, input: DoorInput, actor: Option<Actor>, changed: &mut bool) -> Result<(), ApiError> {
+    fn door_steps(
+        &self,
+        target: &str,
+        input: DoorInput,
+        actor: Option<Actor>,
+        changed: &mut bool,
+    ) -> Result<(), ApiError> {
         let url = input.url.as_deref().map(str::trim).filter(|url| !url.is_empty());
         let key = input.key.as_deref().map(str::trim).filter(|key| !key.is_empty());
-        let secret = key_secret(HOME_COMPUTER);
+        let secret = key_secret(target);
+        let helper = input.helper.as_ref().filter(|helper| !helper.id.trim().is_empty());
         if url.is_some() || key.is_some() {
             let url = match url {
                 Some(url) => url.to_string(),
-                None => self.entry(HOME_COMPUTER).map(|entry| entry.url).ok_or_else(|| {
+                None => self.entry(target).map(|entry| entry.url).ok_or_else(|| {
                     ApiError::bad_request(crate::tr!(
                         "Адреса компьютера ещё нет: впишите его или включите помощь из пульта компьютера."
                     ))
@@ -136,41 +194,62 @@ impl Helpers {
                 )));
             }
             let url = url.trim_end_matches('/').to_string();
+            // The computer that named itself is known at once, not after the next look.
+            let named = helper.map(|helper| helper.id.clone());
             self.write(actor.clone(), |list| {
-                match list.iter_mut().find(|entry| entry.id == HOME_COMPUTER) {
-                    // Another address may be another computer: who answers there is learned anew.
-                    Some(entry) if entry.url != url => {
+                match list.iter_mut().find(|entry| entry.id == target) {
+                    // Another address may be another computer: who answers there is learned anew, unless it said. The
+                    // name goes with the computer it was learned from (22.11: Windows at the door kept «Компьютер
+                    // Mac»): the default, until the look or the computer itself says its own.
+                    Some(entry) if entry.url != url || (named.is_some() && entry.helper_id != named) => {
+                        if entry.helper_id.is_some() && entry.helper_id != named {
+                            entry.name = helper
+                                .and_then(|helper| helper.name.clone())
+                                .filter(|name| !name.trim().is_empty())
+                                .unwrap_or_else(|| crate::tr!("Компьютер дома"));
+                        }
                         entry.url = url.clone();
-                        entry.helper_id = None;
+                        entry.helper_id = named.clone();
                     }
                     Some(_) => {}
-                    None => list.insert(
-                        0,
-                        HelperSetting {
-                            id: HOME_COMPUTER.into(),
-                            name: crate::tr!("Компьютер дома"),
+                    None => {
+                        let name = helper
+                            .and_then(|helper| helper.name.clone())
+                            .filter(|name| !name.trim().is_empty())
+                            .unwrap_or_else(|| crate::tr!("Компьютер дома"));
+                        let entry = HelperSetting {
+                            id: target.into(),
+                            name,
                             url: url.clone(),
                             kind: HelperKind::Home,
                             enabled: true,
                             without: Vec::new(),
-                            helper_id: None,
-                        },
-                    ),
+                            helper_id: named.clone(),
+                        };
+                        if target == HOME_COMPUTER {
+                            list.insert(0, entry);
+                        } else {
+                            // A Turbo that came later stands after the home's other computers: the first stays first.
+                            let after =
+                                list.iter().rposition(|entry| entry.kind == HelperKind::Home).map_or(0, |at| at + 1);
+                            list.insert(after, entry);
+                        }
+                    }
                 }
                 Ok(Some(()))
             })?;
             // Another computer, or a new key: looked at anew, its bot read again.
-            self.forget_remote(HOME_COMPUTER);
+            self.forget_remote(target);
             *changed = true;
         }
         if let Some(on) = input.enabled {
-            if self.entry(HOME_COMPUTER).is_none() || !self.secrets.has(&secret) {
+            if self.entry(target).is_none() || !self.secrets.has(&secret) {
                 return Err(ApiError::bad_request(crate::tr!(
                     "Колонка ещё не знает компьютер: в пульте компьютера нажмите «Помогать колонке» — он пришлёт адрес и ключ."
                 )));
             }
             let switched = self.write(actor.clone(), |list| {
-                let Some(entry) = list.iter_mut().find(|entry| entry.id == HOME_COMPUTER) else { return Ok(None) };
+                let Some(entry) = list.iter_mut().find(|entry| entry.id == target) else { return Ok(None) };
                 if entry.enabled == on {
                     return Ok(None);
                 }
@@ -178,7 +257,7 @@ impl Helpers {
                 Ok(Some(()))
             })?;
             if switched.is_some() {
-                if let Some(remote) = self.entry(HOME_COMPUTER).and_then(|entry| self.remote(&entry)) {
+                if let Some(remote) = self.entry(target).and_then(|entry| self.remote(&entry)) {
                     remote.reset();
                 }
                 *changed = true;
@@ -189,13 +268,13 @@ impl Helpers {
             let mut without: Vec<String> = without.into_iter().filter(|part| SERVES.contains(&part.as_str())).collect();
             without.sort();
             without.dedup();
-            if self.entry(HOME_COMPUTER).is_none() {
+            if self.entry(target).is_none() {
                 return Err(ApiError::bad_request(crate::tr!(
                     "Колонка ещё не знает компьютер: сначала нажмите «Помогать колонке» в пульте компьютера."
                 )));
             }
             let parted = self.write(actor.clone(), |list| {
-                let Some(entry) = list.iter_mut().find(|entry| entry.id == HOME_COMPUTER) else { return Ok(None) };
+                let Some(entry) = list.iter_mut().find(|entry| entry.id == target) else { return Ok(None) };
                 let next = merged(&without, &entry.without);
                 if next == entry.without {
                     return Ok(None);
@@ -223,12 +302,34 @@ impl Helpers {
     }
 }
 
+/// A later computer's own entry: `turbo-` and its id, as an entry id may be spelt.
+pub fn turbo_id(helper: &str) -> Option<String> {
+    let clean: String = helper
+        .trim()
+        .to_ascii_lowercase()
+        .chars()
+        .map(|c| if c.is_ascii_lowercase() || c.is_ascii_digit() { c } else { '-' })
+        .collect();
+    let clean = clean.trim_matches('-');
+    let id = format!("turbo-{}", clean.chars().take(34).collect::<String>().trim_end_matches('-'));
+    (clean.chars().any(|c| c.is_ascii_alphanumeric()) && super::valid_id(&id)).then_some(id)
+}
+
+/// The station has no entry of this computer, and the door is another's. The computer's watch does not ask then
+/// (placement/watch.rs, `own_entry`): this answers an older computer, or one that has not looked yet.
+fn not_this_computer() -> ApiError {
+    ApiError::conflict(crate::tr!(
+        "Колонка не знает этот компьютер как Турбо. На нём: «Этот компьютер» → «Кому помогаю» → «Помогать»."
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use axum::http::StatusCode;
 
     use super::*;
     use crate::helpers::tests::{station, KEY};
+    use crate::helpers::DoorHelper;
     use crate::helpers::{Change, HelperState};
 
     #[test]
@@ -261,6 +362,70 @@ mod tests {
 
     fn door_at(url: &str) -> DoorInput {
         DoorInput { url: Some(url.into()), key: Some("vgw_home".into()), ..DoorInput::default() }
+    }
+
+    /// A home with several Turbos (owner 22.11, after a Mac and a Windows rewrote the one door every second): each
+    /// computer that names itself writes its own entry, the first the old door, a later one its own after it; a
+    /// correction of an address goes to the computer's own entry only, and one the station does not know is refused
+    /// rather than written over another's. A computer that does not name itself (before 0.18.2) keeps the old door.
+    #[tokio::test]
+    async fn each_computer_that_names_itself_keeps_its_own_turbo_and_never_writes_another() {
+        let station = station(&[]);
+        let as_pc = |id: &str, name: &str, url: Option<&str>, key: Option<&str>| DoorInput {
+            url: url.map(str::to_string),
+            key: key.map(str::to_string),
+            helper: Some(DoorHelper { id: id.into(), name: Some(name.into()) }),
+            ..DoorInput::default()
+        };
+        let mac = station
+            .helpers
+            .door(as_pc("gw-mac", "Компьютер Mac", Some("http://192.0.2.3:7780"), Some("vgw_mac")), None);
+        assert_eq!(mac.unwrap(), HOME_COMPUTER, "the first computer: the old door");
+        let door = station.helpers.entry(HOME_COMPUTER).unwrap();
+        assert_eq!((door.helper_id.as_deref(), door.name.as_str()), (Some("gw-mac"), "Компьютер Mac"));
+
+        let windows = station
+            .helpers
+            .door(as_pc("gw-win", "Компьютер Windows", Some("http://192.0.2.6:7780"), Some("vgw_win")), None);
+        let own = windows.unwrap();
+        assert_eq!(own, "turbo-gw-win", "a later computer: a Turbo of its own");
+        let ids: Vec<String> = station.helpers.list().into_iter().map(|entry| entry.id).collect();
+        assert_eq!(ids, [HOME_COMPUTER, "turbo-gw-win"], "after the first");
+        assert_eq!(station.helpers.entry(&own).unwrap().name, "Компьютер Windows");
+        assert_eq!(station.secrets.get(&key_secret(HOME_COMPUTER)).as_deref(), Some("vgw_mac"), "the Mac's key stays");
+        assert_eq!(station.secrets.get(&key_secret(&own)).as_deref(), Some("vgw_win"));
+
+        // Each moves on the network: its own address, nobody else's.
+        station.helpers.door(as_pc("gw-win", "Компьютер Windows", Some("http://192.0.2.16:7780"), None), None).unwrap();
+        station.helpers.door(as_pc("gw-mac", "Компьютер Mac", Some("http://192.0.2.13:7780"), None), None).unwrap();
+        assert_eq!(station.helpers.entry(HOME_COMPUTER).unwrap().url, "http://192.0.2.13:7780");
+        assert_eq!(station.helpers.entry(&own).unwrap().url, "http://192.0.2.16:7780");
+        // «Что даю колонке» of one computer is its own.
+        let parts = DoorInput {
+            without: Some(vec!["llm".into()]), ..as_pc("gw-win", "Компьютер Windows", None, None)
+        };
+        station.helpers.door(parts, None).unwrap();
+        assert_eq!(station.helpers.entry(&own).unwrap().without, [Ability::Model]);
+        assert!(station.helpers.entry(HOME_COMPUTER).unwrap().without.is_empty());
+
+        // A computer the station does not know, without a key: refused, nothing written.
+        let stranger = station.helpers.door(as_pc("gw-other", "Ноутбук", Some("http://192.0.2.9:7780"), None), None);
+        assert_eq!(stranger.unwrap_err().status, StatusCode::CONFLICT);
+        assert_eq!(station.helpers.list().len(), 2);
+
+        // A computer before 0.18.2 does not name itself: the old door, as before.
+        let old = DoorInput { url: Some("http://192.0.2.40:7780".into()), ..DoorInput::default() };
+        assert_eq!(station.helpers.door(old, None).unwrap(), HOME_COMPUTER);
+        let door = station.helpers.entry(HOME_COMPUTER).unwrap();
+        assert_eq!(door.helper_id, None, "another address: who is there is learned anew");
+        assert_eq!(door.name, crate::tr!("Компьютер дома"), "and the Mac's name does not stay on it");
+    }
+
+    #[test]
+    fn a_later_computers_entry_is_spelt_as_an_entry_id() {
+        assert_eq!(turbo_id("gw-Mac_01").as_deref(), Some("turbo-gw-mac-01"));
+        assert_eq!(turbo_id("   ").as_deref(), None);
+        assert_eq!(turbo_id(&"a".repeat(80)).map(|id| id.len()), Some(40));
     }
 
     /// A computer the pair's door brings goes first, before the helpers already listed (review: the door's place, not

@@ -365,7 +365,7 @@ async fn arrive(address: &str, port: u16) -> bool {
         println!(
             "{}",
             crate::tr!(
-                "Колонка ещё не вернулась к своему центру. Подождите минуту и откройте http://{address}:{port}/ . Не открывается — вернуть Яндекс: ssh -p 2222 root@{address} sh {restore}",
+                "Колонка ещё не вернулась к своему хабу. Подождите минуту и откройте http://{address}:{port}/ . Не открывается — вернуть Яндекс: ssh -p 2222 root@{address} sh {restore}",
                 address = address,
                 port = port,
                 restore = RESTORE_SCRIPT

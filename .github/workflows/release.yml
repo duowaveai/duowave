@@ -45,6 +45,9 @@ env:
   # The packages' catalog built into every gateway of the release (gateway/src/plugins/catalog.rs). For good: builds
   # that are never updated keep asking it, so a move later means a 301 from here with the path kept.
   DUOWAVE_PACKAGES_FEED: https://packages.duowave.app/catalog.json
+  # The demo feed every new gateway puts among its own sources once (gateway/src/plugins/catalog.rs, owner 22.11): a
+  # repository secret, so its address is in no code and no public file. No secret — no demo feed, nothing breaks.
+  DUOWAVE_DEMO_FEED: ${{ secrets.DUOWAVE_DEMO_FEED }}
 
 jobs:
   station-build:

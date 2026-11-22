@@ -22,6 +22,11 @@
 //! pin of the very archive (the YouTube app of a separate feed, docs/plugins/apps/youtube-turbo.md). One that answers 404
 //! or 410 is closed: its copy goes and what was installed from it is hidden.
 //!
+//! The demo feed (owner 22.11): a release may carry one more feed's address, DUOWAVE_DEMO_FEED — a secret of the
+//! release build, never in the code or the public repository. A gateway puts it among its own sources once, by itself,
+//! the first time its catalog starts (mark `demo-seeded` beside `sources.json`): every new home has the demo
+//! characters without typing a link, and the admin removes it like any own source — it does not come back.
+//!
 //! A feed may say a package is `hidden`: it is not listed or installed, and the installed one that came from that very
 //! feed is hidden here (registry `hidden`) — not listed, its code off, its characters not offered — until the feed
 //! stops saying so.
@@ -53,6 +58,10 @@ use crate::utils::time::now_iso;
 
 /// The feed built into a release; none in a local build.
 const BUILT_IN_FEED: Option<&str> = option_env!("DUOWAVE_PACKAGES_FEED");
+/// The demo feed a release puts among the own sources once; none in a local build.
+const BUILT_IN_DEMO: Option<&str> = option_env!("DUOWAVE_DEMO_FEED");
+/// Beside `sources.json`: the demo feed was put there once — removed, it is not put again.
+const DEMO_MARK: &str = "demo-seeded";
 /// The feed format this gateway reads.
 pub const FEED_FORMAT: u64 = 1;
 /// The feed is read again after this long.
@@ -1296,7 +1305,40 @@ fn write_whole(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 impl PackageCatalog {
     pub fn new(deps: CatalogDeps) -> Arc<PackageCatalog> {
         let source = FeedSource::of(deps.config.feed_url.as_deref(), BUILT_IN_FEED);
-        PackageCatalog::with_source(deps, source)
+        let catalog = PackageCatalog::with_source(deps, source);
+        catalog.seed_demo(BUILT_IN_DEMO);
+        catalog
+    }
+
+    /// The demo feed among the own sources, once (see the module's doc): not when it is there already, nor when the own
+    /// sources are full; the mark is left either way, so a removed one stays removed.
+    fn seed_demo(&self, demo: Option<&str>) {
+        let Some(link) = demo.map(str::trim).filter(|link| !link.is_empty()) else { return };
+        let mark = self.dir.join(DEMO_MARK);
+        if mark.exists() {
+            return;
+        }
+        let url = match feed_url(link) {
+            Ok(url) => url,
+            Err(problem) => {
+                tracing::warn!(target: "plugins", "packages catalog: the demo feed does not read as a link: {problem}");
+                return;
+            }
+        };
+        let mut sources = self.sources();
+        if !sources.iter().any(|source| feed_url(&source.url).ok().as_ref() == Some(&url))
+            && sources.len() < MAX_SOURCES
+        {
+            sources.push(OwnSource { url: url.to_string(), added_at: now_iso() });
+            if let Err(error) = self.write_sources(&sources) {
+                tracing::warn!(target: "plugins", "packages catalog: the demo feed not kept: {}", error.message);
+                return;
+            }
+            tracing::info!(target: "plugins", "packages catalog: the demo feed is among the own sources");
+        }
+        if let Err(error) = write_whole(&mark, now_iso().as_bytes()) {
+            tracing::warn!(target: "plugins", "packages catalog: the demo mark not kept: {error}");
+        }
     }
 
     /// The same, with the feed named here: tests.
@@ -2630,7 +2672,7 @@ impl PackageCatalog {
         let mut reread = false;
         let not_pinned = || {
             ApiError::forbidden(crate::tr!(
-                "Не поставлено: каталог этого компьютера не проверял «{id}» из ленты центра — код из неё здесь не ставится.",
+                "Не поставлено: каталог этого компьютера не проверял «{id}» из ленты хаба — код из неё здесь не ставится.",
                 id = id
             ))
         };
@@ -2654,19 +2696,19 @@ impl PackageCatalog {
         self.host.rescan();
         let installed = self.host.installed(id).map(|package| package.manifest.version.clone());
         let _turn = self.installing.lock().await;
-        let text = install::download(url.as_str(), MAX_FEED, FEED_TIMEOUT).await.map_err(|error| {
-            ApiError::bad_gateway(crate::tr!("Лента центра не прочиталась: {error}", error = error))
-        })?;
+        let text = install::download(url.as_str(), MAX_FEED, FEED_TIMEOUT)
+            .await
+            .map_err(|error| ApiError::bad_gateway(crate::tr!("Лента хаба не прочиталась: {error}", error = error)))?;
         let text = String::from_utf8(text)
-            .map_err(|_| ApiError::bad_gateway(crate::tr!("Лента центра не прочиталась: не текст")))?;
+            .map_err(|_| ApiError::bad_gateway(crate::tr!("Лента хаба не прочиталась: не текст")))?;
         let other = parse_feed(&text, &url).map_err(|problem| {
-            ApiError::bad_gateway(crate::tr!("Лента центра не прочиталась: {problem}", problem = problem))
+            ApiError::bad_gateway(crate::tr!("Лента хаба не прочиталась: {problem}", problem = problem))
         })?;
         let mut entry = other.find(id, version).cloned().ok_or_else(|| match version {
             Some(version) => {
-                ApiError::not_found(crate::tr!("В ленте центра нет {id} {version}.", id = id, version = version))
+                ApiError::not_found(crate::tr!("В ленте хаба нет {id} {version}.", id = id, version = version))
             }
-            None => ApiError::not_found(crate::tr!("В ленте центра нет «{id}».", id = id)),
+            None => ApiError::not_found(crate::tr!("В ленте хаба нет «{id}».", id = id)),
         })?;
         // As an extra feed's package the main one pinned (`Feed::take`): that very archive — this machine's — or none.
         let archive = entry.archive();
@@ -2741,7 +2783,7 @@ impl PackageCatalog {
             .map_err(|failed| ApiError::bad_gateway(crate::tr!("Не скачалось: {error}", error = failed.message)))?;
         if !hex::encode(sha2::Sha256::digest(&bytes)).eq_ignore_ascii_case(sha256.trim()) {
             return Err(ApiError::bad_request(crate::tr!(
-                "Не поставлено: архив «{id}» от центра не совпал по sha256 — он подменён или испорчен.",
+                "Не поставлено: архив «{id}» от хаба не совпал по sha256 — он подменён или испорчен.",
                 id = id
             )));
         }
@@ -2760,7 +2802,7 @@ impl PackageCatalog {
             .map_err(|error| ApiError::bad_request(crate::tr!("Не поставлено: {error}.", error = error)))?
         };
         let refused = if placed.kind != PackageKind::Character {
-            Some(crate::tr!("Не поставлено: от центра так ставятся только персонажи."))
+            Some(crate::tr!("Не поставлено: от хаба так ставятся только персонажи."))
         } else if !vouched && unknown_voice(&placed.dir) {
             Some(crate::tr!("Не поставлено: у «{id}» голос неизвестного происхождения (voiceOrigin unknown).", id = id))
         } else {
@@ -4858,6 +4900,26 @@ pub mod tests {
         let again = catalog.view(true).await;
         assert!(again.packages.iter().any(|entry| entry.id == "jarvis-demo" && entry.preview.image.is_some()));
         catalog.preview("jarvis-demo", "image").await.expect("its face on a later read");
+    }
+
+    #[tokio::test]
+    async fn the_demo_feed_joins_the_own_sources_once_and_a_removed_one_stays_removed() {
+        let main = site().await;
+        let fixture = fixture(FeedSource::Url(main.url.clone()), Placement::Pc);
+        let catalog = &fixture.catalog;
+        let demo = "https://demo.example/catalog.json";
+        catalog.seed_demo(None);
+        catalog.seed_demo(Some("  "));
+        assert!(catalog.sources().is_empty(), "a build without the secret puts nothing");
+
+        catalog.seed_demo(Some(demo));
+        assert_eq!(catalog.sources().iter().map(|source| source.url.as_str()).collect::<Vec<_>>(), [demo]);
+        catalog.seed_demo(Some(demo));
+        assert_eq!(catalog.sources().len(), 1, "once");
+
+        catalog.remove_source(demo, None).await.unwrap();
+        catalog.seed_demo(Some(demo));
+        assert!(catalog.sources().is_empty(), "removed — not put again");
     }
 
     #[tokio::test]

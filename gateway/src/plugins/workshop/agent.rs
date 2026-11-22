@@ -41,7 +41,7 @@ pub fn cards_doc() -> String {
 /// panel.css.
 pub fn game_doc() -> String {
     format!(
-        "# Окошко-игра: образец «Неоновая змейка» (встроенная)\n\n\
+        "# Окошко-игра: пример «Неоновая змейка» (встроенная)\n\n\
 Игра, своё рисование, живая графика — окошко (`panel.js`), не карточка. Что делает её красивой и живой:\n\n\
 - Плитка стола со своей рамкой: `bare: true` в `desk.widgets`, корень с классом `widget`, свой фон и свет; на ней \
 уже что-то движется (змейка играет сама), рядом рекорд и кнопка «Играть» → `usePanelState().go(id)`.\n\
@@ -52,8 +52,9 @@ pub fn game_doc() -> String {
 - Управление: стрелки и WASD (окошко слышит клавиши в фокусе — подсказка «нажмите на поле»), свайпы, кнопки на \
 экране; пробел — пауза; пауза, когда окошко теряет фокус.\n\
 - Звук — WebAudio после первого нажатия, короткие ноты синтезом, кнопка «без звука».\n\
-- Сочный вид: свой неон поверх любой темы — фон, текст, кнопки и текст на них своими цветами, так игра одинакова в \
-светлой и тёмной теме; свечение, искры, тряска при ошибке; панели и кнопки поверх холста.\n\
+- Сочный вид поверх любой темы — фон, текст, кнопки и текст на них своими цветами, так игра одинакова в светлой и \
+тёмной теме; свет, искры, тряска при ошибке; панели и кнопки поверх холста. Неон — вид этой змейки, а не правило: у \
+своей игры вид по её теме и словам человека — светлый бумажный, пастельный, пиксельный, природный, журнальный…\n\
 - Рекорд и данные — в `backend.js` через `useApi(id).call`: функция чтения ничего не пишет, пишет функция действия.\n\
 - Тексты — словарём `{{ ru: {{…}}, en: {{…}} }}`: в компонентах `useT(T)`, подписи раздела и плитки в `definePlugin` — \
 `t(T, key)` из SDK; в манифесте — `languages` и `locales.en` (`docs`, тема `authoring`, «Языки»).\n\n\
@@ -62,6 +63,56 @@ pub fn game_doc() -> String {
     )
 }
 pub const THEMES: &str = include_str!("../../../../docs/design/glass/THEMES.md");
+
+/// Examples the agent picks from itself (`docs` «examples», owner 22.11: not every app grows out of one template): what
+/// each shows, then, by `name`, its files. The model builds its own thing by the rules, looking at those close to the
+/// request — never a copy of one.
+pub const EXAMPLES: &[(&str, &str)] = &[
+    ("quiz", "игра голосом на колонке: вопросы, ходы, таймер «Время вышло!», счёт в kv"),
+    ("games", "игры-разговоры, где ведёт модель (`model` + `continue`): без окошка"),
+    ("snake", "окошко-игра «Неоновая змейка»: canvas, плитка со своей рамкой, раздел «Играть», клавиши, свайпы, звук"),
+    ("midi", "окошко с уроком и клавиатурой: своё рисование, ввод тоньше кнопок, звук, только компьютер"),
+    ("folders", "окошко-альбом из домашней папки: фото дня на карточке, листание в окошке"),
+    ("widget", "простая карточка: число, подпись, кнопка, память в kv"),
+    ("weather", "карточка с сетью: данные из интернета, пример ответа, живой вид по погоде и времени суток"),
+    ("currency", "карточка с числами и линией из сети"),
+    ("shopping", "список голосом и карточкой: фразы, инструменты для «Мышления», строки и кнопки"),
+    ("plugin", "навык: фраза колонке и инструмент для модели"),
+];
+
+/// The `docs` «examples»: without a name — the list; with one — that example's files as they are.
+pub fn examples_doc(name: &str) -> String {
+    let files = |files: Vec<(String, String)>| {
+        files.into_iter().map(|(path, text)| format!("## {path}\n\n```\n{text}```\n")).collect::<Vec<_>>().join("\n")
+    };
+    let built_in = |id: &str| {
+        let found: Vec<(String, String)> = ["manifest.json", "backend.js", "panel.js", "panel.css"]
+            .into_iter()
+            .filter_map(|file| {
+                crate::plugins::bundled::embedded_text(&format!("{id}/{file}")).map(|text| (file.to_string(), text))
+            })
+            .collect();
+        files(found)
+    };
+    let body = match name.trim() {
+        "quiz" => files(super::templates::quiz("example", "Викторина на время")),
+        "midi" => files(super::templates::midi("example", "Учитель на MIDI-клавиатуре")),
+        "folders" => files(super::templates::folders("example", "Фотоальбом")),
+        "widget" => files(super::templates::widget("example", "Отметки")),
+        "plugin" => files(super::templates::plugin("example", "Привет")),
+        "snake" => return game_doc(),
+        id @ ("games" | "weather" | "currency" | "shopping") => built_in(id),
+        _ => {
+            let list: Vec<String> = EXAMPLES.iter().map(|(name, what)| format!("- `{name}` — {what}")).collect();
+            return format!(
+                "# Примеры\n\nНе заготовки, а примеры: посмотри те, что ближе к просьбе (`docs` с topic «examples» и name), \
+и собери своё по правилам — не копию одного. Вид — свой, не вид примера.\n\n{}\n",
+                list.join("\n")
+            );
+        }
+    };
+    format!("# Пример «{}»\n\n{body}", name.trim())
+}
 
 /// Rounds of tool calls in one answer of the agent: an app written in parts and checked takes many.
 const ROUNDS: usize = 40;
@@ -261,8 +312,14 @@ pub fn tools(with_draft: bool) -> Vec<LlmTool> {
         },
         LlmTool {
             name: "docs".into(),
-            description: "Reference: authoring — the manifest, Host API, bus, limits; station — what the speaker can do; cards — widget cards, their looks (scenes, colours, photos) and when a window is needed; panel — the panel SDK (panel.js, a window); game — a model of a fine game window (all of «Неоновая змейка»); themes — the theme contract: three colours of a mode, a backdrop from the panel's scenes, the palette.".into(),
-            parameters: schema(json!({ "topic": { "type": "string", "enum": ["authoring", "station", "cards", "panel", "game", "themes"] } }), &["topic"]),
+            description: "Reference: authoring — the manifest, Host API, bus, limits; station — what the speaker can do; cards — widget cards, their looks (scenes, colours, photos) and when a window is needed; panel — the panel SDK (panel.js, a window); game — an example of a fine game window (all of «Неоновая змейка»; its neon is its own look, not a rule); examples — examples to build from, not templates: the list, and with `name` that example's files (quiz, games, snake, midi, folders, widget, weather, currency, shopping, plugin); themes — the theme contract: three colours of a mode, a backdrop from the panel's scenes, the palette.".into(),
+            parameters: schema(
+                json!({
+                    "topic": { "type": "string", "enum": ["authoring", "station", "cards", "panel", "game", "themes", "examples"] },
+                    "name": { "type": "string", "description": "examples only: which example's files" }
+                }),
+                &["topic"],
+            ),
         },
     ];
     if with_draft {
@@ -273,11 +330,11 @@ pub fn tools(with_draft: bool) -> Vec<LlmTool> {
         });
         tools.push(LlmTool {
             name: "new_draft".into(),
-            description: "A new draft: from a template (kind plugin; quiz — a quiz with a turn timer «Время вышло!»; midi — a MIDI keyboard teacher; folders; theme), from an API description (openapi — an OpenAPI JSON document) or from an own installed package (draft — its id). The workshop gives the new draft's id — a random «p-» and 12 characters 0–9 a–f — in the answer (field id); call the tools with it. The name goes in title.".into(),
+            description: "A new draft: from a template (kind plugin; game — a blank game; quiz — a quiz with a turn timer «Время вышло!»; midi — a MIDI keyboard teacher; folders; theme), from an API description (openapi — an OpenAPI JSON document) or from an own installed package (draft — its id). The workshop gives the new draft's id — a random «p-» and 12 characters 0–9 a–f — in the answer (field id); call the tools with it. The name goes in title.".into(),
             parameters: schema(
                 json!({
                     "draft": { "type": "string", "description": "Only to open an own installed package; none for a new one" },
-                    "kind": { "type": "string", "enum": ["plugin", "quiz", "midi", "folders", "theme"] },
+                    "kind": { "type": "string", "enum": ["plugin", "game", "quiz", "midi", "folders", "theme"] },
                     "title": { "type": "string" },
                     "openapi": { "type": "string", "description": "An OpenAPI document in JSON" }
                 }),
@@ -402,6 +459,7 @@ pub async fn run_tool(workshop: &Workshop, draft: &str, name: &str, input: &Map<
             "panel" => PANEL_SDK.to_string(),
             "game" => game_doc(),
             "themes" => THEMES.to_string(),
+            "examples" => examples_doc(&field("name")),
             _ => AUTHORING.to_string(),
         }),
         "list_drafts" => Ok(text_of(&workshop.drafts())),
@@ -674,6 +732,17 @@ mod tests {
         assert!(mcp.iter().any(|tool| tool.name == "new_draft"));
         let check = mcp.iter().find(|tool| tool.name == "check").unwrap();
         assert_eq!(check.parameters["required"], json!(["draft"]));
+    }
+
+    #[test]
+    fn every_example_the_list_names_gives_its_files() {
+        let list = examples_doc("");
+        for (name, _) in EXAMPLES {
+            assert!(list.contains(&format!("`{name}`")), "{name} in the list");
+            let doc = examples_doc(name);
+            assert!(doc.contains("manifest.json"), "{name}: {}", &doc[..doc.len().min(200)]);
+        }
+        assert!(examples_doc("weather").contains("## backend.js"), "a built-in's own code");
     }
 
     #[tokio::test]

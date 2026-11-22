@@ -88,7 +88,7 @@ pub const MODE: SettingDefinition<ModeSetting> = SettingDefinition {
 pub const YANDEX_EAR: SettingDefinition<bool> = SettingDefinition {
     key: "yandex_ear",
     scope: SettingScope::Global,
-    description: "Слух Яндекса для своего мозга",
+    description: "Слух Яндекса для своего ИИ",
     sensitive: false,
     parse: Value::as_bool,
 };
@@ -1471,7 +1471,7 @@ pub const HOME_VOICE_ENGINES: SettingDefinition<BTreeMap<String, String>> = Sett
 pub const TURBO_VOICE_ENGINES: SettingDefinition<BTreeMap<String, String>> = SettingDefinition {
     key: "turbo_voice_engines",
     scope: SettingScope::Global,
-    description: "Модель голоса персонажа, названная центром",
+    description: "Модель голоса персонажа, названная хабом",
     sensitive: false,
     parse: as_string_record,
 };

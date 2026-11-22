@@ -34,7 +34,7 @@ pub fn plugin(id: &str, title: &str) -> Vec<(String, String)> {
     });
     let backend = format!(
         r#"// {title}: функции, которые зовёт шлюз (docs/plugins/AUTHORING.md). Ответ на фразу — строка (речь),
-// {{say, play, listen}} или null («не моё»: ответит встроенный навык). Ответ инструмента — что угодно: «Мозг» читает
+// {{say, play, listen}} или null («не моё»: ответит встроенный навык). Ответ инструмента — что угодно: модель читает
 // его текстом; {{say, play}} — действие, шлюз сразу выполняет его.
 
 export function hello({{ name }}) {{
@@ -48,6 +48,36 @@ export function hello({{ name }}) {{
         ("manifest.json".into(), pretty(&manifest)),
         ("backend.js".into(), backend),
         ("README.md".into(), format!("# {title}\n\nЧто умеет плагин и как его проверить голосом.\n")),
+    ]
+}
+
+/// A game, blank (owner 22.11: not every game grows out of the quiz): a manifest and a backend with nothing of their
+/// own. What the game is — a window on the desk or a game by voice — the agent decides from the request, looking at the
+/// examples it picks (`docs` «examples»: the quiz, «Неоновая змейка», the conversation games…).
+pub fn game(id: &str, title: &str) -> Vec<(String, String)> {
+    let manifest = json!({
+        "schema": 1,
+        "kind": "plugin",
+        "id": id,
+        "version": "0.1.0",
+        "title": title,
+        "description": "Игра",
+        "api": "^2",
+        "runs": ["pc", "station", "stationServer"],
+        "budget": { "memoryMb": 4, "storageMb": 1 },
+        "permissions": []
+    });
+    let backend = format!(
+        r#"// {title}: пустая заготовка игры — только каркас (docs/plugins/AUTHORING.md). Какой будет игра, решай по просьбе
+// человека: окошко на столе — своё рисование, клавиши, свайпы, звук (panel.js); игра голосом на колонке — фразы, ходы,
+// таймер; игра-разговор, где ведёт модель. Примеры — docs «examples»: посмотри те, что ближе к просьбе, и собери своё,
+// а не копию примера. Вид — свой, по теме игры и словам человека.
+"#
+    );
+    vec![
+        ("manifest.json".into(), pretty(&manifest)),
+        ("backend.js".into(), backend),
+        ("README.md".into(), format!("# {title}\n\nЧто это за игра и как в неё играть.\n")),
     ]
 }
 
@@ -170,9 +200,9 @@ pub fn widget(id: &str, title: &str) -> Vec<(String, String)> {
     let backend = format!(
         r#"// {title}: карточка на столе пульта (docs/plugins/cards.md). Функция карточки отдаёт её данные — детали,
 // которые рисует пульт: big (крупное), cap (подпись), rows (строки), line (линия), tiles (плитки), buttons
-// (кнопки)… Простая карточка сама следует теме пульта (светлой, тёмной, «авто»); красивую — живую сцену и цвета
-// фона, look — дают, когда человек просит красиво. Нажатие кнопки зовёт функцию из contributes.panel.calls и
-// получает новую карточку.
+// (кнопки)… Простая карточка сама следует теме пульта (светлой, тёмной, «авто»); свой вид — живую сцену и цвета
+// фона, look — по смыслу и словам человека, не сказал о виде — выбери сам, не один и тот же. Нажатие кнопки зовёт
+// функцию из contributes.panel.calls и получает новую карточку.
 // Нужен интернет — право net:<хост> в манифесте и пример examples.json; память между вызовами — host.kv.
 //
 // panelData только читает: каждая запись в host.kv — весть пульту, и все виджеты читают данные заново; запись при

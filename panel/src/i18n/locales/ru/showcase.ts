@@ -19,7 +19,6 @@ export default {
     pathDw: 'DuoWave',
     pathDwNote: 'проще всего',
     pathOr: 'OpenRouter',
-    pathOrNote: 'проще всего',
     pathOrNoteMany: 'много моделей',
     pathGpt: 'Подписка ChatGPT',
     pathGptNote: 'Plus или Pro',

@@ -216,6 +216,9 @@ pub struct StationGateway {
     teller: std::sync::OnceLock<Teller>,
     /// The warnings already told: each once while it holds.
     told: Mutex<Vec<String>>,
+    /// What the station refused last (an address for a door that is another computer's): not asked again on every
+    /// look while it stays the same.
+    refused_address: Mutex<Option<String>>,
     home_addresses: std::sync::OnceLock<HomeAddresses>,
     /// Looks without an answer in a row, and when the station was last looked for on the network.
     misses: Mutex<(u32, Option<std::time::Instant>)>,
@@ -251,6 +254,7 @@ impl StationGateway {
             auto_tried: Mutex::new(None),
             teller: std::sync::OnceLock::new(),
             told: Mutex::new(Vec::new()),
+            refused_address: Mutex::new(None),
             home_addresses: std::sync::OnceLock::new(),
             misses: Mutex::new((0, None)),
             updates: OnceLock::new(),
@@ -276,8 +280,15 @@ impl StationGateway {
 
     /// The computer's key with the station's home server is not there yet: the switch has to bring one.
     pub fn needs_home_key(&self) -> bool {
-        let known = self.lock().health.as_ref().and_then(|health| health.pointer("/placement/homeServer/url").cloned());
-        self.record().is_none_or(|record| record.home_key_id.is_none()) || known.is_none()
+        let health = self.lock().health.clone();
+        let no_key = self.record().is_none_or(|record| record.home_key_id.is_none());
+        // A station that says who its computers are: a key goes along while it has no entry of this one (another
+        // computer may hold the old door).
+        if let Some(own) = health.as_ref().and_then(|health| self.own_entry(health)) {
+            return no_key || own.is_none();
+        }
+        let known = health.as_ref().and_then(|health| health.pointer("/placement/homeServer/url").cloned());
+        no_key || known.is_none()
     }
 
     /// «ПК помогает колонке»: the station leans on this computer or works alone; with a new key (secret, id) the
@@ -288,10 +299,11 @@ impl StationGateway {
         key: Option<(String, String)>,
         actor: Option<Actor>,
     ) -> Result<(), String> {
-        let mut record = self.on_station().ok_or(crate::tr!("центр не на колонке"))?;
+        let mut record = self.on_station().ok_or(crate::tr!("хаб не на колонке"))?;
         let client = self.client().ok_or(crate::tr!("нет ключа пары"))?;
         let mut body = serde_json::json!({ "enabled": on });
         self.helper_body(&mut body, key, &mut record)?;
+        self.name_me(&mut body);
         client.post("/api/v1/home-server/link", body).await?;
         record.placement = if on { Placement::StationServer } else { Placement::Station };
         self.store(&record, actor).map_err(|error| error.message)?;
@@ -305,7 +317,9 @@ impl StationGateway {
     pub async fn set_helper_parts(&self, without: Vec<String>, actor: Option<Actor>) -> Result<(), String> {
         let _ = actor;
         let client = self.client().ok_or(crate::tr!("нет ключа пары"))?;
-        client.post("/api/v1/home-server/link", serde_json::json!({ "without": without })).await?;
+        let mut body = serde_json::json!({ "without": without });
+        self.name_me(&mut body);
+        client.post("/api/v1/home-server/link", body).await?;
         self.events.emit(GatewayEvent::PlacementChanged { what: "helper".into() });
         self.poll().await;
         Ok(())
@@ -326,11 +340,70 @@ impl StationGateway {
         Ok(())
     }
 
+    /// This computer as it names itself at the station's door (0.18.2): its own id and, when people gave one, its
+    /// name. A station that knows it writes this computer's own entry only — a home keeps a Turbo per computer.
+    fn name_me(&self, body: &mut Value) {
+        if let Some(me) = self.settings.get(&GATEWAY_SELF, None).filter(|me| !me.id.trim().is_empty()) {
+            body["helper"] = match me.name.filter(|name| !name.trim().is_empty()) {
+                Some(name) => serde_json::json!({ "id": me.id, "name": name }),
+                None => serde_json::json!({ "id": me.id }),
+            };
+        }
+    }
+
+    /// This computer's own entry in the station's list (0.18.2: the station says who each computer is, `helperId`).
+    /// `None` — the station does not say it (older): the door is read instead. `Some(None)` — it says it, and this
+    /// computer is not among them: not a Turbo of that station (another computer took the old door, or a person
+    /// removed it).
+    fn own_entry(&self, health: &Value) -> Option<Option<Value>> {
+        let helpers = health.pointer("/placement/helpers")?;
+        if helpers.get("perComputer").and_then(Value::as_bool) != Some(true) {
+            return None;
+        }
+        let list = helpers.get("list").and_then(Value::as_array)?;
+        let me = self.settings.get(&GATEWAY_SELF, None).map(|me| me.id).filter(|id| !id.trim().is_empty());
+        let own = me.and_then(|me| {
+            list.iter().find(|helper| helper.get("helperId").and_then(Value::as_str) == Some(me.as_str())).cloned()
+        });
+        // A home computer the station has not named yet (a move's door, never looked at) may be this one: the door is
+        // read, as before, rather than this computer told it helps nobody.
+        let unnamed = list.iter().any(|helper| {
+            helper.get("kind").and_then(Value::as_str) == Some("home") && helper.get("helperId").is_none()
+        });
+        if own.is_none() && unnamed {
+            return None;
+        }
+        Some(own)
+    }
+
     /// After an answer: the station's switch turned on its own panel shows here; this computer's address, changed
     /// on the home network, goes to the station — only where this computer gave it its key.
     async fn keep_links(&self, client: &PeerClient) {
         let Some(mut record) = self.on_station() else { return };
         let Some(health) = self.lock().health.clone() else { return };
+        // A station that says who its computers are: this computer's own entry, and nobody else's (22.11: a Mac and a
+        // Windows in one home each rewrote the one door with its own address every second).
+        if let Some(own) = self.own_entry(&health) {
+            let says = match own.as_ref().and_then(|own| own.get("enabled")).and_then(Value::as_bool) {
+                Some(true) => Placement::StationServer,
+                _ => Placement::Station,
+            };
+            if says != record.placement {
+                record.placement = says;
+                if self.store(&record, None).is_ok() {
+                    self.events.emit(GatewayEvent::PlacementChanged { what: "helper".into() });
+                }
+            }
+            let Some(own) = own else { return };
+            // The station shows a tag of the address, not the address (no addresses in its health).
+            let Some(known) = own.get("urlTag").and_then(Value::as_str) else { return };
+            let Some(ours) = self.home_url() else { return };
+            if known == crate::helpers::url_tag(&ours) {
+                return;
+            }
+            self.tell_address(client, &ours, None, format!("own {ours} {known}")).await;
+            return;
+        }
         // A station with helpers (docs/plans/home-and-helpers.md) may lean on others while this computer's help is
         // off: the switch is its entry of this computer, `homeServer.enabled`. A 0.11 station says it in `placement`.
         let says = if health.pointer("/placement/helpers").is_some() {
@@ -356,7 +429,10 @@ impl StationGateway {
         // dialling the Mac's old address after it changed networks). Another computer's address is never touched.
         let me = self.settings.get(&crate::settings::definitions::GATEWAY_SELF, None).map(|me| me.id);
         let named = health.pointer("/placement/homeServer/helperId").and_then(Value::as_str);
-        if record.home_key_id.is_none() && !(named.is_some() && named == me.as_deref()) {
+        let mine = named.is_some() && named == me.as_deref();
+        // A door that names another computer is that computer's, whatever key this one gave once (22.11: the second
+        // Turbo took the door, and the first kept writing its own address back over it).
+        if !mine && (named.is_some() || record.home_key_id.is_none()) {
             return;
         }
         let Some(known) = health.pointer("/placement/homeServer/url").and_then(Value::as_str) else { return };
@@ -364,9 +440,33 @@ impl StationGateway {
         if known.trim_end_matches('/') == ours {
             return;
         }
-        match client.post("/api/v1/home-server/link", serde_json::json!({ "url": ours })).await {
-            Ok(_) => tracing::info!("placement: told the station this computer's new address {ours} (was {known})"),
-            Err(error) => tracing::warn!("placement: the station not told this computer's new address: {error}"),
+        let named = named.unwrap_or_default();
+        self.tell_address(client, &ours, Some(known), format!("door {ours} {known} {named}")).await;
+    }
+
+    /// This computer's new address to the station, naming itself. A refusal is not asked again while what it was
+    /// asked on (`asked`: the address, what the station had, whose entry) stays the same.
+    async fn tell_address(&self, client: &PeerClient, ours: &str, known: Option<&str>, asked: String) {
+        let refused = || self.refused_address.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if refused().as_deref() == Some(asked.as_str()) {
+            return;
+        }
+        let mut body = serde_json::json!({ "url": ours });
+        self.name_me(&mut body);
+        match client.post("/api/v1/home-server/link", body).await {
+            Ok(_) => {
+                *refused() = None;
+                match known {
+                    Some(known) => {
+                        tracing::info!("placement: told the station this computer's new address {ours} (was {known})")
+                    }
+                    None => tracing::info!("placement: told the station this computer's new address {ours}"),
+                }
+            }
+            Err(error) => {
+                *refused() = Some(asked);
+                tracing::warn!("placement: the station not told this computer's new address: {error}");
+            }
         }
     }
 
@@ -434,7 +534,7 @@ impl StationGateway {
             warnings.push(Warning {
                 kind: "silent",
                 text: crate::tr!(
-                    "Центр на колонке не отвечает{since}. Колонка выключена, перезагружается, её сбросили — или DuoWave не поднимается и страховка вернула её Яндексу. «Проверить» скажет.",
+                    "Хаб на колонке не отвечает{since}. Колонка выключена, перезагружается, её сбросили — или DuoWave не поднимается и страховка вернула её Яндексу. «Проверить» скажет.",
                     since = since
                 ),
             });
@@ -442,8 +542,8 @@ impl StationGateway {
         if let (true, Some(health)) = (live.reachable, live.health.as_ref()) {
             if health.pointer("/placement/voice/local").and_then(Value::as_bool) == Some(false) {
                 let text = match health.pointer("/placement/voice/pointsTo").and_then(Value::as_str) {
-                    Some("yandex") => crate::tr!("Голос колонки снова у Яндекса, мимо её центра: её вернула прошивка, страховка или кнопка «Отдать голос Яндексу». «Вернуть голос DuoWave» — обратно."),
-                    _ => crate::tr!("Голос колонки идёт не в её центр."),
+                    Some("yandex") => crate::tr!("Голос колонки снова у Яндекса, мимо её хаба: её вернула прошивка, страховка или кнопка «Отдать голос Яндексу». «Вернуть голос DuoWave» — обратно."),
+                    _ => crate::tr!("Голос колонки идёт не в её хаб."),
                 };
                 warnings.push(Warning { kind: "voiceAway", text });
             }
@@ -755,7 +855,8 @@ impl StationGateway {
             LazyLock::new(|| Mutex::new(HashMap::new()));
         let Some(network) = crate::platform::windows_net::last() else { return };
         let advice = crate::platform::windows_net::advice(&network);
-        let report = serde_json::json!({ "closed": network.likely_closed(), "advice": advice });
+        let mut report = serde_json::json!({ "closed": network.likely_closed(), "advice": advice });
+        self.name_me(&mut report);
         let text = report.to_string();
         {
             let sent = SENT.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -956,7 +1057,7 @@ impl StationGateway {
 
     pub fn set_auto_update(&self, on: bool, actor: Option<Actor>) -> Result<(), ApiError> {
         let Some(mut record) = self.on_station() else {
-            return Err(ApiError::conflict(crate::tr!("Центр не на колонке.")));
+            return Err(ApiError::conflict(crate::tr!("Хаб не на колонке.")));
         };
         record.auto_update = on;
         self.store(&record, actor)?;
@@ -975,7 +1076,7 @@ impl StationGateway {
         actor: Option<Actor>,
     ) -> Result<UpdateStarted, ApiError> {
         if self.client().is_none() {
-            return Err(ApiError::conflict(crate::tr!("Центр не на колонке.")));
+            return Err(ApiError::conflict(crate::tr!("Хаб не на колонке.")));
         }
         if self.too_old_for_archive() {
             return Err(ApiError::conflict(peer::old_station()));
@@ -1144,7 +1245,7 @@ impl StationGateway {
     /// The station's gateway updated from this computer (the home's copy is here already, src/home/copy.rs): the signed
     /// archive over the home network; the station checks the signature with its own key, puts it in place and starts again.
     pub async fn update_station(&self, actor: Option<Actor>) -> Result<String, String> {
-        let client = self.client().ok_or(crate::tr!("центр не на колонке"))?;
+        let client = self.client().ok_or(crate::tr!("хаб не на колонке"))?;
         let version = self.update_offer().ok_or(crate::tr!("у колонки последняя версия"))?;
         if self.too_old_for_archive() {
             return Err(peer::old_station());
@@ -2118,7 +2219,36 @@ mod tests {
         assert!(state.links.lock().unwrap().is_empty(), "another computer's address stays");
         *state.helper_id.lock().unwrap() = Some("this-computer".into());
         watch.poll().await;
-        assert_eq!(state.links.lock().unwrap().clone(), vec![serde_json::json!({"url": "http://127.0.0.35"})]);
+        assert_eq!(
+            state.links.lock().unwrap().clone(),
+            vec![serde_json::json!({"url": "http://127.0.0.35", "helper": {"id": "this-computer"}})],
+            "the computer names itself: the station writes its own entry"
+        );
+    }
+
+    /// A station that says who its computers are (0.18.2): this computer finds its own entry by its id; not among
+    /// them — it is not a Turbo there (another computer took the old door), and it writes nobody's address; a station
+    /// that does not say it — the old door is read, as before.
+    #[tokio::test]
+    async fn this_computer_finds_its_own_entry_among_the_stations_turbos() {
+        let dir = tempfile::tempdir().unwrap();
+        let (watch, _) = computer(dir.path());
+        let me = crate::settings::definitions::GatewaySelf { id: "gw-mac".into(), name: None };
+        watch.settings.set(&crate::settings::definitions::GATEWAY_SELF, &me, None).unwrap();
+        let health =
+            |list: Value| serde_json::json!({ "placement": { "helpers": { "list": list, "perComputer": true } } });
+        let two = health(serde_json::json!([
+            { "id": "home-computer", "helperId": "gw-win", "urlTag": "a", "enabled": true },
+            { "id": "turbo-gw-mac", "helperId": "gw-mac", "urlTag": "b", "enabled": true },
+        ]));
+        let own = watch.own_entry(&two).unwrap().unwrap();
+        assert_eq!(own["id"], "turbo-gw-mac");
+        let without_me = health(serde_json::json!([{ "id": "home-computer", "helperId": "gw-win" }]));
+        assert_eq!(watch.own_entry(&without_me), Some(None), "not a Turbo of that station");
+        let unknown_door = health(serde_json::json!([{ "id": "home-computer", "kind": "home" }]));
+        assert_eq!(watch.own_entry(&unknown_door), None, "a door not named yet may be this computer's: read as before");
+        let older = serde_json::json!({ "placement": { "helpers": { "list": [{ "id": "home-computer" }] } } });
+        assert_eq!(watch.own_entry(&older), None, "an older station: the door is read");
     }
 
     #[tokio::test]

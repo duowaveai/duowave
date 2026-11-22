@@ -46,7 +46,7 @@ import { micOn, onMic } from '../voice/mic';
 import { answering, onAnswering } from '../voice/speak';
 import { shade, useReducedMotion } from '../stations/kit';
 import { safeColor } from '../ui/media';
-import { useAvailability } from '../availability';
+import { available, useAvailability } from '../availability';
 import { BrandMark } from '../ui/brand';
 import { BRANDS, type BrandId } from '../brand-icons';
 import { Sheet, SkeletonRows } from '../ui/sheet';
@@ -476,7 +476,10 @@ export function Dashboard({ health, session, drawing, online, trip, skew = 0, ve
     // 18.11, п. 31: «Говорит — не готово», а куда идти — не видно).
     const voiceMissing = !!turbo && !turbo.builtin && turbo.abilities.some((ability) => ability.id === 'voice' && !ability.ready);
     const openTurbo = turbo && voiceMissing && onOpenTurbo ? () => onOpenTurbo(turbo.helper.id) : openHome;
-    const side = turbo ? <TurboBody turbo={turbo} onOpen={openTurbo} /> : station && helpers.view ? <TurboSlot onAdd={openHome} /> : null;
+    // Под сценой (узкое окно, столбец) у блока свой крестик; над свободным столом крестик у его рамки (ниже).
+    const sideOf = (onHide?: () => void) =>
+        turbo ? <TurboBody turbo={turbo} onOpen={openTurbo} onHide={onHide} /> : station && helpers.view ? <TurboSlot onAdd={openHome} onHide={onHide} /> : null;
+    const side = sideOf();
     const cloudOn = (id: string): boolean =>
         connectors?.some((entry) => entry.manifest.id === id && entry.manifest.cloud && (entry.status.state === 'ready' || entry.status.state === 'configured')) ?? false;
     const backup = brainView ? backupPlace(brainView) : null;
@@ -494,10 +497,14 @@ export function Dashboard({ health, session, drawing, online, trip, skew = 0, ve
     // На свободном столе второе тело не стоит рядом с колонкой, а висит поверх стола у правого края: места у виджетов
     // не берёт, закрывается крестиком; закрыто — у колонки точка-молния.
     const floating = !!floatHost && !!side;
-    const fold = !!floatHost && !!notesFolded;
+    /** Блок Турбо стоит у колонки: в узком окне, и его не скрыли. */
+    const inline = !floating && !!side && !turboHidden;
+    // «Поток запросов» (полоса дома и «Если Турбо уснёт») сворачивается крестиком в любом окне — и в узком, где сцена
+    // стоит в ленте (замечание 16 после 0.18.1: крестик был только на свободном столе).
+    const fold = !!notesFolded;
     const notes = (folded: boolean) => (
         <>
-            <HomeStrip alice={station && mode !== 'own'} clouds={cloudOn('asr') || cloudOn('tts')} onFold={floatHost && !folded ? () => remember(NOTES_FOLDED, true) : undefined} />
+            <HomeStrip alice={station && mode !== 'own'} clouds={cloudOn('asr') || cloudOn('tts')} onFold={!folded ? () => remember(NOTES_FOLDED, true) : undefined} />
             {fall && <FallLine items={fall.items} modeFalls={fall.modeFalls} backup={backup ?? undefined} />}
         </>
     );
@@ -506,7 +513,7 @@ export function Dashboard({ health, session, drawing, online, trip, skew = 0, ve
         <>
             {asleep && <AsleepLine turbo={turbo} station={station} />}
             <TruthStrip nodes={nodes} truth={truth} mode={mode} open={whoOpen} onToggle={onToggleWho} />
-            <div class={`dash-pair${side && !floating ? ' has-side' : ''}`}>
+            <div class={`dash-pair${inline ? ' has-side' : ''}`}>
             <div ref={box} class="dash-stage" style={{ height: `${Math.round(scene.height * scene.scale)}px` }}>
                 <div
                     class="dash-board"
@@ -669,7 +676,7 @@ export function Dashboard({ health, session, drawing, online, trip, skew = 0, ve
                             <IconChat size={14} />
                         </button>
                     )}
-                    {floating && turboHidden && (
+                    {!!side && turboHidden && (
                         <button
                             class={`dash-turbo-dot${turbo ? (turbo.up || turbo.builtin ? '' : ' is-off') : ' is-empty'}`}
                             style={{ left: `${scene.nodes.voice.x + CIRCLE / 2 + 14}px`, top: `${scene.nodes.voice.y - 14}px` }}
@@ -682,7 +689,7 @@ export function Dashboard({ health, session, drawing, online, trip, skew = 0, ve
                     )}
                 </div>
             </div>
-            {!floating && side}
+            {inline && sideOf(() => remember(TURBO_HIDDEN, true))}
             </div>
             {floating &&
                 !turboHidden &&
@@ -943,6 +950,23 @@ function brainSpec(context: SpecContext): Spec {
         if (result.problems.length) throw new Error(result.problems.join('; '));
     };
     const view = data.brainView;
+    /**
+     * В режиме «Алиса» модели не серые (замечание 3 после 0.18.1: включить свой ИИ можно было только в «Устройства» →
+     * колонка → «Комната»): выбор модели спрашивает «Включить «Алиса + ваш ИИ»» и одной кнопкой выбирает её, ставит ИИ
+     * первым в «Разговоре» и переключает колонку — она переподключается.
+     */
+    const mayTogether = relay && mayChoose && can('station.mode') && available('mode.gateway');
+    const together = async (pick: BrainPick | null): Promise<string> => {
+        await api.chooseBrain({ fast: pick });
+        const current = await api.routes();
+        if (executorOf(current.routes.chat ?? 'own', 'gateway') !== 'own') {
+            const result = await api.setRoutes({ ...current.routes, chat: withFirst(current.routes.chat, 'own') });
+            if (result.problems.length) throw new Error(result.problems.join('; '));
+        }
+        await api.setMode('gateway');
+        return tr.dashboard.togetherOn;
+    };
+    const about = relay ? (mayTogether ? tr.dashboard.relayAboutPick : relayAbout()) : tr.dashboard.brainAbout;
     const alice: Choice = {
         id: 'yandex',
         name: tr.dashboard.alice,
@@ -1002,9 +1026,10 @@ function brainSpec(context: SpecContext): Spec {
                 brand: provider.brand,
                 pill: { text: WHERE[tone], tone },
                 on,
-                disabled: relay || !mayChoose || (executor !== 'own' && !mayRoute),
-                confirm: tr.dashboard.becomesInstead(name, nodes.brain.value),
+                disabled: relay ? !mayTogether : !mayChoose || (executor !== 'own' && !mayRoute),
+                confirm: relay ? tr.dashboard.becomesTogether(name) : tr.dashboard.becomesInstead(name, nodes.brain.value),
                 apply: async () => {
+                    if (relay) return together({ provider: provider.id, model });
                     await setFirst('own');
                     await api.chooseBrain({ fast: { provider: provider.id, model } });
                     return tr.dashboard.appliedNext;
@@ -1020,9 +1045,10 @@ function brainSpec(context: SpecContext): Spec {
                   sub: tr.dashboard.fromEnv(view.env.title),
                   pill: { text: WHERE[view.env.cloud ? 'cloud' : 'own'], tone: view.env.cloud ? 'cloud' : 'own' },
                   on: executor === 'own' && !fast,
-                  disabled: relay || !mayChoose || (executor !== 'own' && !mayRoute),
-                  confirm: tr.dashboard.becomesEnv(nodes.brain.value),
+                  disabled: relay ? !mayTogether : !mayChoose || (executor !== 'own' && !mayRoute),
+                  confirm: relay ? tr.dashboard.becomesTogether(view.env.models.fast) : tr.dashboard.becomesEnv(nodes.brain.value),
                   apply: async () => {
+                      if (relay) return together(null);
                       await setFirst('own');
                       await api.chooseBrain({ fast: null });
                       return tr.dashboard.appliedNext;
@@ -1034,7 +1060,7 @@ function brainSpec(context: SpecContext): Spec {
         key: 'brain',
         tone: nodes.brain.tone,
         title: NODE_LABELS.brain,
-        about: relay ? relayAbout() : tr.dashboard.brainAbout,
+        about,
         choices: [...models, ...envChoice, alice],
         notes: [
             !mayChoose && !relay ? adminOnly() : '',

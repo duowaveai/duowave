@@ -267,7 +267,7 @@ impl Connection {
             cost: Mutex::new(None),
             stderr: Mutex::new(String::new()),
             allow: open.allow.clone(),
-            copy: std::fs::canonicalize(&open.copy).unwrap_or_else(|_| open.copy.clone()),
+            copy: crate::utils::files::canonical(&open.copy).unwrap_or_else(|_| open.copy.clone()),
         });
         if let Some(mut stderr) = child.stderr.take() {
             let shared = shared.clone();
@@ -588,8 +588,8 @@ impl Connection {
                 // Rooted is not relative: on Windows «/etc/hosts» (no drive) is that drive's root, not the copy's
                 // — joined to the copy it was taken for a file inside it, and allowed.
                 let path = if path.has_root() { path.to_path_buf() } else { self.shared.copy.join(path) };
-                let real = std::fs::canonicalize(&path)
-                    .or_else(|_| path.parent().map(std::fs::canonicalize).unwrap_or(Ok(path.clone())))
+                let real = crate::utils::files::canonical(&path)
+                    .or_else(|_| path.parent().map(crate::utils::files::canonical).unwrap_or(Ok(path.clone())))
                     .unwrap_or(path);
                 real.starts_with(&self.shared.copy)
             })

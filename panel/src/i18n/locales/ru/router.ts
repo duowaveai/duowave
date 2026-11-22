@@ -1,5 +1,5 @@
 // Тексты роутера и работ (docs/plans/router-and-works.md): страница «Работы» (screens/works.tsx), одна работа
-// (screens/work.tsx), виджет «Работы» на столе (screens/desk-widgets.tsx), «Расход» в «Мозге» (screens/spend.tsx).
+// (screens/work.tsx), виджет «Работы» на столе (screens/desk-widgets.tsx), «Расход» в «Мышлении» (screens/spend.tsx).
 // «Места» и рабочие папки добавят сюда своё на своих этапах.
 import { plural } from '../../format';
 
@@ -144,7 +144,7 @@ export default {
     outcomeStopped: 'остановлена',
     outcomeLimit: 'упёрлась в лимит',
     // «Где»
-    whereGateway: 'Центр',
+    whereGateway: 'Хаб',
     whereGatewayPc: 'этот компьютер',
     whereGatewayStation: 'колонка',
     whereAsked: 'Где попросили',
@@ -175,9 +175,9 @@ export default {
     widgetMore: (n: number) => `и ещё ${n} ${works(n)}`,
     widgetAsking: 'ждёт ответа',
     widgetQueuedRow: 'в очереди',
-    // «Расход» (screens/spend.tsx): «Персонаж» → «Мозг» → «Расход»
+    // «Расход» (screens/spend.tsx): «Персонаж» → «Мышление» → «Расход»
     spendTitle: 'Расход',
-    spendBack: 'Мозг',
+    spendBack: 'Мышление',
     spendRowSub: 'токены и доллары по дням, местам и моделям',
     spendToday: (usd: string, tokens: string) => `сегодня ${usd} · ${tokens}`,
     spendTodayNone: 'сегодня моделей не звали',
@@ -306,7 +306,7 @@ export default {
     keySet: 'ключ сохранён',
     keyPlaceholder: 'sk-ant-…',
     keySave: 'Сохранить ключ',
-    keyFromBrain: 'Взять ключ провайдера из «Мозга»',
+    keyFromBrain: 'Взять ключ провайдера из «Мышления»',
     pathLabel: 'Где программа',
     pathHint: 'пусто — найти самому',
     pathSave: 'Запомнить путь',

@@ -51,18 +51,26 @@ pub struct Row {
     pub text: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub action: Option<&'static str>,
+    /// The computer the row's action is about (its own id): «Разрешить в брандмауэре» is shown on that very computer,
+    /// elsewhere the way to it — a home may have several Turbos.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub turbo: Option<String>,
 }
 
 fn row(id: &'static str, state: RowState, text: String, action: Option<&'static str>) -> Row {
-    Row { id, state, text, action }
+    Row { id, state, text, action, turbo: None }
 }
 
 /// A Turbo as the centre knows it: a helper of its list, or the computer a station leans on by the pair's key.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TurboFact {
     pub name: String,
     pub up: bool,
     pub error: Option<String>,
+    /// The computer's own id, when the centre knows it.
+    pub id: Option<String>,
+    /// It told the centre its firewall or network keeps the station out (placement/watch.rs, `report_network`).
+    pub firewall: bool,
 }
 
 /// What the centre knows, gathered once (`facts`), and turned into rows by `rows` — the tests feed it by hand.
@@ -79,9 +87,50 @@ pub struct Facts {
     pub turbos: Vec<TurboFact>,
     /// The voice speaks the character's, not Alice's.
     pub own_voice: bool,
+    /// The Turbo's voice failed lately and Alice's spoke instead (station_session.rs, `with_alice_after`): why, and
+    /// the computer whose voice it was.
+    pub voice_failed: Option<VoiceFailed>,
     pub mode: crate::settings::definitions::PanelMode,
     /// A station's Wi-Fi drops of the last day; None — none, or not a station.
     pub wifi: Option<WifiFact>,
+}
+
+/// The Turbo's voice did not speak: Windows' application control kept its engine from starting (WinError 4551, Smart
+/// App Control — 22.11, every answer of a Windows Turbo was silent), or another reason in its own words.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VoiceFailed {
+    pub blocked_by_windows: bool,
+    pub why: String,
+    /// The computer whose voice it was (its own id), when the centre knows it.
+    pub turbo: Option<String>,
+    pub name: Option<String>,
+}
+
+/// The Turbo's voice failed lately: when, and why in its words.
+static VOICE_FAILED: std::sync::Mutex<Option<(std::time::Instant, String)>> = std::sync::Mutex::new(None);
+
+/// A failure of the Turbo's voice is kept for the row this long after the last one.
+const VOICE_FAILED_FOR: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+
+/// The Turbo's voice is not asked again for this long after it failed: the phrase goes to Alice's voice at once
+/// instead of waiting for the same refusal every time.
+pub const VOICE_REST: std::time::Duration = std::time::Duration::from_secs(2 * 60);
+
+/// The station's answers tell how the Turbo's voice went: `Some(why)` — it failed and Alice spoke; `None` — it spoke.
+pub fn note_turbo_voice(failed: Option<&str>) {
+    let mut kept = VOICE_FAILED.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    *kept = failed.map(|why| (std::time::Instant::now(), why.chars().take(600).collect()));
+}
+
+/// The Turbo's voice failed within `within`: why.
+pub fn turbo_voice_failed(within: std::time::Duration) -> Option<String> {
+    let kept = VOICE_FAILED.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    kept.as_ref().filter(|(at, _)| at.elapsed() < within).map(|(_, why)| why.clone())
+}
+
+/// Windows' application control (Smart App Control, WDAC) refused a file: WinError 4551.
+pub fn blocked_by_windows(why: &str) -> bool {
+    why.contains("WinError 4551") || why.contains("Application Control policy")
 }
 
 /// The station's Wi-Fi in the last day, when it dropped: how often, how long, and the likely cause.
@@ -174,7 +223,7 @@ pub fn rows(facts: &Facts) -> Vec<Row> {
             Some("pointLocal"),
         ),
         (Some(false), false) => {
-            row("voice", RowState::Warn, crate::tr!("Колонка сейчас не на связи с этим центром."), Some("station"))
+            row("voice", RowState::Warn, crate::tr!("Колонка сейчас не на связи с этим хабом."), Some("station"))
         }
         (None, _) => row("voice", RowState::Warn, crate::tr!("Колонки в доме пока нет."), Some("station")),
     });
@@ -193,7 +242,7 @@ pub fn rows(facts: &Facts) -> Vec<Row> {
     }
     let brain_title = facts.brain_title.clone().unwrap_or_else(|| crate::tr!("модель"));
     rows.push(match facts.brain {
-        Way::Ready => row("brain", RowState::Ok, crate::tr!("Мозг отвечает: {title}.", title = brain_title), None),
+        Way::Ready => row("brain", RowState::Ok, crate::tr!("ИИ отвечает: {title}.", title = brain_title), None),
         Way::Fallback => row(
             "brain",
             RowState::Warn,
@@ -208,36 +257,16 @@ pub fn rows(facts: &Facts) -> Vec<Row> {
             // In «Алиса» Yandex answers: no model is needed yet.
             if facts.mode == PanelMode::Relay { RowState::Warn } else { RowState::Bad },
             crate::tr!(
-                "Мозг не отвечает: {why}",
+                "ИИ не отвечает: {why}",
                 why = facts.brain_reason.clone().unwrap_or_else(|| crate::tr!("модель не выбрана."))
             ),
             Some("brain"),
         ),
     });
-    let down = facts.turbos.iter().find(|turbo| !turbo.up);
-    rows.push(match (facts.turbos.first(), down) {
-        (None, _) => row(
-            "turbo",
-            RowState::Warn,
-            crate::tr!("Турбо нет: голос персонажа и слух — в облаке или у Алисы."),
-            Some("turbo"),
-        ),
-        (Some(_), Some(turbo)) => row(
-            "turbo",
-            RowState::Bad,
-            match &turbo.error {
-                Some(error) => {
-                    crate::tr!("Турбо «{name}» не на связи: {error}", name = turbo.name.clone(), error = error.clone())
-                }
-                None => crate::tr!("Турбо «{name}» не на связи.", name = turbo.name.clone()),
-            },
-            Some("firewall"),
-        ),
-        (Some(turbo), None) => {
-            row("turbo", RowState::Ok, crate::tr!("Турбо «{name}» на связи.", name = turbo.name.clone()), None)
-        }
-    });
-    rows.push(if facts.own_voice {
+    rows.push(turbo_row(&facts.turbos));
+    rows.push(if let Some(failed) = &facts.voice_failed {
+        voice_failed_row(failed)
+    } else if facts.own_voice {
         row("characterVoice", RowState::Ok, crate::tr!("Ответы звучат голосом персонажа."), None)
     } else {
         row(
@@ -260,6 +289,80 @@ pub fn rows(facts: &Facts) -> Vec<Row> {
     rows
 }
 
+/// The Turbo's voice failed, Alice's spoke. Windows' application control: said plainly, with the way on that very
+/// computer (`windowsVoice`, owner 22.11: tell what to do — keep Alice's voice or open Windows' settings, with a
+/// warning). Another reason: its words, and the voice to choose.
+fn voice_failed_row(failed: &VoiceFailed) -> Row {
+    let name = failed.name.clone().unwrap_or_else(|| crate::tr!("Турбо"));
+    if failed.blocked_by_windows {
+        return Row {
+            turbo: failed.turbo.clone(),
+            ..row(
+                "characterVoice",
+                RowState::Warn,
+                crate::tr!(
+                    "Голос персонажа на «{name}» не запускается: защита Windows (Smart App Control) не пускает его файлы. Пока отвечает голос Алисы.",
+                    name = name
+                ),
+                Some("windowsVoice"),
+            )
+        };
+    }
+    row(
+        "characterVoice",
+        RowState::Warn,
+        crate::tr!(
+            "Голос персонажа на «{name}» не ответил: {why}. Пока отвечает голос Алисы.",
+            name = name,
+            why = failed.why.trim_end_matches('.').chars().take(200).collect::<String>()
+        ),
+        Some("voice"),
+    )
+}
+
+/// The Turbos in one row. A home may have several (22.11): one away while another helps is a warning, all away a
+/// fault. «Разрешить в брандмауэре» only where the Turbo said its firewall keeps the station out (22.11: the button
+/// stood by «не принимает ключ» on a Mac).
+fn turbo_row(turbos: &[TurboFact]) -> Row {
+    let names =
+        |list: &[&TurboFact]| list.iter().map(|turbo| format!("«{}»", turbo.name)).collect::<Vec<_>>().join(", ");
+    let up: Vec<&TurboFact> = turbos.iter().filter(|turbo| turbo.up).collect();
+    let down =
+        turbos.iter().find(|turbo| !turbo.up && turbo.firewall).or_else(|| turbos.iter().find(|turbo| !turbo.up));
+    match (turbos.is_empty(), down) {
+        (true, _) => row(
+            "turbo",
+            RowState::Warn,
+            crate::tr!("Турбо нет: голос персонажа и слух — в облаке или у Алисы."),
+            Some("turbo"),
+        ),
+        (false, Some(turbo)) => {
+            let away = match &turbo.error {
+                Some(error) => crate::tr!(
+                    "Турбо «{name}» не на связи: {error}",
+                    name = turbo.name.clone(),
+                    error = error.trim_end_matches('.').to_string()
+                ),
+                None => crate::tr!("Турбо «{name}» не на связи", name = turbo.name.clone()),
+            };
+            let text = if up.is_empty() {
+                format!("{away}.")
+            } else {
+                crate::tr!("{away}. Пока помогает {names}.", away = away, names = names(&up))
+            };
+            let state = if up.is_empty() { RowState::Bad } else { RowState::Warn };
+            Row {
+                turbo: turbo.firewall.then(|| turbo.id.clone()).flatten(),
+                ..row("turbo", state, text, turbo.firewall.then_some("firewall"))
+            }
+        }
+        (false, None) if up.len() == 1 => {
+            row("turbo", RowState::Ok, crate::tr!("Турбо «{name}» на связи.", name = up[0].name.clone()), None)
+        }
+        (false, None) => row("turbo", RowState::Ok, crate::tr!("Турбо на связи: {names}.", names = names(&up)), None),
+    }
+}
+
 /// The centre's facts now.
 pub fn facts(app: &App) -> Facts {
     use crate::helpers::HelperState;
@@ -274,13 +377,30 @@ pub fn facts(app: &App) -> Facts {
         health.pointer("/station/connected").and_then(Value::as_bool)
     };
     let now = app.brain.now(crate::config::ModelProfile::Fast);
+    // Who each computer is: the id its entry keeps, else the one its last look read.
+    let named: std::collections::BTreeMap<String, String> =
+        app.helpers.list().into_iter().filter_map(|entry| Some((entry.id, entry.helper_id?))).collect();
     let mut turbos: Vec<TurboFact> = app
         .helpers
         .views()
         .into_iter()
         .filter(|helper| helper.enabled && !helper.builtin)
         .filter(|helper| !matches!(helper.state, HelperState::Off | HelperState::Itself))
-        .map(|helper| TurboFact { name: helper.name, up: helper.state == HelperState::Up, error: helper.error })
+        .map(|helper| {
+            let id = named.get(&helper.id).cloned().or_else(|| helper.helper.as_ref().map(|me| me.id.clone()));
+            // A report from a computer that did not name itself (before 0.18.2) is the old door's.
+            let said = turbo_says(id.as_deref())
+                .or_else(|| (helper.id == crate::helpers::HOME_COMPUTER).then(|| turbo_says(None)).flatten());
+            let up = helper.state == HelperState::Up;
+            TurboFact {
+                name: helper.name,
+                up,
+                firewall: !up && said.is_some(),
+                // A Turbo out of reach that said why (Windows' firewall, a public network): its words, not the look's.
+                error: if up { helper.error } else { said.or(helper.error) },
+                id,
+            }
+        })
         .collect();
     // A station's computer by the pair's key (`placement/helper`): its door, `homeServer`.
     if let Some(home) =
@@ -288,17 +408,14 @@ pub fn facts(app: &App) -> Facts {
     {
         let state = home.get("state").and_then(Value::as_str).unwrap_or("none");
         if state != "none" && turbos.is_empty() {
+            let said = if state == "up" { None } else { turbo_says(None) };
             turbos.push(TurboFact {
                 name: crate::tr!("Компьютер"),
                 up: state == "up",
-                error: home.get("error").and_then(Value::as_str).map(str::to_string),
+                firewall: said.is_some(),
+                error: said.or_else(|| home.get("error").and_then(Value::as_str).map(str::to_string)),
+                id: None,
             });
-        }
-    }
-    // A Turbo out of reach that said why (Windows' firewall, a public network): its words, not «не на связи».
-    if let Some(says) = turbo_says() {
-        for turbo in turbos.iter_mut().filter(|turbo| !turbo.up) {
-            turbo.error = Some(says.clone());
         }
     }
     Facts {
@@ -309,9 +426,26 @@ pub fn facts(app: &App) -> Facts {
         brain_reason: now.reason,
         turbos,
         own_voice: app.voice.chosen_provider() != crate::config::TtsProvider::Yandex,
+        voice_failed: voice_failed(app),
         mode: app.modes.current(),
         wifi: if on_station { wifi_fact() } else { None },
     }
+}
+
+/// The Turbo's voice failed lately, with the computer that gives the voice now (the first on the list).
+fn voice_failed(app: &App) -> Option<VoiceFailed> {
+    let why = turbo_voice_failed(VOICE_FAILED_FOR)?;
+    let giver = app.helpers.offer(crate::helpers::contract::Ability::Voice).and_then(|giver| match giver {
+        crate::helpers::Giver::Helper(remote) => Some(remote.id().to_string()),
+        crate::helpers::Giver::Itself => None,
+    });
+    let entry = giver.and_then(|id| app.helpers.entry(&id));
+    Some(VoiceFailed {
+        blocked_by_windows: blocked_by_windows(&why),
+        turbo: entry.as_ref().and_then(|entry| entry.helper_id.clone()),
+        name: entry.map(|entry| entry.name),
+        why,
+    })
 }
 
 pub fn routes() -> Router<Arc<App>> {
@@ -320,14 +454,16 @@ pub fn routes() -> Router<Arc<App>> {
         .route("/api/v1/home/turbo-network", axum::routing::post(turbo_network))
 }
 
-/// What the Turbo told of its network last (placement/watch.rs, `report_network`): why the station may not reach it.
+/// What a Turbo told of its network last (placement/watch.rs, `report_network`): why the station may not reach it.
 struct TurboNetwork {
     closed: bool,
     advice: Option<String>,
     at: std::time::Instant,
 }
 
-static TURBO_NETWORK: std::sync::Mutex<Option<TurboNetwork>> = std::sync::Mutex::new(None);
+/// Each computer's last report, by its own id ("" — a computer before 0.18.2 that did not name itself).
+static TURBO_NETWORK: std::sync::Mutex<std::collections::BTreeMap<String, TurboNetwork>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
 
 /// A report older than this says nothing.
 const REPORT_FOR: std::time::Duration = std::time::Duration::from_secs(15 * 60);
@@ -345,15 +481,20 @@ async fn turbo_network(
     }
     let advice = body.get("advice").and_then(Value::as_str).map(|text| text.chars().take(400).collect::<String>());
     let closed = body.get("closed").and_then(Value::as_bool).unwrap_or(false);
-    *TURBO_NETWORK.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) =
-        Some(TurboNetwork { closed, advice, at: std::time::Instant::now() });
+    let who = body.pointer("/helper/id").and_then(Value::as_str).map(str::trim).unwrap_or_default();
+    let mut kept = TURBO_NETWORK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    kept.retain(|_, report| report.at.elapsed() < REPORT_FOR);
+    // A few computers at most: a home's own.
+    if kept.len() < 16 || kept.contains_key(who) {
+        kept.insert(who.chars().take(64).collect(), TurboNetwork { closed, advice, at: std::time::Instant::now() });
+    }
     Ok(ok(json!({ "kept": true })))
 }
 
-/// Why the Turbo may be out of reach, as it said itself lately.
-fn turbo_says() -> Option<String> {
+/// Why this computer (by its own id; None — one that did not name itself) may be out of reach, as it said lately.
+fn turbo_says(who: Option<&str>) -> Option<String> {
     let kept = TURBO_NETWORK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    kept.as_ref()
+    kept.get(who.unwrap_or_default())
         .filter(|report| report.closed && report.at.elapsed() < REPORT_FOR)
         .and_then(|report| report.advice.clone())
 }
@@ -377,8 +518,9 @@ mod tests {
             brain: Way::Ready,
             brain_title: Some("Claude".into()),
             brain_reason: None,
-            turbos: vec![TurboFact { name: "Ноутбук".into(), up: true, error: None }],
+            turbos: vec![TurboFact { name: "Ноутбук".into(), up: true, ..TurboFact::default() }],
             own_voice: true,
+            voice_failed: None,
             mode: PanelMode::Gateway,
             wifi: None,
         }
@@ -407,8 +549,13 @@ mod tests {
         facts.voice = Some(false);
         facts.brain = Way::Off;
         facts.brain_reason = Some("ключ больше не работает.".into());
-        facts.turbos =
-            vec![TurboFact { name: "Ноутбук".into(), up: false, error: Some("порт закрыт".into()) }];
+        facts.turbos = vec![TurboFact {
+            name: "Ноутбук".into(),
+            error: Some("порт закрыт".into()),
+            id: Some("pc-1".into()),
+            firewall: true,
+            ..TurboFact::default()
+        }];
         facts.own_voice = false;
         let rows = rows(&facts);
         assert_eq!(
@@ -422,6 +569,74 @@ mod tests {
         );
         assert!(rows[1].text.contains("ключ больше не работает"), "{}", rows[1].text);
         assert!(rows[2].text.contains("Ноутбук") && rows[2].text.contains("порт закрыт"), "{}", rows[2].text);
+        assert_eq!(rows[2].turbo.as_deref(), Some("pc-1"), "the firewall's button on that very computer");
+    }
+
+    /// The Turbo's voice refused by Windows (22.11, WinError 4551 from a Windows Turbo, every answer silent): the row
+    /// says so with the way on that computer; another failure — its words and the voice to choose. Alice speaks meanwhile.
+    #[test]
+    fn a_turbo_voice_windows_blocked_is_said_plainly_with_the_way_on_that_computer() {
+        let mut facts = good();
+        let why =
+            "own speech: HTTP 500 {\"error\": \"[WinError 4551] An Application Control policy has blocked this file\"}";
+        assert!(blocked_by_windows(why));
+        facts.voice_failed = Some(VoiceFailed {
+            blocked_by_windows: true,
+            why: why.into(),
+            turbo: Some("gw-win".into()),
+            name: Some("Компьютер Windows".into()),
+        });
+        let voice = rows(&facts).into_iter().find(|row| row.id == "characterVoice").unwrap();
+        assert_eq!(
+            (voice.state, voice.action, voice.turbo.as_deref()),
+            (RowState::Warn, Some("windowsVoice"), Some("gw-win"))
+        );
+        assert!(voice.text.contains("Smart App Control") && voice.text.contains("голос Алисы"), "{}", voice.text);
+
+        facts.voice_failed =
+            Some(VoiceFailed {
+                blocked_by_windows: false, why: "Турбо ответило 500.".into(), turbo: None, name: None
+            });
+        let voice = rows(&facts).into_iter().find(|row| row.id == "characterVoice").unwrap();
+        assert_eq!(voice.action, Some("voice"));
+        assert!(voice.text.contains("Турбо ответило 500") && !voice.text.contains(".."), "{}", voice.text);
+    }
+
+    /// A home with several Turbos (22.11): all on the line — one green row with their names; one away while another
+    /// helps — a warning that says who helps; all away — a fault. The firewall's button only for a Turbo that said
+    /// its firewall keeps the station out, never beside a key or a silence (22.11: it stood by «не принимает ключ»).
+    #[test]
+    fn several_turbos_share_one_row_and_the_firewall_button_is_only_for_a_firewall() {
+        let turbo = |name: &str, up: bool, error: Option<&str>, firewall: bool| TurboFact {
+            name: name.into(),
+            up,
+            error: error.map(str::to_string),
+            id: Some(format!("pc-{name}")),
+            firewall,
+        };
+        let row_of = |turbos: Vec<TurboFact>| turbo_row(&turbos);
+
+        let both = row_of(vec![turbo("Mac", true, None, false), turbo("Windows", true, None, false)]);
+        assert_eq!((both.state, both.action), (RowState::Ok, None));
+        assert!(both.text.contains("«Mac», «Windows»"), "{}", both.text);
+
+        let one_away =
+            row_of(vec![turbo("Mac", false, Some("не ответило вовремя"), false), turbo("Windows", true, None, false)]);
+        assert_eq!((one_away.state, one_away.action, one_away.turbo.as_deref()), (RowState::Warn, None, None));
+        assert!(
+            one_away.text.contains("«Mac» не на связи") && one_away.text.contains("помогает «Windows»"),
+            "{}",
+            one_away.text
+        );
+
+        let closed = row_of(vec![
+            turbo("Mac", true, None, false),
+            turbo("Windows", false, Some("Сделайте сеть частной."), true),
+        ]);
+        assert_eq!((closed.action, closed.turbo.as_deref()), (Some("firewall"), Some("pc-Windows")));
+
+        let all_away = row_of(vec![turbo("Mac", false, Some("ключ"), false)]);
+        assert_eq!((all_away.state, all_away.action), (RowState::Bad, None));
     }
 
     /// No Turbo is a warning, not a fault: the station works without one. No model in «Алиса» is a warning too —
@@ -507,7 +722,7 @@ mod tests {
         };
         assert_eq!(send(None).await, StatusCode::FORBIDDEN);
         assert_eq!(send(Some(key)).await, StatusCode::OK);
-        assert!(turbo_says().unwrap_or_default().contains("Общедоступная"));
+        assert!(turbo_says(None).unwrap_or_default().contains("Общедоступная"), "a computer that did not name itself");
     }
 
     /// The route answers from a station centre with the rows and whether all are green.

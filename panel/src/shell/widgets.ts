@@ -51,10 +51,11 @@ export interface DeskLayout {
     zoom?: number;
     pan?: { x: number; y: number };
     /**
-     * Стол открыт для правки (`false`): свободный стол сдвигается и масштабируется, виджеты двигаются и тянутся. Нет поля —
-     * стол закреплён: так он и начинается (владелец, 16.11), и в углу тогда только замок.
+     * Стол закреплён (`true`): виджеты не двигаются и не тянутся, масштаб не меняется. Нет поля — стол открыт: так он и
+     * начинается (владелец, 22.11, после 0.18.1: закреплённый с начала мешал смотреть стол вбок обычной мышью; с 16.11 до
+     * 0.18.1 стол начинался закреплённым, и тогда хранилось «открыт» — `false`, теперь оно то же, что нет поля).
      */
-    locked?: false;
+    locked?: true;
     /**
      * Только что сели на стол из «Примерки» (docs/plans/voice-creation.md, «Посадка»): виджет → когда, мс от эпохи. Сутки
      * у такого виджета метка «новый».
@@ -147,8 +148,8 @@ function parse(raw: unknown): DeskLayout | null {
         order: list(value.order),
         zoom: finite(value.zoom) && value.zoom >= 0.4 && value.zoom <= 2 ? value.zoom : undefined,
         pan: pan && finite(pan.x) && finite(pan.y) ? { x: pan.x, y: pan.y } : undefined,
-        // Закреплён — как сначала, поэтому хранится только «открыт»; прежнее `true` — то же, что нет поля.
-        locked: value.locked === false ? false : undefined,
+        // Открыт — как сначала, поэтому хранится только «закреплён»; прежнее `false` («открыт») — то же, что нет поля.
+        locked: value.locked === true ? true : undefined,
         fresh: Object.keys(fresh).length ? fresh : undefined,
         shortcuts: Array.isArray(value.shortcuts) ? [...new Set(list(value.shortcuts))] : undefined,
         offered: Array.isArray(value.offered) ? [...new Set(list(value.offered))] : undefined,
@@ -165,7 +166,7 @@ export function oldDesk(layout: DeskLayout): boolean {
     return layout.start !== 2 && !starting(layout);
 }
 
-/** Стартовый стол: ничего не убрано, не поставлено и не переставлено, вид — как сначала, закреплён. Отметка набора не в счёт. */
+/** Стартовый стол: ничего не убрано, не поставлено и не переставлено, вид — как сначала, открыт. Отметка набора не в счёт. */
 function starting(layout: DeskLayout): boolean {
     return (
         layout.hidden.length === 0 &&
@@ -565,7 +566,7 @@ export function deskActions(role: Role): DeskActions {
                 return { ...layout, order };
             }),
         view: (zoom, pan) => change((layout) => ({ ...layout, zoom, pan })),
-        lock: (on) => change((layout) => ({ ...layout, locked: on ? undefined : false }), 0),
+        lock: (on) => change((layout) => ({ ...layout, locked: on ? true : undefined }), 0),
         reset: () => change((layout) => ({ ...layout, places: {}, order: [], zoom: undefined, pan: undefined }), 0),
         land: (id, place) =>
             change(

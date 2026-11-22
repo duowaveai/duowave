@@ -8,6 +8,7 @@
 /* Левая колонка: заголовок, фразы, подсказка */
 .onb .ot .ot-side { width: 392px; flex: none; display: flex; flex-direction: column; gap: 10px; }
 .onb .ot .ot-how { margin: 0; font-size: 14px; line-height: 20px; }
+.onb .ot .ot-not-ready { display: flex; flex-direction: column; gap: 6px; padding: 12px 14px; }
 .onb .ot .ot-rows { display: flex; flex-direction: column; gap: 2px; }
 .onb .ot .ot-rowt { display: flex; flex-direction: column; min-width: 0; }
 .onb .ot .ot-kind { font-size: 12px; line-height: 16px; }

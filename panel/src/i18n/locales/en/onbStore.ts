@@ -5,8 +5,8 @@ import type ru from '../ru/onbStore';
 const en: Translation<typeof ru> = {
     title1: 'Everything you can',
     title2: 'add to DuoWave',
-    about: 'The store inside DuoWave: characters, voices, personalities and apps. Install with one tap, remove the same way.',
-    checkSigned: 'The catalog is signed: only checked packages install. Each app says what it may do and where it runs.',
+    about: 'The store inside DuoWave: characters, voices, personalities and apps. Everything installs and uninstalls with one tap.',
+    checkSigned: 'The catalog has only checked items. Each app shows what it can access and where it runs.',
     checkUpdates: 'Updates arrive by themselves; their count shows on “Apps”.',
     checkSources: 'Your own sources: other authors’ feeds are added by a link.',
     ownLine: 'Not in the catalog? Say what you need and DuoWave makes the app itself, like the snake on the previous step.',

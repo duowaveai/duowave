@@ -26,7 +26,7 @@ pub const NAMESPACE: &str = "duowave";
 /// Said when the plan's limit is reached.
 pub const LIMIT_PHRASE: &str = "Лимит подписки ChatGPT исчерпан. Выберите в пульте другую модель или подождите.";
 /// Said when ChatGPT does not take the sign-in any more.
-pub const SIGN_IN_PHRASE: &str = "ChatGPT не принял вход. Войдите снова в пульте, в «Мозге».";
+pub const SIGN_IN_PHRASE: &str = "ChatGPT не принял вход. Войдите снова в пульте, в «Мышлении».";
 
 pub struct OpenAiResponsesLlm {
     settings: LlmSettings,

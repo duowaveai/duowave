@@ -7,6 +7,13 @@ export default {
     howStation: 'Скажите колонке — результат появится здесь, на столе. Нажмите строку, чтобы посмотреть, как это выглядит.',
     /** Слово, с которого начинают: колонка — «Алиса», компьютер — «ДиВи». */
     wake: { station: 'Алиса', computer: 'ДиВи' },
+    // Что ещё не готово (замечание 17 после 0.18.1, screens/setup-truth.ts).
+    readyTitle: 'Ещё не всё готово',
+    setupInstalling: (title: string, done: number, total: number) => `Ещё ставится ${title}: готово ${done} из ${total}.`,
+    setupWakeMeanwhile: (wake: string) => `Пока зовите «${wake}».`,
+    setupWordWaits: (word: string) => `Слово «${word}» заработает, когда выберете мышление: оно слышно только в режиме «Алиса + ваш ИИ».`,
+    setupNoThinking: (name: string) => `Персонаж «${name}» выбран, но пока отвечает Алиса. Он заговорит, когда выберете мышление.`,
+    setupVoiceAway: (name: string) => `Голос персонажа «${name}» звучит только с компьютера-Турбо. Пока его нет, ответы звучат голосом Алисы.`,
     /** Фраза целиком: «Алиса, сделай …». */
     ask: (name: string, text: string) => `«${name}, ${text}»`,
 

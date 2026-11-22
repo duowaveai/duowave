@@ -409,7 +409,10 @@ impl CloudSpeech {
         match self.stored().part(part) {
             None | Some(Choice { service: Service::Off, .. }) => crate::tr!("Не настроено."),
             Some(choice) if choice.service != Service::Custom => {
-                crate::tr!("Нет ключа {service}: вставьте его здесь или в «Мозге».", service = choice.service.title())
+                crate::tr!(
+                    "Нет ключа {service}: вставьте его здесь или в «Мышлении».",
+                    service = choice.service.title()
+                )
             }
             Some(_) => crate::tr!("Нет адреса сервиса."),
         }

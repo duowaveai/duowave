@@ -555,7 +555,7 @@ impl DialogService {
             .and_then(|pick| self.brain.slot_of(&pick.provider, &pick.model))
             .or_else(|| self.brain.slot(profile))
             .or_else(|| self.brain.slot(ModelProfile::Fast))
-            .ok_or_else(|| anyhow!("модель «Мозга» не выбрана"))?;
+            .ok_or_else(|| anyhow!("модель «Мышления» не выбрана"))?;
         // The app's deal: on the apps' seat, by what stands there for it.
         let tally = Tally::new(self.usage.get().cloned(), "", Answerer::of(&slot, Seat::App, Reason::Seat));
         // An app writes texts, not spoken answers (a series' script as JSON): the workshop's longer limit
@@ -624,7 +624,7 @@ impl DialogService {
         tools: Vec<LlmTool>,
         cancel: CancellationToken,
     ) -> anyhow::Result<AssistantTurn> {
-        let slot = self.brain.slot(ModelProfile::Fast).ok_or_else(|| anyhow!("модель «Мозга» не выбрана"))?;
+        let slot = self.brain.slot(ModelProfile::Fast).ok_or_else(|| anyhow!("модель «Мышления» не выбрана"))?;
         // A background round is a deal of its own, on the fast seat (the router's journal); its own seat comes with
         // the router's door (docs/plans/router-and-works.md).
         let tally = Tally::new(self.usage.get().cloned(), key, Answerer::of(&slot, Seat::Fast, Reason::Seat));

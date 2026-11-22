@@ -257,7 +257,7 @@ impl MovesService {
             return Err(ApiError::bad_request(crate::tr!("Нужен адрес этого компьютера, как его видит колонка.")));
         }
         if request.to == MoveTo::Ear && request.ear_of.is_none() {
-            return Err(ApiError::conflict(crate::tr!("Центр дома не на колонке: подключать ухом не к чему.")));
+            return Err(ApiError::conflict(crate::tr!("Хаб дома не на колонке: подключать ухом не к чему.")));
         }
         if matches!(request.to, MoveTo::Station | MoveTo::StationServer | MoveTo::Ear)
             && payload::info(&self.deps.config).source == payload::PayloadSource::None
@@ -597,7 +597,7 @@ impl MovesService {
             client
                 .put("/api/v1/home/ear", body)
                 .await
-                .map_err(|error| anyhow::anyhow!(crate::tr!("Колонка не стала ухом центра: {error}", error = error)))?;
+                .map_err(|error| anyhow::anyhow!(crate::tr!("Колонка не стала ухом хаба: {error}", error = error)))?;
             self.step(id, MoveStep::Settings, StepState::Done);
             return self.point_and_arrive(id, request, actor, shell, address, port, &key, &watch, None).await;
         }
@@ -760,7 +760,7 @@ impl MovesService {
             })
             .await;
         if arrived.is_none() {
-            anyhow::bail!(crate::tr!("Колонка не вернулась к своему центру за 3 минуты: где она сейчас — «Настройки» → «Колонка» → «Где работает DuoWave»."));
+            anyhow::bail!(crate::tr!("Колонка не вернулась к своему хабу за 3 минуты: где она сейчас — «Настройки» → «Колонка» → «Где работает DuoWave»."));
         }
         // Where the main settings live from now: the station's gateway is told (it keeps them, or takes them).
         let home = if request.settings_home == SettingsHome::Pc { "pc" } else { "station" };
@@ -859,7 +859,7 @@ impl MovesService {
         self.step(id, MoveStep::Arrive, StepState::Running);
         let device = self.await_arrival(receiver, address).await;
         if device.is_none() {
-            anyhow::bail!(crate::tr!("колонка не пришла к этому центру за 3 минуты"));
+            anyhow::bail!(crate::tr!("колонка не пришла к этому хабу за 3 минуты"));
         }
         self.step(id, MoveStep::Arrive, StepState::Done);
 
@@ -1122,7 +1122,7 @@ impl MovesService {
             .await;
         let outcome = async {
             started.map_err(|error| error.to_string())?;
-            let client = watch.client().ok_or(crate::tr!("центр не на колонке"))?;
+            let client = watch.client().ok_or(crate::tr!("хаб не на колонке"))?;
             self.wait(self.deps.timing.start_ms, || async { client.health().await.is_ok() }).await.ok_or(
                 crate::tr!(
                     "DuoWave на колонке снова не запустился: смотрите «Настройки» → «Колонка» → «Где работает DuoWave»"

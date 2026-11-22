@@ -66,7 +66,7 @@ const en: Translation<typeof ru> = {
     voiceNotEnabled: (problem: string) => `The voice is not turned on. ${problem}`,
 
     giveYandexTitle: 'Hand hearing to Yandex?',
-    giveYandexText: 'Then Yandex runs the whole speaker: the mode becomes “Alice”, and your own brain, voice and skills go quiet. To undo, choose “Alice + your AI” or “Your AI” in “Settings” → “Home”.',
+    giveYandexText: 'Then Yandex runs the whole speaker: the mode becomes “Alice”, and your own AI, voice and skills go quiet. To undo, choose “Alice + your AI” or “Your AI” in “Settings” → “Home”.',
     giveYandexOk: 'Hand to Yandex',
     speakerGoingToYandex: 'The speaker is moving to Yandex — reconnecting.',
     rememberedRestart: 'Saved — restart recognition.',

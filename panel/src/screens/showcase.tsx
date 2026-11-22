@@ -23,6 +23,8 @@ import { answerTo } from '../voice/speak';
 import { Path, SignInPath, useBrainConnect } from './brain-connect';
 import { appSectionOf } from './plugins';
 import { useCallWord } from './call-word';
+import { setupLines, wakeNow } from './setup-notes';
+import { useSetupTruth } from './setup-truth';
 import { installProgress, onInstallProgress } from '../magicplace/wizard-state';
 import '../ui/showcase.css';
 
@@ -106,6 +108,7 @@ export function ShowcaseWidget() {
     /** Голос выбранного персонажа ещё ставится (модель качается): пока отвечает голос Алисы (п. 55). */
     const [voiceComing, setVoiceComing] = useState(false);
     const word = useCallWord();
+    const truth = useSetupTruth();
     const [installing, setInstalling] = useState(installProgress);
     useEffect(() => onInstallProgress(() => setInstalling(installProgress())), []);
     const [at, setAt] = useState(0);
@@ -240,10 +243,22 @@ export function ShowcaseWidget() {
     if (empty) return null;
 
     const locked = phase === 'brain' || phase === 'switch';
-    // Слово, которое на деле зовёт (п. 54): стоит приложение-слово — его; нет — прежнее.
-    const talkMe = word ? t.talkWith(word) : computer ? t.talkMeComputer : t.talkMe;
-    const makeMe = word ? t.makeWith(word) : computer ? t.makeMeComputer : t.makeMe;
-    const playMe = word ? t.playWith(word) : computer ? t.playMeComputer : t.playMe;
+    // Слово, которое на деле зовёт (п. 54): стоит приложение-слово, оно встало и его слышно — его; нет — прежнее (п. 17).
+    const heard = word && !computer && wakeNow(truth, tr.onbTry.wake.station) === word ? word : null;
+    const talkMe = heard ? t.talkWith(heard) : computer ? t.talkMeComputer : t.talkMe;
+    const makeMe = heard ? t.makeWith(heard) : computer ? t.makeMeComputer : t.makeMe;
+    const playMe = heard ? t.playWith(heard) : computer ? t.playMeComputer : t.playMe;
+    // Что ещё не готово: ставится, слово не слышно, персонаж молчит без мышления, голос — с Турбо (п. 17).
+    const notReady = computer ? [] : setupLines(truth, tr.onbTry.wake.station, hasBrain);
+    const notes = notReady.length > 0 && (
+        <div class="sc-not-ready" role="status">
+            {notReady.map((line) => (
+                <span key={line} class="sc-note">
+                    {line}
+                </span>
+            ))}
+        </div>
+    );
     /** Имя того, кто ответит, без пометки «(демо)». */
     const who = name ? name.replace(/\s*\([^)]*\)\s*$/, '').trim() || name : null;
     const voiceNote = (voiceComing || (installing && !installing.finished && installing.kind === 'character')) && who;
@@ -267,6 +282,7 @@ export function ShowcaseWidget() {
                     )}
                 </div>
                 <p class="sc-lead">{computer ? t.smarterLeadComputer : t.smarterLeadStation}</p>
+                {notes}
                 <span class="sc-label sc-say-and-see">{t.sayAndSee}</span>
                 <div class="sc-tiles">
                     <button type="button" class="sc-tile" title={t.pressNote} onClick={() => say(t.talkSay, 'talk')}>
@@ -303,8 +319,8 @@ export function ShowcaseWidget() {
 
     const pathTitle: Record<Path, [string, string]> = {
         duowave: [t.pathDw, t.pathDwNote],
-        // С DuoWave «проще всего» — у него (пока он спрятан, shell/dev.ts `duowaveShown`).
-        openrouter: [t.pathOr, brain.duowave ? t.pathOrNoteMany : t.pathOrNote],
+        // «Проще всего» — у DuoWave, у OpenRouter — «много моделей».
+        openrouter: [t.pathOr, t.pathOrNoteMany],
         chatgpt: [t.pathGpt, t.pathGptNote],
         key: [t.pathKey, t.pathKeyNote],
         local: [t.pathLocal, t.pathLocalNote],
@@ -368,10 +384,35 @@ export function ShowcaseWidget() {
                     onInput={(e) => brain.setFields((all) => ({ ...all, [field.id]: (e.target as HTMLInputElement).value }))}
                 />
             ))}
+            {/* Сервис по ключу не узнан — его адрес и, если нужно, модель: провайдер добавится прямо отсюда. */}
+            {brain.keyUnknown && (
+                <>
+                    <input
+                        class="sc-key"
+                        type="url"
+                        inputMode="url"
+                        autocomplete="off"
+                        aria-label={tr.onbBrain.keyUrlLabel}
+                        placeholder={tr.onbBrain.keyUrlPlaceholder}
+                        value={brain.keyUrl}
+                        onInput={(e) => brain.setKeyUrl((e.target as HTMLInputElement).value)}
+                    />
+                    <input
+                        class="sc-key"
+                        autocomplete="off"
+                        aria-label={tr.onbBrain.keyModelLabel}
+                        placeholder={tr.onbBrain.keyModelPlaceholder}
+                        value={brain.keyModel}
+                        onInput={(e) => brain.setKeyModel((e.target as HTMLInputElement).value)}
+                    />
+                </>
+            )}
             <button type="submit" class="sc-btn" aria-disabled={!brain.keyReady ? 'true' : undefined}>
                 {t.keyCheck}
             </button>
-            <span class="sc-note sc-note-full">{brain.keyPreset ? t.keyKnown(brain.keyPreset.title) : t.keyNote}</span>
+            <span class="sc-note sc-note-full">
+                {brain.keyPreset ? t.keyKnown(brain.keyPreset.title) : brain.keyUnknown ? tr.onbBrain.keyUnknownNote : t.keyNote}
+            </span>
         </form>
     ) : brain.local === 'none' ? (
         <div class="sc-acts">
@@ -523,6 +564,7 @@ export function ShowcaseWidget() {
                     {t.hide}
                 </button>
             </div>
+            {notes}
             <div
                 class="sc-row"
                 onScroll={(e) => {

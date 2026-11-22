@@ -305,9 +305,15 @@ pub async fn plan(app: &App, request: &PlanRequest) -> VoicePlan {
 /// The voice waiting on this computer, as any panel of the home shows it (clean-path check 19.11: «Голос ждёт» lived
 /// only on the computer's own page, and nobody saw it while the character was settling): the models' pending voice
 /// with its name and the character it speaks for — `{…PendingView, title, character?, package?}`; none — nothing waits.
-pub fn waiting(app: &App) -> Option<serde_json::Value> {
+pub async fn waiting(app: &App) -> Option<serde_json::Value> {
     let pending = app.models.pending()?;
     let character = app.characters.of_voice(&pending.model_id);
+    // Not a character's own voice: maybe the fallback of the one who answers (owner 22.11, Windows without NVIDIA:
+    // «Дмитрий: ставлю модель голоса» said nothing of Рик, nor why a second voice) — then whose and why.
+    let backup = match character {
+        Some(_) => None,
+        None => backup_of(app, &pending.model_id).await,
+    };
     let title = character
         .as_ref()
         .map(|character| character.title.clone())
@@ -324,7 +330,21 @@ pub fn waiting(app: &App) -> Option<serde_json::Value> {
         view["character"] = serde_json::json!(character.id);
         view["package"] = serde_json::json!(character.package);
     }
+    if let Some((character, why)) = backup {
+        view["character"] = serde_json::json!(character.id);
+        view["package"] = serde_json::json!(character.package);
+        view["backupOf"] = serde_json::json!({ "title": character.title, "why": why });
+    }
     Some(view)
+}
+
+/// The character who answers, when the pending voice is its fallback here — and why its own voice does not go on this
+/// computer (its plan's reason: «На Windows нужна видеокарта NVIDIA.»).
+async fn backup_of(app: &App, card: &str) -> Option<(Character, Option<String>)> {
+    let character = app.characters.active_id().and_then(|id| app.characters.character(&id))?;
+    let here = app.characters.voice_here(&character).await?;
+    let fallback = here.fallback.as_ref()?;
+    (fallback.card_id == card).then(|| (character, here.reason.clone()))
 }
 
 /// The owner's answer to the waiting voice: `anyway` — switch it on although memory is tight, `retry` — what it waited

@@ -24,7 +24,7 @@ impl Connector for PluginsConnector {
             kind: ConnectorKind::Plugins,
             title: crate::tr!("Приложения"),
             description: crate::tr!(
-                "Навыки, инструменты для «Мозга» и источники музыки и радио — из установленных приложений"
+                "Навыки, инструменты для «Мышления» и источники музыки и радио — из установленных приложений"
             ),
             // A plugin that reaches the internet says so in its card; the connector itself sends nothing out.
             cloud: false,

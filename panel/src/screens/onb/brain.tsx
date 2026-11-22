@@ -1,7 +1,6 @@
-// Первые шаги, шаг «Кто думает» (только компьютер) — доска Brain холста «Онбординг» 1:1: четыре пути (OpenRouter,
-// подписка ChatGPT, свой ключ, модель на этом компьютере), под ними карточка пути, ниже «Готовлю слух» и серая строка.
-// DuoWave (наши модели, docs/plans/duowave-connect.md) пока спрятан: нажатие на заголовок «Кто будет думать над
-// ответами?» показывает его пятым путём — первым и во всю ширину; ещё одно нажатие прячет (shell/dev.ts).
+// Первые шаги, шаг «Кто думает» (только компьютер) — доска Brain холста «Онбординг»: пять путей — DuoWave (наши модели,
+// docs/plans/duowave-connect.md; первым и во всю ширину, виден всем с 22.11), OpenRouter, подписка ChatGPT, свой ключ,
+// модель на этом компьютере, — под ними карточка пути, ниже «Готовлю слух» и серая строка.
 // Шапку и кнопки рисует рамка (onb/nav.tsx). Всё настоящее: те же вызовы шлюза, что у «Мозга» (screens/brain.tsx) —
 // добавить провайдера, войти, проверить, выбрать модели (логика — общий хук screens/brain-connect.ts, тот же у витрины
 // стола); слух — useLocalAsr (screens/local-asr.tsx).
@@ -11,7 +10,6 @@ import { useState } from 'preact/hooks';
 import type { ProviderView } from '../../api';
 import { tr } from '../../i18n';
 import { Path, SignInPath, accessLine, useBrainConnect } from '../brain-connect';
-import { duowaveShown, setDuowaveShown } from '../../shell/dev';
 import { localAsrNeedsCard, localAsrPercent, useLocalAsr } from '../local-asr';
 import { awayBackup, awayBehind } from './brain-home';
 import { useOnboarding, useStepNav } from './nav';
@@ -56,8 +54,37 @@ export function BrainStep() {
     const t = tr.onbBrain;
     const { next } = useOnboarding();
     const [ear] = useLocalAsr();
-    const { view, path, choosePath, checking, problem, key, setKey, fields, setFields, keyPreset, keyFields, keyReady, saveKey, local, findLocal, signIn, beginSignIn, paths, duowave, invite, inviteBusy, saveInvite, workingOn, answering, noBackup } =
-        useBrainConnect();
+    const {
+        view,
+        path,
+        choosePath,
+        checking,
+        problem,
+        key,
+        setKey,
+        fields,
+        setFields,
+        keyPreset,
+        keyFields,
+        keyUnknown,
+        keyUrl,
+        setKeyUrl,
+        keyModel,
+        setKeyModel,
+        keyReady,
+        saveKey,
+        local,
+        findLocal,
+        signIn,
+        beginSignIn,
+        paths,
+        invite,
+        inviteBusy,
+        saveInvite,
+        workingOn,
+        answering,
+        noBackup,
+    } = useBrainConnect();
     /** Поле «Есть код приглашения?» открыто и что в нём. */
     const [inviteOpen, setInviteOpen] = useState(false);
     const [inviteDraft, setInviteDraft] = useState('');
@@ -69,7 +96,7 @@ export function BrainStep() {
     // С DuoWave «Проще всего» — у него, у OpenRouter — «Много моделей»; без него доска прежняя.
     const card: Record<Path, { title: string; chip?: { text: string; lime?: boolean }; sub: string; wide?: boolean }> = {
         duowave: { title: t.dwTitle, chip: { text: t.dwChip, lime: true }, sub: t.dwSub, wide: true },
-        openrouter: { title: t.orTitle, chip: duowave ? { text: t.orChipMany } : { text: t.orChip, lime: true }, sub: t.orSub },
+        openrouter: { title: t.orTitle, chip: { text: t.orChipMany }, sub: t.orSub },
         chatgpt: { title: t.gptTitle, sub: t.gptSub },
         key: { title: t.keyTitle, sub: t.keySub },
         local: { title: t.localTitle, chip: backupAway ? undefined : { text: t.localChip }, sub: backupAway ? t.localSubAway : t.localSub },
@@ -222,10 +249,39 @@ export function BrainStep() {
                         />
                     </div>
                 ))}
+                {/* Сервис по ключу не узнан — его адрес и, если нужно, модель: провайдер добавится отсюда же. */}
+                {keyUnknown && (
+                    <>
+                        <div class="field ob-brain-key">
+                            <label for="apikey-url">{t.keyUrlLabel}</label>
+                            <input
+                                id="apikey-url"
+                                class="input"
+                                type="url"
+                                inputMode="url"
+                                autocomplete="off"
+                                placeholder={t.keyUrlPlaceholder}
+                                value={keyUrl}
+                                onInput={(e) => setKeyUrl((e.target as HTMLInputElement).value)}
+                            />
+                        </div>
+                        <div class="field ob-brain-key">
+                            <label for="apikey-model">{t.keyModelLabel}</label>
+                            <input
+                                id="apikey-model"
+                                class="input"
+                                autocomplete="off"
+                                placeholder={t.keyModelPlaceholder}
+                                value={keyModel}
+                                onInput={(e) => setKeyModel((e.target as HTMLInputElement).value)}
+                            />
+                        </div>
+                    </>
+                )}
                 <button type="submit" class="dw-btn dw-btn-lg dw-btn-dark ob-brain-key-btn" aria-disabled={!view || !keyReady ? 'true' : undefined}>
                     {t.keyCheck}
                 </button>
-                <span class="small ob-brain-key-note">{keyPreset ? t.keyKnown(keyPreset.title) : t.keyNote}</span>
+                <span class="small ob-brain-key-note">{keyPreset ? t.keyKnown(keyPreset.title) : keyUnknown ? t.keyUnknownNote : t.keyNote}</span>
             </form>
         )
     ) : working ? (
@@ -244,8 +300,7 @@ export function BrainStep() {
     return (
         <div class="ob-brain">
             <div class="ob-brain-head">
-                {/* Нажатие на заголовок показывает или прячет DuoWave: спрятанный путь, не кнопка для всех. */}
-                <h1 class="h2" id="onb-brain-h" onClick={() => setDuowaveShown(!duowaveShown())}>
+                <h1 class="h2" id="onb-brain-h">
                     {t.title1}
                     <br />
                     {t.title2}

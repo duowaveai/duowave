@@ -76,26 +76,6 @@ export function useHiddenDevOptions(): boolean {
     return hiddenDevOptions();
 }
 
-// DuoWave — наши модели (docs/plans/duowave-connect.md) — пока спрятан (владелец 20.11): в «Мозге» его нет в
-// «Добавить провайдера», в первых шагах «Кто думает» — старые четыре пути. Показывают его скрытая возможность
-// «Показывать DuoWave» и нажатие на заголовок «Кто будет думать над ответами?» в первых шагах. Помнится у человека,
-// как и слой. Уже добавленный провайдер DuoWave виден всегда: это настоящая строка «Мозга».
-const DUOWAVE = 'duowaveShown';
-
-export function duowaveShown(): boolean {
-    return recalled<boolean>(DUOWAVE) === true;
-}
-
-export function setDuowaveShown(next: boolean): void {
-    remember(DUOWAVE, next ? true : undefined);
-}
-
-/** Показан ли DuoWave; перерисовка, когда его показали или спрятали. */
-export function useDuowaveShown(): boolean {
-    useMemoryTick();
-    return duowaveShown();
-}
-
 /** Включён ли слой разработчика; перерисовка, когда его переключили. */
 export function useDevMode(): boolean {
     useMemoryTick();

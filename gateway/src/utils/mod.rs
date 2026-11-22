@@ -56,6 +56,53 @@ pub mod files {
         #[cfg(not(unix))]
         let _ = path;
     }
+
+    /// The path as it is on disk, in the form other programs take: `std::fs::canonicalize`, and on Windows without
+    /// its `\\?\` prefix when the plain form names the same place. `git clone` refused a folder given as
+    /// `\\?\C:\…`: a work in a folder never made its copy on Windows (CI 0.18.1, 22.11).
+    pub fn canonical(path: &Path) -> std::io::Result<std::path::PathBuf> {
+        let real = std::fs::canonicalize(path)?;
+        Ok(plain(real))
+    }
+
+    /// `\\?\C:\a` → `C:\a` and `\\?\UNC\host\share\a` → `\\host\share\a`, when short enough for the plain form;
+    /// anything else as it is. A no-op off Windows.
+    pub fn plain(path: std::path::PathBuf) -> std::path::PathBuf {
+        #[cfg(windows)]
+        {
+            let text = path.to_string_lossy();
+            if text.len() < 260 {
+                if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+                    return std::path::PathBuf::from(format!(r"\\{rest}"));
+                }
+                if let Some(rest) = text.strip_prefix(r"\\?\") {
+                    let drive = rest.as_bytes();
+                    if drive.len() >= 3 && drive[0].is_ascii_alphabetic() && drive[1] == b':' && drive[2] == b'\\' {
+                        return std::path::PathBuf::from(rest);
+                    }
+                }
+            }
+        }
+        path
+    }
+
+    #[cfg(test)]
+    mod tests {
+        #[test]
+        fn a_canonical_path_names_the_same_place_without_a_verbatim_prefix() {
+            let dir = tempfile::tempdir().unwrap();
+            let real = super::canonical(dir.path()).unwrap();
+            assert_eq!(std::fs::canonicalize(&real).unwrap(), std::fs::canonicalize(dir.path()).unwrap());
+            assert!(!real.to_string_lossy().starts_with(r"\\?\"), "{}", real.display());
+            #[cfg(windows)]
+            {
+                use std::path::PathBuf;
+                assert_eq!(super::plain(PathBuf::from(r"\\?\C:\Users\a")), PathBuf::from(r"C:\Users\a"));
+                assert_eq!(super::plain(PathBuf::from(r"\\?\UNC\nas\share\a")), PathBuf::from(r"\\nas\share\a"));
+                assert_eq!(super::plain(PathBuf::from(r"\\?\Volume{x}\a")), PathBuf::from(r"\\?\Volume{x}\a"));
+            }
+        }
+    }
 }
 
 /// Programs this gateway started.

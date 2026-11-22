@@ -70,7 +70,7 @@ impl Face {
         match self {
             Face::Widget => "widget",
             Face::Skill => "plugin",
-            Face::Game => "quiz",
+            Face::Game => "game",
             Face::Theme => "theme",
         }
     }

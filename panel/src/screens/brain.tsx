@@ -16,7 +16,6 @@ import { ask } from '../ui/confirm';
 import { byMode } from '../words';
 import { formatNumber, tr } from '../i18n';
 import { accessLine, accessWarning } from './brain-connect';
-import { useDuowaveShown } from '../shell/dev';
 import { DuoWaveMark } from '../ui/duowave';
 
 /**
@@ -139,7 +138,6 @@ export function BrainTab({ spend, first = false }: { spend?: preact.ComponentChi
     const [asking, setAsking] = useState(false);
     const mayManage = can('connectors.manage');
     const mayChoose = can('models.manage');
-    const duowaveShown = useDuowaveShown();
 
     const load = () =>
         api
@@ -598,7 +596,7 @@ export function BrainTab({ spend, first = false }: { spend?: preact.ComponentChi
             {adding && (
                 <AddProvider
                     // DuoWave спрятан, пока его не показали (shell/dev.ts); уже добавленный виден в списке провайдеров.
-                    presets={duowaveShown ? presets : presets.filter((preset) => preset.id !== 'duowave')}
+                    presets={presets}
                     firstOne={!choice.fast}
                     onClose={() => setAdding(false)}
                     onDone={(fresh) => {

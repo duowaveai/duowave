@@ -2,10 +2,12 @@
    трёх карточек, «Теперь Алиса умнее» — одной карточкой; на телефоне и в узком окне — лентой вбок с точками. Цвета —
    токены пульта: светлая и тёмная тема, «Минимал» и остальные. Доска игры — тёмная в любой теме: это экран игры. */
 
-.sc { display: flex; flex-direction: column; gap: 10px; width: 100%; }
+.sc { display: flex; flex-direction: column; gap: 10px; width: 100%; container: sc / inline-size; }
 .widget-bare:has(.sc) > .widget-bare-menu { display: none; }
 
 .sc-head { display: flex; align-items: center; gap: 8px; min-height: 28px; }
+/* «Ещё не всё готово» (замечание 17 после 0.18.1): спокойные строки под шапкой. */
+.sc-not-ready { display: flex; flex-direction: column; gap: 4px; padding: 10px 14px; border-radius: 14px; background: var(--strong-bg); box-shadow: 0 0 0 1px var(--glass-border); }
 .sc-label { font-size: 12px; line-height: 16px; font-weight: 500; color: var(--sub); }
 .sc-hide,
 .sc-soft {
@@ -191,7 +193,21 @@
     .sc-card { animation: none; }
 }
 
-/* Телефон и узкое окно (уже 1100 — как у стола): карточки лентой вбок, по одной, с точками под ними. */
+/* Телефон и узкое окно (уже 1100 — как у стола): карточки лентой вбок, по одной, с точками под ними. Так же — когда
+   витрине самой тесно в широком окне (замечание 18 после 0.18.1: стол без колонки, столбец в 560 точек — три карточки
+   сжимались, «Войти через OpenRouter» вылезала за край). */
+@container sc (max-width: 860px) {
+    .sc-row { overflow-x: auto; scroll-snap-type: x mandatory; gap: 12px; padding: 4px 2px 8px; scrollbar-width: none; }
+    .sc-row::-webkit-scrollbar { display: none; }
+    .sc-card { flex: 0 0 min(300px, 86%); scroll-snap-align: start; }
+    .sc-card.is-wide { flex-grow: 0; }
+    .sc-dots { display: flex; }
+    .sc-smarter { padding: 16px; }
+    .sc-smarter h2 { font-size: 28px; line-height: 34px; }
+    .sc-tiles { grid-auto-flow: row; grid-template-columns: 1fr; gap: 8px; }
+    .sc-tile { gap: 2px; padding: 9px 12px; }
+    .sc-tile-p { font-size: 14px; line-height: 20px; }
+}
 @media (max-width: 1099px) {
     .sc-row { overflow-x: auto; scroll-snap-type: x mandatory; gap: 12px; padding: 4px 2px 8px; scrollbar-width: none; }
     .sc-row::-webkit-scrollbar { display: none; }
