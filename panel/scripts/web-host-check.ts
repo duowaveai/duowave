@@ -69,7 +69,8 @@ const withManifest = (base: { manifest: string }, change: (manifest: Record<stri
 check('the snake goes to the shelf as it is', () => {
     const checked = checkPackage(SNAKE);
     expect(checked.ok, checked.problems.join('; '));
-    expect(checked.id === 'neon-snake', checked.id);
+    // The package's own id (random since 20.11, p-<12 hex>), not its folder's name.
+    expect(checked.id === (JSON.parse(SNAKE.manifest) as { id: string }).id, checked.id);
     expect(checked.only.length === 0, checked.only.join(', '));
 });
 
