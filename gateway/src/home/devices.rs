@@ -15,16 +15,15 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::extract::State;
 use axum::routing::get;
 use axum::Router;
 use serde::Serialize;
 
-use crate::app::App;
+use super::Parts;
 use crate::core::events::{EventBus, GatewayEvent};
 use crate::core::stations::presence::PresenceState;
 use crate::helpers::{HelperKind, HelperState, HelperView};
-use crate::platform::http::{ok, ApiResult, Caller};
+use crate::platform::http::{ok, ApiResult, Caller, Uses};
 use crate::stations::service::StationStatus;
 
 /// What kind of thing a device is: its picture and its words.
@@ -298,26 +297,28 @@ pub fn gather(
     HomeDevices { home, centre: centre_id, devices }
 }
 
-pub fn routes() -> Router<Arc<App>> {
+pub fn routes<S: crate::home::RouteNeeds>() -> Router<S> {
     Router::new().route("/api/v1/home/devices", get(list))
 }
 
 /// Anyone signed in sees the home's devices: the line at the top of every panel shows them. A computer that is the
 /// Turbo of a station's home has no home of its own: it asks its centre with the pair's key, and while the centre is
 /// away it says what it knows — the centre by its record, itself as Turbo.
-async fn list(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<serde_json::Value> {
+async fn list(Uses(parts): Uses<Parts>, caller: Caller) -> ApiResult<serde_json::Value> {
     caller.signed_in()?;
     // An ear of the home's centre (stage 4): the home is the centre's.
-    if let Some((ear, key)) = super::ear::centre(&app) {
+    if let Some((ear, key)) = super::ear::centre(&parts.settings, &parts.secrets) {
         if let Ok(view) = super::ear::client(&ear, &key).get("/api/v1/home/devices").await {
             if view.get("devices").is_some() {
                 return Ok(ok(view));
             }
         }
-        return Ok(ok(serde_json::to_value(as_ear(&app, &ear)).unwrap_or_default()));
+        return Ok(ok(
+            serde_json::to_value(as_ear(&parts.placement, &parts.identity, &parts.settings, &ear)).unwrap_or_default()
+        ));
     }
     #[cfg(feature = "pc")]
-    if let Some(centre) = centre_elsewhere(&app) {
+    if let Some(centre) = centre_elsewhere(&parts.station_gateway) {
         if let Some(client) = centre.client() {
             match client.get("/api/v1/home/devices").await {
                 Ok(view) if view.get("devices").is_some() => return Ok(ok(view)),
@@ -325,25 +326,25 @@ async fn list(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<serde_js
                 Err(error) => tracing::debug!("home devices: the centre is away: {error}"),
             }
         }
-        return Ok(ok(serde_json::to_value(as_turbo(&app, &centre)).unwrap_or_default()));
+        return Ok(ok(serde_json::to_value(as_turbo(&parts.identity, &parts.settings, &centre)).unwrap_or_default()));
     }
     // The Turbo of a home whose centre is another computer (the link): that home, not one of its own.
     #[cfg(feature = "pc")]
-    if let Some(home) = link_home(&app).and_then(|client| as_link_turbo(&app, &client)) {
+    if let Some(home) = link_home(&parts).and_then(|client| as_link_turbo(&parts, &client)) {
         return Ok(ok(serde_json::to_value(home).unwrap_or_default()));
     }
-    Ok(ok(serde_json::to_value(of_app(&app)).unwrap_or_default()))
+    Ok(ok(serde_json::to_value(of_app(&parts)).unwrap_or_default()))
 }
 
 /// A computer that helps another home over the link and keeps no station of its own (stage 7 of
 /// docs/plans/home-setup-flow.md): that home's Turbo, not a centre with a Turbo of its own — «Компьютер · Центр ·
 /// Турбо» on one device was the Windows test's puzzle (21.11). Its own home stays in its data, for «Это новый дом».
 #[cfg(feature = "pc")]
-fn link_home(app: &App) -> Option<crate::helpers::clients::ClientView> {
-    if !app.link.helps() || !app.station_gateway.all().is_empty() || !app.stations.list().is_empty() {
+fn link_home(parts: &Parts) -> Option<crate::helpers::clients::ClientView> {
+    if !parts.link.helps() || !parts.station_gateway.all().is_empty() || !parts.stations.list().is_empty() {
         return None;
     }
-    app.clients.view(&[]).into_iter().find(|client| client.via == "link" && !client.own_home && client.home.is_some())
+    parts.clients.view(&[]).into_iter().find(|client| client.via == "link" && !client.own_home && client.home.is_some())
 }
 
 /// The home this computer is the Turbo of over the link, as /health tells the panel (`placement.centre`, stage 7 of
@@ -351,19 +352,19 @@ fn link_home(app: &App) -> Option<crate::helpers::clients::ClientView> {
 /// to it is up now. Only once its centre said at a link that it takes this computer's own requests (`up`): with an older
 /// centre — or one that does not count this computer as a Turbo at home — the panel keeps this computer's own desk.
 #[cfg(feature = "pc")]
-pub(crate) fn link_centre(app: &App) -> Option<serde_json::Value> {
-    let client = link_home(app)?;
-    if app.link.takes_up(&client.id) != Some(true) {
+pub(crate) fn link_centre(parts: &Parts) -> Option<serde_json::Value> {
+    let client = link_home(parts)?;
+    if parts.link.takes_up(&client.id) != Some(true) {
         return None;
     }
     let name = client.home.as_ref().map(|home| home.name.clone()).unwrap_or_default();
-    let online = app.link.up_of(&client.id).is_some();
+    let online = parts.link.up_of(&client.id).is_some();
     Some(serde_json::json!({ "key": client.id, "name": name, "online": online }))
 }
 
 /// That home as its Turbo shows it: the centre by the home's name — its gateways online or not —, itself as Turbo.
 #[cfg(feature = "pc")]
-fn as_link_turbo(app: &App, client: &crate::helpers::clients::ClientView) -> Option<HomeDevices> {
+fn as_link_turbo(parts: &Parts, client: &crate::helpers::clients::ClientView) -> Option<HomeDevices> {
     let home = client.home.clone()?;
     let id = format!("home:{}", home.id);
     let mut hub =
@@ -371,7 +372,7 @@ fn as_link_turbo(app: &App, client: &crate::helpers::clients::ClientView) -> Opt
     hub.roles.push(DeviceRole::Centre);
     hub.state =
         if client.gateways.iter().any(|gateway| gateway.online) { DeviceState::Online } else { DeviceState::Offline };
-    let me = app.identity.gateway();
+    let me = parts.identity.gateway();
     let mut itself = HomeDevice::new(
         format!("gateway:{}", me.as_ref().map(|me| me.id.clone()).unwrap_or_default()),
         DeviceKind::Computer,
@@ -385,15 +386,20 @@ fn as_link_turbo(app: &App, client: &crate::helpers::clients::ClientView) -> Opt
 }
 
 /// What an ear knows of its home while the centre is away: the centre by its address, itself with its copy.
-fn as_ear(app: &App, ear: &super::ear::EarOf) -> HomeDevices {
+fn as_ear(
+    placement: &Arc<crate::placement::PlacementService>,
+    identity: &Arc<crate::core::identity::home::Identity>,
+    settings: &Arc<crate::settings::SettingsService>,
+    ear: &super::ear::EarOf,
+) -> HomeDevices {
     let id = format!("centre:{}", ear.address);
     let mut hub =
         HomeDevice::new(id.clone(), DeviceKind::Station, ear.name.clone().unwrap_or_else(|| ear.address.clone()));
     hub.roles.push(DeviceRole::Centre);
     hub.hears = true;
     hub.state = DeviceState::Offline;
-    let (device, name) = app.placement.station_self();
-    let me = app.identity.gateway();
+    let (device, name) = placement.station_self();
+    let me = identity.gateway();
     let mut itself = HomeDevice::new(
         device.as_ref().map(|device| format!("station:{device}")).unwrap_or_else(|| "station:this".into()),
         DeviceKind::Station,
@@ -401,11 +407,11 @@ fn as_ear(app: &App, ear: &super::ear::EarOf) -> HomeDevices {
     );
     itself.hears = true;
     itself.state = DeviceState::Online;
-    itself.copy = super::copy::copied_revision(&app.settings).is_some();
+    itself.copy = super::copy::copied_revision(settings).is_some();
     itself.device = device;
     itself.gateway_id = me.map(|me| me.id);
     HomeDevices {
-        home: HomeInfo { id: app.identity.home().map(|home| home.id), name: app.identity.home_name() },
+        home: HomeInfo { id: identity.home().map(|home| home.id), name: identity.home_name() },
         centre: id,
         devices: vec![hub, itself],
     }
@@ -414,7 +420,9 @@ fn as_ear(app: &App, ear: &super::ear::EarOf) -> HomeDevices {
 /// The station whose gateway is this home's centre while this computer is its Turbo: one with its own gateway (not
 /// placed on this computer).
 #[cfg(feature = "pc")]
-pub(crate) fn centre_elsewhere(app: &App) -> Option<Arc<crate::placement::watch::StationGateway>> {
+pub(crate) fn centre_elsewhere(
+    station_gateway: &Arc<crate::placement::watch::StationGateways>,
+) -> Option<Arc<crate::placement::watch::StationGateway>> {
     use crate::core::availability::Placement;
     // Not an ear of it: a second station joined as the centre's ear has its own gateway and a record here too.
     let ear = |station: &crate::placement::watch::StationGateway| {
@@ -425,7 +433,7 @@ pub(crate) fn centre_elsewhere(app: &App) -> Option<Arc<crate::placement::watch:
             .and_then(|health| health.pointer("/placement/earOf"))
             .is_some_and(|ear| !ear.is_null())
     };
-    app.station_gateway
+    station_gateway
         .all()
         .into_iter()
         .find(|station| station.record().is_some_and(|record| record.placement != Placement::Pc) && !ear(station))
@@ -433,7 +441,11 @@ pub(crate) fn centre_elsewhere(app: &App) -> Option<Arc<crate::placement::watch:
 
 /// What a Turbo computer knows of its home while the centre is away: the centre by its record, then itself.
 #[cfg(feature = "pc")]
-fn as_turbo(app: &App, centre: &crate::placement::watch::StationGateway) -> HomeDevices {
+fn as_turbo(
+    identity: &Arc<crate::core::identity::home::Identity>,
+    settings: &Arc<crate::settings::SettingsService>,
+    centre: &crate::placement::watch::StationGateway,
+) -> HomeDevices {
     let record = centre.record();
     let device = record.as_ref().and_then(|record| record.device.clone());
     let live = centre.live();
@@ -448,7 +460,7 @@ fn as_turbo(app: &App, centre: &crate::placement::watch::StationGateway) -> Home
     hub.state = if live.reachable { DeviceState::Online } else { DeviceState::Offline };
     hub.last_seen = live.seen_at.clone();
     hub.device = device;
-    let me = app.identity.gateway();
+    let me = identity.gateway();
     let mut turbo = HomeDevice::new(
         format!("gateway:{}", me.as_ref().map(|me| me.id.as_str()).unwrap_or_default()),
         DeviceKind::Computer,
@@ -456,27 +468,27 @@ fn as_turbo(app: &App, centre: &crate::placement::watch::StationGateway) -> Home
     );
     turbo.roles.push(DeviceRole::Turbo);
     turbo.hears = true;
-    turbo.copy = super::copy::copied_revision(&app.settings).is_some();
+    turbo.copy = super::copy::copied_revision(settings).is_some();
     turbo.state = DeviceState::Online;
     turbo.gateway_id = me.map(|me| me.id);
     turbo.order = Some(1);
     turbo.enabled = Some(true);
     HomeDevices {
-        home: HomeInfo { id: app.identity.home().map(|home| home.id), name: app.identity.home_name() },
+        home: HomeInfo { id: identity.home().map(|home| home.id), name: identity.home_name() },
         centre: id,
         devices: vec![hub, turbo],
     }
 }
 
 /// The list as this gateway keeps it now.
-pub fn of_app(app: &App) -> HomeDevices {
-    let home = HomeInfo { id: app.identity.home().map(|home| home.id), name: app.identity.home_name() };
-    let me = app.identity.gateway();
-    let on_station = app.placement.role() == crate::placement::service::Role::Station;
-    let (device, station_name) = if on_station { app.placement.station_self() } else { (None, None) };
+pub fn of_app(parts: &Parts) -> HomeDevices {
+    let home = HomeInfo { id: parts.identity.home().map(|home| home.id), name: parts.identity.home_name() };
+    let me = parts.identity.gateway();
+    let on_station = parts.placement.role() == crate::placement::service::Role::Station;
+    let (device, station_name) = if on_station { parts.placement.station_self() } else { (None, None) };
     let model = device
         .as_deref()
-        .and_then(|device| app.stations.find(device))
+        .and_then(|device| parts.stations.find(device))
         .and_then(|station| station.model.or(station.device_model));
     let centre = Centre {
         on_station,
@@ -485,17 +497,17 @@ pub fn of_app(app: &App) -> HomeDevices {
         device,
         model,
     };
-    let elsewhere = elsewhere(app);
-    let stations: Vec<StationIn> = app
+    let elsewhere = elsewhere(parts);
+    let stations: Vec<StationIn> = parts
         .stations
         .list()
         .into_iter()
         .map(|entry| {
             let view = entry.view;
-            let presence = app.presence.of(&view.device);
+            let presence = parts.presence.of(&view.device);
             StationIn {
                 elsewhere: elsewhere.contains(&view.device),
-                copy: super::copy::device_holds(&app.settings, &view.device),
+                copy: super::copy::device_holds(&parts.settings, &view.device),
                 device: view.device,
                 name: view.name,
                 status: view.status,
@@ -507,14 +519,14 @@ pub fn of_app(app: &App) -> HomeDevices {
             }
         })
         .collect();
-    let copies: HashSet<String> = app
+    let copies: HashSet<String> = parts
         .helpers
         .views()
         .iter()
         .filter_map(|view| view.helper.as_ref().map(|identity| identity.id.clone()))
-        .filter(|id| super::copy::holds(&app.settings, id))
+        .filter(|id| super::copy::holds(&parts.settings, id))
         .collect();
-    gather(home, centre, &stations, &app.helpers.views(), &copies)
+    gather(home, centre, &stations, &parts.helpers.views(), &copies)
 }
 
 /// 127.0.0.1, ::1 or localhost: a voice that came from the gateway's own machine.
@@ -524,9 +536,10 @@ fn is_loopback(address: &str) -> bool {
 
 /// The stations whose voice goes to a gateway of their own (a computer's records): they are not this centre's ears.
 #[cfg(feature = "pc")]
-fn elsewhere(app: &App) -> HashSet<String> {
+fn elsewhere(parts: &Parts) -> HashSet<String> {
     use crate::core::availability::Placement;
-    app.station_gateway
+    parts
+        .station_gateway
         .all()
         .iter()
         .filter_map(|station| station.record())
@@ -536,7 +549,7 @@ fn elsewhere(app: &App) -> HashSet<String> {
 }
 
 #[cfg(not(feature = "pc"))]
-fn elsewhere(_app: &App) -> HashSet<String> {
+fn elsewhere(_parts: &Parts) -> HashSet<String> {
     HashSet::new()
 }
 

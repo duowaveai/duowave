@@ -41,6 +41,8 @@ use self::wire::{Message, Step};
 use crate::core::events::{EventBus, GatewayEvent};
 use crate::platform::http::Zone;
 
+crate::route_needs!(routes::Parts);
+
 /// An input stays open this long after its last listener: a page reloaded does not open it anew.
 pub const INPUT_HOLD: Duration = Duration::from_secs(10);
 /// An output stays open this long after its last message.

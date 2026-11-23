@@ -23,6 +23,7 @@ use serde::Serialize;
 
 use crate::core::availability::HomeServer;
 use crate::core::events::Actor;
+use crate::dialog::brain::BrainService;
 use crate::helpers::contract::Ability;
 use crate::helpers::{door, DoorHelper, DoorInput, Helpers, HOME_COMPUTER};
 use crate::platform::http::ApiError;
@@ -33,6 +34,50 @@ use crate::speech::tts::own_speech::OwnSpeech;
 
 pub use crate::helpers::remote::Messenger;
 pub use crate::helpers::{AWAY, BACK, CHECK_EVERY, DOWN_AFTER, GIVEN, NO_HEARING, NO_VOICE, RETURN_AFTER};
+
+#[cfg(feature = "pc")]
+crate::route_needs!(
+    serve::Door,
+    Arc<crate::placement::PlacementService>,
+    Arc<HomeServerService>,
+    Arc<crate::config::Config>,
+    Arc<crate::skills::SkillsService>,
+    Arc<crate::dialog::brain::BrainService>,
+    Arc<crate::plugins::PackageCatalog>,
+    Arc<crate::plugins::PluginHost>,
+    Arc<crate::voice_lab::VoiceLabService>,
+    Arc<crate::characters::CharactersService>,
+    Arc<crate::models::ModelsService>,
+    Arc<crate::core::identity::home::Identity>,
+    Arc<crate::connectors::settings::ConnectorSettings>,
+    Option<Arc<crate::plugins::history::History>>,
+    Arc<crate::calls::CallsService>,
+    Arc<crate::helpers::builtin::BuiltinHelper>,
+    Arc<crate::speech::VoiceService>,
+    Arc<crate::helpers::clients::Clients>,
+    Arc<crate::helpers::link_serve::LinkServer>,
+    Arc<crate::helpers::Helpers>,
+    Arc<crate::home::turbo_devices::HouseDevices>,
+    Arc<crate::settings::SettingsService>,
+    Arc<crate::bus::Bus>,
+    Arc<crate::midi::MidiService>
+);
+#[cfg(not(feature = "pc"))]
+crate::route_needs!(
+    Arc<crate::placement::PlacementService>,
+    Arc<HomeServerService>,
+    Arc<crate::config::Config>,
+    Arc<crate::skills::SkillsService>,
+    Arc<crate::dialog::brain::BrainService>,
+    Arc<crate::plugins::PackageCatalog>,
+    Arc<crate::plugins::PluginHost>,
+    Arc<crate::characters::CharactersService>,
+    Arc<crate::core::identity::home::Identity>,
+    Arc<crate::connectors::settings::ConnectorSettings>,
+    Option<Arc<crate::plugins::history::History>>,
+    Arc<crate::speech::VoiceService>,
+    Arc<crate::helpers::Helpers>
+);
 
 /// The pair's door's words (the station's old panel, a 0.11 computer): «Модель» off while «Мозг» on the station answers
 /// with the computer's model — its row cannot leave while a choice answers with it, so the switch is refused.
@@ -216,7 +261,7 @@ pub const BRAIN_TITLE: &str = "Модель на компьютере";
 /// the person would switch off what answers. The refusal names the helper. Hearing and voice go their own way.
 pub fn check_model_kept(
     helpers: &Helpers,
-    brain: &crate::dialog::brain::BrainService,
+    brain: &BrainService,
     id: &str,
     without: &[Ability],
 ) -> Result<(), ApiError> {
@@ -231,11 +276,7 @@ pub fn check_model_kept(
 }
 
 /// «Что даю колонке» in the old names, for the pair's door: the station's computer, in the door's own words.
-pub fn check_parts(
-    home: &HomeServerService,
-    brain: &crate::dialog::brain::BrainService,
-    without: &[String],
-) -> Result<(), ApiError> {
+pub fn check_parts(home: &HomeServerService, brain: &BrainService, without: &[String]) -> Result<(), ApiError> {
     if model_kept(&home.helpers, brain, HOME_COMPUTER, &door::to_abilities(without)) {
         return Err(ApiError::conflict(model_answers()));
     }
@@ -243,14 +284,14 @@ pub fn check_parts(
 }
 
 /// The model of a helper newly switched off while «Мозг» answers with it.
-fn model_kept(helpers: &Helpers, brain: &crate::dialog::brain::BrainService, id: &str, without: &[Ability]) -> bool {
+fn model_kept(helpers: &Helpers, brain: &BrainService, id: &str, without: &[Ability]) -> bool {
     without.contains(&Ability::Model)
         && helpers.entry(id).is_some_and(|entry| !entry.without.contains(&Ability::Model))
         && brain.answers_with_helper(id)
 }
 
 /// `/api/v1/home-server`: the station's panel sets the connection up; `/home/v1` on the computer (serve.rs).
-pub fn router() -> axum::Router<Arc<crate::app::App>> {
+pub fn router<S: RouteNeeds>() -> axum::Router<S> {
     use axum::routing::{get, post};
     let router = axum::Router::new()
         .route("/api/v1/home-server", get(routes::status).put(routes::set).delete(routes::remove))
@@ -269,13 +310,13 @@ pub fn router() -> axum::Router<Arc<crate::app::App>> {
 mod routes {
     use std::sync::Arc;
 
-    use axum::extract::State;
     use serde_json::Value;
 
-    use super::HomeServerStatus;
-    use crate::app::App;
+    use super::{HomeServerService, HomeServerStatus};
     use crate::core::identity::permissions::{CONNECTORS_MANAGE, CONNECTORS_VIEW};
-    use crate::platform::http::{created, ok, ApiResult, Body, Caller};
+    use crate::dialog::brain::BrainService;
+    use crate::placement::PlacementService;
+    use crate::platform::http::{created, ok, ApiResult, Body, Caller, Uses};
 
     /// The helper's «Что даю колонке»: how many times and how fast it gave the station hearing, voice and the model
     /// today.
@@ -285,43 +326,52 @@ mod routes {
         Ok(ok(super::serve::served_today()))
     }
 
-    pub async fn status(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<HomeServerStatus> {
+    pub async fn status(
+        Uses(home_server): Uses<Arc<HomeServerService>>,
+        caller: Caller,
+    ) -> ApiResult<HomeServerStatus> {
         caller.permitted(CONNECTORS_VIEW)?;
-        Ok(ok(app.home_server.status()))
+        Ok(ok(home_server.status()))
     }
 
     pub async fn set(
-        State(app): State<Arc<App>>,
+        Uses(home_server): Uses<Arc<HomeServerService>>,
         caller: Caller,
         Body(body): Body<Value>,
     ) -> ApiResult<HomeServerStatus> {
         caller.permitted(CONNECTORS_MANAGE)?;
         let url = body.get("url").and_then(Value::as_str);
         let key = body.get("key").and_then(Value::as_str);
-        app.home_server.set(url, key, caller.actor())?;
-        app.home_server.check().await;
-        Ok(created(app.home_server.status()))
+        home_server.set(url, key, caller.actor())?;
+        home_server.check().await;
+        Ok(created(home_server.status()))
     }
 
-    pub async fn remove(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<HomeServerStatus> {
+    pub async fn remove(
+        Uses(home_server): Uses<Arc<HomeServerService>>,
+        caller: Caller,
+    ) -> ApiResult<HomeServerStatus> {
         caller.permitted(CONNECTORS_MANAGE)?;
-        Ok(ok(app.home_server.set(None, None, caller.actor())?))
+        Ok(ok(home_server.set(None, None, caller.actor())?))
     }
 
     /// The address, the key, the switch: from the computer with the pair's key, or a person with the right.
     pub async fn link(
-        State(app): State<Arc<App>>,
+        Uses(placement): Uses<Arc<PlacementService>>,
+        Uses(home_server): Uses<Arc<HomeServerService>>,
+        Uses(brain): Uses<Arc<BrainService>>,
+        Uses(helpers): Uses<Arc<crate::helpers::Helpers>>,
         caller: Caller,
         Body(body): Body<Value>,
     ) -> ApiResult<HomeServerStatus> {
-        crate::placement::peer::peer_or_permitted(&caller, app.placement.peer_key(), CONNECTORS_MANAGE)?;
+        crate::placement::peer::peer_or_permitted(&caller, placement.peer_key(), CONNECTORS_MANAGE)?;
         let without: Option<Vec<String>> = body
             .get("without")
             .and_then(Value::as_array)
             .map(|list| list.iter().filter_map(Value::as_str).map(str::to_string).collect());
         // Before anything is stored: «Модель» stays while «Мозг» answers with it (the computer's panel says why).
         if let Some(without) = &without {
-            super::check_parts(&app.home_server, &app.brain, without)?;
+            super::check_parts(&home_server, &brain, without)?;
         }
         // The computer as it names itself (0.18.2): its own entry, so a home keeps a Turbo per computer.
         let helper = body.get("helper").and_then(|helper| {
@@ -329,7 +379,7 @@ mod routes {
             let name = helper.get("name").and_then(Value::as_str).map(str::trim).filter(|name| !name.is_empty());
             (!id.is_empty()).then(|| crate::helpers::DoorHelper { id: id.to_string(), name: name.map(str::to_string) })
         });
-        let target = app.home_server.link_of(
+        let target = home_server.link_of(
             body.get("url").and_then(Value::as_str),
             body.get("key").and_then(Value::as_str),
             body.get("enabled").and_then(Value::as_bool),
@@ -337,16 +387,19 @@ mod routes {
             helper,
             caller.actor(),
         )?;
-        if app.helpers.entry(&target).is_some_and(|entry| entry.enabled) {
-            let _ = app.helpers.check(&target).await;
+        if helpers.entry(&target).is_some_and(|entry| entry.enabled) {
+            let _ = helpers.check(&target).await;
         }
-        Ok(ok(app.home_server.status()))
+        Ok(ok(home_server.status()))
     }
 
-    pub async fn check_now(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<HomeServerStatus> {
+    pub async fn check_now(
+        Uses(home_server): Uses<Arc<HomeServerService>>,
+        caller: Caller,
+    ) -> ApiResult<HomeServerStatus> {
         caller.permitted(CONNECTORS_VIEW)?;
-        app.home_server.check().await;
-        Ok(created(app.home_server.status()))
+        home_server.check().await;
+        Ok(created(home_server.status()))
     }
 }
 
@@ -366,7 +419,7 @@ mod tests {
             station(&[("HOME_SERVER_URL", a.url.as_str()), ("HOME_SERVER_KEY", KEY), ("DIALOG_PROVIDER", "none")]);
         station.put("home-b", &b.url, HelperKind::Home);
         let brain = Arc::new(
-            crate::dialog::brain::BrainService::new(
+            BrainService::new(
                 station.config.dialog.clone(),
                 station.db.clone(),
                 station.settings.clone(),

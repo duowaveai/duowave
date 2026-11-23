@@ -7,19 +7,19 @@
 
 use std::sync::Arc;
 
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, Query};
 use axum::routing::{get, post};
 use axum::Router;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
 use super::{TaskError, TaskLog};
-use crate::app::App;
 use crate::core::identity::permissions::use_of;
-use crate::platform::http::{ok, Api, ApiError, ApiResult, Caller};
+use crate::platform::http::{ok, Api, ApiError, ApiResult, Caller, Uses};
 use crate::skills::capabilities::CapabilityName;
+use crate::tasks::Tasks;
 
-pub fn routes() -> Router<Arc<App>> {
+pub fn routes<S: crate::tasks::RouteNeeds>() -> Router<S> {
     Router::new()
         .route("/api/v1/tasks", get(list))
         .route("/api/v1/tasks/{id}", get(one))
@@ -44,18 +44,18 @@ struct Whose {
     app: Option<String>,
 }
 
-async fn list(State(app): State<Arc<App>>, caller: Caller, Query(whose): Query<Whose>) -> ApiResult<Value> {
+async fn list(Uses(tasks): Uses<Arc<Tasks>>, caller: Caller, Query(whose): Query<Whose>) -> ApiResult<Value> {
     caller.permitted(&use_of(CapabilityName::Plugins))?;
-    Ok(ok(json!({ "tasks": app.tasks.list(whose.app.as_deref().filter(|app| !app.is_empty())) })))
+    Ok(ok(json!({ "tasks": tasks.list(whose.app.as_deref().filter(|app| !app.is_empty())) })))
 }
 
-async fn one(State(app): State<Arc<App>>, caller: Caller, Path(id): Path<String>) -> ApiResult<TaskLog> {
+async fn one(Uses(tasks): Uses<Arc<Tasks>>, caller: Caller, Path(id): Path<String>) -> ApiResult<TaskLog> {
     caller.permitted(&use_of(CapabilityName::Plugins))?;
-    Ok(ok(app.tasks.get(&id).ok_or(TaskError::NotFound)?))
+    Ok(ok(tasks.get(&id).ok_or(TaskError::NotFound)?))
 }
 
 /// «Отменить»: answers 200, not 201 — nothing is made.
-async fn cancel(State(app): State<Arc<App>>, caller: Caller, Path(id): Path<String>) -> ApiResult<super::Task> {
+async fn cancel(Uses(tasks): Uses<Arc<Tasks>>, caller: Caller, Path(id): Path<String>) -> ApiResult<super::Task> {
     caller.permitted(&use_of(CapabilityName::Plugins))?;
-    Ok(Api(axum::http::StatusCode::OK, app.tasks.cancel(&id)?))
+    Ok(Api(axum::http::StatusCode::OK, tasks.cancel(&id)?))
 }

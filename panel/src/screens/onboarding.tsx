@@ -7,6 +7,7 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
 
 import { ApiError, FoundStation, PairCodeAsked, PairCodeLook, StationGatewayView, api, can, problemOf, stationCall } from '../api';
+import { drawingOf } from '../stations';
 import { LANGUAGES, setLanguage, tr, useLanguage } from '../i18n';
 import { usePanel } from '../shell/context';
 import { flushPanelMemory, recalled, remember } from '../shell/memory';
@@ -489,7 +490,12 @@ function useScan(enabled: boolean): Scan {
     return { done: found !== null, found: found ?? [], withGateway, helperDeclined: declined, declineHelper: () => setDeclined(true) };
 }
 
-const nameOf = (station: FoundStation): string => station.name ?? station.address;
+/**
+ * Колонка для людей: имя, что ей дали, а без него — модель («Станция Лайт 2»), и только потом адрес. Метку прошивки
+ * `YandexIOReceiver-<серийный>` поиск именем не считает (gateway/src/stations/connect/discovery.rs; первые шаги 24.11).
+ */
+const nameOf = (station: FoundStation): string =>
+    station.name ?? (station.txt?.platform ? drawingOf(null, station.txt.platform).title : station.address);
 
 // ─── Схема «Как это будет» ─────────────────────────────────────
 

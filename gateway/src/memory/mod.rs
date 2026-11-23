@@ -20,3 +20,5 @@ pub mod tools;
 
 pub use controller::routes;
 pub use service::{MemoryError, MemoryService, Remember, Remembered};
+
+crate::route_needs!(std::sync::Arc<MemoryService>, std::sync::Arc<reflect::Reflection>);

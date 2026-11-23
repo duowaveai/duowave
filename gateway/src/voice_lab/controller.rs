@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::body::Body as RawBody;
-use axum::extract::{Path, RawQuery, State};
+use axum::extract::{Path, RawQuery};
 use axum::http::{header, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, patch, post};
@@ -21,11 +21,12 @@ use super::jobs::JobState;
 use super::js;
 use super::service::VoiceLabView;
 use super::voice_store::{OwnVoice, TakeInfo, MAX_TAKE_BYTES};
-use crate::app::App;
 use crate::core::identity::permissions::{MODELS_MANAGE, STATION_VIEW};
-use crate::platform::http::{created, ok, ApiError, ApiResult, Body, Caller, Zone};
+use crate::helpers::builtin::BuiltinHelper;
+use crate::platform::http::{created, ok, ApiError, ApiResult, Body, Caller, Uses, Zone};
+use crate::voice_lab::VoiceLabService;
 
-pub fn router() -> Router<Arc<App>> {
+pub fn router<S: crate::voice_lab::RouteNeeds>() -> Router<S> {
     Router::new()
         .route("/api/v1/voice-lab", get(view))
         .route("/api/v1/voice-lab/platform/recheck", post(recheck))
@@ -53,16 +54,17 @@ const IMPRINT_ASR_LIMIT: usize = 16 * 1024 * 1024;
 /// script sends no sign-in — and heard by the same engine as the home's recognition (home_server/serve.rs). Anything
 /// else is not there.
 async fn imprint_asr(
-    State(app): State<Arc<App>>,
+    Uses(voice_lab): Uses<Arc<VoiceLabService>>,
+    Uses(builtin): Uses<Arc<BuiltinHelper>>,
     caller: Caller,
     Path(key): Path<String>,
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
 ) -> Result<Response, ApiError> {
-    if caller.zone != Zone::Local || !app.voice_lab.asr_key_is(&key) {
+    if caller.zone != Zone::Local || !voice_lab.asr_key_is(&key) {
         return Err(ApiError::not_found("Not Found"));
     }
-    match app.builtin.hearing() {
+    match builtin.hearing() {
         Some(crate::helpers::builtin::Hearing::Local(local)) => {
             crate::home_server::serve::recognize_here(local, &headers, &body).await
         }
@@ -121,24 +123,28 @@ async fn wav(path: PathBuf, missing: String) -> Result<Response, ApiError> {
     Ok(response)
 }
 
-async fn view(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<VoiceLabView> {
+async fn view(Uses(voice_lab): Uses<Arc<VoiceLabService>>, caller: Caller) -> ApiResult<VoiceLabView> {
     caller.permitted(STATION_VIEW)?;
-    Ok(ok(app.voice_lab.view().await))
+    Ok(ok(voice_lab.view().await))
 }
 
-async fn recheck(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<VoiceLabView> {
+async fn recheck(Uses(voice_lab): Uses<Arc<VoiceLabService>>, caller: Caller) -> ApiResult<VoiceLabView> {
     caller.permitted(MODELS_MANAGE)?;
-    Ok(created(app.voice_lab.recheck().await))
+    Ok(created(voice_lab.recheck().await))
 }
 
-async fn install(State(app): State<Arc<App>>, caller: Caller, Path(id): Path<String>) -> ApiResult<JobState> {
+async fn install(
+    Uses(voice_lab): Uses<Arc<VoiceLabService>>,
+    caller: Caller,
+    Path(id): Path<String>,
+) -> ApiResult<JobState> {
     caller.permitted(MODELS_MANAGE)?;
-    Ok(created(app.voice_lab.install(&id, caller.actor()).await?))
+    Ok(created(voice_lab.install(&id, caller.actor()).await?))
 }
 
 /// A take: the body is a 16-bit PCM WAV (the panel records or converts it), ?passage=N — which passage was read.
 async fn add_take(
-    State(app): State<Arc<App>>,
+    Uses(voice_lab): Uses<Arc<VoiceLabService>>,
     caller: Caller,
     RawQuery(query): RawQuery,
     body: RawBody,
@@ -147,41 +153,53 @@ async fn add_take(
     caller.permitted(MODELS_MANAGE)?;
     let passage = passage(query.as_deref());
     let body = read_body(body, MAX_TAKE_BYTES).await?;
-    Ok(created(app.voice_lab.add_take(body, passage).await?))
+    Ok(created(voice_lab.add_take(body, passage).await?))
 }
 
-async fn take(State(app): State<Arc<App>>, caller: Caller, Path(n): Path<String>) -> Result<Response, ApiError> {
+async fn take(
+    Uses(voice_lab): Uses<Arc<VoiceLabService>>,
+    caller: Caller,
+    Path(n): Path<String>,
+) -> Result<Response, ApiError> {
     caller.permitted(MODELS_MANAGE)?;
-    wav(app.voice_lab.take_path(js::integer(&n))?, crate::tr!("нет такого дубля")).await
+    wav(voice_lab.take_path(js::integer(&n))?, crate::tr!("нет такого дубля")).await
 }
 
-async fn remove_take(State(app): State<Arc<App>>, caller: Caller, Path(n): Path<String>) -> ApiResult<Value> {
+async fn remove_take(
+    Uses(voice_lab): Uses<Arc<VoiceLabService>>,
+    caller: Caller,
+    Path(n): Path<String>,
+) -> ApiResult<Value> {
     caller.permitted(MODELS_MANAGE)?;
-    app.voice_lab.remove_take(js::integer(&n))?;
+    voice_lab.remove_take(js::integer(&n))?;
     Ok(ok(json!({ "deleted": true })))
 }
 
-async fn clear_draft(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<Value> {
+async fn clear_draft(Uses(voice_lab): Uses<Arc<VoiceLabService>>, caller: Caller) -> ApiResult<Value> {
     caller.permitted(MODELS_MANAGE)?;
-    app.voice_lab.clear_draft()?;
+    voice_lab.clear_draft()?;
     Ok(ok(json!({ "cleared": true })))
 }
 
 /// «Снять отпечаток»: {engine, name, anyway?}; the progress rides in GET /voice-lab. Tight on memory: 428 with the
 /// warning, and the same request with `"anyway": true` starts it.
-async fn imprint(State(app): State<Arc<App>>, caller: Caller, Body(body): Body<Value>) -> ApiResult<JobState> {
+async fn imprint(
+    Uses(voice_lab): Uses<Arc<VoiceLabService>>,
+    caller: Caller,
+    Body(body): Body<Value>,
+) -> ApiResult<JobState> {
     caller.permitted(MODELS_MANAGE)?;
     let Some(engine) = body.get("engine").and_then(Value::as_str) else {
         return Err(ApiError::bad_request(crate::tr!("body: {\"engine\": \"omnivoice\", \"name\": \"Мой голос\"}")));
     };
     let anyway = body.get("anyway") == Some(&Value::Bool(true));
-    Ok(created(app.voice_lab.imprint(engine, body.get("name"), caller.actor(), anyway).await?))
+    Ok(created(voice_lab.imprint(engine, body.get("name"), caller.actor(), anyway).await?))
 }
 
 /// «Переснять для другой модели»: {engine, anyway?} — the voice imprinted anew under that engine from its reference
 /// and words (or its takes), a new voice beside it; the progress rides in GET /voice-lab, 428 as for an imprint.
 async fn reimprint(
-    State(app): State<Arc<App>>,
+    Uses(voice_lab): Uses<Arc<VoiceLabService>>,
     caller: Caller,
     Path(id): Path<String>,
     Body(body): Body<Value>,
@@ -191,36 +209,40 @@ async fn reimprint(
         return Err(ApiError::bad_request(r#"body: {"engine": "cosyvoice3"}"#));
     };
     let anyway = body.get("anyway") == Some(&Value::Bool(true));
-    Ok(created(app.voice_lab.reimprint(&id, engine, anyway, caller.actor()).await?))
+    Ok(created(voice_lab.reimprint(&id, engine, anyway, caller.actor()).await?))
 }
 
-async fn stop(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<Value> {
+async fn stop(Uses(voice_lab): Uses<Arc<VoiceLabService>>, caller: Caller) -> ApiResult<Value> {
     caller.permitted(MODELS_MANAGE)?;
-    Ok(created(json!({ "stopped": app.voice_lab.stop_job() })))
+    Ok(created(json!({ "stopped": voice_lab.stop_job() })))
 }
 
 async fn sample(
-    State(app): State<Arc<App>>,
+    Uses(voice_lab): Uses<Arc<VoiceLabService>>,
     caller: Caller,
     Path((id, n)): Path<(String, String)>,
 ) -> Result<Response, ApiError> {
     caller.permitted(MODELS_MANAGE)?;
-    wav(app.voice_lab.sample_path(&id, js::integer(&n))?, crate::tr!("нет такой пробы")).await
+    wav(voice_lab.sample_path(&id, js::integer(&n))?, crate::tr!("нет такой пробы")).await
 }
 
 async fn rename(
-    State(app): State<Arc<App>>,
+    Uses(voice_lab): Uses<Arc<VoiceLabService>>,
     caller: Caller,
     Path(id): Path<String>,
     Body(body): Body<Value>,
 ) -> ApiResult<OwnVoice> {
     caller.permitted(MODELS_MANAGE)?;
-    Ok(ok(app.voice_lab.rename(&id, body.get("name"), caller.actor())?))
+    Ok(ok(voice_lab.rename(&id, body.get("name"), caller.actor())?))
 }
 
-async fn remove(State(app): State<Arc<App>>, caller: Caller, Path(id): Path<String>) -> ApiResult<Value> {
+async fn remove(
+    Uses(voice_lab): Uses<Arc<VoiceLabService>>,
+    caller: Caller,
+    Path(id): Path<String>,
+) -> ApiResult<Value> {
     caller.permitted(MODELS_MANAGE)?;
-    app.voice_lab.remove(&id, caller.actor())?;
+    voice_lab.remove(&id, caller.actor())?;
     Ok(ok(json!({ "deleted": true })))
 }
 
@@ -244,10 +266,6 @@ mod tests {
         Caller::local(lab.app.clone(), Some(user_principal("admin", "Админ", Role::Admin, None)))
     }
 
-    fn state(lab: &Lab) -> State<Arc<App>> {
-        State(lab.app.clone())
-    }
-
     /// An answer as the envelope carries it: the status and the message's JSON, or the error's.
     fn answer<T: Serialize>(result: ApiResult<T>) -> (StatusCode, Value) {
         match result {
@@ -257,17 +275,17 @@ mod tests {
     }
 
     async fn view_of(lab: &Lab) -> Value {
-        let (status, view) = answer(view(state(lab), admin(lab)).await);
+        let (status, view) = answer(view(Uses::of(&lab.app), admin(lab)).await);
         assert_eq!(status, StatusCode::OK);
         view
     }
 
     async fn add(lab: &Lab, query: Option<&str>, body: Vec<u8>) -> (StatusCode, Value) {
-        answer(add_take(state(lab), admin(lab), RawQuery(query.map(str::to_string)), RawBody::from(body)).await)
+        answer(add_take(Uses::of(&lab.app), admin(lab), RawQuery(query.map(str::to_string)), RawBody::from(body)).await)
     }
 
     async fn imprint_as(lab: &Lab, body: Value) -> (StatusCode, Value) {
-        answer(imprint(state(lab), admin(lab), Body(body)).await)
+        answer(imprint(Uses::of(&lab.app), admin(lab), Body(body)).await)
     }
 
     async fn finished_job(lab: &Lab) -> Value {
@@ -299,7 +317,7 @@ mod tests {
     async fn takes_a_voice_again_for_another_engine_and_a_characters_voice_from_its_reference() {
         let lab = lab().await;
         let id = imprinted(&lab, "Мой голос").await;
-        let reimprint_as = |body: Value| reimprint(state(&lab), admin(&lab), Path(id.clone()), Body(body));
+        let reimprint_as = |body: Value| reimprint(Uses::of(&lab.app), admin(&lab), Path(id.clone()), Body(body));
         let (status, message) = answer(reimprint_as(json!({ "engine": "cosyvoice3" })).await);
         assert_eq!((status, message), (StatusCode::BAD_REQUEST, json!("Сначала установите CosyVoice 3.")));
         let (status, _) = answer(reimprint_as(json!({ "engine": "omnivoice" })).await);
@@ -404,12 +422,15 @@ mod tests {
         assert_eq!(audio.headers()[header::CONTENT_TYPE], "audio/wav");
         assert_eq!(audio.headers()[header::CACHE_CONTROL], "no-store");
         assert_eq!(add(&lab, None, b"ID3...".to_vec()).await.0, StatusCode::BAD_REQUEST);
-        assert_eq!(answer(clear_draft(state(&lab), admin(&lab)).await), (StatusCode::OK, json!({ "cleared": true })));
+        assert_eq!(
+            answer(clear_draft(Uses::of(&lab.app), admin(&lab)).await),
+            (StatusCode::OK, json!({ "cleared": true }))
+        );
         assert_eq!(view_of(&lab).await["draft"], json!({ "takes": [], "seconds": 0 }));
     }
 
     async fn take_wav(lab: &Lab, n: &str) -> Result<Response, ApiError> {
-        take(state(lab), admin(lab), Path(n.to_string())).await
+        take(Uses::of(&lab.app), admin(lab), Path(n.to_string())).await
     }
 
     #[tokio::test]
@@ -430,15 +451,16 @@ mod tests {
         ] {
             assert_eq!(voices[0][field], value, "{field}");
         }
-        let played = sample(state(&lab), admin(&lab), Path((id.clone(), "1".into()))).await.unwrap();
+        let played = sample(Uses::of(&lab.app), admin(&lab), Path((id.clone(), "1".into()))).await.unwrap();
         assert_eq!(played.status(), StatusCode::OK);
-        let missing = sample(state(&lab), admin(&lab), Path((id.clone(), "7".into()))).await.unwrap_err();
+        let missing = sample(Uses::of(&lab.app), admin(&lab), Path((id.clone(), "7".into()))).await.unwrap_err();
         assert_eq!(missing.status, StatusCode::NOT_FOUND);
-        let (status, renamed) =
-            answer(rename(state(&lab), admin(&lab), Path(id.clone()), Body(json!({ "name": "Второй голос" }))).await);
+        let (status, renamed) = answer(
+            rename(Uses::of(&lab.app), admin(&lab), Path(id.clone()), Body(json!({ "name": "Второй голос" }))).await,
+        );
         assert_eq!((status, &renamed["name"]), (StatusCode::OK, &json!("Второй голос")));
         assert_eq!(
-            answer(remove(state(&lab), admin(&lab), Path(id)).await),
+            answer(remove(Uses::of(&lab.app), admin(&lab), Path(id)).await),
             (StatusCode::OK, json!({ "deleted": true }))
         );
         assert_eq!(view_of(&lab).await["voices"], json!([]));
@@ -472,7 +494,7 @@ mod tests {
         );
         assert_eq!(lab.app.voice.own_speech().unwrap().base_url(), lab.clone_url);
         assert_eq!(view_of(&lab).await["voices"][0]["chosen"], true);
-        let (status, _) = answer(remove(state(&lab), admin(&lab), Path(id)).await);
+        let (status, _) = answer(remove(Uses::of(&lab.app), admin(&lab), Path(id)).await);
         assert_eq!(status, StatusCode::CONFLICT);
     }
 
@@ -500,7 +522,10 @@ mod tests {
         let job = finished_job(&lab).await;
         assert_eq!((&job["state"], &job["limitMb"]), (&json!("done"), &json!(3_623)));
         lab.memory.free_mb.store(16_384, Ordering::SeqCst);
-        assert_eq!(answer(stop(state(&lab), admin(&lab)).await), (StatusCode::CREATED, json!({ "stopped": false })));
+        assert_eq!(
+            answer(stop(Uses::of(&lab.app), admin(&lab)).await),
+            (StatusCode::CREATED, json!({ "stopped": false }))
+        );
     }
 
     /// imprint.py's loopback recognition (item 38): only from this computer and only with the gateway's key; this test
@@ -511,7 +536,8 @@ mod tests {
         let key = lab.app.voice_lab.asr_key_for_tests();
         let call = |caller: Caller, key: &str| {
             imprint_asr(
-                State(lab.app.clone()),
+                Uses::of(&lab.app),
+                Uses::of(&lab.app),
                 caller,
                 Path(key.to_string()),
                 axum::http::HeaderMap::new(),
@@ -533,12 +559,12 @@ mod tests {
     async fn lets_everyone_who_sees_the_station_look_and_only_managers_change() {
         let lab = lab().await;
         let nobody = || Caller::local(lab.app.clone(), None);
-        assert_eq!(answer(view(state(&lab), nobody()).await).0, StatusCode::UNAUTHORIZED);
-        let anonymous = answer(install(state(&lab), nobody(), Path("cosyvoice3".into())).await);
+        assert_eq!(answer(view(Uses::of(&lab.app), nobody()).await).0, StatusCode::UNAUTHORIZED);
+        let anonymous = answer(install(Uses::of(&lab.app), nobody(), Path("cosyvoice3".into())).await);
         assert_eq!(anonymous.0, StatusCode::UNAUTHORIZED);
         let member = || Caller::local(lab.app.clone(), Some(user_principal("m", "Участник", Role::Member, None)));
-        assert_eq!(answer(view(state(&lab), member()).await).0, StatusCode::OK);
-        let (status, message) = answer(install(state(&lab), member(), Path("cosyvoice3".into())).await);
+        assert_eq!(answer(view(Uses::of(&lab.app), member()).await).0, StatusCode::OK);
+        let (status, message) = answer(install(Uses::of(&lab.app), member(), Path("cosyvoice3".into())).await);
         assert_eq!(status, StatusCode::FORBIDDEN);
         assert!(message.as_str().unwrap().starts_with("Нет права:"), "{message}");
     }
@@ -548,7 +574,7 @@ mod tests {
         let lab = lab().await;
         let mut from_outside = admin(&lab);
         from_outside.zone = Zone::Remote;
-        let refused = add_take(state(&lab), from_outside, RawQuery(None), RawBody::from(spoken_take())).await;
+        let refused = add_take(Uses::of(&lab.app), from_outside, RawQuery(None), RawBody::from(spoken_take())).await;
         assert_eq!(answer(refused), (StatusCode::FORBIDDEN, json!("Только из домашней сети.")));
         let large = read_body(RawBody::from(vec![0u8; MAX_TAKE_BYTES + 1]), MAX_TAKE_BYTES).await.unwrap_err();
         assert_eq!((large.status, large.message.as_str()), (StatusCode::BAD_REQUEST, "Запись больше 16 МБ."));

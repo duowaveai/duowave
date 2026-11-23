@@ -24,18 +24,19 @@
 use std::sync::Arc;
 
 use axum::body::Bytes;
-use axum::extract::{ConnectInfo, Path, Query, State};
+use axum::extract::{ConnectInfo, Path, Query};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde_json::{json, Value};
 
-use crate::app::App;
 use crate::apps::supervisor::AppHost;
-use crate::tasks::{Outcome, TaskError};
+use crate::platform::http::Uses;
+use crate::plugins::PluginHost;
+use crate::tasks::{Outcome, TaskError, Tasks};
 
-pub fn routes() -> Router<Arc<App>> {
+pub fn routes<S: crate::apps::RouteNeeds>() -> Router<S> {
     Router::new()
         .route("/api/v1/apps/host/log", post(log))
         .route("/api/v1/apps/host/kv", get(keys))
@@ -56,7 +57,7 @@ fn refused(status: StatusCode, message: impl AsRef<str>) -> Response {
 }
 
 /// The app by its token, from this machine only; the refusal to answer otherwise.
-fn app_of(app: &App, peer: std::net::SocketAddr, headers: &HeaderMap) -> Result<AppHost, Box<Response>> {
+fn app_of(plugins: &PluginHost, peer: std::net::SocketAddr, headers: &HeaderMap) -> Result<AppHost, Box<Response>> {
     if !peer.ip().is_loopback() {
         return Err(Box::new(refused(
             StatusCode::FORBIDDEN,
@@ -68,7 +69,7 @@ fn app_of(app: &App, peer: std::net::SocketAddr, headers: &HeaderMap) -> Result<
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.strip_prefix("Bearer "))
         .unwrap_or_default();
-    app.plugins
+    plugins
         .app_host(token)
         .ok_or_else(|| Box::new(refused(StatusCode::UNAUTHORIZED, crate::tr!("нет такого приложения: токен не тот"))))
 }
@@ -76,12 +77,12 @@ fn app_of(app: &App, peer: std::net::SocketAddr, headers: &HeaderMap) -> Result<
 type Peer = ConnectInfo<std::net::SocketAddr>;
 
 async fn log(
-    State(app): State<Arc<App>>,
+    Uses(plugins): Uses<Arc<PluginHost>>,
     ConnectInfo(peer): Peer,
     headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Response {
-    match app_of(&app, peer, &headers) {
+    match app_of(&plugins, peer, &headers) {
         Ok((_, host)) => {
             let level = body.get("level").and_then(Value::as_str).unwrap_or("info");
             host.log(level, body.get("message").and_then(Value::as_str).unwrap_or_default());
@@ -98,12 +99,12 @@ struct Prefix {
 }
 
 async fn keys(
-    State(app): State<Arc<App>>,
+    Uses(plugins): Uses<Arc<PluginHost>>,
     ConnectInfo(peer): Peer,
     headers: HeaderMap,
     Query(query): Query<Prefix>,
 ) -> Response {
-    match app_of(&app, peer, &headers) {
+    match app_of(&plugins, peer, &headers) {
         Ok((_, host)) => match host.kv_keys(&query.prefix) {
             Ok(keys) => Json(json!({ "keys": keys })).into_response(),
             Err(why) => refused(StatusCode::FORBIDDEN, &why),
@@ -113,12 +114,12 @@ async fn keys(
 }
 
 async fn kv_get(
-    State(app): State<Arc<App>>,
+    Uses(plugins): Uses<Arc<PluginHost>>,
     ConnectInfo(peer): Peer,
     headers: HeaderMap,
     Path(key): Path<String>,
 ) -> Response {
-    match app_of(&app, peer, &headers) {
+    match app_of(&plugins, peer, &headers) {
         Ok((_, host)) => match host.kv_get(&key) {
             Ok(Some(value)) => Json(value).into_response(),
             Ok(None) => StatusCode::NOT_FOUND.into_response(),
@@ -129,13 +130,13 @@ async fn kv_get(
 }
 
 async fn kv_set(
-    State(app): State<Arc<App>>,
+    Uses(plugins): Uses<Arc<PluginHost>>,
     ConnectInfo(peer): Peer,
     headers: HeaderMap,
     Path(key): Path<String>,
     body: Bytes,
 ) -> Response {
-    match app_of(&app, peer, &headers) {
+    match app_of(&plugins, peer, &headers) {
         Ok((_, host)) => {
             let Ok(value) = serde_json::from_slice::<Value>(&body) else {
                 return refused(StatusCode::BAD_REQUEST, crate::tr!("значение — JSON"));
@@ -150,12 +151,12 @@ async fn kv_set(
 }
 
 async fn kv_delete(
-    State(app): State<Arc<App>>,
+    Uses(plugins): Uses<Arc<PluginHost>>,
     ConnectInfo(peer): Peer,
     headers: HeaderMap,
     Path(key): Path<String>,
 ) -> Response {
-    match app_of(&app, peer, &headers) {
+    match app_of(&plugins, peer, &headers) {
         Ok((_, host)) => match host.kv_delete(&key) {
             Ok(()) => StatusCode::NO_CONTENT.into_response(),
             Err(why) => refused(StatusCode::FORBIDDEN, &why),
@@ -165,12 +166,12 @@ async fn kv_delete(
 }
 
 async fn say(
-    State(app): State<Arc<App>>,
+    Uses(plugins): Uses<Arc<PluginHost>>,
     ConnectInfo(peer): Peer,
     headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Response {
-    match app_of(&app, peer, &headers) {
+    match app_of(&plugins, peer, &headers) {
         Ok((_, host)) => {
             let text = body.get("text").and_then(Value::as_str).unwrap_or_default().to_string();
             let device = body.get("device").and_then(Value::as_str).map(str::to_string);
@@ -184,12 +185,12 @@ async fn say(
 }
 
 async fn fetch(
-    State(app): State<Arc<App>>,
+    Uses(plugins): Uses<Arc<PluginHost>>,
     ConnectInfo(peer): Peer,
     headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Response {
-    match app_of(&app, peer, &headers) {
+    match app_of(&plugins, peer, &headers) {
         Ok((_, host)) => match host.fetch(body).await {
             Ok(answer) => Json(answer).into_response(),
             Err(why) => refused(StatusCode::FORBIDDEN, &why),
@@ -200,13 +201,13 @@ async fn fetch(
 
 /// Host API 1.1: the gateway's services by name (`content.search`, `tools.call`, `smartHome.devices`…).
 async fn call(
-    State(app): State<Arc<App>>,
+    Uses(plugins): Uses<Arc<PluginHost>>,
     ConnectInfo(peer): Peer,
     headers: HeaderMap,
     Path(name): Path<String>,
     body: Bytes,
 ) -> Response {
-    match app_of(&app, peer, &headers) {
+    match app_of(&plugins, peer, &headers) {
         Ok((_, host)) => {
             let input = serde_json::from_slice::<Value>(&body).unwrap_or(Value::Null);
             match host.call(&name, input).await {
@@ -218,8 +219,8 @@ async fn call(
     }
 }
 
-async fn settings(State(app): State<Arc<App>>, ConnectInfo(peer): Peer, headers: HeaderMap) -> Response {
-    match app_of(&app, peer, &headers) {
+async fn settings(Uses(plugins): Uses<Arc<PluginHost>>, ConnectInfo(peer): Peer, headers: HeaderMap) -> Response {
+    match app_of(&plugins, peer, &headers) {
         Ok((_, host)) => Json(Value::Object(host.settings())).into_response(),
         Err(response) => *response,
     }
@@ -227,8 +228,8 @@ async fn settings(State(app): State<Arc<App>>, ConnectInfo(peer): Peer, headers:
 
 /// The household's language now and the app's own (its manifest's `languages`), as `host.i18n` gives a QuickJS
 /// backend: the program reads it at each call — it changes in the panel's «Настройки».
-async fn locale(State(app): State<Arc<App>>, ConnectInfo(peer): Peer, headers: HeaderMap) -> Response {
-    match app_of(&app, peer, &headers) {
+async fn locale(Uses(plugins): Uses<Arc<PluginHost>>, ConnectInfo(peer): Peer, headers: HeaderMap) -> Response {
+    match app_of(&plugins, peer, &headers) {
         Ok((_, host)) => Json(json!({ "locale": host.locale(), "languages": host.languages() })).into_response(),
         Err(response) => *response,
     }
@@ -249,23 +250,34 @@ fn task_refused(error: TaskError) -> Response {
     (status, Json(body)).into_response()
 }
 
-async fn tasks(State(app): State<Arc<App>>, ConnectInfo(peer): Peer, headers: HeaderMap) -> Response {
-    match app_of(&app, peer, &headers) {
-        Ok((id, _)) => Json(json!({ "tasks": app.tasks.list(Some(&id)) })).into_response(),
+async fn tasks(
+    Uses(plugins): Uses<Arc<PluginHost>>,
+    Uses(tasks): Uses<Arc<Tasks>>,
+    ConnectInfo(peer): Peer,
+    headers: HeaderMap,
+) -> Response {
+    match app_of(&plugins, peer, &headers) {
+        Ok((id, _)) => Json(json!({ "tasks": tasks.list(Some(&id)) })).into_response(),
         Err(response) => *response,
     }
 }
 
-async fn task_start(State(app): State<Arc<App>>, ConnectInfo(peer): Peer, headers: HeaderMap, body: Bytes) -> Response {
-    match app_of(&app, peer, &headers) {
+async fn task_start(
+    Uses(plugins): Uses<Arc<PluginHost>>,
+    Uses(tasks): Uses<Arc<Tasks>>,
+    ConnectInfo(peer): Peer,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    match app_of(&plugins, peer, &headers) {
         Ok((id, host)) => {
             let body = serde_json::from_slice::<Value>(&body).unwrap_or(Value::Null);
-            let started = app.tasks.start(
+            let started = tasks.start(
                 &id,
                 body.get("title").and_then(Value::as_str).unwrap_or_default(),
                 body.get("text").and_then(Value::as_str),
                 body.get("percent").and_then(Value::as_f64),
-                app.plugins.tasks_at_once(&id),
+                plugins.tasks_at_once(&id),
             );
             match started {
                 Ok(task) => {
@@ -290,18 +302,19 @@ struct Wait {
 const WAIT_MS: u64 = 60_000;
 
 async fn task(
-    State(app): State<Arc<App>>,
+    Uses(plugins): Uses<Arc<PluginHost>>,
+    Uses(tasks): Uses<Arc<Tasks>>,
     ConnectInfo(peer): Peer,
     headers: HeaderMap,
     Path(task): Path<String>,
     Query(wait): Query<Wait>,
 ) -> Response {
-    match app_of(&app, peer, &headers) {
+    match app_of(&plugins, peer, &headers) {
         Ok((id, _)) => {
             let found = if wait.wait_ms == 0 {
-                app.tasks.own(&id, &task)
+                tasks.own(&id, &task)
             } else {
-                app.tasks.wait(&id, &task, std::time::Duration::from_millis(wait.wait_ms.min(WAIT_MS))).await
+                tasks.wait(&id, &task, std::time::Duration::from_millis(wait.wait_ms.min(WAIT_MS))).await
             };
             match found {
                 Ok(task) => Json(task).into_response(),
@@ -313,17 +326,18 @@ async fn task(
 }
 
 async fn task_progress(
-    State(app): State<Arc<App>>,
+    Uses(plugins): Uses<Arc<PluginHost>>,
+    Uses(tasks): Uses<Arc<Tasks>>,
     ConnectInfo(peer): Peer,
     headers: HeaderMap,
     Path(task): Path<String>,
     body: Bytes,
 ) -> Response {
-    match app_of(&app, peer, &headers) {
+    match app_of(&plugins, peer, &headers) {
         Ok((id, _)) => {
             let body = serde_json::from_slice::<Value>(&body).unwrap_or(Value::Null);
             let percent = body.get("percent").and_then(Value::as_f64);
-            match app.tasks.progress(&id, &task, percent, body.get("text").and_then(Value::as_str)) {
+            match tasks.progress(&id, &task, percent, body.get("text").and_then(Value::as_str)) {
                 Ok(asked) => Json(json!({ "cancelRequested": asked })).into_response(),
                 Err(error) => task_refused(error),
             }
@@ -334,13 +348,14 @@ async fn task_progress(
 
 /// How the app ends its task: `done` `{result?}`, `fail` `{error}`, `cancelled`.
 async fn task_end(
-    State(app): State<Arc<App>>,
+    Uses(plugins): Uses<Arc<PluginHost>>,
+    Uses(tasks): Uses<Arc<Tasks>>,
     ConnectInfo(peer): Peer,
     headers: HeaderMap,
     Path((task, end)): Path<(String, String)>,
     body: Bytes,
 ) -> Response {
-    match app_of(&app, peer, &headers) {
+    match app_of(&plugins, peer, &headers) {
         Ok((id, host)) => {
             let mut body = serde_json::from_slice::<Value>(&body).unwrap_or(Value::Null);
             let outcome = match end.as_str() {
@@ -349,7 +364,7 @@ async fn task_end(
                 "cancelled" => Outcome::Cancelled,
                 _ => return refused(StatusCode::NOT_FOUND, crate::tr!("задачу заканчивают done, fail или cancelled")),
             };
-            match app.tasks.finish(&id, &task, outcome) {
+            match tasks.finish(&id, &task, outcome) {
                 Ok(task) => {
                     let how = match (&task.state, &task.error) {
                         (crate::tasks::TaskState::Failed, Some(error)) => {

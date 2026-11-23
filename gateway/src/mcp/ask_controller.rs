@@ -9,7 +9,6 @@ use std::convert::Infallible;
 use std::sync::Arc;
 use std::time::Instant;
 
-use axum::extract::State;
 use axum::http::{header, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
@@ -24,12 +23,13 @@ use tokio_util::sync::CancellationToken;
 
 use super::mcp_import::{present, Json};
 use super::mcp_service::{Cancelled, McpOffer, OfferOptions, ToolOutcome};
-use crate::app::App;
+use crate::connectors::ConnectorsService;
 use crate::core::connectors::ContributedOffer;
 use crate::core::identity::permissions::MCP_USE;
 use crate::core::identity::Principal;
 use crate::dialog::llm::{LlmTool, ToolCall};
-use crate::platform::http::{ApiError, Body, Caller};
+use crate::platform::http::{ApiError, Body, Caller, Uses};
+use crate::secrets::SecretsService;
 
 /// How much of a tool's answer the chat shows: enough to see what the model read.
 const SHOWN: usize = 600;
@@ -182,11 +182,17 @@ pub struct AskBody {
     fresh: Option<Json>,
 }
 
-pub fn routes() -> Router<Arc<App>> {
+pub fn routes<S: crate::mcp::RouteNeeds>() -> Router<S> {
     Router::new().route("/api/v1/brain/ask", post(ask))
 }
 
-async fn ask(State(app): State<Arc<App>>, caller: Caller, Body(body): Body<AskBody>) -> Result<Response, ApiError> {
+async fn ask(
+    Uses(mcp): Uses<Arc<crate::mcp::McpService>>,
+    Uses(connectors): Uses<Arc<ConnectorsService>>,
+    Uses(secrets_service): Uses<Arc<SecretsService>>,
+    caller: Caller,
+    Body(body): Body<AskBody>,
+) -> Result<Response, ApiError> {
     let principal = caller.permitted(MCP_USE)?.clone();
     let question: String = body
         .question
@@ -197,16 +203,16 @@ async fn ask(State(app): State<Arc<App>>, caller: Caller, Body(body): Body<AskBo
     if question.is_empty() {
         return Err(ApiError::bad_request(crate::tr!("Напишите вопрос.")));
     }
-    let dialog = app.mcp.dialog().filter(|dialog| dialog.enabled()).ok_or_else(|| {
+    let dialog = mcp.dialog().filter(|dialog| dialog.enabled()).ok_or_else(|| {
         ApiError::conflict(crate::tr!("Модель не выбрана: добавьте провайдера в «Персонаж» → «Мышление»."))
     })?;
     let key = format!("panel:{}", principal.id);
     if body.fresh.as_ref().and_then(Json::as_bool) == Some(true) {
         dialog.forget(&key);
     }
-    let offer = app.mcp.offer(&principal, OfferOptions { voice: false, capability_allowed: None }).map(Arc::new);
-    let contributions = app.connectors.tools(&principal);
-    let secrets = app.secrets.clone();
+    let offer = mcp.offer(&principal, OfferOptions { voice: false, capability_allowed: None }).map(Arc::new);
+    let contributions = connectors.tools(&principal);
+    let secrets = secrets_service.clone();
     let started = Instant::now();
     let ms = move || started.elapsed().as_millis() as u64;
     let (events, receiver) = mpsc::unbounded_channel();
@@ -267,6 +273,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+    use crate::app::App;
     use crate::config::{Config, Env};
     use crate::core::identity::principal::user_principal;
     use crate::core::identity::Role;
@@ -353,8 +360,14 @@ mod tests {
         let (_dir, app) = app();
         let model = Arc::new(Model { phrases: vec!["Да.".into()], call: None, forgotten: Mutex::new(Vec::new()) });
         app.mcp.attach_dialog(model.clone());
-        let response =
-            ask(State(app.clone()), member(&app), question(json!({ "question": "Ты здесь?", "fresh": true }))).await;
+        let response = ask(
+            Uses::of(&app),
+            Uses::of(&app),
+            Uses::of(&app),
+            member(&app),
+            question(json!({ "question": "Ты здесь?", "fresh": true })),
+        )
+        .await;
         let events = events(response.unwrap()).await;
         let types: Vec<&str> = events.iter().map(|event| event["type"].as_str().unwrap()).collect();
         assert_eq!(types, ["start", "text", "done"]);
@@ -390,7 +403,15 @@ mod tests {
             forgotten: Mutex::new(Vec::new()),
         }));
         let events = events(
-            ask(State(app.clone()), member(&app), question(json!({ "question": "Повтори «да»" }))).await.unwrap(),
+            ask(
+                Uses::of(&app),
+                Uses::of(&app),
+                Uses::of(&app),
+                member(&app),
+                question(json!({ "question": "Повтори «да»" })),
+            )
+            .await
+            .unwrap(),
         )
         .await;
         let types: Vec<&str> = events.iter().map(|event| event["type"].as_str().unwrap()).collect();
@@ -409,14 +430,30 @@ mod tests {
     #[tokio::test]
     async fn wants_a_question_and_a_model() {
         let (_dir, app) = app();
-        let empty = ask(State(app.clone()), member(&app), question(json!({ "question": "  " }))).await.err().unwrap();
+        let empty =
+            ask(Uses::of(&app), Uses::of(&app), Uses::of(&app), member(&app), question(json!({ "question": "  " })))
+                .await
+                .err()
+                .unwrap();
         assert_eq!((empty.status, empty.message.as_str()), (StatusCode::BAD_REQUEST, "Напишите вопрос."));
-        let none =
-            ask(State(app.clone()), member(&app), question(json!({ "question": "Ты здесь?" }))).await.err().unwrap();
+        let none = ask(
+            Uses::of(&app),
+            Uses::of(&app),
+            Uses::of(&app),
+            member(&app),
+            question(json!({ "question": "Ты здесь?" })),
+        )
+        .await
+        .err()
+        .unwrap();
         assert_eq!(none.status, StatusCode::CONFLICT);
         assert_eq!(none.message, "Модель не выбрана: добавьте провайдера в «Персонаж» → «Мышление».");
         let guest = Caller::local(app.clone(), Some(user_principal("g", "Гость", Role::Guest, None)));
-        let refused = ask(State(app.clone()), guest, question(json!({ "question": "Ты здесь?" }))).await.err().unwrap();
+        let refused =
+            ask(Uses::of(&app), Uses::of(&app), Uses::of(&app), guest, question(json!({ "question": "Ты здесь?" })))
+                .await
+                .err()
+                .unwrap();
         assert_eq!(refused.status, StatusCode::FORBIDDEN, "the servers' tools are for the household");
     }
 }

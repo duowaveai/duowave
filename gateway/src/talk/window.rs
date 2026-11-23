@@ -12,7 +12,6 @@
 //! Anything else is not taken: no request of the journal, nothing in the history, no model — the panel hears
 //! `dropped`. Only a phrase after the button or the wake word may begin a new work, remember, or act outside the home.
 
-use std::sync::Arc;
 use std::time::Instant;
 
 use tokio::sync::mpsc;
@@ -22,8 +21,7 @@ use super::asked::Kind;
 use super::reader::Act;
 use super::rules::{Heard, TalkRules};
 use super::works::{Focus, Outcome};
-use super::{Activator, Talk, TalkEvent, Turn};
-use crate::app::App;
+use super::{Activator, Parts, Talk, TalkEvent, Turn};
 use crate::config::ModelProfile;
 use crate::core::identity::Principal;
 use crate::core::requests::{Place, RequestPhase};
@@ -56,8 +54,8 @@ fn of_the_work(heard: &Heard) -> bool {
 }
 
 /// What the window does with a phrase heard without the button on a device.
-pub fn sift(app: &App, text: &str, device: &str) -> Sift {
-    let layer = &app.talk;
+pub fn sift(parts: &Parts, text: &str, device: &str) -> Sift {
+    let layer = &parts.talk;
     let rules = TalkRules::new(layer);
     let normalized = crate::skills::text::normalize(text);
     let reads = layer.reader().is_some_and(|reader| reader.ready());
@@ -99,17 +97,17 @@ pub fn sift(app: &App, text: &str, device: &str) -> Sift {
 }
 
 /// A phrase of the window: done here, or None — not the window's (said after the button), or the brain's answer.
-pub fn begin(app: &Arc<App>, principal: &Principal, turn: &Turn) -> Option<Talk> {
+pub fn begin(parts: &Parts, principal: &Principal, turn: &Turn) -> Option<Talk> {
     if turn.origin.activator != Activator::Answer {
         return None;
     }
     let device = turn.origin.device.clone();
-    match sift(app, &turn.text, &device) {
+    match sift(parts, &turn.text, &device) {
         Sift::Brain => None,
-        Sift::Rules(heard) => Some(super::by_heard(app, principal, turn, TalkRules::new(&app.talk), heard)),
+        Sift::Rules(heard) => Some(super::by_heard(parts, principal, turn, TalkRules::new(&parts.talk), heard)),
         Sift::Close => {
-            if let Some(question) = app.talk.asked.take(&device) {
-                app.talk.ended_asking(&question.work, Outcome::Declined);
+            if let Some(question) = parts.talk.asked.take(&device) {
+                parts.talk.ended_asking(&question.work, Outcome::Declined);
             }
             tracing::info!(target: "talk", "the window on {device} was closed by a word");
             Some(nothing(false))
@@ -118,7 +116,7 @@ pub fn begin(app: &Arc<App>, principal: &Principal, turn: &Turn) -> Option<Talk>
             tracing::info!(target: "talk", "the window on {device} did not take a phrase");
             Some(nothing(true))
         }
-        Sift::Read(acts) => Some(read(app, principal, turn, acts)),
+        Sift::Read(acts) => Some(read(parts, principal, turn, acts)),
     }
 }
 
@@ -139,10 +137,10 @@ fn nothing(dropped: bool) -> Talk {
 
 /// The reader reads the phrase with the window's acts only; taken — the layer does and says it, and only then the
 /// journal has it. Not taken — `dropped`.
-fn read(app: &Arc<App>, principal: &Principal, turn: &Turn, acts: &'static [Act]) -> Talk {
+fn read(parts: &Parts, principal: &Principal, turn: &Turn, acts: &'static [Act]) -> Talk {
     let (events, receiver) = mpsc::unbounded_channel();
     let cancel = CancellationToken::new();
-    let (app, turn, answering) = (app.clone(), turn.clone(), cancel.clone());
+    let (parts, turn, answering) = (parts.clone(), turn.clone(), cancel.clone());
     let key = format!("panel:{}", principal.id);
     let origin = turn.origin.clone().by(Some(principal.name.clone()));
     tokio::spawn(async move {
@@ -155,7 +153,7 @@ fn read(app: &Arc<App>, principal: &Principal, turn: &Turn, acts: &'static [Act]
             max_tokens: Some(crate::dialog::SPEECH_MAX_TOKENS),
             ..DialogContext::default()
         };
-        let reader = app.talk.reader();
+        let reader = parts.talk.reader();
         let read = match reader {
             Some(reader) => tokio::select! {
                 _ = answering.cancelled() => return,
@@ -176,14 +174,14 @@ fn read(app: &Arc<App>, principal: &Principal, turn: &Turn, acts: &'static [Act]
             });
             return;
         };
-        let trip = super::journal(&app, &turn, &origin, "plugins", "talk:window");
+        let trip = super::journal(&parts, &turn, &origin, "plugins", "talk:window");
         trip.step(RequestPhase::Tool, Some(Place::Own), Some("talk:read"));
         let _ = events.send(TalkEvent::Start { request: trip.id(), by: "home" });
-        super::spoken(&app, &trip, turn.voice, &read.said);
+        super::spoken(&parts, &trip, turn.voice, &read.said);
         let _ = events.send(TalkEvent::Phrase { text: read.said.clone() });
-        let work = app.talk.touched_since(&turn.origin.device, since);
+        let work = parts.talk.touched_since(&turn.origin.device, since);
         let ms = started.elapsed().as_millis() as u64;
-        let (asks, remind) = super::closing(&app, &turn.origin.device, &read.said, turn.voice, false);
+        let (asks, remind) = super::closing(&parts, &turn.origin.device, &read.said, turn.voice, false);
         let _ = events.send(TalkEvent::Done { said: read.said, by: "home", ms, work, asks, remind, dropped: false });
     });
     Talk { events: receiver, cancel }

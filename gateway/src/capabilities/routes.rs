@@ -20,7 +20,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, Query};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
@@ -28,15 +28,18 @@ use axum::Router;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use crate::app::App;
-use crate::bus::{address, Address, BusError, Trail};
-use crate::capabilities::publish::{Kind, Request, PANEL};
+use crate::bus::{address, Address, Bus, BusError, Trail};
+use crate::capabilities::publish::{Kind, Publishers, Request, PANEL};
+use crate::capabilities::voices::Voices;
 use crate::core::identity::permissions::{use_of, CONNECTORS_MANAGE, CONNECTORS_VIEW};
 use crate::core::identity::PrincipalKind;
-use crate::platform::http::{created, ok, ApiError, ApiResult, Body, Caller, Zone};
+use crate::platform::http::{created, ok, ApiError, ApiResult, Body, Caller, Uses, Zone};
+use crate::plugins::files::PluginFiles;
+use crate::plugins::PluginHost;
+use crate::secrets::SecretsService;
 use crate::skills::capabilities::CapabilityName;
 
-pub fn routes() -> Router<Arc<App>> {
+pub fn routes<S: crate::capabilities::RouteNeeds>() -> Router<S> {
     Router::new()
         .route("/api/v1/publishers", get(publishers))
         .route("/api/v1/publishers/shared", post(publish_noted))
@@ -48,22 +51,22 @@ pub fn routes() -> Router<Arc<App>> {
 }
 
 /// Anyone signed in to the panel may see where a file can go: sending itself is the person's own act in «Поделиться».
-async fn publishers(State(app): State<Arc<App>>, _caller: Caller) -> ApiResult<Value> {
-    Ok(ok(json!({ "publishers": app.publishers.cards() })))
+async fn publishers(Uses(publishers): Uses<Arc<Publishers>>, _caller: Caller) -> ApiResult<Value> {
+    Ok(ok(json!({ "publishers": publishers.cards() })))
 }
 
-async fn voice_providers(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<Value> {
+async fn voice_providers(Uses(voices): Uses<Arc<Voices>>, caller: Caller) -> ApiResult<Value> {
     caller.permitted(CONNECTORS_VIEW)?;
-    Ok(ok(json!({ "providers": app.voices.cards() })))
+    Ok(ok(json!({ "providers": voices.cards() })))
 }
 
-fn provider(app: &App, id: &str) -> Result<Arc<dyn crate::capabilities::voices::VoiceProvider>, ApiError> {
-    app.voices.get(id).ok_or_else(|| ApiError::not_found(crate::tr!("нет поставщика голосов {id}", id = id)))
+fn provider(voices: &Voices, id: &str) -> Result<Arc<dyn crate::capabilities::voices::VoiceProvider>, ApiError> {
+    voices.get(id).ok_or_else(|| ApiError::not_found(crate::tr!("нет поставщика голосов {id}", id = id)))
 }
 
 /// Keys are typed by people, never by a script's key.
 async fn voice_key(
-    State(app): State<Arc<App>>,
+    Uses(voices): Uses<Arc<Voices>>,
     caller: Caller,
     Path(id): Path<String>,
     Body(body): Body<Value>,
@@ -75,31 +78,36 @@ async fn voice_key(
     if key.is_empty() {
         return Err(ApiError::field("key", crate::tr!("ключ пустой")));
     }
-    let provider = provider(&app, &id)?;
+    let provider = provider(&voices, &id)?;
     provider.set_key(Some(key)).map_err(|error| ApiError::field("key", &error))?;
     tracing::info!(target: "voices", "the key of {id} is set in the panel");
     Ok(ok(json!({ "provider": provider.card() })))
 }
 
 async fn voice_key_removed(
-    State(app): State<Arc<App>>,
+    Uses(voices): Uses<Arc<Voices>>,
     caller: Caller,
     Path(id): Path<String>,
 ) -> Result<Response, ApiError> {
     if caller.permitted(CONNECTORS_MANAGE)?.kind != PrincipalKind::User {
         return Err(ApiError::forbidden(crate::tr!("Ключ убирает человек, не ключ доступа.")));
     }
-    provider(&app, &id)?.set_key(None).map_err(|error| ApiError::field("key", &error))?;
+    provider(&voices, &id)?.set_key(None).map_err(|error| ApiError::field("key", &error))?;
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
 /// Asks the provider itself: how many voices the key gives and what is left on the plan.
-async fn voice_check(State(app): State<Arc<App>>, caller: Caller, Path(id): Path<String>) -> ApiResult<Value> {
+async fn voice_check(
+    Uses(voices_service): Uses<Arc<Voices>>,
+    Uses(secrets): Uses<Arc<SecretsService>>,
+    caller: Caller,
+    Path(id): Path<String>,
+) -> ApiResult<Value> {
     caller.permitted(CONNECTORS_MANAGE)?;
-    let provider = provider(&app, &id)?;
+    let provider = provider(&voices_service, &id)?;
     let voices = provider.voices().await;
     let balance = provider.balance().await;
-    let problem = voices.as_ref().err().or(balance.as_ref().err()).map(|error| app.secrets.redact(error));
+    let problem = voices.as_ref().err().or(balance.as_ref().err()).map(|error| secrets.redact(error));
     Ok(ok(json!({
         "voices": voices.as_ref().map(Vec::len).unwrap_or(0),
         "balance": balance.ok().flatten(),
@@ -115,14 +123,14 @@ pub enum Sender {
 }
 
 /// The sender of a press in the panel: a person, never a script's key; for an app, one that is installed.
-pub fn sender_of(app: &App, caller: &Caller, of: Option<&str>) -> Result<(Sender, String), ApiError> {
+pub fn sender_of(plugins: &PluginHost, caller: &Caller, of: Option<&str>) -> Result<(Sender, String), ApiError> {
     let principal = caller.permitted(&use_of(CapabilityName::Plugins))?.clone();
     if principal.kind != PrincipalKind::User {
         return Err(ApiError::forbidden(crate::tr!("Отправляет человек своим нажатием, не ключ доступа.")));
     }
     match of.map(str::trim).filter(|id| !id.is_empty()) {
         Some(id) => {
-            if app.plugins.installed(id).is_none() {
+            if plugins.installed(id).is_none() {
                 return Err(ApiError::not_found(crate::tr!("Нет приложения «{id}».", id = id)));
             }
             Ok((Sender::App(id.to_string()), principal.name.clone()))
@@ -144,20 +152,16 @@ fn bus_error(error: BusError) -> ApiError {
 }
 
 /// The file on disk: the app's own, or a folder's file the person may see (the bus says so, as in «Папки»).
-async fn file_of(app: &App, sender: &Sender, file: &str) -> Result<PathBuf, ApiError> {
+async fn file_of(plugin_files: &PluginFiles, bus: &Bus, sender: &Sender, file: &str) -> Result<PathBuf, ApiError> {
     let path = match sender {
-        Sender::App(id) => app.files.inside(id, file).map_err(ApiError::bad_request)?,
+        Sender::App(id) => plugin_files.inside(id, file).map_err(ApiError::bad_request)?,
         Sender::Person { trail, from } => {
             let to = Address::parse(file).map_err(ApiError::bad_request)?;
             if to.kind() != address::FILES {
                 return Err(ApiError::field("file", crate::tr!("файл — адрес в папках дома: files/…")));
             }
-            app.bus
-                .call(trail.clone(), from.clone(), to.clone(), "stat", json!({}), vec![])
-                .await
-                .map_err(bus_error)?;
-            let spot = app
-                .bus
+            bus.call(trail.clone(), from.clone(), to.clone(), "stat", json!({}), vec![]).await.map_err(bus_error)?;
+            let spot = bus
                 .files()
                 .and_then(|files| files.places().spot(&to))
                 .ok_or_else(|| ApiError::not_found(crate::tr!("Нет файла {file}.", file = file)))?;
@@ -172,15 +176,15 @@ async fn file_of(app: &App, sender: &Sender, file: &str) -> Result<PathBuf, ApiE
 }
 
 /// «отправлено: …» into the sender's journal.
-fn note(app: &App, sender: &Sender, who: &str, how: &str, line: &str) {
+fn note(plugins: &PluginHost, bus: &Bus, sender: &Sender, who: &str, how: &str, line: &str) {
     match sender {
         Sender::App(id) => {
             let by = if who.is_empty() { String::new() } else { format!(" ({who})") };
-            app.plugins.note_line(id, "info", &format!("{line}{by}"));
+            plugins.note_line(id, "info", &format!("{line}{by}"));
         }
         Sender::Person { trail, from } => {
             if let Ok(to) = Address::parse(crate::bus::providers::system::PUBLISH) {
-                app.bus.note_share(trail, from, &to, how, line);
+                bus.note_share(trail, from, &to, how, line);
             }
         }
     }
@@ -197,13 +201,16 @@ struct SendBody {
 }
 
 async fn publish_send(
-    State(app): State<Arc<App>>,
+    Uses(plugins): Uses<Arc<PluginHost>>,
+    Uses(files): Uses<Arc<PluginFiles>>,
+    Uses(bus): Uses<Arc<Bus>>,
+    Uses(publishers): Uses<Arc<Publishers>>,
     caller: Caller,
     Path(id): Path<String>,
     Body(body): Body<SendBody>,
 ) -> ApiResult<Value> {
-    let (sender, who) = sender_of(&app, &caller, body.app.as_deref())?;
-    let path = file_of(&app, &sender, &body.file).await?;
+    let (sender, who) = sender_of(&plugins, &caller, body.app.as_deref())?;
+    let path = file_of(&files, &bus, &sender, &body.file).await?;
     let request = Request {
         sender: match &sender {
             Sender::App(id) => id.clone(),
@@ -213,9 +220,9 @@ async fn publish_send(
         path: body.file.clone(),
         input: if body.input.is_object() { body.input } else { json!({}) },
     };
-    let sent = app.publishers.send(&id, request).map_err(ApiError::bad_request)?;
+    let sent = publishers.send(&id, request).map_err(ApiError::bad_request)?;
     let published = sent.await.map_err(ApiError::bad_request)?;
-    note(&app, &sender, &who, &id, &published.line);
+    note(&plugins, &bus, &sender, &who, &id, &published.line);
     Ok(ok(published.answer))
 }
 
@@ -231,14 +238,30 @@ pub struct SharedBody {
     pub file: Option<String>,
 }
 
-async fn publish_noted(State(app): State<Arc<App>>, caller: Caller, Body(body): Body<SharedBody>) -> ApiResult<Value> {
-    Ok(ok(noted(&app, &caller, body).await?))
+async fn publish_noted(
+    Uses(plugins): Uses<Arc<PluginHost>>,
+    Uses(publishers): Uses<Arc<Publishers>>,
+    Uses(files): Uses<Arc<PluginFiles>>,
+    Uses(bus): Uses<Arc<Bus>>,
+    caller: Caller,
+    Body(body): Body<SharedBody>,
+) -> ApiResult<Value> {
+    Ok(ok(noted(&plugins, &publishers, &files, &bus, &caller, body).await?))
 }
 
 /// What the browser did by itself, in the sender's journal; «в «Видео»» copies an app's file into the house first.
-pub async fn noted(app: &App, caller: &Caller, body: SharedBody) -> Result<Value, ApiError> {
-    let (sender, who) = sender_of(app, caller, body.app.as_deref())?;
-    let manual = app.publishers.cards().into_iter().find(|card| card.kind == Kind::Manual && card.id == body.to);
+/// The journal's line for what a person sent, and «В Видео»'s copy: the apps, the platforms' pages, the apps' files
+/// and the household's folders (through the bus).
+pub async fn noted(
+    plugins: &PluginHost,
+    publishers: &Publishers,
+    plugin_files: &PluginFiles,
+    bus: &Bus,
+    caller: &Caller,
+    body: SharedBody,
+) -> Result<Value, ApiError> {
+    let (sender, who) = sender_of(plugins, caller, body.app.as_deref())?;
+    let manual = publishers.cards().into_iter().find(|card| card.kind == Kind::Manual && card.id == body.to);
     let place = match body.to.as_str() {
         "videos" if matches!(sender, Sender::App(_)) => crate::tr!("в «Видео»"),
         "download" => crate::tr!("скачано"),
@@ -253,13 +276,20 @@ pub async fn noted(app: &App, caller: &Caller, body: SharedBody) -> Result<Value
     };
     let mut saved = None;
     if let Some(file) = body.file.as_deref() {
-        let from = file_of(app, &sender, file).await?;
+        let from = file_of(plugin_files, bus, &sender, file).await?;
         if body.to == "videos" {
-            saved = Some(save_to_videos(app, &from)?);
+            saved = Some(save_to_videos(bus, &from)?);
         }
     }
     let what = body.file.clone().unwrap_or_else(|| crate::tr!("текст"));
-    note(app, &sender, &who, &body.to, &crate::tr!("отправлено: {what} → {place}", what = what, place = place));
+    note(
+        plugins,
+        bus,
+        &sender,
+        &who,
+        &body.to,
+        &crate::tr!("отправлено: {what} → {place}", what = what, place = place),
+    );
     Ok(json!({ "where": body.to, "saved": saved }))
 }
 
@@ -267,10 +297,9 @@ pub async fn noted(app: &App, caller: &Caller, body: SharedBody) -> Result<Value
 const VIDEOS: &str = "files/home/Videos";
 
 /// A copy of an app's file in the house's «Видео», under a free name.
-fn save_to_videos(app: &App, from: &std::path::Path) -> Result<String, ApiError> {
+fn save_to_videos(bus: &Bus, from: &std::path::Path) -> Result<String, ApiError> {
     let address = Address::parse(VIDEOS).map_err(ApiError::internal)?;
-    let folder = app
-        .bus
+    let folder = bus
         .files()
         .and_then(|files| files.places().spot(&address))
         .map(|spot| spot.path())
@@ -297,13 +326,14 @@ struct RecordingQuery {
 /// «Записать своим голосом» into a folder of the house: the panel opened the microphone; the WAV is written as the
 /// person, where they may write — the bus refuses a folder they may not.
 async fn recording(
-    State(app): State<Arc<App>>,
+    Uses(plugins): Uses<Arc<PluginHost>>,
+    Uses(bus): Uses<Arc<Bus>>,
     caller: Caller,
     Query(query): Query<RecordingQuery>,
     body: axum::body::Bytes,
 ) -> ApiResult<Value> {
     use base64::Engine as _;
-    let (sender, _) = sender_of(&app, &caller, None)?;
+    let (sender, _) = sender_of(&plugins, &caller, None)?;
     let Sender::Person { trail, from } = sender else {
         return Err(ApiError::forbidden(crate::tr!("Запись — от человека.")));
     };
@@ -317,6 +347,6 @@ async fn recording(
         return Err(ApiError::field("folder", crate::tr!("папка — адрес в папках дома: files/…")));
     }
     let input = json!({ "base64": base64::engine::general_purpose::STANDARD.encode(&body) });
-    app.bus.call(trail, from, to.clone(), "write", input, vec![]).await.map_err(bus_error)?;
+    bus.call(trail, from, to.clone(), "write", input, vec![]).await.map_err(bus_error)?;
     Ok(created(json!({ "file": to.as_str(), "seconds": (seconds * 10.0).round() / 10.0 })))
 }

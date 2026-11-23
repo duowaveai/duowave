@@ -6,7 +6,9 @@
 // пути компьютера (onb/brain.tsx; замечание 19 после 0.18.2: по пути через колонку код было негде ввести). DuoWave уже
 // на колонке — вход, ключ и код уходят к ней (у «Только колонка» отсюда предупреждение доски про SSH); модель на
 // компьютере остаётся у компьютера.
-// Пока колонка перезагружается после «Дальше, не ждать», здесь видно, пришла ли она (onb/speaker.tsx).
+// Пока колонка перезагружается после «Дальше, не ждать», здесь видно, пришла ли она (onb/speaker.tsx). Пока DuoWave
+// переезжает на колонку, шаг ждёт: вход, код и режим легли бы на этот компьютер, а не к хабу. Хаб перезапускается после
+// переноса (около 40 с) — запросы к нему ждут его самого (api.hubCall): ни очереди, ни копии, строка «подождите».
 
 import { useEffect, useRef, useState } from 'preact/hooks';
 
@@ -23,6 +25,7 @@ import {
     SignInStatus,
     api,
     can,
+    hubCall,
     problemOf,
     stationCall,
 } from '../../api';
@@ -66,22 +69,29 @@ const direct: Gate = {
     setInvite: (code) => api.setInvite(code),
 };
 
-function viaStation(key: string): Gate {
+/**
+ * Шлюз колонки через проход помощника. Каждый вызов ждёт сам хаб (hubCall): пока он перезапускается, правка не ложится
+ * в очередь компьютера, а ответ — всегда хаба, не слова «правка сохранена» и не копия (24.11: «Применить» у кода
+ * приглашения отдавало шагу эти слова вместо мозга — шаг падал, а провайдер без id давал `providers/undefined/signin`).
+ * `waiting` — ждём хаб: шаг говорит «колонка перезапускается, подождите».
+ */
+function viaStation(key: string, waiting?: (on: boolean) => void, signal?: AbortSignal): Gate {
     const enc = encodeURIComponent;
+    const hub = <T,>(method: string, path: string, body?: unknown) => hubCall<T>(key, method, path, body, waiting, signal);
     return {
-        mode: () => stationCall<ModeView>(key, 'GET', '/api/v1/station/mode'),
-        setMode: (mode) => stationCall<ModeView>(key, 'POST', '/api/v1/station/mode', { mode }),
-        brain: () => stationCall<BrainView>(key, 'GET', '/api/v1/brain'),
-        addProvider: (input) => stationCall<ProviderView>(key, 'POST', '/api/v1/brain/providers', input),
-        updateProvider: (id, input) => stationCall<ProviderView>(key, 'PATCH', `/api/v1/brain/providers/${enc(id)}`, input),
-        removeProvider: (id) => stationCall<void>(key, 'DELETE', `/api/v1/brain/providers/${enc(id)}`),
-        checkProvider: (id, model) =>
-            stationCall<ProviderCheck>(key, 'POST', `/api/v1/brain/providers/${enc(id)}/check`, model ? { model } : {}),
-        signInProvider: (id) => stationCall<SignInStart>(key, 'POST', `/api/v1/brain/providers/${enc(id)}/signin`),
+        mode: () => hub<ModeView>('GET', '/api/v1/station/mode'),
+        setMode: (mode) => hub<ModeView>('POST', '/api/v1/station/mode', { mode }),
+        brain: () => hub<BrainView>('GET', '/api/v1/brain'),
+        addProvider: (input) => hub<ProviderView>('POST', '/api/v1/brain/providers', input),
+        updateProvider: (id, input) => hub<ProviderView>('PATCH', `/api/v1/brain/providers/${enc(id)}`, input),
+        removeProvider: (id) => hub<void>('DELETE', `/api/v1/brain/providers/${enc(id)}`),
+        checkProvider: (id, model) => hub<ProviderCheck>('POST', `/api/v1/brain/providers/${enc(id)}/check`, model ? { model } : {}),
+        signInProvider: (id) => hub<SignInStart>('POST', `/api/v1/brain/providers/${enc(id)}/signin`),
+        // Опрос входа раз в 2 с — сам себе повтор: не ждёт, мигнувшая связь — следующий раз.
         signInStatus: (id) => stationCall<SignInStatus>(key, 'GET', `/api/v1/oauth/${enc(id)}`),
-        completeSignIn: (id, text) => stationCall<{ title: string }>(key, 'POST', '/api/v1/oauth/complete', { id, text }),
-        chooseBrain: (choice) => stationCall<BrainView>(key, 'PUT', '/api/v1/brain/choice', choice),
-        setInvite: (code) => stationCall<BrainView>(key, 'PUT', '/api/v1/brain/invite', { code }),
+        completeSignIn: (id, text) => hub<{ title: string }>('POST', '/api/v1/oauth/complete', { id, text }),
+        chooseBrain: (choice) => hub<BrainView>('PUT', '/api/v1/brain/choice', choice),
+        setInvite: (code) => hub<BrainView>('PUT', '/api/v1/brain/invite', { code }),
     };
 }
 
@@ -133,9 +143,14 @@ export function AnswerStep() {
     // DuoWave и живут там (gateway/src/placement/routes.rs, SETTINGS_PATHS). Модель на этом компьютере (Ollama, LM
     // Studio) остаётся в его «Мозге»: колонка берёт её у помощника (gateway/src/home_server/serve.rs).
     const stationKey = panel.role.role === 'helper' ? panel.role.station?.key : undefined;
-    const modeGate = stationKey ? viaStation(stationKey) : direct;
-    const modelGate = stationKey ? viaStation(stationKey) : direct;
+    /** Ждём хаб на колонке: он перезапускается после переноса. */
+    const [hubWait, setHubWait] = useState(false);
+    const modeGate = stationKey ? viaStation(stationKey, setHubWait) : direct;
+    const modelGate = modeGate;
     const localGate = only && stationKey ? modelGate : direct;
+    // DuoWave переезжает на колонку, а пульт ещё не помощник: шлюз этого компьютера скоро отдаст дом колонке, и вход,
+    // код или режим, сделанные здесь, легли бы не туда. Шаг ждёт конца переезда — потом всё идёт хабу.
+    const held = !stationKey && !!live?.to && (linkActive(live) || (live.phase === 'done' && live.moveError === undefined));
     const mayPick = can('station.mode');
     const mayModel = can('connectors.manage') && can('models.manage');
 
@@ -164,7 +179,9 @@ export function AnswerStep() {
     // Что сейчас: режим колонки и выбранная модель. Режим «Как раньше» — сразу советуем «Вместе», как доска.
     useEffect(() => {
         let alive = true;
-        modeGate
+        const stop = new AbortController();
+        const gate = stationKey ? viaStation(stationKey, (on) => alive && setHubWait(on), stop.signal) : direct;
+        gate
             .mode()
             .then((view) => {
                 if (!alive) return;
@@ -172,7 +189,7 @@ export function AnswerStep() {
                 if (!picked.current && view.mode !== 'relay' && !(only && view.mode === 'own')) setMode(MODES.indexOf(view.mode));
             })
             .catch(() => undefined);
-        modelGate
+        gate
             .brain()
             .then((fresh) => {
                 if (!alive) return;
@@ -185,6 +202,7 @@ export function AnswerStep() {
             .catch(() => undefined);
         return () => {
             alive = false;
+            stop.abort();
         };
     }, [stationKey]);
 
@@ -360,7 +378,7 @@ export function AnswerStep() {
     useStepNav(
         {
             label: mode === 0 ? t.finish : t.next,
-            disabled: busy,
+            disabled: busy || held,
             onNext: async () => {
                 const now = latest.current;
                 const want = MODES[now.mode];
@@ -375,7 +393,7 @@ export function AnswerStep() {
                 }
             },
         },
-        [mode, busy, current, stationKey],
+        [mode, busy, current, stationKey, held],
     );
 
     const alice = 'c-out';
@@ -502,7 +520,7 @@ export function AnswerStep() {
                             ))}
                         </div>
                         {!askCode && (
-                            <button type="button" class="dw-btn dw-btn-lg dw-btn-dark" disabled={busy || !mayModel || !view} onClick={act}>
+                            <button type="button" class="dw-btn dw-btn-lg dw-btn-dark" disabled={busy || held || !mayModel || !view} onClick={act}>
                                 {busy && !keyOpen ? t.checkingModel : signed ? t.actDone : actions[path]}
                             </button>
                         )}
@@ -564,12 +582,12 @@ export function AnswerStep() {
                                     value={inviteDraft}
                                     onInput={(e) => setInviteDraft((e.target as HTMLInputElement).value)}
                                 />
-                                <button type="submit" class="dw-btn dw-btn-dark" disabled={!inviteDraft.trim() || busy || !mayModel}>
+                                <button type="submit" class="dw-btn dw-btn-dark" disabled={!inviteDraft.trim() || busy || held || !mayModel}>
                                     {t.inviteSave}
                                 </button>
                             </form>
                             <div class="onb-cx-btns">
-                                <button type="button" class="dw-btn dw-btn-light" disabled={busy || !mayModel || !view} onClick={() => signIn('duowave')}>
+                                <button type="button" class="dw-btn dw-btn-light" disabled={busy || held || !mayModel || !view} onClick={() => signIn('duowave')}>
                                     {busy ? t.checkingModel : t.actDuowaveNoCode}
                                 </button>
                                 <span class="small">{t.duowaveNote}</span>
@@ -637,7 +655,7 @@ export function AnswerStep() {
                                     onInput={(e) => setExtra((all) => ({ ...all, [field.id]: (e.target as HTMLInputElement).value }))}
                                 />
                             ))}
-                            <button type="submit" class="dw-btn dw-btn-light" disabled={!key.trim() || !keyTarget || !complete || busy}>
+                            <button type="submit" class="dw-btn dw-btn-light" disabled={!key.trim() || !keyTarget || !complete || busy || held}>
                                 {busy ? t.checkingModel : t.save}
                             </button>
                         </form>
@@ -668,7 +686,13 @@ export function AnswerStep() {
                     {live.phase === 'moving' ? t.linkMoving : live.phase === 'restoring' ? t.restoring : t.rebooting}
                 </p>
             )}
-            {live?.phase === 'done' && (
+            {hubWait && !(live && linkActive(live)) && (
+                <p class="small onb-cx-status" role="status">
+                    <span class="dot dot-busy" aria-hidden="true" />
+                    {t.hubWait}
+                </p>
+            )}
+            {live?.phase === 'done' && !hubWait && (
                 <p class="small onb-cx-status" role="status">
                     <span class="dot dot-ok" aria-hidden="true" />
                     {t.linkOnline(live.name)}

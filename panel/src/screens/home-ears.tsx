@@ -7,6 +7,7 @@
 import { useEffect, useState } from 'preact/hooks';
 
 import { ApiError, FoundStation, MoveJob, PairCodeAsked, PairCodeLook, can, ownCall, problemOf } from '../api';
+import { drawingOf } from '../stations';
 import { readHomeDevices } from '../home-devices';
 import { tr } from '../i18n';
 import { IconSpeaker } from '../icons';
@@ -18,7 +19,12 @@ interface Found extends FoundStation {
     port: number;
 }
 
-const nameOf = (station: FoundStation): string => station.name ?? station.address;
+/**
+ * Колонка для людей: имя, что ей дали, а без него — модель («Станция Лайт 2»), и только потом адрес. Метку прошивки
+ * `YandexIOReceiver-<серийный>` поиск именем не считает (gateway/src/stations/connect/discovery.rs; первые шаги 24.11).
+ */
+const nameOf = (station: FoundStation): string =>
+    station.name ?? (station.txt?.platform ? drawingOf(null, station.txt.platform).title : station.address);
 
 /** Колонки в сети не в доме: `inHome` — адреса колонок дома (центр, уши). */
 export function FoundStations({ inHome, onJoined }: { inHome: Set<string>; onJoined: () => void }) {

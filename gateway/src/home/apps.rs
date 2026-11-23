@@ -9,17 +9,17 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::extract::State;
 use axum::routing::get;
 use axum::Router;
 use serde::Serialize;
 use serde_json::{json, Value};
 
 use super::devices::{of_app, DeviceKind, HomeDevice};
-use crate::app::App;
+use super::Parts;
+use crate::core::events::EventBus;
 use crate::core::identity::permissions::STATION_VIEW;
 use crate::helpers::HelperState;
-use crate::platform::http::{ok, ApiResult, Caller};
+use crate::platform::http::{ok, ApiResult, Caller, Uses};
 
 /// Where a package runs: the device's id in the home's list, its name and kind.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -40,7 +40,7 @@ impl AppPlace {
     }
 }
 
-pub fn routes() -> Router<Arc<App>> {
+pub fn routes<S: crate::home::RouteNeeds>() -> Router<S> {
     Router::new().route("/api/v1/home/apps", get(list))
 }
 
@@ -59,10 +59,10 @@ fn entry(package: &Value, place: &AppPlace) -> Value {
     })
 }
 
-async fn list(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<Value> {
+async fn list(Uses(parts): Uses<Parts>, caller: Caller) -> ApiResult<Value> {
     caller.permitted(STATION_VIEW)?;
     // An ear (stage 4): the home's list is the centre's.
-    if let Some((ear, key)) = super::ear::centre(&app) {
+    if let Some((ear, key)) = super::ear::centre(&parts.settings, &parts.secrets) {
         if let Ok(view) = super::ear::client(&ear, &key).get("/api/v1/home/apps").await {
             if view.get("apps").is_some() {
                 return Ok(ok(view));
@@ -70,7 +70,7 @@ async fn list(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<Value> {
         }
     }
     #[cfg(feature = "pc")]
-    if let Some(centre) = super::devices::centre_elsewhere(&app) {
+    if let Some(centre) = super::devices::centre_elsewhere(&parts.station_gateway) {
         if let Some(client) = centre.client() {
             if let Ok(view) = client.get("/api/v1/home/apps").await {
                 if view.get("apps").is_some() {
@@ -79,19 +79,19 @@ async fn list(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<Value> {
             }
         }
     }
-    let devices = of_app(&app);
+    let devices = of_app(&parts);
     let mut apps = Vec::new();
     let mut places = Vec::new();
     if let Some(centre) = devices.devices.iter().find(|device| device.id == devices.centre) {
         let place = AppPlace::of(centre, true, None);
-        let own = app.plugins.view().await;
+        let own = parts.plugins.view().await;
         for package in &own.packages {
             apps.push(entry(&serde_json::to_value(package).unwrap_or_default(), &place));
         }
         places.push(place);
     }
-    let views = app.helpers.views();
-    for setting in app.helpers.list() {
+    let views = parts.helpers.views();
+    for setting in parts.helpers.list() {
         let Some(device) = devices.devices.iter().find(|device| device.id == format!("turbo:{}", setting.id)) else {
             continue;
         };
@@ -106,7 +106,7 @@ async fn list(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<Value> {
             places.push(AppPlace::of(device, false, Some(why)));
             continue;
         }
-        let Some(remote) = app.helpers.remote(&setting) else {
+        let Some(remote) = parts.helpers.remote(&setting) else {
             places.push(AppPlace::of(device, false, Some(crate::tr!("нет ключа"))));
             continue;
         };
@@ -138,10 +138,12 @@ async fn list(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<Value> {
 /// centre as its face — for a computer, on a station — is installed on the Турбо that gives the apps, at the face's
 /// version; one there older is updated. Run after a package changed here and when the Турбо comes back: a Турбо asleep
 /// at the install gets it when it wakes.
-pub async fn sync_faces(app: &App) -> Result<usize, String> {
-    let here = app.plugins.placement_now();
-    let faces: Vec<(String, String)> = app
-        .plugins
+pub async fn sync_faces(
+    plugins: &Arc<crate::plugins::PluginHost>,
+    catalog: &Arc<crate::plugins::PackageCatalog>,
+) -> Result<usize, String> {
+    let here = plugins.placement_now();
+    let faces: Vec<(String, String)> = plugins
         .installed_all()
         .into_iter()
         .filter(|package| package.manifest.face_at(here))
@@ -150,7 +152,7 @@ pub async fn sync_faces(app: &App) -> Result<usize, String> {
     if faces.is_empty() {
         return Ok(0);
     }
-    let Some((url, key)) = app.catalog.turbo_up() else { return Ok(0) };
+    let Some((url, key)) = catalog.turbo_up() else { return Ok(0) };
     let base = url.trim_end_matches('/').to_string();
     let listed: Value = crate::utils::http::client()
         .get(format!("{base}/home/v1/plugins"))
@@ -177,13 +179,13 @@ pub async fn sync_faces(app: &App) -> Result<usize, String> {
                 .collect()
         })
         .unwrap_or_default();
-    let feed = app.catalog.feed(false).await;
+    let feed = catalog.feed(false).await;
     let mut sent = 0;
     for (id, version) in faces {
-        let installed_from = app.catalog.extra_feed_of(&id);
+        let installed_from = catalog.extra_feed_of(&id);
         let current = there.iter().find(|(there, _, _)| *there == id);
         if current.is_some_and(|(_, theirs, on)| *on && newer_or_same(theirs, &version)) {
-            app.plugins.note_turbo(&id, None);
+            plugins.note_turbo(&id, None);
             continue;
         }
         let answer = crate::utils::http::client()
@@ -196,13 +198,13 @@ pub async fn sync_faces(app: &App) -> Result<usize, String> {
             .map_err(|error| error.to_string())?;
         if answer.status().is_success() {
             tracing::info!(target: "home", "{id} {version}: its code installed on the Турбо");
-            app.plugins.note_turbo(&id, None);
+            plugins.note_turbo(&id, None);
             sent += 1;
         } else {
             let status = answer.status();
             let text: String = answer.text().await.unwrap_or_default().chars().take(400).collect();
             tracing::warn!(target: "home", "{id} {version}: the Турбо did not install it: {status} {text}");
-            app.plugins.note_turbo(&id, Some(refusal(status.as_u16(), &text)));
+            plugins.note_turbo(&id, Some(refusal(status.as_u16(), &text)));
         }
     }
     Ok(sent)
@@ -246,10 +248,9 @@ pub(crate) fn newer_or_same(theirs: &str, ours: &str) -> bool {
 }
 
 /// The faces' code follows: after a package changed here, and when a Турбо comes back.
-pub fn watch(app: &Arc<App>) {
-    let weak = Arc::downgrade(app);
+pub fn watch(events: &EventBus, parts: impl Fn() -> Option<Parts> + Clone + Send + Sync + 'static) {
     let runner = OneAtATime::default();
-    app.events.on("home.apps", move |event| {
+    events.on("home.apps", move |event| {
         let name = event.name();
         let moves = match &*event {
             crate::core::events::GatewayEvent::PackagesChanged { change, .. } => {
@@ -260,13 +261,13 @@ pub fn watch(app: &Arc<App>) {
         if !moves {
             return;
         }
-        let weak = weak.clone();
+        let parts = parts.clone();
         runner.poke(move || {
-            let weak = weak.clone();
+            let parts = parts.clone();
             async move {
                 tokio::time::sleep(Duration::from_secs(1)).await;
-                let Some(app) = weak.upgrade() else { return };
-                if let Err(error) = sync_faces(&app).await {
+                let Some(home) = parts() else { return };
+                if let Err(error) = sync_faces(&home.plugins, &home.catalog).await {
                     tracing::info!(target: "home", "the apps' code on the Турбо: {error}");
                 }
             }

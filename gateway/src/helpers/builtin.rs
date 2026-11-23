@@ -921,7 +921,10 @@ pub(crate) mod tests {
         let (app, _dir) =
             computer(&[("ASR_BASE_URL", asr.as_str()), ("TTS_OWN_URL", tts.as_str()), ("TTS_PROVIDER", "own")]);
         let row = |ability: Ability| {
-            crate::helpers::now::rows(&app).into_iter().find(|row| row.ability == ability).expect("a row")
+            crate::helpers::now::rows(&crate::platform::http::Provides::provide(&app))
+                .into_iter()
+                .find(|row| row.ability == ability)
+                .expect("a row")
         };
         app.builtin.check().await;
         let contract = app.builtin.contract();
@@ -1041,7 +1044,7 @@ pub(crate) mod tests {
         assert_eq!(app.helpers.update(SELF, Change::default(), None).unwrap_err().status, StatusCode::NOT_FOUND);
         assert_eq!(app.helpers.remove(SELF, None).unwrap_err().status, StatusCode::NOT_FOUND);
         // «Где сейчас»: its hearing and voice are the built-in helper's.
-        let rows = crate::helpers::now::rows(&app);
+        let rows = crate::helpers::now::rows(&crate::platform::http::Provides::provide(&app));
         for ability in [Ability::Hearing, Ability::Voice] {
             let row = rows.iter().find(|row| row.ability == ability).unwrap();
             assert_eq!(

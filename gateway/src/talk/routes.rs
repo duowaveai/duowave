@@ -40,7 +40,7 @@ use std::sync::Arc;
 
 use std::collections::HashMap;
 
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, Query};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -53,19 +53,22 @@ use tokio_stream::wrappers::UnboundedReceiverStream;
 use super::executor::Doing;
 use super::ready::Answer;
 use super::works::{Refused, Work, WorkState, APP};
-use super::{input, Activator, Heard, Origin, TalkEvent, Turn, Why, COMPUTER, MAX_TEXT};
-use crate::app::App;
+use super::{input, Activator, Heard, Origin, Parts, TalkEvent, Turn, Why, COMPUTER, MAX_TEXT};
 use crate::core::identity::permissions::{use_of, SETTINGS_EDIT, STATION_MODE, STATION_VIEW};
 use crate::core::requests::Place;
-use crate::dialog::Channel;
+use crate::dialog::{Channel, PersonaService};
+use crate::gateway::mode::ModeService;
 use crate::placement::service::Role;
-use crate::platform::http::{ok, ApiError, ApiResult, Body, Caller};
+use crate::placement::PlacementService;
+use crate::platform::http::{ok, ApiError, ApiResult, Body, Caller, Uses};
 use crate::router::deals::DealsQuery;
 use crate::settings::definitions::VoiceInput;
+use crate::settings::SettingsService;
 use crate::skills::capabilities::CapabilityName;
+use crate::talk::TalkLayer;
 use crate::utils::time::now_ms;
 
-pub fn routes() -> Router<Arc<App>> {
+pub fn routes<S: super::RouteNeeds>() -> Router<S> {
     Router::new()
         .route("/api/v1/talk/input", get(voice_input).put(set_voice_input))
         .route("/api/v1/talk", post(talk))
@@ -85,10 +88,10 @@ struct WorkSaid {
     said: String,
 }
 
-async fn work_said(State(app): State<Arc<App>>, caller: Caller, Path(id): Path<String>) -> ApiResult<WorkItem> {
+async fn work_said(Uses(parts): Uses<Parts>, caller: Caller, Path(id): Path<String>) -> ApiResult<WorkItem> {
     caller.permitted(&use_of(CapabilityName::Plugins))?;
-    let work = app.talk.said_on(&id, COMPUTER).ok_or_else(|| ApiError::not_found(crate::tr!("Такой работы нет.")))?;
-    Ok(ok(Shelf::new(&app, &caller).item(work)))
+    let work = parts.talk.said_on(&id, COMPUTER).ok_or_else(|| ApiError::not_found(crate::tr!("Такой работы нет.")))?;
+    Ok(ok(Shelf::new(&parts, &caller).item(work)))
 }
 
 /// The panel's person on the computer, typing.
@@ -97,30 +100,30 @@ fn typed(caller: &Caller) -> Origin {
 }
 
 async fn work_notes(
-    State(app): State<Arc<App>>,
+    Uses(talk): Uses<Arc<TalkLayer>>,
     caller: Caller,
     Path(id): Path<String>,
     Body(body): Body<Value>,
 ) -> ApiResult<WorkSaid> {
     caller.permitted(&use_of(CapabilityName::Plugins))?;
-    app.talk.works().get(&id).ok_or_else(|| ApiError::not_found(crate::tr!("Такой работы нет.")))?;
+    talk.works().get(&id).ok_or_else(|| ApiError::not_found(crate::tr!("Такой работы нет.")))?;
     let text = body.get("text").and_then(Value::as_str).unwrap_or_default();
-    let pack = super::pack::of(app.talk.lang(COMPUTER));
+    let pack = super::pack::of(talk.lang(COMPUTER));
     let said =
-        app.talk.add(typed(&caller), text, Some(&id), false).await.unwrap_or_else(|refusal| refusal.for_person(pack));
+        talk.add(typed(&caller), text, Some(&id), false).await.unwrap_or_else(|refusal| refusal.for_person(pack));
     Ok(ok(WorkSaid { said }))
 }
 
 async fn work_do(
-    State(app): State<Arc<App>>,
+    Uses(talk): Uses<Arc<TalkLayer>>,
     caller: Caller,
     Path(id): Path<String>,
     Body(body): Body<Value>,
 ) -> ApiResult<WorkSaid> {
     caller.permitted(&use_of(CapabilityName::Plugins))?;
-    app.talk.works().get(&id).ok_or_else(|| ApiError::not_found(crate::tr!("Такой работы нет.")))?;
+    talk.works().get(&id).ok_or_else(|| ApiError::not_found(crate::tr!("Такой работы нет.")))?;
     let action = body.get("action").and_then(Value::as_str).unwrap_or_default();
-    let pack = super::pack::of(app.talk.lang(COMPUTER));
+    let pack = super::pack::of(talk.lang(COMPUTER));
     if action == "answer" {
         let answer = match body.get("answer").and_then(Value::as_str).unwrap_or_default() {
             "yes" => Answer::Yes,
@@ -130,15 +133,13 @@ async fn work_do(
             "details" => Answer::Details,
             _ => return Err(ApiError::field("answer", crate::tr!("ответ — yes, fit, no, park или details"))),
         };
-        let said = app
-            .talk
+        let said = talk
             .answer_work(typed(&caller), &id, answer)
             .await
             .ok_or_else(|| ApiError::conflict(crate::tr!("Работа ничего не спрашивает.")))?;
         return Ok(ok(WorkSaid { said }));
     }
-    let said =
-        app.talk.act(&typed(&caller), action, Some(&id)).await.unwrap_or_else(|refusal| refusal.for_person(pack));
+    let said = talk.act(&typed(&caller), action, Some(&id)).await.unwrap_or_else(|refusal| refusal.for_person(pack));
     Ok(ok(WorkSaid { said }))
 }
 
@@ -148,16 +149,21 @@ struct WorkDealList {
     deals: Vec<crate::router::Deal>,
 }
 
-async fn work_deals(State(app): State<Arc<App>>, caller: Caller, Path(id): Path<String>) -> ApiResult<WorkDealList> {
+async fn work_deals(
+    Uses(talk): Uses<Arc<TalkLayer>>,
+    Uses(router): Uses<Arc<crate::router::Router>>,
+    caller: Caller,
+    Path(id): Path<String>,
+) -> ApiResult<WorkDealList> {
     caller.permitted(SETTINGS_EDIT)?;
-    let work = app.talk.works().get(&id).ok_or_else(|| ApiError::not_found(crate::tr!("Такой работы нет.")))?;
+    let work = talk.works().get(&id).ok_or_else(|| ApiError::not_found(crate::tr!("Такой работы нет.")))?;
     let asked = DealsQuery {
         work: Some(work.id.clone()),
         from: Some(work.started_at.saturating_sub(SINCE_SLACK_MS)),
         limit: Some(crate::router::deals::LIST_MAX),
         ..DealsQuery::default()
     };
-    Ok(ok(WorkDealList { deals: app.router.deals.list(&asked)? }))
+    Ok(ok(WorkDealList { deals: router.deals.list(&asked)? }))
 }
 
 /// The block «Сейчас» as a device's brain gets it.
@@ -168,7 +174,8 @@ struct Now {
 }
 
 async fn now(
-    State(app): State<Arc<App>>,
+    Uses(personas): Uses<Arc<PersonaService>>,
+    Uses(talk): Uses<Arc<TalkLayer>>,
     caller: Caller,
     Query(query): Query<HashMap<String, String>>,
 ) -> ApiResult<Now> {
@@ -176,21 +183,21 @@ async fn now(
     let device =
         query.get("device").map(|device| device.trim()).filter(|device| !device.is_empty()).unwrap_or(COMPUTER);
     let channel = if device == COMPUTER { Channel::Computer } else { Channel::Station };
-    let lang = crate::memory::text::lang_of(&app.personas.system_prompt_for(None, channel).text);
-    Ok(ok(Now { device: device.to_string(), text: app.talk.now(device, lang) }))
+    let lang = crate::memory::text::lang_of(&personas.system_prompt_for(None, channel).text);
+    Ok(ok(Now { device: device.to_string(), text: talk.now(device, lang) }))
 }
 
 async fn works(
-    State(app): State<Arc<App>>,
+    Uses(parts): Uses<Parts>,
     caller: Caller,
     Query(query): Query<HashMap<String, String>>,
 ) -> ApiResult<Vec<WorkItem>> {
     caller.permitted(&use_of(CapabilityName::Plugins))?;
     // A work whose run ended without its end reaching the record is settled before it is shown.
-    app.talk.settle();
-    let shelf = Shelf::new(&app, &caller);
+    parts.talk.settle();
+    let shelf = Shelf::new(&parts, &caller);
     if query.get("waiting").is_some_and(|waiting| waiting == "1" || waiting == "true") {
-        return Ok(ok(app.talk.waiting().into_iter().map(|work| shelf.item(work)).collect()));
+        return Ok(ok(parts.talk.waiting().into_iter().map(|work| shelf.item(work)).collect()));
     }
     let device = query.get("device").map(String::as_str).filter(|device| !device.is_empty());
     let state = match query.get("state").map(String::as_str).filter(|state| !state.is_empty()) {
@@ -210,7 +217,7 @@ async fn works(
         groups.push(group);
     }
     // The groups are picked before the rest is looked up: the deals are read only for the works shown.
-    let mut items: Vec<WorkItem> = app
+    let mut items: Vec<WorkItem> = parts
         .talk
         .works()
         .all(device, state)
@@ -225,11 +232,11 @@ async fn works(
     Ok(ok(items))
 }
 
-async fn work(State(app): State<Arc<App>>, caller: Caller, Path(id): Path<String>) -> ApiResult<WorkItem> {
+async fn work(Uses(parts): Uses<Parts>, caller: Caller, Path(id): Path<String>) -> ApiResult<WorkItem> {
     caller.permitted(&use_of(CapabilityName::Plugins))?;
-    app.talk.settle();
-    let work = app.talk.works().get(&id).ok_or_else(|| ApiError::not_found(crate::tr!("Такой работы нет.")))?;
-    Ok(ok(Shelf::new(&app, &caller).item(work)))
+    parts.talk.settle();
+    let work = parts.talk.works().get(&id).ok_or_else(|| ApiError::not_found(crate::tr!("Такой работы нет.")))?;
+    Ok(ok(Shelf::new(&parts, &caller).item(work)))
 }
 
 /// A deal's `at` is when its answer ended: never before its work began. A second of slack for the clock's step.
@@ -309,18 +316,18 @@ struct WorkItem {
 
 /// What the works are matched with for the page: the questions waiting, the queue, the router for the admin.
 struct Shelf<'a> {
-    app: &'a App,
+    parts: &'a Parts,
     asking: std::collections::HashSet<String>,
     queued: Vec<Work>,
     admin: bool,
 }
 
 impl<'a> Shelf<'a> {
-    fn new(app: &'a App, caller: &Caller) -> Shelf<'a> {
-        let asking = app.talk.waiting().into_iter().map(|work| work.id).collect();
-        let mut queued = app.talk.works().all(None, Some(WorkState::Queued));
+    fn new(parts: &'a Parts, caller: &Caller) -> Shelf<'a> {
+        let asking = parts.talk.waiting().into_iter().map(|work| work.id).collect();
+        let mut queued = parts.talk.works().all(None, Some(WorkState::Queued));
         queued.sort_by_key(|work| (work.started_at, work.id.parse::<u64>().unwrap_or(0)));
-        Shelf { app, asking, queued, admin: caller.permitted(SETTINGS_EDIT).is_ok() }
+        Shelf { parts, asking, queued, admin: caller.permitted(SETTINGS_EDIT).is_ok() }
     }
 
     /// Where a work stands: going, in the queue, asking — as «Ждёт вас» counts it — or recent.
@@ -340,7 +347,7 @@ impl<'a> Shelf<'a> {
     fn item(&self, work: Work) -> WorkItem {
         let group = self.group(&work);
         let wait = (group == Group::Queued).then(|| self.wait(&work));
-        let executor = self.app.talk.executor(&work.executor);
+        let executor = self.parts.talk.executor(&work.executor);
         let (doing, step) = match (&executor, group) {
             (Some(executor), Group::Going) if work.kind == APP => (executor.status(&work).map(doing_name), None),
             (Some(executor), Group::Going | Group::Asking) if work.going() => (None, executor.details(&work)),
@@ -354,7 +361,8 @@ impl<'a> Shelf<'a> {
     fn wait(&self, work: &Work) -> Wait {
         let ahead =
             self.queued.iter().take_while(|other| other.id != work.id).filter(|other| other.kind == work.kind).count();
-        let (why, until) = match self.app.talk.works().may_start_kind(&work.kind, &work.origin, work.again, now_ms()) {
+        let (why, until) = match self.parts.talk.works().may_start_kind(&work.kind, &work.origin, work.again, now_ms())
+        {
             Ok(()) => ("next", None),
             Err(Refused::Busy) => ("busy", None),
             Err(Refused::TooSoon(ms)) => ("soon", Some(now_ms() + ms)),
@@ -365,14 +373,14 @@ impl<'a> Shelf<'a> {
 
     /// Who answers a work and what its deals spent: the router's journal since the work began.
     fn spending(&self, work: &Work) -> (Option<crate::router::Answered>, Option<Spending>) {
-        let deals = match self.app.router.deals.of_work(&work.id, work.started_at.saturating_sub(SINCE_SLACK_MS)) {
+        let deals = match self.parts.router.deals.of_work(&work.id, work.started_at.saturating_sub(SINCE_SLACK_MS)) {
             Ok(deals) => deals,
             Err(error) => {
                 tracing::warn!(target: "talk", "the deals of work {} are not read: {error}", work.id);
                 return (None, None);
             }
         };
-        let heard = work.going().then(|| self.app.router.last_heard(&work.id)).flatten();
+        let heard = work.going().then(|| self.parts.router.last_heard(&work.id)).flatten();
         let model = heard.or(deals.last);
         let sums = deals.sums;
         let spent = (sums.deals > 0).then_some(Spending {
@@ -406,7 +414,7 @@ pub const NO_VOICE: &str = "Голос не выбран: выберите св�
 pub const VOICE_STARTING: &str = "Голос запускается: попробуйте через несколько секунд.";
 
 /// A phrase said by the household's own voice, as a WAV the panel plays.
-async fn speech(State(app): State<Arc<App>>, caller: Caller, Body(body): Body<Value>) -> Result<Response, ApiError> {
+async fn speech(Uses(parts): Uses<Parts>, caller: Caller, Body(body): Body<Value>) -> Result<Response, ApiError> {
     caller.permitted(&use_of(CapabilityName::Chat))?;
     let text = body.get("text").and_then(Value::as_str).map(str::trim).unwrap_or_default();
     if text.is_empty() {
@@ -415,7 +423,7 @@ async fn speech(State(app): State<Arc<App>>, caller: Caller, Body(body): Body<Va
     if text.chars().count() > MAX_PHRASE {
         return Err(ApiError::bad_request(crate::tr!("Фраза длиннее {max} знаков.", max = MAX_PHRASE)));
     }
-    let voice = app.voice.for_computer().ok_or_else(|| ApiError::conflict(NO_VOICE))?;
+    let voice = parts.voice.for_computer().ok_or_else(|| ApiError::conflict(NO_VOICE))?;
     // The panel going away (a new «Сказать», the × of the strip) drops the request, and that stops the synthesis.
     let cancel = tokio_util::sync::CancellationToken::new();
     let _guard = cancel.clone().drop_guard();
@@ -423,7 +431,7 @@ async fn speech(State(app): State<Arc<App>>, caller: Caller, Body(body): Body<Va
         if crate::speech::tts::own_speech::is_unreachable(&error) {
             return ApiError::conflict(VOICE_STARTING);
         }
-        let why: String = app.secrets.redact(&format!("{error:#}")).chars().take(200).collect();
+        let why: String = parts.secrets.redact(&format!("{error:#}")).chars().take(200).collect();
         ApiError::bad_gateway(crate::tr!("Голос не ответил: {why}", why = why))
     })?;
     let mut response = (StatusCode::OK, wav).into_response();
@@ -433,19 +441,21 @@ async fn speech(State(app): State<Arc<App>>, caller: Caller, Body(body): Body<Va
     Ok(response)
 }
 
-async fn voice_input(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<VoiceInput> {
+async fn voice_input(Uses(settings): Uses<Arc<SettingsService>>, caller: Caller) -> ApiResult<VoiceInput> {
     caller.permitted(STATION_VIEW)?;
-    Ok(ok(input::current(&app.settings)))
+    Ok(ok(input::current(&settings)))
 }
 
 async fn set_voice_input(
-    State(app): State<Arc<App>>,
+    Uses(placement): Uses<Arc<PlacementService>>,
+    Uses(modes): Uses<Arc<ModeService>>,
+    Uses(settings): Uses<Arc<SettingsService>>,
     caller: Caller,
     Body(body): Body<Value>,
 ) -> ApiResult<VoiceInput> {
     caller.permitted(STATION_MODE)?;
-    let station = app.placement.role() == Role::Station;
-    Ok(ok(input::choose(&app.modes, &app.settings, station, body.get("input"), caller.actor())?))
+    let station = placement.role() == Role::Station;
+    Ok(ok(input::choose(&modes, &settings, station, body.get("input"), caller.actor())?))
 }
 
 /// The whole answer, for a caller that does not read a stream.
@@ -505,14 +515,14 @@ fn turn_of(body: &Value) -> Result<Turn, ApiError> {
 }
 
 async fn talk(
-    State(app): State<Arc<App>>,
+    Uses(parts): Uses<Parts>,
     caller: Caller,
     headers: HeaderMap,
     Body(body): Body<Value>,
 ) -> Result<Response, ApiError> {
     let principal = caller.permitted(&use_of(CapabilityName::Chat))?.clone();
     let turn = turn_of(&body)?;
-    let mut talk = super::begin(&app, &principal, turn)?;
+    let mut talk = super::begin(&parts, &principal, turn)?;
     let stream = headers
         .get(header::ACCEPT)
         .and_then(|accept| accept.to_str().ok())

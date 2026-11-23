@@ -5,7 +5,7 @@
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
-use axum::extract::{Path as UrlPath, Query, State};
+use axum::extract::{Path as UrlPath, Query};
 use axum::routing::{delete, get, post, put};
 use axum::Router;
 use futures::future::BoxFuture;
@@ -17,13 +17,13 @@ use super::path;
 use super::places::{Kind, ATTACHED, CONTENT_FOLDERS, PROJECTS};
 use super::rules::{Change, Folders, How, Rule};
 use super::Files;
-use crate::app::App;
 use crate::bus::address::Address;
-use crate::bus::Level;
+use crate::bus::{Bus, BusError, Level};
 use crate::core::identity::permissions::{use_of, PLUGINS_MANAGE};
 use crate::core::identity::principal::Principal;
 use crate::core::identity::roles::Role;
-use crate::platform::http::{ok, ApiError, ApiResult, Body, Caller, Zone};
+use crate::platform::http::{ok, ApiError, ApiResult, Body, Caller, Uses, Zone};
+use crate::plugins::PluginHost;
 use crate::skills::capabilities::CapabilityName;
 
 /// The system's window to pick a folder: the desktop app's (tauri-plugin-dialog), set once at its start. Its title
@@ -37,7 +37,7 @@ pub fn set_picker(picker: Picker) {
     let _ = PICKER.set(picker);
 }
 
-pub fn routes() -> Router<Arc<App>> {
+pub fn routes<S: crate::bus::RouteNeeds>() -> Router<S> {
     Router::new()
         .route("/api/v1/folders", get(view))
         .route("/api/v1/folders/attach", post(attach))
@@ -60,10 +60,10 @@ fn person_letter(caller: &Caller) -> Result<(crate::bus::Trail, Address), ApiErr
     Ok((trail, from))
 }
 
-fn bus_error(error: crate::bus::BusError) -> ApiError {
+fn bus_error(error: BusError) -> ApiError {
     match error {
-        crate::bus::BusError::NotFound(why) => ApiError::not_found(why),
-        crate::bus::BusError::Denied(why) => ApiError::forbidden(why),
+        BusError::NotFound(why) => ApiError::not_found(why),
+        BusError::Denied(why) => ApiError::forbidden(why),
         other => ApiError::bad_request(other.to_string()),
     }
 }
@@ -78,11 +78,11 @@ struct BrowseQuery {
 }
 
 /// A folder's list for the panel, a page at a time, read as the person.
-async fn browse(State(app): State<Arc<App>>, caller: Caller, Query(query): Query<BrowseQuery>) -> ApiResult<Value> {
+async fn browse(Uses(bus): Uses<Arc<Bus>>, caller: Caller, Query(query): Query<BrowseQuery>) -> ApiResult<Value> {
     let (trail, from) = person_letter(&caller)?;
     let to = Address::parse(&query.address).map_err(ApiError::bad_request)?;
     let input = json!({ "from": query.from, "limit": query.limit });
-    app.bus.call(trail, from, to, "list", input, vec![]).await.map(ok).map_err(bus_error)
+    bus.call(trail, from, to, "list", input, vec![]).await.map(ok).map_err(bus_error)
 }
 
 #[derive(Deserialize)]
@@ -94,14 +94,14 @@ struct PreviewQuery {
 
 /// A picture of a folder made small, for the panel's own view of the folder (as the person).
 async fn preview(
-    State(app): State<Arc<App>>,
+    Uses(bus): Uses<Arc<Bus>>,
     caller: Caller,
     Query(query): Query<PreviewQuery>,
 ) -> Result<axum::response::Response, ApiError> {
     let (trail, from) = person_letter(&caller)?;
     let to = Address::parse(&query.address).map_err(ApiError::bad_request)?;
     let input = json!({ "size": query.size.unwrap_or(super::preview::SIDE) });
-    let shown = app.bus.call(trail, from, to, "preview", input, vec![]).await.map_err(bus_error)?;
+    let shown = bus.call(trail, from, to, "preview", input, vec![]).await.map_err(bus_error)?;
     jpeg(&shown)
 }
 
@@ -124,9 +124,9 @@ struct SizeQuery {
 }
 
 /// How many files a folder holds and how big it is — counted up to 50 000 entries and 5 seconds.
-async fn size(State(app): State<Arc<App>>, caller: Caller, Query(query): Query<SizeQuery>) -> ApiResult<Value> {
+async fn size(Uses(bus): Uses<Arc<Bus>>, caller: Caller, Query(query): Query<SizeQuery>) -> ApiResult<Value> {
     caller.permitted(PLUGINS_MANAGE)?;
-    let files = files(&app)?;
+    let files = files(&bus)?;
     let address = Address::parse(&query.address).map_err(ApiError::bad_request)?;
     let spot = files.places().spot(&address).ok_or_else(|| ApiError::not_found(crate::tr!("нет такой папки")))?;
     let root =
@@ -162,8 +162,8 @@ fn count(root: &std::path::Path) -> (u64, u64, bool) {
     (files, bytes, false)
 }
 
-fn files(app: &App) -> Result<Arc<Files>, ApiError> {
-    app.bus.files().ok_or_else(|| ApiError::unavailable(crate::tr!("папок здесь нет")))
+fn files(bus: &Bus) -> Result<Arc<Files>, ApiError> {
+    bus.files().ok_or_else(|| ApiError::unavailable(crate::tr!("папок здесь нет")))
 }
 
 fn folders(files: &Files) -> Result<Arc<Folders>, ApiError> {
@@ -223,13 +223,13 @@ struct View {
 }
 
 /// The apps that reach a folder: each installed app's reach on the bus, links and older rights both.
-fn reach(app: &App, folder: &Address) -> Vec<AppReach> {
-    app.plugins
+fn reach(plugins: &PluginHost, bus: &Bus, folder: &Address) -> Vec<AppReach> {
+    plugins
         .installed_all()
         .iter()
         .filter_map(|package| {
             let id = package.manifest.id.clone();
-            let level = app.bus.reach(&Address::app(&id), folder);
+            let level = bus.reach(&Address::app(&id), folder);
             (level > Level::None).then(|| AppReach { id, title: package.manifest.title.clone(), level })
         })
         .collect()
@@ -237,7 +237,7 @@ fn reach(app: &App, folder: &Address) -> Vec<AppReach> {
 
 /// Every folder of the home folder a person of `role` sees: the household's (those made at the start and any a
 /// person made in Finder), the music and tales, what is attached, the projects.
-fn folder_views(app: &App, files: &Files, role: Role, admin: bool) -> Vec<FolderView> {
+fn folder_views(plugins: &PluginHost, bus: &Bus, files: &Files, role: Role, admin: bool) -> Vec<FolderView> {
     let places = files.places();
     let Some(folders) = files.folders() else { return Vec::new() };
     let mut views = Vec::new();
@@ -250,7 +250,7 @@ fn folder_views(app: &App, files: &Files, role: Role, admin: bool) -> Vec<Folder
         let here = path::root(&spot.root).is_ok();
         let path = admin.then(|| spot.root.to_string_lossy().to_string());
         let rule = if admin { rule } else { Rule { path: None, volume: None, ..rule } };
-        let apps = if admin { reach(app, &spot.folder) } else { Vec::new() };
+        let apps = if admin { reach(plugins, bus, &spot.folder) } else { Vec::new() };
         views.push(FolderView { name: rule.name(), address: spot.folder, kind, here, path, rule, apps });
     };
     let mut names: Vec<String> = std::fs::read_dir(&places.home)
@@ -297,13 +297,13 @@ fn folder_views(app: &App, files: &Files, role: Role, admin: bool) -> Vec<Folder
     views
 }
 
-async fn view(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<View> {
+async fn view(Uses(bus): Uses<Arc<Bus>>, Uses(plugins): Uses<Arc<PluginHost>>, caller: Caller) -> ApiResult<View> {
     let principal = caller.permitted(&use_of(CapabilityName::Plugins))?.clone();
-    let files = files(&app)?;
+    let files = files(&bus)?;
     let admin = crate::core::identity::can(Some(&principal), PLUGINS_MANAGE);
     let local = caller.zone == Zone::Local;
     let remote = caller.zone == Zone::Remote;
-    let mut folders = folder_views(&app, &files, role_of(&principal), admin);
+    let mut folders = folder_views(&plugins, &bus, &files, role_of(&principal), admin);
     if remote {
         folders.retain(|folder| folder.rule.remote);
     }
@@ -337,9 +337,9 @@ struct AttachBody {
     name: Option<String>,
 }
 
-async fn attach(State(app): State<Arc<App>>, caller: Caller, Body(body): Body<AttachBody>) -> ApiResult<Rule> {
+async fn attach(Uses(bus): Uses<Arc<Bus>>, caller: Caller, Body(body): Body<AttachBody>) -> ApiResult<Rule> {
     let principal = admin_here(&caller)?;
-    let files = files(&app)?;
+    let files = files(&bus)?;
     files
         .drives()
         .ok_or_else(|| ApiError::forbidden(crate::tr!("здесь ничего не подключают (FOLDERS=0 или колонка)")))?;
@@ -351,9 +351,9 @@ async fn attach(State(app): State<Arc<App>>, caller: Caller, Body(body): Body<At
         .map_err(ApiError::bad_request)
 }
 
-async fn pick(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<Value> {
+async fn pick(Uses(bus): Uses<Arc<Bus>>, caller: Caller) -> ApiResult<Value> {
     let principal = admin_here(&caller)?;
-    let files = files(&app)?;
+    let files = files(&bus)?;
     files
         .drives()
         .ok_or_else(|| ApiError::forbidden(crate::tr!("здесь ничего не подключают (FOLDERS=0 или колонка)")))?;
@@ -384,25 +384,25 @@ fn may_answer(caller: &Caller, offer: &Offer) -> Result<Principal, ApiError> {
     }
 }
 
-async fn look(State(app): State<Arc<App>>, caller: Caller, UrlPath(id): UrlPath<String>) -> ApiResult<Rule> {
-    let drives = files(&app)?.drives().ok_or_else(|| ApiError::not_found(crate::tr!("предложений здесь нет")))?;
+async fn look(Uses(bus): Uses<Arc<Bus>>, caller: Caller, UrlPath(id): UrlPath<String>) -> ApiResult<Rule> {
+    let drives = files(&bus)?.drives().ok_or_else(|| ApiError::not_found(crate::tr!("предложений здесь нет")))?;
     let offer = drives.offer(&id).ok_or_else(|| ApiError::not_found(crate::tr!("этого предложения уже нет")))?;
     let principal = may_answer(&caller, &offer)?;
     drives.look(&id, Some(&principal.id)).map(ok).map_err(ApiError::bad_request)
 }
 
-async fn skip(State(app): State<Arc<App>>, caller: Caller, UrlPath(id): UrlPath<String>) -> ApiResult<Value> {
-    let drives = files(&app)?.drives().ok_or_else(|| ApiError::not_found(crate::tr!("предложений здесь нет")))?;
+async fn skip(Uses(bus): Uses<Arc<Bus>>, caller: Caller, UrlPath(id): UrlPath<String>) -> ApiResult<Value> {
+    let drives = files(&bus)?.drives().ok_or_else(|| ApiError::not_found(crate::tr!("предложений здесь нет")))?;
     let offer = drives.offer(&id).ok_or_else(|| ApiError::not_found(crate::tr!("этого предложения уже нет")))?;
     may_answer(&caller, &offer)?;
     drives.skip(&id).map_err(ApiError::bad_request)?;
     Ok(ok(json!({ "skipped": id })))
 }
 
-async fn detach(State(app): State<Arc<App>>, caller: Caller, UrlPath(name): UrlPath<String>) -> ApiResult<Value> {
+async fn detach(Uses(bus): Uses<Arc<Bus>>, caller: Caller, UrlPath(name): UrlPath<String>) -> ApiResult<Value> {
     caller.permitted(PLUGINS_MANAGE)?;
     caller.zone_at_least(Zone::Home)?;
-    folders(&*files(&app)?)?.detach(&name).map_err(ApiError::bad_request)?;
+    folders(&*files(&bus)?)?.detach(&name).map_err(ApiError::bad_request)?;
     Ok(ok(json!({ "detached": name })))
 }
 
@@ -414,11 +414,11 @@ struct ChangeBody {
     change: Change,
 }
 
-async fn change(State(app): State<Arc<App>>, caller: Caller, Body(body): Body<ChangeBody>) -> ApiResult<Rule> {
+async fn change(Uses(bus): Uses<Arc<Bus>>, caller: Caller, Body(body): Body<ChangeBody>) -> ApiResult<Rule> {
     caller.permitted(PLUGINS_MANAGE)?;
     caller.zone_at_least(Zone::Home)?;
     let address = Address::parse(&body.address).map_err(ApiError::bad_request)?;
-    folders(&*files(&app)?)?.change(&address, &body.change).map(ok).map_err(ApiError::bad_request)
+    folders(&*files(&bus)?)?.change(&address, &body.change).map(ok).map_err(ApiError::bad_request)
 }
 
 #[derive(Deserialize)]
@@ -427,10 +427,10 @@ struct RevealBody {
 }
 
 /// «Показать в Finder»: the folder opens in the system's file manager on this computer.
-async fn reveal(State(app): State<Arc<App>>, caller: Caller, Body(body): Body<RevealBody>) -> ApiResult<Value> {
+async fn reveal(Uses(bus): Uses<Arc<Bus>>, caller: Caller, Body(body): Body<RevealBody>) -> ApiResult<Value> {
     let principal = caller.permitted(&use_of(CapabilityName::Plugins))?.clone();
     caller.zone_at_least(Zone::Local)?;
-    let files = files(&app)?;
+    let files = files(&bus)?;
     let address = Address::parse(&body.address).map_err(ApiError::bad_request)?;
     let spot = files.places().spot(&address).ok_or_else(|| ApiError::not_found(crate::tr!("нет такой папки")))?;
     if matches!(spot.kind, Kind::App | Kind::Person) {

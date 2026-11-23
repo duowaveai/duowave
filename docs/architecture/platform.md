@@ -209,7 +209,7 @@ Home Assistant, Telegram, LiveKit, SIP, город погоды и ленты н
 |---|---|---|
 | настройку | `SettingDefinition` в `src/settings/definitions.rs` | читать и писать через `SettingsService`, без строковых ключей в модулях |
 | право | `PERMISSIONS` и константа в `src/core/identity/permissions.rs` | выдать ролям в `roles.rs`; на маршруте — `caller.permitted(permissions::…)?` |
-| маршрут API | обработчик axum в `routes()` или `router()` своего модуля (путь `/api/v1/…`), модуль — в `router` (`src/app.rs`) | обработчик берёт `Caller` и сначала спрашивает зону и право; маршрут без них (публичный) — только осознанно; ответ — `ok(…)`, `created(…)` или `ApiError` |
+| маршрут API | обработчик axum в `routes()` или `router()` своего модуля (путь `/api/v1/…`), модуль — в `router` (`src/app.rs`) | обработчик берёт `Caller` и сначала спрашивает зону и право; маршрут без них (публичный) — только осознанно; ответ — `ok(…)`, `created(…)` или `ApiError`. Не весь шлюз (`State<Arc<App>>`), а только нужное: `Uses<Arc<…>>` в обработчике, `S: RouteState + Provides<Arc<…>>` у `routes()`, строка `Provides` в `src/links/http.rs` (`src/platform/http/state.rs`; пример — `src/locale/mod.rs`) |
 | событие | вариант `GatewayEvent` в `events!` (`src/core/events.rs`) | `events.emit(GatewayEvent::…)`; в аудит — строка в `AUDITED` (`src/access/audit_service.rs`) |
 | возможность | строка в `capabilities!` (`src/skills/capabilities.rs`) | право `use:<имя>` появляется само; пульт берёт каталог у шлюза |
 | исполнителя | `OwnSkill` (`src/skills/skill.rs`) в `src/skills/` | регистрация в `SkillsService` (`skills_service.rs`); маршрут — в `ROUTES` или пульте |

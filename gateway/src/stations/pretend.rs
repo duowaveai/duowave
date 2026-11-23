@@ -22,8 +22,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, UdpSocket};
 
 use super::connect::discovery::{self, DnsRecord, MDNS_PORT, YANDEX_SERVICE};
-use crate::app::App;
 use crate::config::PretendConfig;
+use crate::core::identity::home::Identity;
 
 /// The station's SSH port (the wiki's dropbear) and its greeting.
 pub const SSH_PORT: u16 = 2222;
@@ -83,7 +83,7 @@ pub fn records(pretend: &PretendConfig, device: &str) -> Vec<DnsRecord> {
 
 /// The pretend parts beside the gateway: the entry its HTTP calls to the other pretend addresses take; on a station
 /// also its mDNS answer and its SSH greeting. A part that cannot start says so in the log; the gateway runs on.
-pub async fn start(app: Arc<App>, pretend: &PretendConfig) {
+pub async fn start(identity: &Identity, pretend: &PretendConfig) {
     let decide: crate::egress::app_entry::Decide = Arc::new(|_, _, _| crate::egress::app_entry::Hop::Direct);
     let failed: crate::egress::app_entry::Failed = Arc::new(|_, host, why| {
         tracing::info!(target: "pretend", "{host} did not answer ({why})");
@@ -102,12 +102,12 @@ pub async fn start(app: Arc<App>, pretend: &PretendConfig) {
         return;
     }
     // Its own name as the household would have given it at the install («Kitchen»), unless a person renamed it since.
-    if app.identity.view().is_ok_and(|view| !view.named) {
-        if let Err(error) = app.identity.rename(Some(&pretend.name), None) {
+    if identity.view().is_ok_and(|view| !view.named) {
+        if let Err(error) = identity.rename(Some(&pretend.name), None) {
             tracing::info!(target: "pretend", "the station's name stays the default: {}", error.message);
         }
     }
-    let device = app.identity.as_helper().id;
+    let device = identity.as_helper().id;
     let answer = discovery::mdns_answer(&records(pretend, &device), 120);
     match mdns_socket(pretend.address) {
         Ok(socket) => {

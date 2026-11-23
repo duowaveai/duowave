@@ -12,7 +12,6 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
 use std::time::Duration;
 
 use axum::body::{Body, Bytes};
-use axum::extract::State;
 use axum::http::{header, HeaderValue, StatusCode};
 use axum::response::Response;
 use axum::routing::get;
@@ -22,15 +21,16 @@ use serde::Serialize;
 use serde_json::Value;
 use tokio::sync::mpsc;
 
-use crate::app::App;
 use crate::core::events::{EventBus, GatewayEvent};
 use crate::core::identity::permissions::{JOURNAL_VIEW, STATION_VIEW};
 use crate::core::identity::{can, Principal};
 use crate::core::requests::{without_words, RequestView};
 use crate::core::stations::presence::StationPresence;
-use crate::platform::http::{ApiError, Caller};
+use crate::platform::http::{ApiError, Caller, Uses};
 use crate::requests::RequestsService;
 use crate::utils::time::now_iso;
+
+crate::route_needs!(Arc<LiveHub>, Arc<crate::config::Config>);
 
 /// Events the panel re-reads on. Names only: whatever they carry, the panel reads through its own API and rights.
 pub const RELAYED: &[&str] = &[
@@ -484,7 +484,7 @@ fn events_body(queue: mpsc::Receiver<LiveMessage>, leave: Leave) -> impl Stream<
     })
 }
 
-pub fn routes() -> Router<Arc<App>> {
+pub fn routes<S: RouteNeeds>() -> Router<S> {
     Router::new()
         .route("/api/v1/live", get(stream))
         .route("/api/v1/live/ticket", axum::routing::post(ws::ticket))
@@ -494,10 +494,10 @@ pub fn routes() -> Router<Arc<App>> {
 /// The panel's live channel: Server-Sent Events over a plain GET, signed like any API call — the panel reads it with
 /// fetch and its bearer token (EventSource cannot send one). A hello with the state, then each change; a comment
 /// every 20 s keeps it open through proxies; after 15 minutes it ends and the panel opens it again.
-async fn stream(State(app): State<Arc<App>>, caller: Caller) -> Result<Response, ApiError> {
+async fn stream(Uses(live): Uses<Arc<LiveHub>>, caller: Caller) -> Result<Response, ApiError> {
     let principal = caller.permitted(STATION_VIEW)?;
     let (sender, queue) = mpsc::channel(QUEUE);
-    let leave = app.live.join(principal, Box::new(ChannelSink(sender)));
+    let leave = live.join(principal, Box::new(ChannelSink(sender)));
     let mut response = Response::new(Body::from_stream(events_body(queue, leave)));
     *response.status_mut() = StatusCode::OK;
     let headers = response.headers_mut();

@@ -20,7 +20,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::extract::ws::{Message as StationMessage, WebSocket};
-use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::routing::{get, post};
 use axum::Router;
@@ -30,12 +29,14 @@ use serde_json::{json, Value};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message as CentreMessage;
 
-use crate::app::App;
+use super::Parts;
 use crate::core::events::GatewayEvent;
 use crate::core::identity::permissions::{SETTINGS_EDIT, STATION_VIEW};
 use crate::core::settings::{SettingDefinition, SettingScope};
 use crate::placement::peer::{from_peer, PeerClient};
-use crate::platform::http::{ok, ApiError, ApiResult, Body, Caller};
+use crate::platform::http::{ok, ApiError, ApiResult, Body, Caller, Uses};
+use crate::secrets::SecretsService;
+use crate::settings::SettingsService;
 use crate::utils::time::now_iso;
 
 /// This gateway's centre, when it is an ear: where the centre listens. Its pair key is a secret (`KEY_SECRET`). Each
@@ -71,9 +72,9 @@ const DIAL: Duration = Duration::from_secs(2);
 const LOOK: Duration = Duration::from_secs(30);
 
 /// The centre this gateway is the ear of, with its pair key.
-pub fn centre(app: &App) -> Option<(EarOf, String)> {
-    let ear = app.settings.get(&HOME_EAR, None)?;
-    let key = app.secrets.get(KEY_SECRET)?;
+pub fn centre(settings: &SettingsService, secrets: &SecretsService) -> Option<(EarOf, String)> {
+    let ear = settings.get(&HOME_EAR, None)?;
+    let key = secrets.get(KEY_SECRET)?;
     Some((ear, key))
 }
 
@@ -104,9 +105,14 @@ fn forwarded(headers: &HeaderMap) -> Vec<(axum::http::HeaderName, axum::http::He
 type CentreSocket = tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
 /// The station's socket opened on to the centre, within `DIAL`; none — the centre is away.
-pub async fn dial(app: &App, headers: &HeaderMap) -> Option<CentreSocket> {
-    let (ear, key) = centre(app)?;
-    let url = format!("ws://{}:{}{}", ear.address, ear.port, app.config.gateway.uniproxy_path);
+pub async fn dial(
+    settings: &SettingsService,
+    secrets: &SecretsService,
+    uniproxy_path: &str,
+    headers: &HeaderMap,
+) -> Option<CentreSocket> {
+    let (ear, key) = centre(settings, secrets)?;
+    let url = format!("ws://{}:{}{}", ear.address, ear.port, uniproxy_path);
     let mut request = url.into_client_request().ok()?;
     for (name, value) in forwarded(headers) {
         request.headers_mut().insert(name, value);
@@ -181,34 +187,32 @@ pub async fn bridge(station: WebSocket, centre: CentreSocket) {
 
 /// The ear's copy of the home, every `LOOK` and at once when it is set: the centre's revision taken, the memory both
 /// ways, the changes made while it was away sent (src/home/copy.rs).
-pub async fn keep(app: &App) -> Result<(), String> {
-    let Some((ear, key)) = centre(app) else { return Ok(()) };
+pub async fn keep(
+    settings: &Arc<crate::settings::SettingsService>,
+    secrets: &Arc<crate::secrets::SecretsService>,
+    identity: &Arc<crate::core::identity::home::Identity>,
+    placement: &Arc<crate::placement::PlacementService>,
+    db: &Arc<crate::storage::Db>,
+    events: &crate::core::events::EventBus,
+    config: &Arc<crate::config::Config>,
+) -> Result<(), String> {
+    let Some((ear, key)) = centre(settings, secrets) else { return Ok(()) };
     let client = client(&ear, &key);
     let health = client.health().await?;
     let revision = health.pointer("/placement/settingsRevision").and_then(Value::as_u64);
-    let me = app.identity.gateway().map(|me| me.id);
-    let (device, _) = app.placement.station_self();
-    super::copy::Keeper {
-        db: &app.db,
-        secrets: &app.secrets,
-        settings: &app.settings,
-        events: &app.events,
-        client: &client,
-        revision,
-        me,
-    }
-    .keep()
-    .await?;
+    let me = identity.gateway().map(|me| me.id);
+    let (device, _) = placement.station_self();
+    super::copy::Keeper { db, secrets, settings, events, client: &client, revision, me }.keep().await?;
     // The centre learns where this ear listens and its key: «Сделать центром» asks it with them.
-    let key = app.placement.pair_key().map_err(|error| error.message)?;
+    let key = placement.pair_key().map_err(|error| error.message)?;
     client
         .post(
             "/api/v1/home/held",
             json!({
-                "gateway": app.identity.gateway().map(|me| me.id).unwrap_or_default(),
+                "gateway": identity.gateway().map(|me| me.id).unwrap_or_default(),
                 "revision": revision.unwrap_or(0),
                 "device": device,
-                "port": app.config.app.public_port.unwrap_or(app.config.app.port),
+                "port": config.app.public_port.unwrap_or(config.app.port),
                 "key": key,
             }),
         )
@@ -217,17 +221,26 @@ pub async fn keep(app: &App) -> Result<(), String> {
 }
 
 /// The ear's look at its centre, from the start.
-pub fn start(app: &Arc<App>) {
-    let weak = Arc::downgrade(app);
+pub fn start(parts: impl Fn() -> Option<Parts> + Clone + Send + Sync + 'static) {
     tokio::spawn(async move {
         loop {
-            let Some(app) = weak.upgrade() else { return };
-            if centre(&app).is_some() {
-                if let Err(error) = keep(&app).await {
+            let Some(home) = parts() else { return };
+            if centre(&home.settings, &home.secrets).is_some() {
+                if let Err(error) = keep(
+                    &home.settings,
+                    &home.secrets,
+                    &home.identity,
+                    &home.placement,
+                    &home.db,
+                    &home.events,
+                    &home.config,
+                )
+                .await
+                {
                     tracing::info!(target: "home", "the home's copy from the centre: {error}");
                 }
             }
-            drop(app);
+            drop(home);
             tokio::time::sleep(LOOK).await;
         }
     });
@@ -259,7 +272,7 @@ fn its_own(path: &str) -> bool {
 /// The home is written only at its centre: on an ear a change of it is refused with words — made here, it would be
 /// lost at the next copy. Its own things pass (`its_own`), and the pair's own calls do.
 pub async fn guard(
-    State(app): State<Arc<App>>,
+    Uses(settings): Uses<Arc<crate::settings::SettingsService>>,
     request: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
@@ -268,7 +281,7 @@ pub async fn guard(
     let changing = !matches!(*request.method(), Method::GET | Method::HEAD | Method::OPTIONS);
     let path = request.uri().path().to_string();
     if changing && path.starts_with("/api/v1/") && !its_own(&path) {
-        if let Some(ear) = app.settings.get(&HOME_EAR, None) {
+        if let Some(ear) = settings.get(&HOME_EAR, None) {
             let name = ear.name.unwrap_or(ear.address);
             return ApiError::conflict(crate::tr!(
                 "Это устройство слышит для хаба дома «{name}»: дом правят в его пульте, здесь правка потерялась бы.",
@@ -282,15 +295,20 @@ pub async fn guard(
 
 /// The centre of this ear for its pair (a computer that watched this station as the centre, before it moved): where
 /// the centre is now and its key, so the computer follows it.
-async fn centre_for_pair(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<Value> {
-    if !from_peer(&caller, app.placement.peer_key()) {
+async fn centre_for_pair(
+    Uses(placement): Uses<Arc<crate::placement::PlacementService>>,
+    Uses(settings): Uses<Arc<crate::settings::SettingsService>>,
+    Uses(secrets): Uses<Arc<crate::secrets::SecretsService>>,
+    caller: Caller,
+) -> ApiResult<Value> {
+    if !from_peer(&caller, placement.peer_key()) {
         return Err(ApiError::forbidden(crate::tr!("Это знает только устройство пары.")));
     }
-    let Some((ear, key)) = centre(&app) else { return Ok(ok(json!({ "centre": null }))) };
+    let Some((ear, key)) = centre(&settings, &secrets) else { return Ok(ok(json!({ "centre": null }))) };
     Ok(ok(json!({ "centre": { "address": ear.address, "port": ear.port, "name": ear.name, "key": key } })))
 }
 
-pub fn routes() -> Router<Arc<App>> {
+pub fn routes<S: crate::home::RouteNeeds>() -> Router<S> {
     Router::new()
         .route("/api/v1/home/ear", get(view).put(set).delete(unset))
         .route("/api/v1/home/centre", post(make_centre))
@@ -299,10 +317,10 @@ pub fn routes() -> Router<Arc<App>> {
         .route("/api/v1/home/join-ear", post(join))
 }
 
-async fn view(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<Value> {
+async fn view(Uses(settings): Uses<Arc<crate::settings::SettingsService>>, caller: Caller) -> ApiResult<Value> {
     caller.permitted(STATION_VIEW)?;
-    let ear = app.settings.get(&HOME_EAR, None);
-    Ok(ok(json!({ "earOf": ear, "copiedRevision": super::copy::copied_revision(&app.settings) })))
+    let ear = settings.get(&HOME_EAR, None);
+    Ok(ok(json!({ "earOf": ear, "copiedRevision": super::copy::copied_revision(&settings) })))
 }
 
 #[derive(Deserialize)]
@@ -314,9 +332,22 @@ struct SetEar {
 }
 
 /// This gateway becomes the ear of that centre: checked first with its pair key, then its copy taken at once.
-async fn set(State(app): State<Arc<App>>, caller: Caller, Body(body): Body<Value>) -> ApiResult<Value> {
+/// The ear set up or let go: every part of the home's copy, each an extractor of its own.
+#[allow(clippy::too_many_arguments)]
+async fn set(
+    Uses(placement): Uses<Arc<crate::placement::PlacementService>>,
+    Uses(secrets): Uses<Arc<crate::secrets::SecretsService>>,
+    Uses(settings): Uses<Arc<crate::settings::SettingsService>>,
+    Uses(events): Uses<crate::core::events::EventBus>,
+    Uses(identity): Uses<Arc<crate::core::identity::home::Identity>>,
+    Uses(db): Uses<Arc<crate::storage::Db>>,
+    Uses(config): Uses<Arc<crate::config::Config>>,
+    Uses(sessions): Uses<Arc<crate::gateway::uniproxy::SessionRegistry>>,
+    caller: Caller,
+    Body(body): Body<Value>,
+) -> ApiResult<Value> {
     // An admin here, or the computer of its pair joining it to the home (`join`, stage 6).
-    crate::placement::peer::peer_or_permitted(&caller, app.placement.peer_key(), SETTINGS_EDIT)?;
+    crate::placement::peer::peer_or_permitted(&caller, placement.peer_key(), SETTINGS_EDIT)?;
     let wanted: SetEar =
         serde_json::from_value(body).map_err(|_| ApiError::bad_request("{address, port, key}".to_string()))?;
     let ear = EarOf {
@@ -330,26 +361,32 @@ async fn set(State(app): State<Arc<App>>, caller: Caller, Body(body): Body<Value
     }
     let probe = client(&ear, wanted.key.trim());
     probe.settings().await.map_err(|_| ApiError::conflict(crate::tr!("Хаб не принял ключ пары.")))?;
-    app.secrets.set(KEY_SECRET, Some(wanted.key.trim()))?;
-    app.settings.set(&HOME_EAR, &ear, caller.actor())?;
-    app.events.emit(GatewayEvent::HomeDevicesChanged { reason: "ear".into() });
-    if let Err(error) = keep(&app).await {
+    secrets.set(KEY_SECRET, Some(wanted.key.trim()))?;
+    settings.set(&HOME_EAR, &ear, caller.actor())?;
+    events.emit(GatewayEvent::HomeDevicesChanged { reason: "ear".into() });
+    if let Err(error) = keep(&settings, &secrets, &identity, &placement, &db, &events, &config).await {
         tracing::info!(target: "home", "the first copy from the new centre: {error}");
     }
     // Its own station reconnects: its voice goes to the centre from the next socket on, not from the next reboot
     // (pretend stations 23.11: the open socket stayed here, the ear answered for itself).
-    app.sessions.drop_all("this station became an ear");
+    sessions.drop_all("this station became an ear");
     Ok(ok(json!({ "earOf": ear })))
 }
 
 /// This gateway is its own centre again.
-async fn unset(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<Value> {
+async fn unset(
+    Uses(settings): Uses<Arc<crate::settings::SettingsService>>,
+    Uses(secrets): Uses<Arc<crate::secrets::SecretsService>>,
+    Uses(events): Uses<crate::core::events::EventBus>,
+    Uses(sessions): Uses<Arc<crate::gateway::uniproxy::SessionRegistry>>,
+    caller: Caller,
+) -> ApiResult<Value> {
     caller.permitted(SETTINGS_EDIT)?;
-    app.settings.forget(&HOME_EAR)?;
-    app.secrets.delete(KEY_SECRET)?;
-    app.events.emit(GatewayEvent::HomeDevicesChanged { reason: "ear".into() });
+    settings.forget(&HOME_EAR)?;
+    secrets.delete(KEY_SECRET)?;
+    events.emit(GatewayEvent::HomeDevicesChanged { reason: "ear".into() });
     // The station's voice comes back here from the next socket on.
-    app.sessions.drop_all("this station is its own centre again");
+    sessions.drop_all("this station is its own centre again");
     Ok(ok(json!({ "earOf": null })))
 }
 
@@ -359,56 +396,74 @@ struct MakeCentre {
 }
 
 /// «Сделать центром» at the centre: the ear of that station becomes the centre, this gateway its ear.
-async fn make_centre(State(app): State<Arc<App>>, caller: Caller, Body(body): Body<Value>) -> ApiResult<Value> {
+async fn make_centre(
+    Uses(settings): Uses<Arc<crate::settings::SettingsService>>,
+    Uses(secrets): Uses<Arc<crate::secrets::SecretsService>>,
+    Uses(stations_service): Uses<Arc<crate::stations::StationsService>>,
+    Uses(events): Uses<crate::core::events::EventBus>,
+    Uses(sessions): Uses<Arc<crate::gateway::uniproxy::SessionRegistry>>,
+    caller: Caller,
+    Body(body): Body<Value>,
+) -> ApiResult<Value> {
     caller.permitted(SETTINGS_EDIT)?;
-    if centre(&app).is_some() {
+    if centre(&settings, &secrets).is_some() {
         return Err(ApiError::conflict(crate::tr!("Это устройство не хаб: сделать хабом может только хаб дома.")));
     }
     let wanted: MakeCentre = serde_json::from_value(body).map_err(|_| ApiError::bad_request("{device}".to_string()))?;
-    let held = super::copy::holder_of_device(&app.settings, &wanted.device)
+    let held = super::copy::holder_of_device(&settings, &wanted.device)
         .ok_or_else(|| ApiError::not_found(crate::tr!("У этой колонки нет копии дома — она не ухо этого хаба.")))?;
-    let key = app
-        .secrets
+    let key = secrets
         .get(&ear_key_secret(&wanted.device))
         .ok_or_else(|| ApiError::conflict(crate::tr!("Колонка ещё не сказала свой ключ пары — подождите минуту.")))?;
     let address = held
         .address
         .clone()
-        .or_else(|| app.stations.find(&wanted.device).and_then(|station| station.last_address))
+        .or_else(|| stations_service.find(&wanted.device).and_then(|station| station.last_address))
         .ok_or_else(|| ApiError::not_found(crate::tr!("Адрес этой колонки неизвестен.")))?;
     let port = held.port.unwrap_or(crate::config::DEFAULT_PORT);
     let them = PeerClient::new(&address, port, &key);
     // The last of the home goes first: its copy takes the newest revision before it becomes the centre.
     let answer = them.post("/api/v1/home/become-centre", json!({})).await.map_err(ApiError::unavailable)?;
     let their_key = answer.get("key").and_then(Value::as_str).unwrap_or(&key).to_string();
-    let name = app.stations.find(&wanted.device).map(|station| station.name);
+    let name = stations_service.find(&wanted.device).map(|station| station.name);
     let ear = EarOf { address: address.clone(), port, name, since: now_iso() };
-    app.secrets.set(KEY_SECRET, Some(&their_key))?;
-    app.settings.set(&HOME_EAR, &ear, caller.actor())?;
-    app.events.emit(GatewayEvent::HomeDevicesChanged { reason: "centre".into() });
+    secrets.set(KEY_SECRET, Some(&their_key))?;
+    settings.set(&HOME_EAR, &ear, caller.actor())?;
+    events.emit(GatewayEvent::HomeDevicesChanged { reason: "centre".into() });
     tracing::info!(target: "home", "the centre moved to {address}: this gateway is its ear now");
     // Its own station reconnects: its voice goes to the new centre from the next socket on.
-    app.sessions.drop_all("the centre moved");
+    sessions.drop_all("the centre moved");
     Ok(ok(json!({ "centre": { "address": address, "port": port } })))
 }
 
 /// At an ear, from its centre: it becomes the centre with the copy it has; the old centre becomes its ear.
-async fn become_centre(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<Value> {
-    if !from_peer(&caller, app.placement.peer_key()) {
+/// Becoming the centre takes every part of the home's copy, each an extractor of its own.
+#[allow(clippy::too_many_arguments)]
+async fn become_centre(
+    Uses(placement): Uses<Arc<crate::placement::PlacementService>>,
+    Uses(settings): Uses<Arc<crate::settings::SettingsService>>,
+    Uses(secrets): Uses<Arc<crate::secrets::SecretsService>>,
+    Uses(identity): Uses<Arc<crate::core::identity::home::Identity>>,
+    Uses(db): Uses<Arc<crate::storage::Db>>,
+    Uses(events): Uses<crate::core::events::EventBus>,
+    Uses(config): Uses<Arc<crate::config::Config>>,
+    caller: Caller,
+) -> ApiResult<Value> {
+    if !from_peer(&caller, placement.peer_key()) {
         return Err(ApiError::forbidden(crate::tr!("Сделать хабом просит только хаб этого дома.")));
     }
-    if centre(&app).is_some() {
+    if centre(&settings, &secrets).is_some() {
         // The newest of the home first, then no more an ear.
-        if let Err(error) = keep(&app).await {
+        if let Err(error) = keep(&settings, &secrets, &identity, &placement, &db, &events, &config).await {
             tracing::warn!(target: "home", "the last copy before becoming the centre: {error}");
         }
     }
-    app.settings.forget(&HOME_EAR)?;
-    app.secrets.delete(KEY_SECRET)?;
-    app.events.emit(GatewayEvent::HomeDevicesChanged { reason: "centre".into() });
+    settings.forget(&HOME_EAR)?;
+    secrets.delete(KEY_SECRET)?;
+    events.emit(GatewayEvent::HomeDevicesChanged { reason: "centre".into() });
     tracing::info!(target: "home", "this gateway is the home's centre now");
-    let key = app.placement.pair_key()?;
-    Ok(ok(json!({ "key": key, "port": app.config.app.public_port.unwrap_or(app.config.app.port) })))
+    let key = placement.pair_key()?;
+    Ok(ok(json!({ "key": key, "port": config.app.public_port.unwrap_or(config.app.port) })))
 }
 
 #[cfg(feature = "pc")]
@@ -421,17 +476,24 @@ struct Join {
 /// put DuoWave on joins the home as the centre's ear — the computer knows the centre's address and pair key and hands
 /// them to the new station with that one's pair key. Nothing else is asked; its room comes next on its page.
 #[cfg(feature = "pc")]
-async fn join(State(app): State<Arc<App>>, caller: Caller, Body(body): Body<Value>) -> ApiResult<Value> {
+async fn join(
+    Uses(station_gateway): Uses<Arc<crate::placement::watch::StationGateways>>,
+    Uses(events): Uses<crate::core::events::EventBus>,
+    caller: Caller,
+    Body(body): Body<Value>,
+) -> ApiResult<Value> {
     caller.permitted(crate::core::identity::permissions::STATIONS_MANAGE)?;
     let wanted: Join = serde_json::from_value(body).map_err(|_| ApiError::bad_request("{station}".to_string()))?;
-    join_station(&app, &wanted.station).await?;
+    join_station(&station_gateway, &events, &wanted.station).await?;
     Ok(ok(json!({ "joined": wanted.station })))
 }
 
 /// The centre this computer is the Turbo of, as an ear dials it: its address, port, pair key and name.
 #[cfg(feature = "pc")]
-pub fn centre_for_ear(app: &App) -> Result<(String, u16, String, Option<String>), ApiError> {
-    let centre = super::devices::centre_elsewhere(app)
+pub fn centre_for_ear(
+    station_gateway: &Arc<crate::placement::watch::StationGateways>,
+) -> Result<(String, u16, String, Option<String>), ApiError> {
+    let centre = super::devices::centre_elsewhere(station_gateway)
         .ok_or_else(|| ApiError::conflict(crate::tr!("Хаб дома не на колонке: подключать ухом не к чему.")))?;
     let record = centre
         .record()
@@ -442,9 +504,13 @@ pub fn centre_for_ear(app: &App) -> Result<(String, u16, String, Option<String>)
 
 /// A station this computer knows (its pair key) becomes the centre's ear: the centre's address and key handed to it.
 #[cfg(feature = "pc")]
-pub async fn join_station(app: &App, station: &str) -> Result<(), ApiError> {
+pub async fn join_station(
+    station_gateway: &Arc<crate::placement::watch::StationGateways>,
+    events: &crate::core::events::EventBus,
+    station: &str,
+) -> Result<(), ApiError> {
     let wanted = Join { station: station.to_string() };
-    let centre = super::devices::centre_elsewhere(app)
+    let centre = super::devices::centre_elsewhere(station_gateway)
         .ok_or_else(|| ApiError::conflict(crate::tr!("Хаб дома не на колонке: подключать ухом не к чему.")))?;
     if centre.key() == wanted.station {
         return Err(ApiError::conflict(crate::tr!("Это и есть хаб дома.")));
@@ -453,8 +519,7 @@ pub async fn join_station(app: &App, station: &str) -> Result<(), ApiError> {
         .record()
         .ok_or_else(|| ApiError::conflict(crate::tr!("Хаб дома не на колонке: подключать ухом не к чему.")))?;
     let key = centre.pair_key().ok_or_else(|| ApiError::conflict(crate::tr!("Нет ключа пары хаба.")))?;
-    let found = app
-        .station_gateway
+    let found = station_gateway
         .find(&wanted.station)
         .ok_or_else(|| ApiError::not_found(crate::tr!("Такой колонки у этого компьютера нет.")))?;
     // The same station under a second record (by its device and «at:<address>»): still the centre itself — an ear of
@@ -466,7 +531,7 @@ pub async fn join_station(app: &App, station: &str) -> Result<(), ApiError> {
         found.client().ok_or_else(|| ApiError::not_found(crate::tr!("Такой колонки у этого компьютера нет.")))?;
     let body = json!({ "address": record.address, "port": record.port, "key": key, "name": centre.name() });
     station.put("/api/v1/home/ear", body).await.map_err(ApiError::unavailable)?;
-    app.events.emit(GatewayEvent::HomeDevicesChanged { reason: "join".into() });
+    events.emit(GatewayEvent::HomeDevicesChanged { reason: "join".into() });
     Ok(())
 }
 

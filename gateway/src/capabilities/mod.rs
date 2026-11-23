@@ -8,3 +8,12 @@ pub mod hearing;
 pub mod publish;
 pub mod routes;
 pub mod voices;
+
+crate::route_needs!(
+    std::sync::Arc<publish::Publishers>,
+    std::sync::Arc<voices::Voices>,
+    std::sync::Arc<crate::plugins::PluginHost>,
+    std::sync::Arc<crate::bus::Bus>,
+    std::sync::Arc<crate::secrets::SecretsService>,
+    std::sync::Arc<crate::plugins::files::PluginFiles>
+);

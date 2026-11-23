@@ -563,13 +563,17 @@ async fn on_link_port(State(app): State<Arc<App>>, request: Request) -> Response
 
 /// The link port bound beside the main one — on the same address —, on a computer that helps and has its
 /// certificate; a port taken is said on the key sheet, and the gateway serves without the link.
-pub async fn bind(app: &Arc<App>, main: &TcpListener) -> Option<LinkListener> {
-    let server = &app.link;
+pub async fn bind(
+    link: &Arc<crate::helpers::link_serve::LinkServer>,
+    config: &Arc<crate::config::Config>,
+    main: &TcpListener,
+) -> Option<LinkListener> {
+    let server = &link;
     if !server.helps() {
         return None;
     }
     let tls = server.tls()?;
-    let port = app.config.app.link_port?;
+    let port = config.app.link_port?;
     let ip = main.local_addr().map(|address| address.ip()).unwrap_or(IpAddr::from([0, 0, 0, 0]));
     match TcpListener::bind((ip, port)).await {
         Ok(listener) => {
@@ -1396,8 +1400,21 @@ pub(crate) async fn pair_session(
     source: &str,
 ) {
     let mut pending = Pending { clients: app.link.clients.clone(), id: None };
-    let outcome =
-        tokio::time::timeout(PAIR_EXCHANGE, exchange(&app, &mut sink, &mut stream, &binding, &mut pending)).await;
+    let outcome = tokio::time::timeout(
+        PAIR_EXCHANGE,
+        exchange(
+            &app.link,
+            &app.secrets,
+            &app.identity,
+            &app.builtin,
+            &app.voice,
+            &mut sink,
+            &mut stream,
+            &binding,
+            &mut pending,
+        ),
+    )
+    .await;
     match outcome {
         Ok(Ok(())) => {
             // The gateway closes; its close is awaited a moment.
@@ -1444,8 +1461,15 @@ fn id_of(value: &Value, field: &str) -> Option<String> {
     (!id.is_empty() && id.len() <= 100 && id.chars().all(|c| c.is_ascii_graphic())).then(|| id.to_string())
 }
 
+/// The link's handshake: the link's own state, the secrets and who this gateway is (the proof), the built-in helper and
+/// the voice (the status it answers with), and the wire — each its own argument.
+#[allow(clippy::too_many_arguments)]
 async fn exchange(
-    app: &Arc<App>,
+    link: &Arc<crate::helpers::link_serve::LinkServer>,
+    secrets: &Arc<crate::secrets::SecretsService>,
+    identity: &Arc<crate::core::identity::home::Identity>,
+    builtin: &Arc<crate::helpers::builtin::BuiltinHelper>,
+    voice: &Arc<crate::speech::VoiceService>,
     sink: &mut WireSink,
     stream: &mut WireStream,
     binding: &Binding,
@@ -1453,7 +1477,7 @@ async fn exchange(
 ) -> Result<(), Spoiled> {
     use base64::Engine;
     let b64 = |bytes: &[u8]| base64::engine::general_purpose::STANDARD.encode(bytes);
-    let server = &app.link;
+    let server = &link;
     let first = tokio::time::timeout(PAIR_FIRST, next_json(stream)).await.map_err(|_| Spoiled::Broken)?;
     let (kind, pair) = first.ok_or(Spoiled::Broken)?;
     let fields = (nonce_of(&pair), id_of(&pair, "gateway"), id_of(&pair, "home"));
@@ -1486,13 +1510,13 @@ async fn exchange(
         return Err(Spoiled::Guess);
     }
     let own_home =
-        app.secrets.get(HOME_KEY).is_some_and(|home_key| same(&field("homeMac"), &transcript.home_proof(&home_key)));
+        secrets.get(HOME_KEY).is_some_and(|home_key| same(&field("homeMac"), &transcript.home_proof(&home_key)));
     let given = Given { abilities: super::clients::given_at_pairing(own_home), own_home };
     let mut paired = json!({
         "t": "paired",
         "mac": b64(&transcript.proof(key.bytes(), "helper")),
-        "helper": app.identity.as_helper(),
-        "status": status_of(app, Some(given)),
+        "helper": identity.as_helper(),
+        "status": status_of(builtin, link, voice, Some(given)),
     });
     if probe {
         sink.send(Wire::json(&paired)).await.map_err(|_| Spoiled::Quiet)?;
@@ -1626,8 +1650,18 @@ async fn serve_home(
 }
 
 /// The status a home sees now: what it is given, and the voice only within D31's limits.
-fn status_for(app: &App, origin: &LinkOrigin) -> Value {
-    status_of(app, Some(Given { abilities: app.link.clients.given(&origin.client), own_home: origin.own_home }))
+fn status_for(
+    builtin: &Arc<crate::helpers::builtin::BuiltinHelper>,
+    link: &Arc<crate::helpers::link_serve::LinkServer>,
+    voice: &Arc<crate::speech::VoiceService>,
+    origin: &LinkOrigin,
+) -> Value {
+    status_of(
+        builtin,
+        link,
+        voice,
+        Some(Given { abilities: link.clients.given(&origin.client), own_home: origin.own_home }),
+    )
 }
 
 /// A home's link served until it ends: the welcome, then its requests through `/home/v1`, the status told as it
@@ -1648,7 +1682,7 @@ pub(crate) async fn serve_link(
     let client_held = locked(&server.client_bodies).entry(origin.client.clone()).or_default().clone();
     let router = inner_router(&app);
     let mut home = Home { origin, peer, router, out, running: HashMap::new(), held: 0, client_held, done };
-    let mut told = status_for(&app, &home.origin);
+    let mut told = status_for(&app.builtin, &app.link, &app.voice, &home.origin);
     home.control(Wire::json(&json!({ "t": "welcome", "v": super::link::VERSION, "status": told })));
     let mut told_at = Instant::now();
     // The status to tell once `STATUS_EVERY` has passed since the last: always the latest — none when it came back to
@@ -1719,11 +1753,11 @@ pub(crate) async fn serve_link(
                     break REFUSED;
                 }
                 home.give_up_late_bodies(BODY_SILENCE, BODY_WHOLE);
-                let now = status_for(&app, &home.origin);
+                let now = status_for(&app.builtin, &app.link, &app.voice, &home.origin);
                 waiting = (now != told).then_some(now);
             }
             _ = nudged => {
-                let now = status_for(&app, &home.origin);
+                let now = status_for(&app.builtin, &app.link, &app.voice, &home.origin);
                 waiting = (now != told).then_some(now);
             }
             _ = tokio::time::sleep_until(told_at + STATUS_EVERY), if waiting.is_some() => {

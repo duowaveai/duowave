@@ -6,8 +6,6 @@ use std::sync::Arc;
 use axum::extract::DefaultBodyLimit;
 use axum::Router;
 
-use crate::app::App;
-
 pub mod ask_controller;
 pub mod mcp_background;
 pub mod mcp_connection;
@@ -26,11 +24,13 @@ pub(crate) mod fixtures;
 pub use ask_controller::{AskDialog, AskEvent, AskModel, AskToolbox};
 pub use mcp_service::{Cancelled, McpOffer, McpService, OfferOptions, OfferServer, ToolOutcome};
 
+crate::route_needs!(Arc<McpService>, Arc<crate::connectors::ConnectorsService>, Arc<crate::secrets::SecretsService>);
+
 /// The largest body these routes read: Express's default for JSON, as the Node gateway had it. A body is read before
 /// the route asks who is calling, so its size is the bound on what anyone who reaches the port can make us parse.
 pub const BODY_LIMIT: usize = 100 * 1024;
 
 /// `/api/v1/mcp/…` and the check chat, `/api/v1/brain/ask`.
-pub fn routes() -> Router<Arc<App>> {
+pub fn routes<S: RouteNeeds>() -> Router<S> {
     mcp_controller::routes().merge(ask_controller::routes()).layer(DefaultBodyLimit::max(BODY_LIMIT))
 }

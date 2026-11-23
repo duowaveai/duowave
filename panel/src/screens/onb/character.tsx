@@ -9,7 +9,7 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
 import type { InstallProgress } from '../../magicplace/wizard-state';
 
-import { CharacterView, CharactersView, api, can, isTight, needsOf, problemOf, stationCall } from '../../api';
+import { CharacterView, CharactersView, api, can, hubCall, isTight, needsOf, problemOf } from '../../api';
 import { VoiceWizard } from '../voice-lab';
 import { stopAudio, useAudio } from '../../audio';
 import { tr } from '../../i18n';
@@ -199,7 +199,7 @@ export function CharacterStep() {
         try {
             const active = (await api.models()).ttsActive.modelId;
             if (!active.startsWith('own:') || active.startsWith('own:c-')) return;
-            if (stationKey) await stationCall(stationKey, 'POST', '/api/v1/models/home-voice', { voice: 'computer' });
+            if (stationKey) await hubCall(stationKey, 'POST', '/api/v1/models/home-voice', { voice: 'computer' });
             setNote({ text: tr.voiceHome.onbOwnOn });
         } catch (e) {
             setNote({ text: tr.voiceHome.onbOwnStationMissed(problemOf(e)), tone: 'warn' });
@@ -210,7 +210,8 @@ export function CharacterStep() {
     const toStation = async (character: CharacterView): Promise<string | null> => {
         if (!stationKey) return null;
         try {
-            await stationCall(stationKey, 'POST', `/api/v1/characters/${encodeURIComponent(character.id)}/choose`, {});
+            // Хаб мог ещё перезапускаться после переноса: ждём его самого, правка не ложится в очередь компьютера.
+            await hubCall(stationKey, 'POST', `/api/v1/characters/${encodeURIComponent(character.id)}/choose`, {});
             return null;
         } catch (e) {
             return tr.onbCharacter.stationMissed(problemOf(e));

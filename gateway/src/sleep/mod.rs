@@ -37,6 +37,8 @@ use crate::storage::Db;
 use crate::utils::ids::uuid;
 use crate::utils::time::{iso, now_iso};
 
+crate::route_needs!(Arc<SleepService>);
+
 /// The sleep's hour when none is set.
 pub const DEFAULT_TIME: &str = "04:00";
 /// How long a night lasts after its hour: what is not done by then waits for the next night.

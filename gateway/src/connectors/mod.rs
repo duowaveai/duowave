@@ -17,14 +17,12 @@ pub mod settings;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-use axum::extract::State;
 use axum::routing::get;
 use axum::Router;
 use futures::future::BoxFuture;
 use futures::FutureExt;
 use serde::Serialize;
 
-use crate::app::App;
 use crate::config::Config;
 use crate::core::connectors::{
     Connector, ConnectorKind, ConnectorManifest, ConnectorRegistry, ConnectorSetup, ConnectorStatus, ConnectorView,
@@ -33,10 +31,12 @@ use crate::core::connectors::{
 use crate::core::identity::permissions::CONNECTORS_VIEW;
 use crate::core::identity::Principal;
 use crate::operations::networks::is_local_url;
-use crate::platform::http::{ok, ApiResult, Caller};
+use crate::platform::http::{ok, ApiResult, Caller, Uses};
 use crate::requests::ModeSource;
 use crate::skills::capabilities::CapabilityName;
 use settings::{ConnectorId, ConnectorSettings};
+
+crate::route_needs!(Arc<crate::config::Config>, Arc<ConnectorsService>, controller::Parts);
 
 /// The built-ins in the order the panel lists them, whenever each registered.
 const BUILT_IN_ORDER: &[&str] = &[
@@ -534,7 +534,7 @@ pub mod builtin {
     }
 }
 
-pub fn routes() -> Router<Arc<App>> {
+pub fn routes<S: RouteNeeds>() -> Router<S> {
     Router::new().route("/api/v1/connectors", get(list)).merge(controller::routes())
 }
 
@@ -551,10 +551,10 @@ struct Connectors {
 }
 
 /// Every connector with its state, and the kinds the gateway knows (MCP and agents come next).
-async fn list(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<Connectors> {
+async fn list(Uses(connectors): Uses<Arc<ConnectorsService>>, caller: Caller) -> ApiResult<Connectors> {
     caller.permitted(CONNECTORS_VIEW)?;
     Ok(ok(Connectors {
-        connectors: app.connectors.views().await,
+        connectors: connectors.views().await,
         kinds: CONNECTOR_KINDS.iter().map(|(id, title)| Kind { id: *id, title: crate::core::tx(title) }).collect(),
     }))
 }

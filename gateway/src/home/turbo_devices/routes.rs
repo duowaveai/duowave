@@ -9,20 +9,20 @@
 //!   who sees the connectors sees it, who manages them changes it.
 use std::sync::Arc;
 
-use axum::extract::State;
 use axum::routing::{get, post};
 use axum::Router;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use super::{GivenKind, WAKE_WAIT};
-use crate::app::App;
+use super::{GivenKind, HouseDevices, WAKE_WAIT};
+use crate::core::events::EventBus;
 use crate::core::identity::permissions::{use_of, CONNECTORS_MANAGE, CONNECTORS_VIEW};
-use crate::platform::http::{ok, ApiError, ApiResult, Body, Caller};
+use crate::platform::http::{ok, ApiError, ApiResult, Body, Caller, Uses};
 use crate::settings::definitions::{TurboShares, TURBO_SHARES};
+use crate::settings::SettingsService;
 use crate::skills::capabilities::CapabilityName;
 
-pub fn routes() -> Router<Arc<App>> {
+pub fn routes<S: crate::home::RouteNeeds>() -> Router<S> {
     Router::new()
         .route("/api/v1/home/plugged", get(view))
         .route("/api/v1/home/plugged/choice", post(choice))
@@ -35,9 +35,8 @@ fn may_use(caller: &Caller) -> Result<(), ApiError> {
 }
 
 /// The home's kinds with their places, and which sleeping places can be woken.
-async fn view(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<Value> {
+async fn view(Uses(house): Uses<Arc<HouseDevices>>, caller: Caller) -> ApiResult<Value> {
     may_use(&caller)?;
-    let house = app.house.clone();
     let kinds = house.view();
     let wakeable: Vec<String> = kinds
         .iter()
@@ -57,11 +56,15 @@ struct ChoiceBody {
 }
 
 /// Where the house does a kind's acts from now on (the panel's choice is the house's, not a room's).
-async fn choice(State(app): State<Arc<App>>, caller: Caller, Body(body): Body<ChoiceBody>) -> ApiResult<Value> {
+async fn choice(
+    Uses(house): Uses<Arc<HouseDevices>>,
+    caller: Caller,
+    Body(body): Body<ChoiceBody>,
+) -> ApiResult<Value> {
     may_use(&caller)?;
     let chosen =
-        app.house.set_choice(&body.kind, "", &body.place).map_err(|error| ApiError::conflict(error.to_string()))?;
-    app.house.used(&body.kind, &chosen.place);
+        house.set_choice(&body.kind, "", &body.place).map_err(|error| ApiError::conflict(error.to_string()))?;
+    house.used(&body.kind, &chosen.place);
     Ok(ok(json!({ "kind": body.kind, "place": chosen.place, "name": chosen.name })))
 }
 
@@ -71,17 +74,16 @@ struct WakeBody {
 }
 
 /// A sleeping Турбо woken, and whether it came on the line in time.
-async fn wake(State(app): State<Arc<App>>, caller: Caller, Body(body): Body<WakeBody>) -> ApiResult<Value> {
+async fn wake(Uses(house): Uses<Arc<HouseDevices>>, caller: Caller, Body(body): Body<WakeBody>) -> ApiResult<Value> {
     may_use(&caller)?;
-    let awake = app.house.wake(&body.place, WAKE_WAIT).await.map_err(ApiError::conflict)?;
+    let awake = house.wake(&body.place, WAKE_WAIT).await.map_err(ApiError::conflict)?;
     Ok(ok(json!({ "place": body.place, "awake": awake })))
 }
 
 /// One kind of this computer's devices as «Что этот компьютер даёт дому» shows it.
-fn shares_view(app: &App) -> Value {
-    let ticked: TurboShares = app.settings.get(&TURBO_SHARES, None).unwrap_or_default();
-    let kinds: Vec<Value> = app
-        .house
+fn shares_view(settings: &SettingsService, house: &HouseDevices) -> Value {
+    let ticked: TurboShares = settings.get(&TURBO_SHARES, None).unwrap_or_default();
+    let kinds: Vec<Value> = house
         .local()
         .list()
         .iter()
@@ -101,9 +103,13 @@ fn shares_view(app: &App) -> Value {
     json!({ "kinds": kinds })
 }
 
-async fn shares(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<Value> {
+async fn shares(
+    Uses(settings): Uses<Arc<SettingsService>>,
+    Uses(house): Uses<Arc<HouseDevices>>,
+    caller: Caller,
+) -> ApiResult<Value> {
     caller.permitted(CONNECTORS_VIEW)?;
-    Ok(ok(shares_view(&app)))
+    Ok(ok(shares_view(&settings, &house)))
 }
 
 #[derive(Debug, Deserialize)]
@@ -112,7 +118,13 @@ struct SharesBody {
     kinds: std::collections::BTreeMap<String, bool>,
 }
 
-async fn set_shares(State(app): State<Arc<App>>, caller: Caller, Body(body): Body<SharesBody>) -> ApiResult<Value> {
+async fn set_shares(
+    Uses(settings): Uses<Arc<SettingsService>>,
+    Uses(house): Uses<Arc<HouseDevices>>,
+    Uses(events): Uses<EventBus>,
+    caller: Caller,
+    Body(body): Body<SharesBody>,
+) -> ApiResult<Value> {
     caller.permitted(CONNECTORS_MANAGE)?;
     let kinds = body
         .kinds
@@ -121,12 +133,12 @@ async fn set_shares(State(app): State<Arc<App>>, caller: Caller, Body(body): Bod
             !kind.is_empty() && kind.len() <= 40 && kind.bytes().all(|b| b.is_ascii_lowercase() || b == b'-')
         })
         .collect();
-    app.settings.set(&TURBO_SHARES, &TurboShares { kinds }, caller.actor())?;
+    settings.set(&TURBO_SHARES, &TurboShares { kinds }, caller.actor())?;
     // What this computer gives changed: its contract says so at its home's next look.
-    app.events.emit(crate::core::events::GatewayEvent::HelpersChanged {
+    events.emit(crate::core::events::GatewayEvent::HelpersChanged {
         id: Some("self".into()),
         change: "contract".into(),
         actor: None,
     });
-    Ok(ok(shares_view(&app)))
+    Ok(ok(shares_view(&settings, &house)))
 }

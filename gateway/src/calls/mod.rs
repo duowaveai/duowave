@@ -30,3 +30,5 @@ pub use calls_service::{CallsConnectors, CallsPart, CallsService, NoCallsConnect
 pub use livekit::Invite;
 pub use opus::{CallsOpus, SpeechOpus};
 pub use telegram::{Contact, IncomingMessage, LinkButton, Stranger, TelegramMessenger};
+
+crate::route_needs!(std::sync::Arc<CallsService>);

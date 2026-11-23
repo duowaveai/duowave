@@ -6,11 +6,12 @@
 //! built-in helper («Этот компьютер») is the first road of hearing and voice (stage 6); the clouds' roads go under the
 //! regulator on every gateway.
 
+use std::sync::Arc;
+
 use serde::Serialize;
 
 use super::contract::Ability;
-use super::{reach_of, Helpers, Reach};
-use crate::app::App;
+use super::{reach_of, Helpers, Parts, Reach};
 use crate::config::{ModelProfile, TtsProvider};
 use crate::core::availability::State;
 use crate::operations::networks::is_local_url;
@@ -90,14 +91,14 @@ fn row(ability: Ability, roads: Vec<Road>) -> NowRow {
 }
 
 /// Every shown ability's row.
-pub fn rows(app: &App) -> Vec<NowRow> {
-    let station = app.placement.role() == Role::Station;
-    let yandex_allowed = app.modes.current() != PanelMode::Own;
+pub fn rows(parts: &Parts) -> Vec<NowRow> {
+    let station = parts.placement.role() == Role::Station;
+    let yandex_allowed = parts.modes.current() != PanelMode::Own;
     let yandex = || {
         let problem = (!yandex_allowed).then(|| crate::core::tx("в режиме «Ваш ИИ» Яндекс выключен"));
         Road::of(By::Yandex, None, None, problem)
     };
-    let helpers = &app.helpers;
+    let helpers = &parts.helpers;
     // This computer's own parts, when it takes them from itself (a computer that is not in the station role): first.
     let own = helpers.own.get();
     let ours = |ability: Ability| own.is_some_and(|own| own.gives_here(ability));
@@ -106,7 +107,7 @@ pub fn rows(app: &App) -> Vec<NowRow> {
         .into_iter()
         .map(|ability| {
             if ability == Ability::Model {
-                return model_row(app, station);
+                return model_row(&parts.brain, &parts.helpers, &parts.modes, station);
             }
             // Hearing and voice go the helpers' way on a computer too (stage 6): its own helpers after itself.
             let through = station
@@ -120,7 +121,7 @@ pub fn rows(app: &App) -> Vec<NowRow> {
                             silent(Ability::Hearing).then(|| crate::tr!("слух на этом компьютере не отвечает"));
                         roads.insert(0, built_in(problem));
                     }
-                    let asr = &app.config.speech.asr;
+                    let asr = &parts.config.speech.asr;
                     if asr.enabled && !is_local_url(Some(&asr.base_url)) {
                         // The .env's cloud hearing goes under the regulator, a computer's too (its chain, stage 6).
                         roads.push(cloud(helpers, &asr.base_url));
@@ -130,7 +131,7 @@ pub fn rows(app: &App) -> Vec<NowRow> {
                 Ability::Voice => {
                     // Alice's voice is the first road only when a person chose it; when ours has nobody to speak
                     // with (the helpers away, the cloud kept in) she stands in, and the chain says why.
-                    if app.voice.chosen_provider() == TtsProvider::Yandex && yandex_allowed {
+                    if parts.voice.chosen_provider() == TtsProvider::Yandex && yandex_allowed {
                         roads = vec![yandex()];
                     } else {
                         if ours(Ability::Voice) {
@@ -138,7 +139,7 @@ pub fn rows(app: &App) -> Vec<NowRow> {
                                 silent(Ability::Voice).then(|| crate::tr!("голос на этом компьютере не отвечает"));
                             roads.insert(0, built_in(problem));
                         }
-                        if let Some(own) = app.voice.own_speech() {
+                        if let Some(own) = parts.voice.own_speech() {
                             let url = own.base_url();
                             if !is_local_url(Some(&url)) {
                                 roads.push(cloud(helpers, &url));
@@ -154,7 +155,7 @@ pub fn rows(app: &App) -> Vec<NowRow> {
                     }
                 }
                 Ability::Messages => {
-                    if own_bot(app) {
+                    if own_bot(parts) {
                         roads.insert(0, Road::of(By::Here, None, Some(Reach::Home), None));
                     }
                 }
@@ -273,12 +274,17 @@ fn helper_roads(helpers: &Helpers, ability: Ability) -> Vec<Road> {
 /// The model's row: «Мозг»'s own answer for the fast profile (dialog/brain/brain_service.rs) — the chosen model;
 /// another in its place, the backup or the next helper, and why; or none may be asked: then Alice on a station whose
 /// mode lets Yandex (the owner, 15.11: in «Вместе» such a question goes to her), else nobody — the words say why.
-fn model_row(app: &App, station: bool) -> NowRow {
-    let now = app.brain.now(ModelProfile::Fast);
+fn model_row(
+    brain: &Arc<crate::dialog::brain::BrainService>,
+    helpers: &Arc<crate::helpers::Helpers>,
+    modes: &Arc<crate::gateway::mode::ModeService>,
+    station: bool,
+) -> NowRow {
+    let now = brain.now(ModelProfile::Fast);
     let (by, name) = match now.helper.as_deref() {
         // A model server of this computer (stage 6): the built-in helper's row.
         Some(super::SELF) => (By::Helper, Some(crate::tr!("Этот компьютер"))),
-        Some(id) => (By::Helper, app.helpers.entry(id).map(|entry| entry.name).or(now.title)),
+        Some(id) => (By::Helper, helpers.entry(id).map(|entry| entry.name).or(now.title)),
         None if now.reach == Some(Reach::Foreign) => (By::Cloud, now.title),
         None => (By::Here, now.title),
     };
@@ -286,7 +292,7 @@ fn model_row(app: &App, station: bool) -> NowRow {
     match now.state {
         State::Off => {
             // The words say why none may be asked; with no model at all there are none, and nobody answers.
-            let alice = now.reason.is_some() && station && app.modes.yandex_allowed();
+            let alice = now.reason.is_some() && station && modes.yandex_allowed();
             let by = if alice { By::Yandex } else { By::None };
             NowRow { ability, by, helper: None, name: None, reach: None, first: false, why: now.reason }
         }
@@ -303,15 +309,8 @@ fn model_row(app: &App, station: bool) -> NowRow {
 }
 
 /// This computer's own Telegram bot is set up.
-fn own_bot(app: &App) -> bool {
-    #[cfg(feature = "pc")]
-    let own = app.calls.telegram.enabled();
-    #[cfg(not(feature = "pc"))]
-    let own = {
-        let _ = app;
-        false
-    };
-    own
+fn own_bot(parts: &Parts) -> bool {
+    (parts.own_bot)()
 }
 
 /// A server at home that is not this machine, for people: its host. One at a loopback address is this gateway's own
@@ -341,6 +340,7 @@ pub fn cloud_name(url: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::App;
 
     #[test]
     fn a_cloud_is_named_by_its_host() {
@@ -368,7 +368,12 @@ mod tests {
     #[tokio::test]
     async fn a_stations_voice_server_elsewhere_at_home_is_named_in_where_now() {
         use crate::helpers::builtin::tests::computer;
-        let voice = |app: &App| rows(app).into_iter().find(|row| row.ability == Ability::Voice).unwrap();
+        let voice = |app: &std::sync::Arc<App>| {
+            rows(&crate::platform::http::Provides::provide(app))
+                .into_iter()
+                .find(|row| row.ability == Ability::Voice)
+                .unwrap()
+        };
         let station =
             |voice: &'static str| [("DUOWAVE_ROLE", "station"), ("TTS_PROVIDER", "mixed"), ("TTS_OWN_URL", voice)];
         let (app, _dir) = computer(&station("http://192.168.1.50:8091/v1"));

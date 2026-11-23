@@ -655,6 +655,30 @@ check('an_invitation_code_reaches_the_gateway_as_the_site_takes_it_whatever_was_
     }
 });
 
+check('the_first_steps_wait_for_the_hub_and_never_take_a_queued_change_for_its_answer', () => {
+    // 24.11, hub on a Lite 2, this Mac its Turbo: the hub rebooted after the move, the pass kept «Применить» of the
+    // invite code in its queue and answered «правка сохранена» — the step drew that as the hub's brain and fell
+    // («Этот шаг не открылся»), and a provider «added» the same way had no id: `providers/undefined/signin`.
+    const api = source('src/api.ts');
+    const fetcher = api.slice(api.indexOf('async function stationFetch'), api.indexOf('export async function stationCall'));
+    expect(fetcher.includes('new QueuedChange('), 'a queued change through the pass is an error, never a value');
+    expect(fetcher.includes('new HubAway('), 'the hub away for one who waits is told apart');
+    const proxy = source('../gateway/src/placement/proxy.rs');
+    for (const name of ['x-duowave-wait', 'x-duowave-away']) {
+        expect(api.includes(`'${name}'`) && proxy.includes(`"${name}"`), `the panel and the pass name ${name} alike`);
+    }
+    const answer = source('src/screens/onb/answer.tsx');
+    const gate = answer.slice(answer.indexOf('function viaStation'), answer.indexOf('const MODES'));
+    for (const call of ['setInvite', 'addProvider', 'signInProvider', 'chooseBrain', 'setMode', 'brain']) {
+        expect(new RegExp(`${call}: \\([^)]*\\) => hub<`).test(gate), `«Кто отвечает»: ${call} waits for the hub itself`);
+    }
+    expect(/disabled=\{busy \|\| held/.test(answer) && answer.includes('disabled: busy || held'), 'while DuoWave moves, the step waits');
+    expect(answer.includes('t.hubWait'), 'and says the speaker is restarting');
+    const character = source('src/screens/onb/character.tsx');
+    expect(!character.includes('stationCall(') && character.includes('hubCall('), '«Персонаж» waits for the hub too');
+    for (const lang of ['ru', 'en']) expect(source(`src/i18n/locales/${lang}/onbConnect.ts`).includes('hubWait:'), `${lang}: the waiting words`);
+});
+
 check('duowaves_access_shows_its_kind_and_never_a_date', () => {
     const connect = source('src/screens/brain-connect.ts');
     expect(!connect.includes('formatDate') && !connect.includes('access.endsAt'), 'the access line takes no date');

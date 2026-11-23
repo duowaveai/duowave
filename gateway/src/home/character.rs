@@ -15,19 +15,21 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::extract::{Query, State};
+use axum::extract::Query;
 use axum::routing::get;
 use axum::Router;
 use serde_json::{json, Value};
 
-use crate::app::App;
+use super::Parts;
 use crate::characters::contributes::KNOWN_ENGINES;
-use crate::characters::Character;
+use crate::characters::{Character, CharactersService};
+use crate::core::events::EventBus;
 use crate::core::identity::permissions::{MODELS_MANAGE, STATION_VIEW};
 use crate::helpers::contract::Ability;
 use crate::helpers::remote::RemoteHelper;
-use crate::platform::http::{ok, ApiError, ApiResult, Body, Caller};
+use crate::platform::http::{ok, ApiError, ApiResult, Body, Caller, Uses};
 use crate::settings::definitions::{HOME_VOICE_ENGINES, PERSONA};
+use crate::settings::SettingsService;
 
 /// The events after which the Турбо hears the character again.
 fn tells(name: &str) -> bool {
@@ -35,17 +37,16 @@ fn tells(name: &str) -> bool {
 }
 
 /// Starts telling the voice's Турбо the home's character.
-pub fn watch(app: &Arc<App>) {
-    let weak = Arc::downgrade(app);
-    app.events.on("home.character", move |event| {
+pub fn watch(events: &EventBus, parts: impl Fn() -> Option<Parts> + Clone + Send + Sync + 'static) {
+    events.on("home.character", move |event| {
         if !tells(event.name()) {
             return;
         }
-        let Some(app) = weak.upgrade() else { return };
+        let Some(home) = parts() else { return };
         tokio::spawn(async move {
             // A burst (the list read again, a pairing) settles first.
             tokio::time::sleep(Duration::from_millis(500)).await;
-            if let Err(error) = tell(&app).await {
+            if let Err(error) = tell(&home).await {
                 tracing::info!(target: "home", "the character to the Турбо: {error}");
             }
         });
@@ -54,8 +55,12 @@ pub fn watch(app: &Arc<App>) {
 
 /// The model the owner chose for a character's voice: by the character, else by its package (chosen before it was
 /// installed). Only one of them is kept at a time (`keep_choice`): the owner's last word.
-pub fn chosen_engine(app: &App, character: &str, package: &str) -> Option<String> {
-    let chosen = app.settings.get(&HOME_VOICE_ENGINES, None)?;
+pub fn chosen_engine(
+    settings: &Arc<crate::settings::SettingsService>,
+    character: &str,
+    package: &str,
+) -> Option<String> {
+    let chosen = settings.get(&HOME_VOICE_ENGINES, None)?;
     chosen.get(character).or_else(|| chosen.get(package)).cloned()
 }
 
@@ -85,24 +90,27 @@ pub fn drop_package(chosen: &mut BTreeMap<String, String>, package: &str) -> boo
 
 /// A package removed: the models chosen for its characters' voices go with it — here (the centre's choices) and in what
 /// a Турбо's centre named to it, so a package installed again starts afresh.
-pub fn forget_package(app: &App, package: &str) {
-    if let Some(mut chosen) = app.settings.get(&HOME_VOICE_ENGINES, None) {
+pub fn forget_package(settings: &SettingsService, characters: &CharactersService, package: &str) {
+    if let Some(mut chosen) = settings.get(&HOME_VOICE_ENGINES, None) {
         if drop_package(&mut chosen, package) {
-            if let Err(error) = app.settings.set(&HOME_VOICE_ENGINES, &chosen, None) {
+            if let Err(error) = settings.set(&HOME_VOICE_ENGINES, &chosen, None) {
                 tracing::warn!(target: "home", "{package}: its voice models not forgotten: {}", error.message);
             }
         }
     }
-    app.characters.forget_engines(package);
+    characters.forget_engines(package);
 }
 
 /// The character as the Турбо should hear it: its id and package, and the model chosen for its voice; none — a
 /// built-in one.
-pub fn of_home(app: &App) -> Option<Value> {
-    let id = app.settings.get(&PERSONA, None)?.preset_id?;
-    let character = app.characters.character(&id)?;
+pub fn of_home(
+    settings: &Arc<crate::settings::SettingsService>,
+    characters: &Arc<crate::characters::CharactersService>,
+) -> Option<Value> {
+    let id = settings.get(&PERSONA, None)?.preset_id?;
+    let character = characters.character(&id)?;
     let mut told = json!({ "id": character.id, "package": { "id": character.package, "version": character.version } });
-    if let Some(engine) = chosen_engine(app, &character.id, &character.package) {
+    if let Some(engine) = chosen_engine(settings, &character.id, &character.package) {
         told["engine"] = json!(engine);
     }
     Some(told)
@@ -110,29 +118,30 @@ pub fn of_home(app: &App) -> Option<Value> {
 
 /// Where the centre's signed feed has this version of a package: its address and hash (`{url, sha256, size}`); none
 /// when the feed is not read here or does not have it.
-async fn archive_of(app: &App, package: &str, version: &str) -> Option<Value> {
-    let feed = app.catalog.feed(false).await?;
+async fn archive_of(catalog: &Arc<crate::plugins::PackageCatalog>, package: &str, version: &str) -> Option<Value> {
+    let feed = catalog.feed(false).await?;
     let entry = feed.find(package, Some(version))?;
     Some(json!({ "url": entry.url.as_str(), "sha256": entry.sha256, "size": entry.size }))
 }
 
 /// The Турбо that gives the voice: the one the voice goes to now, else one on the line — its voice ready or not.
-fn voice_turbo(app: &App) -> Option<Arc<RemoteHelper>> {
-    app.helpers
+fn voice_turbo(parts: &Parts) -> Option<Arc<RemoteHelper>> {
+    parts
+        .helpers
         .pick_remote(Ability::Voice)
-        .or_else(|| app.helpers.offering(Ability::Voice).into_iter().find(|helper| helper.up()))
+        .or_else(|| parts.helpers.offering(Ability::Voice).into_iter().find(|helper| helper.up()))
 }
 
 /// Names the home's character to the Турбо that gives the voice, if there is one on the line — its voice ready or
 /// not: a Турбо without a voice yet is the one that must hear it most, it installs the character's voice then (clean-path
 /// check 18.11, item 12: the Mac was on the line without a voice and was never told, so the home spoke Alice's voice).
 /// With the model chosen for its voice and where the centre's feed has its package.
-pub async fn tell(app: &App) -> Result<(), String> {
-    let Some(mut character) = of_home(app) else { return Ok(()) };
-    let Some(remote) = voice_turbo(app) else { return Ok(()) };
+pub async fn tell(parts: &Parts) -> Result<(), String> {
+    let Some(mut character) = of_home(&parts.settings, &parts.characters) else { return Ok(()) };
+    let Some(remote) = voice_turbo(parts) else { return Ok(()) };
     let package = (character["package"]["id"].as_str(), character["package"]["version"].as_str());
     if let (Some(package), Some(version)) = package {
-        if let Some(archive) = archive_of(app, package, version).await {
+        if let Some(archive) = archive_of(&parts.catalog, package, version).await {
             character["archive"] = archive;
         }
     }
@@ -177,7 +186,7 @@ pub fn no_room(model: &str, need_mb: u64, free_mb: u64) -> ApiError {
     )
 }
 
-pub fn routes() -> Router<Arc<App>> {
+pub fn routes<S: crate::home::RouteNeeds>() -> Router<S> {
     Router::new()
         .route("/api/v1/home/voice", get(voice).put(choose))
         .route("/api/v1/home/voice/pending", get(pending).post(answer_pending))
@@ -237,17 +246,19 @@ async fn waiting_at(remote: &RemoteHelper) -> Option<Value> {
 /// The voice waiting for the owner, wherever it waits (clean-path check 19.11: «Голос ждёт» lived only on the
 /// computer's own page): this gateway's own (a computer that is the home's centre), else the voice's Турбо's —
 /// `{turbo: {id, name, up} | null, pending: {…, title, character?} | null}`.
-async fn waiting(app: &App) -> Value {
+async fn waiting(parts: &Parts) -> Value {
     #[cfg(feature = "pc")]
-    if let Some(pending) = crate::home_server::voice_plan::waiting(app).await {
+    if let Some(pending) =
+        crate::home_server::voice_plan::waiting(&parts.models, &parts.characters, &parts.voice_lab).await
+    {
         return json!({ "turbo": null, "pending": pending });
     }
-    let remote = voice_turbo(app).or_else(|| app.helpers.offering(Ability::Voice).into_iter().next());
+    let remote = voice_turbo(parts).or_else(|| parts.helpers.offering(Ability::Voice).into_iter().next());
     let Some(remote) = remote else {
         return json!({ "turbo": null, "pending": null });
     };
     let up = remote.up();
-    let name = app.helpers.views().into_iter().find(|view| view.id == remote.id()).map(|view| view.name);
+    let name = parts.helpers.views().into_iter().find(|view| view.id == remote.id()).map(|view| view.name);
     let pending = if up { waiting_at(&remote).await } else { None };
     json!({
         "turbo": { "id": remote.id(), "name": name.unwrap_or_else(|| remote.id().to_string()), "up": up },
@@ -255,21 +266,21 @@ async fn waiting(app: &App) -> Value {
     })
 }
 
-async fn pending(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<Value> {
+async fn pending(Uses(parts): Uses<Parts>, caller: Caller) -> ApiResult<Value> {
     caller.permitted(STATION_VIEW)?;
-    Ok(ok(waiting(&app).await))
+    Ok(ok(waiting(&parts).await))
 }
 
 /// The owner's answer to the waiting voice — `{"answer": "anyway" | "retry" | "cancel"}` — here, or passed to the
 /// Турбо where it waits; then what waits now.
-async fn answer_pending(State(app): State<Arc<App>>, caller: Caller, Body(answer): Body<Answer>) -> ApiResult<Value> {
+async fn answer_pending(Uses(parts): Uses<Parts>, caller: Caller, Body(answer): Body<Answer>) -> ApiResult<Value> {
     caller.permitted(MODELS_MANAGE)?;
     #[cfg(feature = "pc")]
-    if app.models.pending().is_some() {
-        crate::home_server::voice_plan::answer(&app, &answer.answer, caller.actor()).await?;
-        return Ok(ok(waiting(&app).await));
+    if parts.models.pending().is_some() {
+        crate::home_server::voice_plan::answer(&parts.models, &answer.answer, caller.actor()).await?;
+        return Ok(ok(waiting(&parts).await));
     }
-    let Some(remote) = voice_turbo(&app).filter(|remote| remote.up()) else {
+    let Some(remote) = voice_turbo(&parts).filter(|remote| remote.up()) else {
         return Err(ApiError::conflict(crate::tr!("Компьютер с голосом не на связи — ответить ему пока нельзя.")));
     };
     let request = crate::utils::http::client()
@@ -286,7 +297,7 @@ async fn answer_pending(State(app): State<Arc<App>>, caller: Caller, Body(answer
         let status = axum::http::StatusCode::from_u16(status.as_u16()).unwrap_or(axum::http::StatusCode::BAD_GATEWAY);
         return Err(ApiError::new(status, message));
     }
-    Ok(ok(waiting(&app).await))
+    Ok(ok(waiting(&parts).await))
 }
 
 /// What the Турбо's plan needs of an installed character.
@@ -305,22 +316,25 @@ fn plan_request(character: &Character, engine: Option<String>) -> Value {
 
 /// The plan's request and the owner's choice for a character, or for a package of the catalog not installed here yet:
 /// its models from the feed's `needs` of kind `engine`, a reference taken as there.
-async fn asked(app: &App, which: &Which) -> Result<(Value, Option<String>), ApiError> {
+async fn asked(
+    characters: &Arc<crate::characters::CharactersService>,
+    settings: &Arc<crate::settings::SettingsService>,
+    catalog: &Arc<crate::plugins::PackageCatalog>,
+    which: &Which,
+) -> Result<(Value, Option<String>), ApiError> {
     let character = match (&which.character, &which.package) {
         (Some(id), _) => Some(
-            app.characters
-                .character(id)
-                .ok_or_else(|| ApiError::not_found(crate::tr!("Нет персонажа {id}.", id = id)))?,
+            characters.character(id).ok_or_else(|| ApiError::not_found(crate::tr!("Нет персонажа {id}.", id = id)))?,
         ),
-        (None, Some(package)) => app.characters.of_package(package),
+        (None, Some(package)) => characters.of_package(package),
         (None, None) => return Err(ApiError::bad_request("character или package".to_string())),
     };
     if let Some(character) = character {
-        let chosen = chosen_engine(app, &character.id, &character.package);
+        let chosen = chosen_engine(settings, &character.id, &character.package);
         return Ok((plan_request(&character, chosen.clone()), chosen));
     }
     let package = which.package.clone().unwrap_or_default();
-    let feed = app.catalog.feed(false).await;
+    let feed = catalog.feed(false).await;
     let entry = feed
         .as_ref()
         .and_then(|feed| feed.find(&package, None))
@@ -334,7 +348,7 @@ async fn asked(app: &App, which: &Which) -> Result<(Value, Option<String>), ApiE
         .filter_map(|need| need.get("id").and_then(Value::as_str))
         .filter(|engine| KNOWN_ENGINES.contains(engine))
         .collect();
-    let chosen = chosen_engine(app, &package, &package);
+    let chosen = chosen_engine(settings, &package, &package);
     let request = json!({
         "id": package,
         "package": { "id": package, "version": entry.version.to_string() },
@@ -366,14 +380,14 @@ async fn plan_of(remote: &RemoteHelper, request: &Value) -> Option<Value> {
 }
 
 /// `{turbo: {id, name, up} | null, plan: VoicePlan | null, chosen}`.
-async fn answer(app: &App, which: &Which) -> Result<Value, ApiError> {
-    let (request, chosen) = asked(app, which).await?;
-    let remote = voice_turbo(app).or_else(|| app.helpers.offering(Ability::Voice).into_iter().next());
+async fn answer(parts: &Parts, which: &Which) -> Result<Value, ApiError> {
+    let (request, chosen) = asked(&parts.characters, &parts.settings, &parts.catalog, which).await?;
+    let remote = voice_turbo(parts).or_else(|| parts.helpers.offering(Ability::Voice).into_iter().next());
     let Some(remote) = remote else {
         return Ok(json!({ "turbo": null, "plan": null, "chosen": chosen }));
     };
     let up = remote.up();
-    let name = app.helpers.views().into_iter().find(|view| view.id == remote.id()).map(|view| view.name);
+    let name = parts.helpers.views().into_iter().find(|view| view.id == remote.id()).map(|view| view.name);
     let plan = if up { plan_of(&remote, &request).await } else { None };
     Ok(json!({
         "turbo": { "id": remote.id(), "name": name.unwrap_or_else(|| remote.id().to_string()), "up": up },
@@ -382,14 +396,14 @@ async fn answer(app: &App, which: &Which) -> Result<Value, ApiError> {
     }))
 }
 
-async fn voice(State(app): State<Arc<App>>, caller: Caller, Query(which): Query<Which>) -> ApiResult<Value> {
+async fn voice(Uses(parts): Uses<Parts>, caller: Caller, Query(which): Query<Which>) -> ApiResult<Value> {
     caller.permitted(STATION_VIEW)?;
-    Ok(ok(answer(&app, &which).await?))
+    Ok(ok(answer(&parts, &which).await?))
 }
 
 /// The owner's model for a character's voice (or a package's, before it is installed): kept here and named to the
 /// Турбо at once, in the background — its package may be downloaded there first.
-async fn choose(State(app): State<Arc<App>>, caller: Caller, Body(choice): Body<Choice>) -> ApiResult<Value> {
+async fn choose(Uses(parts): Uses<Parts>, caller: Caller, Body(choice): Body<Choice>) -> ApiResult<Value> {
     caller.permitted(MODELS_MANAGE)?;
     if !KNOWN_ENGINES.contains(&choice.engine.as_str()) {
         return Err(ApiError::bad_request(crate::tr!(
@@ -403,9 +417,9 @@ async fn choose(State(app): State<Arc<App>>, caller: Caller, Body(choice): Body<
         _ => return Err(ApiError::bad_request("character или package".to_string())),
     };
     let which = Which { character: choice.character.clone(), package: choice.package.clone() };
-    let (request, _) = asked(&app, &which).await?;
+    let (request, _) = asked(&parts.characters, &parts.settings, &parts.catalog, &which).await?;
     // A model that would not fit on the Турбо's disk is refused, and not kept: its plan says so while it is on the line.
-    if let Some(remote) = voice_turbo(&app).filter(|remote| remote.up()) {
+    if let Some(remote) = voice_turbo(&parts).filter(|remote| remote.up()) {
         if let Some(plan) = plan_of(&remote, &request).await {
             let row = plan["engines"].as_array().into_iter().flatten().find(|row| row["id"] == choice.engine.as_str());
             if let Some(row) = row.filter(|row| row["diskFits"] == false) {
@@ -415,16 +429,16 @@ async fn choose(State(app): State<Arc<App>>, caller: Caller, Body(choice): Body<
             }
         }
     }
-    let mut chosen = app.settings.get(&HOME_VOICE_ENGINES, None).unwrap_or_default();
+    let mut chosen = parts.settings.get(&HOME_VOICE_ENGINES, None).unwrap_or_default();
     keep_choice(&mut chosen, &key, choice.character.is_some(), &choice.engine);
-    app.settings.set(&HOME_VOICE_ENGINES, &chosen, caller.actor())?;
-    let told = app.clone();
+    parts.settings.set(&HOME_VOICE_ENGINES, &chosen, caller.actor())?;
+    let told = parts.clone();
     tokio::spawn(async move {
         if let Err(error) = tell(&told).await {
             tracing::info!(target: "home", "the voice's model to the Турбо: {error}");
         }
     });
-    Ok(ok(answer(&app, &which).await?))
+    Ok(ok(answer(&parts, &which).await?))
 }
 
 #[cfg(test)]
@@ -440,6 +454,7 @@ mod tests {
     use tower::ServiceExt;
 
     use super::*;
+    use crate::app::App;
     use crate::characters::contributes::tests::{arthur_manifest, write_arthur};
     use crate::config::{Config, Env};
     use crate::helpers::tests::{contract, KEY};
@@ -641,7 +656,7 @@ mod tests {
         assert!(first.get("archive").is_none(), "{first}");
         assert_eq!(turbo.told.lock().unwrap().len(), 1, "the refused one was never told");
         // The Турбо back on the line is told the same.
-        tell(&app).await.unwrap();
+        tell(&crate::platform::http::Provides::provide(&app)).await.unwrap();
         assert_eq!(told(&turbo, 2).await["engine"], "voxcpm");
 
         // An older Турбо: no plan, the panel goes as before.
@@ -692,21 +707,21 @@ mod tests {
         let mut chosen = app.settings.get(&HOME_VOICE_ENGINES, None).unwrap();
         chosen.insert("arthur:arthur".into(), "voxcpm".into());
         app.settings.set(&HOME_VOICE_ENGINES, &chosen, None).unwrap();
-        assert_eq!(of_home(&app).unwrap()["engine"], "voxcpm");
+        assert_eq!(of_home(&app.settings, &app.characters).unwrap()["engine"], "voxcpm");
 
         // The owner's last word wins (21.11): chosen again by the package (the wizard's), it is that one, not the
         // character's older one.
         let again = json!({ "package": "arthur", "engine": "omnivoice" });
         let (status, view) = send(&app, "PUT", "/api/v1/home/voice", &owner, again).await;
         assert_eq!(status, StatusCode::OK, "{view}");
-        assert_eq!(of_home(&app).unwrap()["engine"], "omnivoice");
+        assert_eq!(of_home(&app.settings, &app.characters).unwrap()["engine"], "omnivoice");
         assert_eq!(told(&turbo, 2).await["engine"], "omnivoice");
         let kept = app.settings.get(&HOME_VOICE_ENGINES, None).unwrap();
         assert_eq!(kept, BTreeMap::from([("arthur".to_string(), "omnivoice".to_string())]));
         // Removed, the package's choices go with it.
-        forget_package(&app, "arthur");
+        forget_package(&app.settings, &app.characters, "arthur");
         assert!(app.settings.get(&HOME_VOICE_ENGINES, None).unwrap().is_empty());
-        assert!(of_home(&app).unwrap().get("engine").is_none());
+        assert!(of_home(&app.settings, &app.characters).unwrap().get("engine").is_none());
     }
 
     /// One choice for a character's voice at a time: by its package or by itself, whichever came last; a package's

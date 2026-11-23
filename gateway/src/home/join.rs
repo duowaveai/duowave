@@ -25,20 +25,20 @@
 //! Each change is `home.join` on the live channel (its subject the request's id): the admins' panels read the list
 //! again and show the request's card.
 
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Mutex, MutexGuard};
 
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, Query};
 use axum::routing::{get, post};
 use axum::Router;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use subtle::ConstantTimeEq;
 
+use super::Parts;
 use crate::access::throttle::LoginThrottle;
-use crate::app::App;
 use crate::core::events::{Actor, GatewayEvent};
 use crate::core::identity::permissions::USERS_MANAGE;
-use crate::platform::http::{created, ok, ApiError, ApiResult, Body, Caller, Zone};
+use crate::platform::http::{created, ok, ApiError, ApiResult, Body, Caller, Uses, Zone};
 use crate::utils::ids::{random_hex, uuid};
 use crate::utils::time::now_ms;
 
@@ -491,7 +491,7 @@ impl Joins {
 
 // ─── The routes ──────────────────────────────────────────────
 
-pub fn routes() -> Router<Arc<App>> {
+pub fn routes<S: crate::home::RouteNeeds>() -> Router<S> {
     Router::new()
         .route("/api/v1/home/join", post(ask))
         .route("/api/v1/home/joins", get(list))
@@ -502,20 +502,20 @@ pub fn routes() -> Router<Arc<App>> {
         .route("/api/v1/home/join/{id}/deny", post(deny))
 }
 
-fn changed(app: &App, id: &str, change: &str, actor: Option<Actor>) {
-    app.events.emit(GatewayEvent::HomeJoin { id: id.to_string(), change: change.to_string(), actor });
+fn changed(parts: &Parts, id: &str, change: &str, actor: Option<Actor>) {
+    parts.events.emit(GatewayEvent::HomeJoin { id: id.to_string(), change: change.to_string(), actor });
 }
 
 /// This gateway is the home's centre: not an ear of another's, and — on a computer — not the Turbo of a station's.
-fn centre_here(app: &App) -> Result<(), ApiError> {
-    if let Some((ear, _)) = super::ear::centre(app) {
+fn centre_here(parts: &Parts) -> Result<(), ApiError> {
+    if let Some((ear, _)) = super::ear::centre(&parts.settings, &parts.secrets) {
         return Err(ApiError::conflict(crate::tr!(
             "Это не хаб дома: подключайтесь к хабу, {address}.",
             address = ear.address
         )));
     }
     #[cfg(feature = "pc")]
-    if let Some(centre) = super::devices::centre_elsewhere(app) {
+    if let Some(centre) = super::devices::centre_elsewhere(&parts.station_gateway) {
         let address = centre.record().map(|record| record.address).unwrap_or_default();
         return Err(ApiError::conflict(crate::tr!(
             "Это не хаб дома: подключайтесь к хабу, {address}.",
@@ -552,9 +552,9 @@ fn asker_name(body: &Value, kind: JoinKind) -> String {
     }
 }
 
-async fn ask(State(app): State<Arc<App>>, caller: Caller, Body(body): Body<Value>) -> ApiResult<Value> {
+async fn ask(Uses(parts): Uses<Parts>, caller: Caller, Body(body): Body<Value>) -> ApiResult<Value> {
     caller.zone_at_least(Zone::Home)?;
-    centre_here(&app)?;
+    centre_here(&parts)?;
     let kind: JoinKind = serde_json::from_value(body.get("kind").cloned().unwrap_or(Value::Null))
         .map_err(|_| ApiError::bad_request(crate::tr!("kind: turbo или ear")))?;
     let link = match body.get("link") {
@@ -566,11 +566,11 @@ async fn ask(State(app): State<Arc<App>>, caller: Caller, Body(body): Body<Value
     };
     let name = asker_name(&body, kind);
     let address = text(&body, "address").map(str::to_string);
-    let asked = app.joins.ask(kind, &name, address, link, &caller.source, now_ms())?;
+    let asked = parts.joins.ask(kind, &name, address, link, &caller.source, now_ms())?;
     tracing::info!(target: "home", "join: «{name}» asks in as {} from {}", kind.as_str(), caller.source);
-    let told = super::join_say::tell(app.clone(), &asked.id, &name, kind, &asked.code, asked.expires_ms);
-    app.joins.told(&asked.id, |kept| *kept = told.clone());
-    changed(&app, &asked.id, "asked", None);
+    let told = super::join_say::tell(parts.clone(), &asked.id, &name, kind, &asked.code, asked.expires_ms);
+    parts.joins.told(&asked.id, |kept| *kept = told.clone());
+    changed(&parts, &asked.id, "asked", None);
     Ok(created(json!({
         "id": asked.id,
         "token": asked.token,
@@ -587,17 +587,17 @@ struct TokenQuery {
 }
 
 async fn read(
-    State(app): State<Arc<App>>,
+    Uses(parts): Uses<Parts>,
     caller: Caller,
     Path(id): Path<String>,
     Query(query): Query<TokenQuery>,
 ) -> ApiResult<AskerView> {
     caller.zone_at_least(Zone::Home)?;
-    Ok(ok(app.joins.read(&id, &query.token, now_ms())?))
+    Ok(ok(parts.joins.read(&id, &query.token, now_ms())?))
 }
 
 async fn code(
-    State(app): State<Arc<App>>,
+    Uses(parts): Uses<Parts>,
     caller: Caller,
     Path(id): Path<String>,
     Body(body): Body<Value>,
@@ -605,9 +605,9 @@ async fn code(
     caller.zone_at_least(Zone::Home)?;
     let token = text(&body, "token").unwrap_or_default();
     let given = text(&body, "code").unwrap_or_default();
-    match app.joins.code(&id, token, given, now_ms())? {
+    match parts.joins.code(&id, token, given, now_ms())? {
         CodeOutcome::Wrong { tries_left } => {
-            changed(&app, &id, if tries_left == 0 { "closed" } else { "wrong" }, None);
+            changed(&parts, &id, if tries_left == 0 { "closed" } else { "wrong" }, None);
             Err(ApiError::forbidden(if tries_left == 0 {
                 crate::tr!("Три неверных кода: запрос закрыт. Попросите новый код.")
             } else {
@@ -615,88 +615,95 @@ async fn code(
             }))
         }
         CodeOutcome::Right => {
-            let grant = join(&app, &id, None).await?;
-            app.joins.granted(&id, grant.clone(), false);
-            changed(&app, &id, "joined", None);
+            let grant = join(&parts, &id, None).await?;
+            parts.joins.granted(&id, grant.clone(), false);
+            changed(&parts, &id, "joined", None);
             Ok(created(json!({ "status": JoinStatus::Joined, "grant": grant })))
         }
     }
 }
 
 async fn say(
-    State(app): State<Arc<App>>,
+    Uses(parts): Uses<Parts>,
     caller: Caller,
     Path(id): Path<String>,
     Body(body): Body<Value>,
 ) -> ApiResult<Value> {
     caller.zone_at_least(Zone::Home)?;
     let token = text(&body, "token").unwrap_or_default();
-    let Some((code, name, kind)) = app.joins.say_again(&id, token, now_ms())? else {
+    let Some((code, name, kind)) = parts.joins.say_again(&id, token, now_ms())? else {
         return Ok(ok(json!({ "said": false })));
     };
-    let told = super::join_say::tell(app.clone(), &id, &name, kind, &code, now_ms());
-    app.joins.told(&id, |kept| *kept = told.clone());
+    let told = super::join_say::tell(parts.clone(), &id, &name, kind, &code, now_ms());
+    parts.joins.told(&id, |kept| *kept = told.clone());
     Ok(created(json!({ "said": true, "told": told })))
 }
 
-async fn list(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<Vec<JoinView>> {
+async fn list(Uses(parts): Uses<Parts>, caller: Caller) -> ApiResult<Vec<JoinView>> {
     admin(&caller)?;
-    Ok(ok(app.joins.list(now_ms())))
+    Ok(ok(parts.joins.list(now_ms())))
 }
 
-async fn approve(State(app): State<Arc<App>>, caller: Caller, Path(id): Path<String>) -> ApiResult<Value> {
+async fn approve(Uses(parts): Uses<Parts>, caller: Caller, Path(id): Path<String>) -> ApiResult<Value> {
     admin(&caller)?;
-    app.joins.approve(&id, now_ms())?;
-    let grant = join(&app, &id, caller.actor()).await?;
-    app.joins.granted(&id, grant, true);
-    changed(&app, &id, "joined", caller.actor());
+    parts.joins.approve(&id, now_ms())?;
+    let grant = join(&parts, &id, caller.actor()).await?;
+    parts.joins.granted(&id, grant, true);
+    changed(&parts, &id, "joined", caller.actor());
     Ok(created(json!({ "status": JoinStatus::Joined })))
 }
 
-async fn deny(State(app): State<Arc<App>>, caller: Caller, Path(id): Path<String>) -> ApiResult<Value> {
+async fn deny(Uses(parts): Uses<Parts>, caller: Caller, Path(id): Path<String>) -> ApiResult<Value> {
     admin(&caller)?;
-    app.joins.deny(&id, now_ms())?;
-    changed(&app, &id, "denied", caller.actor());
+    parts.joins.deny(&id, now_ms())?;
+    changed(&parts, &id, "denied", caller.actor());
     Ok(created(json!({ "status": JoinStatus::Denied })))
 }
 
 /// What joins the asker of a request that was let in: the pair's key of a station centre, or the link a computer
 /// centre opens to the asker's own connection key. A failure closes the request and says why.
-async fn join(app: &Arc<App>, id: &str, actor: Option<Actor>) -> Result<Value, ApiError> {
-    let Some((kind, link, name)) = app.joins.kind_and_link(id) else {
+async fn join(parts: &Parts, id: &str, actor: Option<Actor>) -> Result<Value, ApiError> {
+    let Some((kind, link, name)) = parts.joins.kind_and_link(id) else {
         return Err(ApiError::not_found(crate::tr!("Такого запроса нет: он закончился или хаб перезапустился.")));
     };
-    let made = grant(app, kind, link, &name, actor).await;
+    let made = grant(parts, kind, link, &name, actor).await;
     match made {
         Ok(grant) => {
             tracing::info!(target: "home", "join: «{name}» joined as {}", kind.as_str());
             Ok(grant)
         }
         Err(error) => {
-            app.joins.failed(id, &error.message, now_ms());
-            changed(app, id, "closed", None);
+            parts.joins.failed(id, &error.message, now_ms());
+            changed(parts, id, "closed", None);
             Err(error)
         }
     }
 }
 
 async fn grant(
-    app: &Arc<App>,
+    parts: &Parts,
     kind: JoinKind,
     link: Option<LinkOffer>,
     name: &str,
     actor: Option<Actor>,
 ) -> Result<Value, ApiError> {
     use crate::placement::service::Role;
-    if app.placement.role() == Role::Station {
-        let key = app.placement.pair_key()?;
+    if parts.placement.role() == Role::Station {
+        let key = parts.placement.pair_key()?;
         // The key only: the asker reached this centre at an address and port it knows better than the centre does
         // (a port published elsewhere, a test's own socket).
         return Ok(json!({ "key": key }));
     }
     match (kind, link) {
         (JoinKind::Turbo, Some(link)) => {
-            let id = crate::helpers::routes::pair_with_key(app, &link.url, &link.key, Some(name), actor).await?;
+            let id = crate::helpers::routes::pair_with_key(
+                (&parts.identity, &parts.secrets, &parts.helpers),
+                &link.url,
+                &link.key,
+                Some(name),
+                actor,
+            )
+            .await?;
             Ok(json!({ "helper": id }))
         }
         (JoinKind::Turbo, None) => Err(ApiError::bad_request(crate::tr!(

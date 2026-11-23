@@ -29,9 +29,14 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use super::device_tag::device_tag_of;
-use crate::app::App;
+use super::session_registry::SessionRegistry;
+use crate::config::Config;
 use crate::operations::networks::{in_networks, via_tunnel};
-use crate::platform::http::Caller;
+use crate::placement::PlacementService;
+use crate::platform::http::{Caller, Provides, RouteState, Uses};
+use crate::secrets::SecretsService;
+use crate::settings::SettingsService;
+use crate::stations::StationsService;
 
 /// Connections one address may hold at once (the station keeps a few), and all of them together.
 pub const PER_ADDRESS: usize = 16;
@@ -267,11 +272,41 @@ async fn pump_closing_in(
 /// Node's 'upgrade' listener took it before Express and its securityMiddleware saw the request. So a station that
 /// reaches us by any name (a router's domain, a DDNS name) connects; the upgrade keeps its own checks. The path is
 /// compared as it is, as Node compared the pathname; everything else goes on to the routes.
-pub async fn station_socket(State(app): State<Arc<App>>, request: Request, next: Next) -> Response {
-    if request.uri().path() != app.config.gateway.uniproxy_path || !request.headers().contains_key(header::UPGRADE) {
+pub async fn station_socket<S: SocketNeeds>(
+    State(state): State<S>,
+    Uses(config): Uses<Arc<Config>>,
+    request: Request,
+    next: Next,
+) -> Response {
+    if request.uri().path() != config.gateway.uniproxy_path || !request.headers().contains_key(header::UPGRADE) {
         return next.run(request).await;
     }
-    upgrade.call(request, app).await
+    upgrade.call(request, state).await
+}
+
+/// What the station's socket uses of the gateway: the configuration, the live sessions, the stations it admits, the
+/// placement's pair key its own ear opens the socket with, and the settings and secrets of the home's centre it passes
+/// the voice on to when this gateway is an ear of one.
+pub trait SocketNeeds:
+    RouteState
+    + Provides<Arc<Config>>
+    + Provides<Arc<SessionRegistry>>
+    + Provides<Arc<StationsService>>
+    + Provides<Arc<SettingsService>>
+    + Provides<Arc<SecretsService>>
+    + Provides<Arc<PlacementService>>
+{
+}
+
+impl<S> SocketNeeds for S where
+    S: RouteState
+        + Provides<Arc<Config>>
+        + Provides<Arc<SessionRegistry>>
+        + Provides<Arc<StationsService>>
+        + Provides<Arc<SettingsService>>
+        + Provides<Arc<SecretsService>>
+        + Provides<Arc<PlacementService>>
+{
 }
 
 fn refused(status: StatusCode) -> Response {
@@ -285,10 +320,22 @@ pub fn from_a_page(headers: &HeaderMap) -> bool {
 }
 
 /// The checks before the upgrade: the station is at home (nothing of it through a tunnel), it is no browser's page,
-/// it does not open sockets without end, and it is one we know. The socket's place among the limits is taken here, at once with the count, and
-/// held until its session is served (or the upgrade fails): sockets upgraded together cannot all pass one count.
-async fn upgrade(State(app): State<Arc<App>>, caller: Caller, upgrade: WebSocketUpgrade) -> Response {
-    let config = &app.config.gateway;
+/// it does not open sockets without end, and it is one we know. The socket's place among the limits is taken here, at
+/// once with the count, and held until its session is served (or the upgrade fails): sockets upgraded together cannot
+/// all pass one count. Each part of the gateway it reads is an extractor of its own.
+#[allow(clippy::too_many_arguments)]
+async fn upgrade(
+    Uses(config): Uses<Arc<Config>>,
+    Uses(sessions): Uses<Arc<SessionRegistry>>,
+    Uses(stations): Uses<Arc<StationsService>>,
+    Uses(settings): Uses<Arc<SettingsService>>,
+    Uses(secrets): Uses<Arc<SecretsService>>,
+    Uses(placement): Uses<Arc<PlacementService>>,
+    caller: Caller,
+    upgrade: WebSocketUpgrade,
+) -> Response {
+    let uniproxy_path = config.gateway.uniproxy_path.clone();
+    let config = &config.gateway;
     if via_tunnel(&caller.headers) {
         tracing::warn!(target: "uniproxy", "rejected WebSocket upgrade to {} through a tunnel", config.uniproxy_path);
         return refused(StatusCode::FORBIDDEN);
@@ -303,7 +350,7 @@ async fn upgrade(State(app): State<Arc<App>>, caller: Caller, upgrade: WebSocket
         tracing::warn!(target: "uniproxy", "rejected the station socket from {address}: not the home network");
         return refused(StatusCode::FORBIDDEN);
     }
-    let slot = match app.sessions.reserve(&address, PER_ADDRESS, IN_ALL) {
+    let slot = match sessions.reserve(&address, PER_ADDRESS, IN_ALL) {
         Ok(slot) => slot,
         Err((in_all, from_here)) => {
             tracing::warn!(
@@ -316,10 +363,10 @@ async fn upgrade(State(app): State<Arc<App>>, caller: Caller, upgrade: WebSocket
     let device = device_tag_of(&caller.headers, config.recorder.redact);
     // The station of this centre's own ear, its socket opened on by that ear with this centre's pair key: invited, as
     // a station the admin connected from the panel is (src/home/ear.rs, EAR_KEY_HEADER).
-    if from_own_ear(&caller, app.placement.peer_key()) {
-        app.stations.expect(&address, 60_000);
+    if from_own_ear(&caller, placement.peer_key()) {
+        stations.expect(&address, 60_000);
     }
-    let admitted = app.stations.admit(&device, &address);
+    let admitted = stations.admit(&device, &address);
     if !admitted.ok {
         tracing::warn!(
             target: "uniproxy",
@@ -328,17 +375,16 @@ async fn upgrade(State(app): State<Arc<App>>, caller: Caller, upgrade: WebSocket
         );
         return refused(StatusCode::FORBIDDEN);
     }
-    let sessions = app.sessions.clone();
     // The ear's key stays here: the station's headers go on to Yandex.
     let mut headers = caller.headers.clone();
     headers.remove(crate::home::ear::EAR_KEY_HEADER);
     let handshake = Handshake { headers, remote_address: address };
-    let ear_app = app.clone();
     upgrade.max_message_size(MAX_MESSAGE).on_upgrade(move |socket| async move {
         // An ear of the home's centre (docs/plans/home-and-devices.md, stage 4): the station's voice goes on to the
         // centre; the centre away — answered here, from the home's copy.
-        if crate::home::ear::centre(&ear_app).is_some() {
-            if let Some(centre) = crate::home::ear::dial(&ear_app, &handshake.headers).await {
+        if crate::home::ear::centre(&settings, &secrets).is_some() {
+            if let Some(centre) = crate::home::ear::dial(&settings, &secrets, &uniproxy_path, &handshake.headers).await
+            {
                 drop(slot);
                 crate::home::ear::bridge(socket, centre).await;
                 return;

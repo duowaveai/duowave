@@ -4,3 +4,5 @@
 pub mod service;
 
 pub use service::{routes, HistoryQuery, ModeSource, RequestsService, StoredMode, DEFAULT_KEEP_DAYS, RECENT};
+
+crate::route_needs!(std::sync::Arc<RequestsService>);

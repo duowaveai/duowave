@@ -10,12 +10,12 @@
 //! Stations do not announce: their RAM and space are tight, and they are found as before.
 
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 use std::time::Duration;
 
 use tokio::task::JoinHandle;
 
-use crate::app::App;
+use super::Parts;
 use crate::stations::connect::discovery::{self, DnsRecord, DUOWAVE_SERVICE, MDNS_GROUP, MDNS_PORT};
 
 /// The records stand this long in the askers' caches.
@@ -24,12 +24,12 @@ const TTL: u32 = 120;
 static RUNNING: Mutex<Option<(JoinHandle<()>, Vec<u8>)>> = Mutex::new(None);
 
 /// What this gateway is, as its TXT says it.
-pub fn role(app: &App) -> &'static str {
-    if crate::home::ear::centre(app).is_some() {
+pub fn role(parts: &Parts) -> &'static str {
+    if crate::home::ear::centre(&parts.settings, &parts.secrets).is_some() {
         return "ear";
     }
     #[cfg(feature = "pc")]
-    if crate::home::devices::centre_elsewhere(app).is_some() {
+    if crate::home::devices::centre_elsewhere(&parts.station_gateway).is_some() {
         return "turbo";
     }
     "centre"
@@ -49,24 +49,24 @@ fn label(text: &str) -> String {
 }
 
 /// This gateway's records for an asker on `near`: the address on its network goes into A.
-pub fn records(app: &App, near: Option<Ipv4Addr>) -> Vec<DnsRecord> {
-    let me = app.identity.as_helper();
+pub fn records(parts: &Parts, near: Option<Ipv4Addr>) -> Vec<DnsRecord> {
+    let me = parts.identity.as_helper();
     let id: String = me.id.chars().filter(char::is_ascii_alphanumeric).take(8).collect();
     let id = if id.is_empty() { "duowave".to_string() } else { id };
     let instance = format!("duowave-{}-{id}.{DUOWAVE_SERVICE}", label(&me.name).trim_matches('-'));
     let host = format!("duowave-{id}.local");
     // The port it really listens on (the desktop app may bind another than PORT), else the configured one.
-    let port = app.config.app.public_port.unwrap_or_else(|| match app.helpers.local_port() {
-        0 => app.config.app.port,
+    let port = parts.config.app.public_port.unwrap_or_else(|| match parts.helpers.local_port() {
+        0 => parts.config.app.port,
         bound => bound,
     });
     let mut txt = std::collections::BTreeMap::new();
-    txt.insert("role".to_string(), role(app).to_string());
+    txt.insert("role".to_string(), role(parts).to_string());
     txt.insert("port".to_string(), port.to_string());
     txt.insert("version".to_string(), crate::VERSION.to_string());
     txt.insert("name".to_string(), me.name.chars().take(60).collect());
-    txt.insert("home".to_string(), app.identity.home_name().chars().take(60).collect());
-    if let Some(home) = app.identity.home() {
+    txt.insert("home".to_string(), parts.identity.home_name().chars().take(60).collect());
+    if let Some(home) = parts.identity.home() {
         txt.insert("homeId".to_string(), home.id);
     }
     // Who this gateway is, and where its link listens when it helps: a centre whose Turbo moved finds it by these
@@ -74,14 +74,16 @@ pub fn records(app: &App, near: Option<Ipv4Addr>) -> Vec<DnsRecord> {
     if !me.id.is_empty() {
         txt.insert("id".to_string(), me.id.clone());
     }
-    if let Some(link) = app.link.port().filter(|_| app.link.helps()) {
+    if let Some(link) = parts.link.port().filter(|_| parts.link.helps()) {
         txt.insert("link".to_string(), link.to_string());
     }
-    if let Some((ear, _)) = crate::home::ear::centre(app) {
+    if let Some((ear, _)) = crate::home::ear::centre(&parts.settings, &parts.secrets) {
         txt.insert("centre".to_string(), format!("{}:{}", ear.address, ear.port));
     }
     #[cfg(feature = "pc")]
-    if let Some(record) = crate::home::devices::centre_elsewhere(app).and_then(|centre| centre.record()) {
+    if let Some(record) =
+        crate::home::devices::centre_elsewhere(&parts.station_gateway).and_then(|centre| centre.record())
+    {
         txt.insert("centre".to_string(), format!("{}:{}", record.address, record.port));
     }
     let mut records = vec![
@@ -117,9 +119,9 @@ fn addresses(near: Option<Ipv4Addr>) -> Vec<Ipv4Addr> {
 
 /// Starts the announcer (again: an earlier one of this process stops first — the desktop app restarts its engine in
 /// the same process).
-pub fn start(app: Arc<App>) {
+pub fn start(parts: Parts) {
     stop_quietly();
-    let goodbye = discovery::mdns_answer(&records(&app, None), 0);
+    let goodbye = discovery::mdns_answer(&records(&parts, None), 0);
     let task = tokio::spawn(async move {
         let Some(socket) = discovery::shared_socket() else {
             tracing::info!(target: "home", "announce: UDP {MDNS_PORT} is the system's own — this gateway is not announced");
@@ -132,7 +134,7 @@ pub fn start(app: Arc<App>) {
         let group = SocketAddr::V4(SocketAddrV4::new(MDNS_GROUP, MDNS_PORT));
         // Said twice at the start, a second apart (RFC 6762, 8.3), then answered when asked.
         for _ in 0..2 {
-            let _ = socket.send_to(&discovery::mdns_answer(&records(&app, None), TTL), group).await;
+            let _ = socket.send_to(&discovery::mdns_answer(&records(&parts, None), TTL), group).await;
             tokio::time::sleep(Duration::from_secs(1)).await;
         }
         let mut buffer = vec![0u8; 9000];
@@ -145,7 +147,7 @@ pub fn start(app: Arc<App>) {
                 std::net::IpAddr::V4(ip) => Some(ip),
                 std::net::IpAddr::V6(_) => None,
             };
-            let answer = discovery::mdns_answer(&records(&app, near), TTL);
+            let answer = discovery::mdns_answer(&records(&parts, near), TTL);
             if from.port() == MDNS_PORT {
                 let _ = socket.send_to(&answer, group).await;
             } else {
@@ -176,6 +178,7 @@ pub async fn stop() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::App;
     use crate::config::{Config, Env};
 
     /// A computer that is its own home's centre says so, with its port, version and home; its answer reads back as
@@ -184,7 +187,7 @@ mod tests {
     async fn a_computer_centre_announces_its_role_port_and_home_and_reads_back() {
         let app = App::build(Config::for_tests(&Env::from_pairs([("STATE_DIR", "")]))).unwrap();
         app.identity.ensure().unwrap();
-        let records = records(&app, Some(Ipv4Addr::new(192, 168, 1, 20)));
+        let records = records(&crate::platform::http::Provides::provide(&app), Some(Ipv4Addr::new(192, 168, 1, 20)));
         let packet = discovery::mdns_answer(&records, TTL);
         let read = discovery::parse_records(&packet);
         let found = discovery::stations_in(&read, "192.168.1.30", DUOWAVE_SERVICE).expect("a home in the answer");

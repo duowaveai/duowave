@@ -5,17 +5,17 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use axum::extract::{Query, State};
+use axum::extract::Query;
 use axum::routing::get;
 use axum::Router;
 use rusqlite::params;
 use serde::Serialize;
 use serde_json::{Map, Value};
 
-use crate::app::App;
+use super::AccessService;
 use crate::core::events::{EventBus, GatewayEvent};
 use crate::core::identity::permissions::AUDIT_VIEW;
-use crate::platform::http::{ok, ApiResult, Caller};
+use crate::platform::http::{ok, ApiResult, Caller, Provides, RouteState, Uses};
 use crate::settings::definitions::AUTH_SECRET;
 use crate::storage::Db;
 use crate::utils::time::now_iso;
@@ -220,19 +220,19 @@ pub(crate) fn parse_int(text: &str) -> Option<i64> {
     Some(sign * digits.parse::<i64>().unwrap_or(i64::MAX))
 }
 
-pub fn routes() -> Router<Arc<App>> {
+pub fn routes<S: RouteState + Provides<Arc<AccessService>>>() -> Router<S> {
     Router::new().route("/api/v1/audit", get(recent))
 }
 
 /// The newest entries first; `limit` from 1 to 1000, 100 when absent or not a number.
 async fn recent(
-    State(app): State<Arc<App>>,
+    Uses(access): Uses<Arc<AccessService>>,
     caller: Caller,
     Query(query): Query<HashMap<String, String>>,
 ) -> ApiResult<Vec<AuditEntry>> {
     caller.permitted(AUDIT_VIEW)?;
     let limit = query.get("limit").and_then(|limit| parse_int(limit)).filter(|limit| *limit != 0).unwrap_or(100);
-    Ok(ok(app.access.audit.recent(limit)?))
+    Ok(ok(access.audit.recent(limit)?))
 }
 
 #[cfg(test)]

@@ -7,15 +7,14 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 use std::sync::{Arc, LazyLock};
 
-use axum::extract::State;
 use axum::routing::get;
 use axum::Router;
 use regex::Regex;
 use serde::Serialize;
 
-use crate::app::App;
 use crate::core::identity::permissions::SETTINGS_EDIT;
-use crate::platform::http::{ok, ApiResult, Caller};
+use crate::platform::http::{ok, ApiResult, Caller, Provides, RouteState, Uses};
+use crate::secrets::SecretsService;
 
 /// How much of the log's end goes in: enough for an evening's trouble, small enough to paste.
 const LOG_BYTES: u64 = 192 * 1024;
@@ -26,11 +25,11 @@ pub struct Report {
     pub text: String,
 }
 
-pub fn routes() -> Router<Arc<App>> {
+pub fn routes<S: RouteState + Provides<Arc<SecretsService>>>() -> Router<S> {
     Router::new().route("/api/v1/system/report", get(report))
 }
 
-async fn report(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<Report> {
+async fn report(Uses(secrets): Uses<Arc<SecretsService>>, caller: Caller) -> ApiResult<Report> {
     caller.permitted(SETTINGS_EDIT)?;
     let mut text = format!(
         "DuoWave {} · {} {} · {}\n",
@@ -51,7 +50,7 @@ async fn report(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<Report
     }
     let home = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")).ok();
     let user = std::env::var("USER").or_else(|_| std::env::var("USERNAME")).ok();
-    Ok(ok(Report { text: clean(&app.secrets.redact(&text), home.as_deref(), user.as_deref()) }))
+    Ok(ok(Report { text: clean(&secrets.redact(&text), home.as_deref(), user.as_deref()) }))
 }
 
 /// The last `lines` of a file, read from at most its last `bytes`.

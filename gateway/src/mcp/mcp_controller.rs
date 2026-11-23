@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, Query};
 use axum::http::StatusCode;
 use axum::response::Response;
 use axum::routing::{get, patch, post, put};
@@ -16,12 +16,12 @@ use super::mcp_import::{present, Json};
 use super::mcp_service::{
     ImportDone, LoginDone, LoginStart, McpServerInput, McpServerView, McpView, ToolChange, TryResult,
 };
-use crate::app::App;
 use crate::core::identity::permissions::{CONNECTORS_MANAGE, CONNECTORS_VIEW};
 use crate::core::identity::{Principal, PrincipalKind};
-use crate::platform::http::{created, ok, ApiError, ApiResult, Body, Caller, Zone};
+use crate::mcp::McpService;
+use crate::platform::http::{created, ok, ApiError, ApiResult, Body, Caller, Uses, Zone};
 
-pub fn routes() -> Router<Arc<App>> {
+pub fn routes<S: crate::mcp::RouteNeeds>() -> Router<S> {
     Router::new()
         .route("/api/v1/mcp", get(view))
         .route("/api/v1/mcp/servers", post(add))
@@ -50,18 +50,18 @@ fn manager(caller: &Caller) -> Result<(), ApiError> {
     person(caller.permitted(CONNECTORS_MANAGE)?)
 }
 
-async fn view(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<McpView> {
+async fn view(Uses(mcp): Uses<Arc<McpService>>, caller: Caller) -> ApiResult<McpView> {
     caller.permitted(CONNECTORS_VIEW)?;
-    Ok(ok(app.mcp.view()))
+    Ok(ok(mcp.view()))
 }
 
 async fn add(
-    State(app): State<Arc<App>>,
+    Uses(mcp): Uses<Arc<McpService>>,
     caller: Caller,
     Body(input): Body<McpServerInput>,
 ) -> ApiResult<McpServerView> {
     manager(&caller)?;
-    Ok(created(app.mcp.add(&input, caller.actor())?))
+    Ok(created(mcp.add(&input, caller.actor())?))
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -70,45 +70,57 @@ pub struct ImportBody {
     json: Option<Json>,
 }
 
-async fn import(State(app): State<Arc<App>>, caller: Caller, Body(body): Body<ImportBody>) -> ApiResult<ImportDone> {
+async fn import(
+    Uses(mcp): Uses<Arc<McpService>>,
+    caller: Caller,
+    Body(body): Body<ImportBody>,
+) -> ApiResult<ImportDone> {
     manager(&caller)?;
-    Ok(created(app.mcp.import_json(body.json.as_ref(), caller.actor())?))
+    Ok(created(mcp.import_json(body.json.as_ref(), caller.actor())?))
 }
 
 async fn update(
-    State(app): State<Arc<App>>,
+    Uses(mcp): Uses<Arc<McpService>>,
     caller: Caller,
     Path(id): Path<String>,
     Body(input): Body<McpServerInput>,
 ) -> ApiResult<McpServerView> {
     manager(&caller)?;
-    Ok(ok(app.mcp.update(&id, &input, caller.actor())?))
+    Ok(ok(mcp.update(&id, &input, caller.actor())?))
 }
 
-async fn remove(State(app): State<Arc<App>>, caller: Caller, Path(id): Path<String>) -> Result<StatusCode, ApiError> {
+async fn remove(
+    Uses(mcp): Uses<Arc<McpService>>,
+    caller: Caller,
+    Path(id): Path<String>,
+) -> Result<StatusCode, ApiError> {
     manager(&caller)?;
-    app.mcp.remove(&id, caller.actor()).await?;
+    mcp.remove(&id, caller.actor()).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 async fn set_tool(
-    State(app): State<Arc<App>>,
+    Uses(mcp): Uses<Arc<McpService>>,
     caller: Caller,
     Path((id, name)): Path<(String, String)>,
     Body(change): Body<ToolChange>,
 ) -> ApiResult<McpServerView> {
     manager(&caller)?;
-    Ok(ok(app.mcp.set_tool(&id, &name, &change, caller.actor())?))
+    Ok(ok(mcp.set_tool(&id, &name, &change, caller.actor())?))
 }
 
-async fn approve(State(app): State<Arc<App>>, caller: Caller, Path(id): Path<String>) -> ApiResult<McpServerView> {
+async fn approve(Uses(mcp): Uses<Arc<McpService>>, caller: Caller, Path(id): Path<String>) -> ApiResult<McpServerView> {
     manager(&caller)?;
-    Ok(ok(app.mcp.approve_instructions(&id, caller.actor())?))
+    Ok(ok(mcp.approve_instructions(&id, caller.actor())?))
 }
 
-async fn reconnect(State(app): State<Arc<App>>, caller: Caller, Path(id): Path<String>) -> ApiResult<McpServerView> {
+async fn reconnect(
+    Uses(mcp): Uses<Arc<McpService>>,
+    caller: Caller,
+    Path(id): Path<String>,
+) -> ApiResult<McpServerView> {
     caller.permitted(CONNECTORS_MANAGE)?;
-    Ok(ok(app.mcp.reconnect(&id).await?))
+    Ok(ok(mcp.reconnect(&id).await?))
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -118,31 +130,31 @@ pub struct TryBody {
 }
 
 async fn try_tool(
-    State(app): State<Arc<App>>,
+    Uses(mcp): Uses<Arc<McpService>>,
     caller: Caller,
     Path((id, name)): Path<(String, String)>,
     Body(body): Body<TryBody>,
 ) -> ApiResult<TryResult> {
     manager(&caller)?;
-    Ok(ok(app.mcp.try_tool(&id, &name, body.arguments.as_ref()).await?))
+    Ok(ok(mcp.try_tool(&id, &name, body.arguments.as_ref()).await?))
 }
 
 /// «Войти» on a server in the cloud: the page of the service for the owner's browser.
-async fn login(State(app): State<Arc<App>>, caller: Caller, Path(id): Path<String>) -> ApiResult<LoginStart> {
+async fn login(Uses(mcp): Uses<Arc<McpService>>, caller: Caller, Path(id): Path<String>) -> ApiResult<LoginStart> {
     manager(&caller)?;
-    Ok(ok(app.mcp.login(&id).await?))
+    Ok(ok(mcp.login(&id).await?))
 }
 
 /// The service sends the browser back here after the sign-in (to localhost: on this computer it lands by itself).
 /// No sign-in to the panel is asked — the state of a sign-in begun from the panel is the check; a page in words
 /// answers, never the service's own error text.
 async fn callback(
-    State(app): State<Arc<App>>,
+    Uses(mcp): Uses<Arc<McpService>>,
     caller: Caller,
     Query(query): Query<Vec<(String, String)>>,
 ) -> Result<Response, ApiError> {
     caller.zone_at_least(Zone::Home)?;
-    let (status, text) = match app.mcp.complete_login(&query, None).await {
+    let (status, text) = match mcp.complete_login(&query, None).await {
         Ok(done) => (
             StatusCode::OK,
             crate::tr!(
@@ -162,13 +174,17 @@ pub struct CompleteBody {
 }
 
 /// From a phone: the address the browser could not open after the sign-in, pasted into the panel.
-async fn complete(State(app): State<Arc<App>>, caller: Caller, Body(body): Body<CompleteBody>) -> ApiResult<LoginDone> {
+async fn complete(
+    Uses(mcp): Uses<Arc<McpService>>,
+    caller: Caller,
+    Body(body): Body<CompleteBody>,
+) -> ApiResult<LoginDone> {
     person(caller.permitted(CONNECTORS_MANAGE)?)?;
     let text = body.url.as_ref().and_then(Json::as_str).map(str::trim).unwrap_or_default();
     let url =
         url::Url::parse(text).map_err(|_| ApiError::bad_request(crate::tr!("Это не адрес страницы после входа.")))?;
     let query: Vec<(String, String)> = url.query_pairs().map(|(k, v)| (k.into_owned(), v.into_owned())).collect();
-    Ok(ok(app.mcp.complete_login(&query, caller.actor()).await?))
+    Ok(ok(mcp.complete_login(&query, caller.actor()).await?))
 }
 
 #[cfg(test)]
@@ -184,6 +200,7 @@ mod tests {
     use tower::ServiceExt;
 
     use super::*;
+    use crate::app::App;
     use crate::config::{Config, Env};
     use crate::core::identity::principal::{api_key_principal, user_principal};
     use crate::core::identity::Role;
@@ -238,7 +255,7 @@ mod tests {
             "args": args,
             "env": { "FIXTURE_VAR": "program-secret-4242" },
         });
-        let (status, added) = answer(add(State(app.clone()), admin(app), body(given)).await).await;
+        let (status, added) = answer(add(Uses::of(&app), admin(app), body(given)).await).await;
         assert_eq!(status, StatusCode::CREATED);
         added["message"].clone()
     }
@@ -255,7 +272,7 @@ mod tests {
         until("the fixture is up", || ready(&app, "fixture"), READY).await;
         let connector = app.mcp.states().into_iter().find(|server| server.id == "fixture").unwrap();
         assert_eq!((connector.title.as_str(), connector.cloud, connector.tools), ("Fixture", true, 0));
-        let (status, shown) = answer(view(State(app.clone()), admin(&app)).await).await;
+        let (status, shown) = answer(view(Uses::of(&app), admin(&app)).await).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(shown["message"]["servers"][0]["state"], json!("ready"));
         assert!(!shown.to_string().contains("program-secret"));
@@ -301,32 +318,31 @@ mod tests {
         let (router, _) = fixtures::legacy_http();
         let base = fixtures::spawn(router).await;
         let given = json!({ "transport": "http", "title": "Fixture", "url": format!("{base}/mcp") });
-        let (status, _) = answer(add(State(app.clone()), admin(&app), body(given)).await).await;
+        let (status, _) = answer(add(Uses::of(&app), admin(&app), body(given)).await).await;
         assert_eq!(status, StatusCode::CREATED);
         until("the fixture is up", || ready(&app, "fixture"), READY).await;
 
-        assert_eq!(answer(view(State(app.clone()), member(&app)).await).await.0, StatusCode::OK);
+        assert_eq!(answer(view(Uses::of(&app), member(&app)).await).await.0, StatusCode::OK);
         let program = body(json!({ "transport": "stdio", "command": "echo" }));
-        assert_eq!(answer(add(State(app.clone()), member(&app), program).await).await.0, StatusCode::FORBIDDEN);
+        assert_eq!(answer(add(Uses::of(&app), member(&app), program).await).await.0, StatusCode::FORBIDDEN);
         let tool = Path(("fixture".to_string(), "echo".to_string()));
         let on = body(json!({ "on": true }));
-        assert_eq!(answer(set_tool(State(app.clone()), member(&app), tool, on).await).await.0, StatusCode::FORBIDDEN);
+        assert_eq!(answer(set_tool(Uses::of(&app), member(&app), tool, on).await).await.0, StatusCode::FORBIDDEN);
         let tool = Path(("fixture".to_string(), "echo".to_string()));
         assert_eq!(
-            answer(try_tool(State(app.clone()), member(&app), tool, body(json!({}))).await).await.0,
+            answer(try_tool(Uses::of(&app), member(&app), tool, body(json!({}))).await).await.0,
             StatusCode::FORBIDDEN
         );
         // A key may hold every right and still adds nothing: a program is someone's decision.
         let key = Caller::local(app.clone(), Some(api_key_principal("k1", "script", &["*".into()])));
         let program = body(json!({ "transport": "stdio", "command": "echo" }));
-        let refused = add(State(app.clone()), key, program).await.err().unwrap();
+        let refused = add(Uses::of(&app), key, program).await.err().unwrap();
         assert_eq!(refused.message, "Это для людей, не для ключей.");
 
         let tool = Path(("fixture".to_string(), "echo".to_string()));
-        let tried = answer(
-            try_tool(State(app.clone()), admin(&app), tool, body(json!({ "arguments": { "text": "да" } }))).await,
-        )
-        .await;
+        let tried =
+            answer(try_tool(Uses::of(&app), admin(&app), tool, body(json!({ "arguments": { "text": "да" } }))).await)
+                .await;
         assert_eq!(tried.0, StatusCode::OK);
         assert_eq!(tried.1["message"]["content"], json!("echo: да"));
         assert_eq!(tried.1["message"]["isError"], json!(false));

@@ -18,12 +18,16 @@
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
-use axum::extract::{Path as UrlPath, Request, State};
+use axum::extract::{Path as UrlPath, Request};
 use axum::routing::{get, post};
 use axum::Router;
 
-use crate::app::App;
-use crate::platform::http::{ApiError, Caller, Zone};
+use crate::bus::Bus;
+use crate::config::Config;
+use crate::gateway::media::stream::StreamRelays;
+use crate::home::turbo_devices::HouseDevices;
+use crate::platform::http::{ApiError, Caller, Uses, Zone};
+use crate::plugins::PluginHost;
 
 pub mod engine;
 pub mod kind;
@@ -33,7 +37,7 @@ pub mod stream;
 
 pub use engine::{Allow, Grant, Link, MediaEngine};
 
-pub fn router() -> Router<Arc<App>> {
+pub fn router<S: crate::gateway::RouteNeeds>() -> Router<S> {
     Router::new().route("/media/{*path}", get(media)).route("/api/v1/media/links", post(routes::links))
 }
 
@@ -64,41 +68,49 @@ pub fn media_file(root: &Path, relative: &str) -> Option<PathBuf> {
     (file.starts_with(&root) && file != root && file.is_file()).then_some(file)
 }
 
+/// A file of the media: by an engine's key (this gateway's own, or a Турбо's), a stream the gateway relays, an app's
+/// sound, a package's own files, or the content folder — each of what it reads an extractor of its own.
+#[allow(clippy::too_many_arguments)]
 async fn media(
-    State(app): State<Arc<App>>,
+    Uses(bus): Uses<Arc<Bus>>,
+    Uses(streams): Uses<Arc<StreamRelays>>,
+    Uses(plugins): Uses<Arc<PluginHost>>,
+    Uses(config): Uses<Arc<Config>>,
+    Uses(house): Uses<Arc<HouseDevices>>,
     caller: Caller,
     UrlPath(relative): UrlPath<String>,
     request: Request,
 ) -> Result<axum::response::Response, ApiError> {
     // A key the engine gave: the key is the pass.
     if let Some(key) = relative.strip_prefix("v/").or_else(|| relative.strip_prefix("folder/")) {
-        return keyed(&app, &caller, key, request).await;
+        return keyed(&bus, &house, &caller, key, request).await;
     }
     caller.zone_at_least(Zone::Home)?;
     // A stream the gateway relays for the station (stream.rs): one the station kept silent on.
     if let Some(token) = relative.strip_prefix("stream/") {
-        return app.streams.serve(token).await;
+        return streams.serve(token).await;
     }
     // An app's own sound, while it runs here: its /stream/<path> on localhost, nothing else of its server.
     if let Some(rest) = relative.strip_prefix("apps/") {
         let (id, path) = rest.split_once('/').ok_or_else(|| ApiError::not_found("Not Found"))?;
-        let url = app.plugins.app_stream(id, path).await.ok_or_else(|| ApiError::not_found("Not Found"))?;
+        let url = plugins.app_stream(id, path).await.ok_or_else(|| ApiError::not_found("Not Found"))?;
         return stream::app_sound(&url, request.headers().get(axum::http::header::RANGE).cloned()).await;
     }
     // A package's own files (its assets/): of a plugin that is on, of a character or a theme installed.
     if let Some(rest) = relative.strip_prefix("packages/") {
-        let file = rest.split_once('/').and_then(|(id, path)| package_file(&app.plugins.media_assets(id)?, path));
+        let file = rest.split_once('/').and_then(|(id, path)| package_file(&plugins.media_assets(id)?, path));
         let file = file.ok_or_else(|| ApiError::not_found("Not Found"))?;
         return engine::serve(file, Allow::Assets, request, "no-store").await;
     }
-    let file = media_file(&app.config.skills.content_dir, &relative).ok_or_else(|| ApiError::not_found("Not Found"))?;
+    let file = media_file(&config.skills.content_dir, &relative).ok_or_else(|| ApiError::not_found("Not Found"))?;
     engine::serve(file, Allow::Media, request, "no-store").await
 }
 
 /// A file by the engine's key: on the home network only when given so. An app's keys close when the app is removed
 /// (plugins/routes.rs) — a workshop's draft has its keys too, so no «installed» check here.
 async fn keyed(
-    app: &Arc<App>,
+    bus: &Bus,
+    house: &HouseDevices,
     caller: &Caller,
     key: &str,
     request: Request,
@@ -107,7 +119,7 @@ async fn keyed(
     // goes to the Турбо's own address, the station passing nothing through.
     if let Some(rest) = key.strip_prefix(crate::home::turbo_devices::TURBO_KEY) {
         let (place, key) = rest.split_once('.').ok_or_else(|| ApiError::not_found("Not Found"))?;
-        let mut url = app.house.media_url(place, key).ok_or_else(|| ApiError::not_found("Not Found"))?;
+        let mut url = house.media_url(place, key).ok_or_else(|| ApiError::not_found("Not Found"))?;
         if let Some(query) = request.uri().query() {
             url = format!("{url}?{query}");
         }
@@ -118,7 +130,7 @@ async fn keyed(
             .body(axum::body::Body::empty())
             .map_err(ApiError::internal);
     }
-    let files = app.bus.files().ok_or_else(|| ApiError::not_found("Not Found"))?;
+    let files = bus.files().ok_or_else(|| ApiError::not_found("Not Found"))?;
     let ticket = files.media().ticket(key).ok_or_else(|| ApiError::not_found("Not Found"))?;
     if ticket.home_only && !matches!(caller.zone, Zone::Local | Zone::Home) {
         return Err(ApiError::not_found("Not Found"));

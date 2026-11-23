@@ -735,6 +735,8 @@ impl Bus {
 #[cfg(test)]
 pub(crate) mod tests;
 
+crate::route_needs!(Arc<Bus>, Arc<crate::plugins::PluginHost>);
+
 /// A plugin's `host.bus.*` and `host.files.*` as letters (Host API 2): `bus.call`, `bus.ask`, `bus.tell`, `bus.list` and
 /// the folders' `folders.*` — a path without `files/` is inside the app's own folder `files/app/<id>`. In the trail of
 /// the call it runs in, else the app's own.

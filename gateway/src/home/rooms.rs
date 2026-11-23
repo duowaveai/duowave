@@ -8,24 +8,23 @@
 //! `{mode?, volume?, character?}` — a field `null` goes back to «как во всём доме».
 use std::sync::Arc;
 
-use axum::extract::{Path, State};
+use axum::extract::Path;
 use axum::routing::{get, put};
 use axum::Router;
 use serde_json::{json, Map, Value};
 
-use crate::app::App;
 use crate::core::events::GatewayEvent;
 use crate::core::identity::permissions::{SETTINGS_EDIT, STATION_VIEW};
-use crate::platform::http::{ok, ApiError, ApiResult, Body, Caller};
+use crate::platform::http::{ok, ApiError, ApiResult, Body, Caller, Uses};
 use crate::settings::definitions::{PanelMode, ROOMS};
 
-pub fn routes() -> Router<Arc<App>> {
+pub fn routes<S: crate::home::RouteNeeds>() -> Router<S> {
     Router::new().route("/api/v1/rooms", get(list)).route("/api/v1/rooms/{device}", put(change))
 }
 
-async fn list(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<Value> {
+async fn list(Uses(settings): Uses<Arc<crate::settings::SettingsService>>, caller: Caller) -> ApiResult<Value> {
     caller.permitted(STATION_VIEW)?;
-    let rooms = app.settings.get(&ROOMS, None).unwrap_or_default();
+    let rooms = settings.get(&ROOMS, None).unwrap_or_default();
     let shown: Map<String, Value> = rooms
         .into_iter()
         .map(|(device, room)| {
@@ -55,8 +54,14 @@ fn field<T>(
     }
 }
 
+/// A room's change reaches the stations, the settings and the mode, each an extractor of its own.
+#[allow(clippy::too_many_arguments)]
 async fn change(
-    State(app): State<Arc<App>>,
+    Uses(stations): Uses<Arc<crate::stations::StationsService>>,
+    Uses(settings): Uses<Arc<crate::settings::SettingsService>>,
+    Uses(modes): Uses<Arc<crate::gateway::mode::ModeService>>,
+    Uses(characters): Uses<Arc<crate::characters::CharactersService>>,
+    Uses(events): Uses<crate::core::events::EventBus>,
     caller: Caller,
     Path(device): Path<String>,
     Body(body): Body<Value>,
@@ -65,14 +70,14 @@ async fn change(
     let Value::Object(body) = body else {
         return Err(ApiError::bad_request(crate::tr!("Комната — объект JSON: mode, volume, character.")));
     };
-    if app.stations.find(&device).is_none() && device != "computer" {
+    if stations.find(&device).is_none() && device != "computer" {
         return Err(ApiError::not_found(crate::tr!("Такого устройства в доме нет.")));
     }
     let mode = field(&body, "mode", |value| value.as_str().and_then(PanelMode::parse), "mode: relay, gateway, own")?;
     let volume =
         field(&body, "volume", |value| value.as_u64().filter(|volume| *volume <= 10).map(|v| v as u8), "volume: 0–10")?;
     let character = field(&body, "character", |value| value.as_str().map(str::to_string), "character: id")?;
-    let mut rooms = app.settings.get(&ROOMS, None).unwrap_or_default();
+    let mut rooms = settings.get(&ROOMS, None).unwrap_or_default();
     let mut room = rooms.remove(&device).unwrap_or_default();
     let mut fields = Vec::new();
     match mode {
@@ -82,7 +87,7 @@ async fn change(
             fields.push("mode".to_string());
         }
         Field::Own(mode) => {
-            if let Err(why) = app.modes.possible_now(mode) {
+            if let Err(why) = modes.possible_now(mode) {
                 return Err(ApiError::conflict(why));
             }
             room.mode = Some(mode);
@@ -108,7 +113,7 @@ async fn change(
             fields.push("character".to_string());
         }
         Field::Own(id) => {
-            room.persona = Some(app.characters.persona_for(&id)?);
+            room.persona = Some(characters.persona_for(&id)?);
             room.character = Some(id);
             fields.push("character".to_string());
         }
@@ -116,8 +121,8 @@ async fn change(
     if !room.is_empty() {
         rooms.insert(device.clone(), room.clone());
     }
-    app.settings.set(&ROOMS, &rooms, caller.actor())?;
-    app.events.emit(GatewayEvent::RoomChanged { device: device.clone(), fields, actor: caller.actor() });
+    settings.set(&ROOMS, &rooms, caller.actor())?;
+    events.emit(GatewayEvent::RoomChanged { device: device.clone(), fields, actor: caller.actor() });
     Ok(ok(json!({ "device": device, "mode": room.mode, "volume": room.volume, "character": room.character })))
 }
 

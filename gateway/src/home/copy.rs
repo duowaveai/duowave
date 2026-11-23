@@ -17,7 +17,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::extract::{Query, State};
+use axum::extract::Query;
 use axum::routing::{get, post};
 use axum::Router;
 use rusqlite::types::Value as SqlValue;
@@ -25,12 +25,12 @@ use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
-use crate::app::App;
+use super::Parts;
 use crate::core::events::{EventBus, GatewayEvent};
 use crate::core::settings::{SettingDefinition, SettingScope};
 use crate::placement::peer::{from_peer, PeerClient};
 use crate::placement::transfer;
-use crate::platform::http::{ok, ApiError, ApiResult, Body, Caller};
+use crate::platform::http::{ok, ApiError, ApiResult, Body, Caller, Uses};
 use crate::secrets::SecretsService;
 use crate::settings::SettingsService;
 use crate::storage::Db;
@@ -208,13 +208,13 @@ pub fn merge_memory(db: &Db, rows: &Map<String, Value>) -> rusqlite::Result<usiz
     })
 }
 
-pub fn routes() -> Router<Arc<App>> {
+pub fn routes<S: crate::home::RouteNeeds>() -> Router<S> {
     Router::new().route("/api/v1/home/memory", get(memory_out).post(memory_in)).route("/api/v1/home/held", post(held))
 }
 
 /// Only the pair's key, from the home network: the copy holder of this home.
-fn holder(app: &App, caller: &Caller) -> Result<(), ApiError> {
-    if from_peer(caller, app.placement.peer_key()) {
+fn holder(placement: &Arc<crate::placement::PlacementService>, caller: &Caller) -> Result<(), ApiError> {
+    if from_peer(caller, placement.peer_key()) {
         return Ok(());
     }
     Err(ApiError::forbidden(crate::tr!("Копию дома берёт только устройство этого дома с ключом пары.")))
@@ -226,20 +226,31 @@ struct Since {
 }
 
 /// The centre's memory changed after `since`, and its time now: the holder asks from there next.
-async fn memory_out(State(app): State<Arc<App>>, caller: Caller, Query(query): Query<Since>) -> ApiResult<Value> {
-    holder(&app, &caller)?;
-    let rows = memory_since(&app.db, query.since.as_deref())?;
+async fn memory_out(
+    Uses(placement): Uses<Arc<crate::placement::PlacementService>>,
+    Uses(db): Uses<Arc<crate::storage::Db>>,
+    caller: Caller,
+    Query(query): Query<Since>,
+) -> ApiResult<Value> {
+    holder(&placement, &caller)?;
+    let rows = memory_since(&db, query.since.as_deref())?;
     Ok(ok(json!({ "rows": rows, "newest": newest(&rows) })))
 }
 
 /// What the holder remembered — away from home too — merged into the home's memory.
-async fn memory_in(State(app): State<Arc<App>>, caller: Caller, Body(body): Body<Value>) -> ApiResult<Value> {
-    holder(&app, &caller)?;
+async fn memory_in(
+    Uses(placement): Uses<Arc<crate::placement::PlacementService>>,
+    Uses(db): Uses<Arc<crate::storage::Db>>,
+    Uses(events): Uses<crate::core::events::EventBus>,
+    caller: Caller,
+    Body(body): Body<Value>,
+) -> ApiResult<Value> {
+    holder(&placement, &caller)?;
     let rows = body.get("rows").and_then(Value::as_object).cloned().unwrap_or_default();
-    let merged = merge_memory(&app.db, &rows)?;
+    let merged = merge_memory(&db, &rows)?;
     if merged > 0 {
         tracing::info!(target: "home", "memory: {merged} record(s) from the home's copy");
-        app.events.emit(GatewayEvent::MemoryChanged {
+        events.emit(GatewayEvent::MemoryChanged {
             action: "merge".into(),
             target: "copy".into(),
             target_id: String::new(),
@@ -263,25 +274,32 @@ struct Held {
 }
 
 /// A holder took this revision of the home.
-async fn held(State(app): State<Arc<App>>, caller: Caller, Body(body): Body<Value>) -> ApiResult<Value> {
-    holder(&app, &caller)?;
+async fn held(
+    Uses(placement): Uses<Arc<crate::placement::PlacementService>>,
+    Uses(settings): Uses<Arc<crate::settings::SettingsService>>,
+    Uses(secrets): Uses<Arc<crate::secrets::SecretsService>>,
+    Uses(events): Uses<crate::core::events::EventBus>,
+    caller: Caller,
+    Body(body): Body<Value>,
+) -> ApiResult<Value> {
+    holder(&placement, &caller)?;
     let held: Held =
         serde_json::from_value(body).map_err(|_| ApiError::bad_request("{gateway, revision}".to_string()))?;
     if held.gateway.is_empty() || held.gateway.len() > 64 {
         return Err(ApiError::bad_request("gateway".to_string()));
     }
-    let mut copies = app.settings.get(&HOME_COPIES, None).unwrap_or_default();
+    let mut copies = settings.get(&HOME_COPIES, None).unwrap_or_default();
     let device = held.device.clone().filter(|device| !device.is_empty() && device.len() <= 128);
     if let (Some(device), Some(key)) = (&device, held.key.as_deref().filter(|key| key.len() >= 16)) {
-        app.secrets.set(&super::ear::ear_key_secret(device), Some(key))?;
+        secrets.set(&super::ear::ear_key_secret(device), Some(key))?;
     }
     let address = Some(caller.source.clone()).filter(|address| !address.is_empty());
     copies.insert(
         held.gateway.clone(),
         CopyHolder { revision: held.revision, at: now_iso(), device, port: held.port, address },
     );
-    app.settings.set(&HOME_COPIES, &copies, None)?;
-    app.events.emit(GatewayEvent::HomeDevicesChanged { reason: "copy".into() });
+    settings.set(&HOME_COPIES, &copies, None)?;
+    events.emit(GatewayEvent::HomeDevicesChanged { reason: "copy".into() });
     Ok(ok(json!({ "ok": true })))
 }
 
@@ -444,15 +462,14 @@ fn urlencoding(text: &str) -> String {
 }
 
 /// The home copy for the services that keep their own view of the settings: they read them again.
-pub fn watch(app: &Arc<App>) {
-    let weak = Arc::downgrade(app);
-    app.events.on("home.copy", move |event| {
+pub fn watch(events: &EventBus, parts: impl Fn() -> Option<Parts> + Clone + Send + Sync + 'static) {
+    events.on("home.copy", move |event| {
         if !matches!(&*event, GatewayEvent::HomeCopied { .. }) {
             return;
         }
-        let Some(app) = weak.upgrade() else { return };
-        app.connector_settings.read_again();
-        app.characters.sync();
+        let Some(home) = parts() else { return };
+        home.connector_settings.read_again();
+        home.characters.sync();
     });
 }
 

@@ -45,15 +45,54 @@ pub use layer::TalkLayer;
 pub use origin::{Activator, Origin, Via, Why, COMPUTER};
 pub use routes::routes;
 
-use crate::app::App;
 use crate::config::ModelProfile;
+use crate::core::connectors::ToolContribution;
 use crate::core::identity::Principal;
-use crate::core::requests::{Place, RequestKind, RequestPhase, RequestStart, RequestStatus};
-use crate::dialog::DialogContext;
+use crate::core::requests::{Place, RequestHandle, RequestKind, RequestPhase, RequestStart, RequestStatus};
+use crate::dialog::{DialogContext, DialogService};
+use crate::mcp::McpService;
 use crate::platform::http::ApiError;
+use crate::secrets::SecretsService;
+use crate::skills::SkillsService;
+use crate::speech::VoiceService;
 
 /// A phrase at most this long: a question, not a document.
 pub const MAX_TEXT: usize = 1000;
+
+/// What a talk works with: the layer, the brain, the voice, the secrets (kept out of errors), the skills and their
+/// routes, MCP and the pool of models — and, from the floors above (gateway/layers.json), the journal of requests and
+/// the connectors' tools, as functions the gateway gives. The gateway makes it (src/links/http.rs); a talk holds it
+/// while its answer runs.
+#[derive(Clone)]
+pub struct Parts {
+    pub talk: Arc<TalkLayer>,
+    pub dialog: Arc<DialogService>,
+    pub voice: Arc<VoiceService>,
+    pub secrets: Arc<SecretsService>,
+    pub skills: Arc<SkillsService>,
+    pub mcp: Arc<McpService>,
+    pub router: Arc<crate::router::Router>,
+    /// A talk's request in the journal, answered by our side (src/requests).
+    pub journal: Journal,
+    /// The connectors' tools a person may use (src/connectors).
+    pub connector_tools: ConnectorTools,
+}
+
+crate::route_needs!(
+    Parts,
+    Arc<TalkLayer>,
+    Arc<crate::router::Router>,
+    Arc<crate::dialog::PersonaService>,
+    Arc<crate::settings::SettingsService>,
+    Arc<crate::placement::PlacementService>,
+    Arc<crate::gateway::mode::ModeService>,
+);
+
+/// A request's start → its handle in the journal, answered by our side.
+pub type Journal = Arc<dyn Fn(RequestStart) -> Arc<RequestHandle> + Send + Sync>;
+
+/// A person → the connectors' tools they may use.
+pub type ConnectorTools = Arc<dyn Fn(&Principal) -> Vec<ToolContribution> + Send + Sync>;
 
 pub const NO_MODEL: &str = "Модель не выбрана: добавьте провайдера в «Персонаж» → «Мышление».";
 
@@ -126,20 +165,20 @@ pub fn ends_with_question(text: &str) -> bool {
 
 /// The end of a spoken answer on a device: whether it asks, and the reminder of a work's question nobody answered — once,
 /// and never on top of a new question. `brain` — the brain answered: its question is the device's now.
-fn closing(app: &App, device: &str, said: &str, voice: bool, brain: bool) -> (bool, Option<String>) {
+fn closing(parts: &Parts, device: &str, said: &str, voice: bool, brain: bool) -> (bool, Option<String>) {
     let asks = ends_with_question(said);
     if !voice {
         return (asks, None);
     }
     if asks {
         // A background tool's «Запускать?» asked in this answer stays the device's question: «да» runs it.
-        let run = app.talk.asked.open(device).is_some_and(|question| question.kind == asked::Kind::Run);
+        let run = parts.talk.asked.open(device).is_some_and(|question| question.kind == asked::Kind::Run);
         if brain && !run {
-            app.talk.asked.ask(device, "", asked::Kind::Talk, false);
+            parts.talk.asked.ask(device, "", asked::Kind::Talk, false);
         }
         return (true, None);
     }
-    (false, app.talk.remind(device))
+    (false, parts.talk.remind(device))
 }
 
 /// The brain of a talk: where its question goes and which model answers.
@@ -151,8 +190,8 @@ pub(crate) struct Brain {
 
 impl Brain {
     /// The fast profile's, as the station's conversation names it.
-    fn of(app: &App) -> Brain {
-        let brain = app.dialog.brain();
+    fn of(parts: &Parts) -> Brain {
+        let brain = parts.dialog.brain();
         let slot = brain.profiles.fast.as_ref();
         let cloud = slot.map_or(brain.cloud, |slot| slot.cloud);
         let what = slot.map(|slot| slot.model.clone()).unwrap_or_else(|| brain.models.fast.clone());
@@ -177,40 +216,37 @@ pub struct Talk {
 /// A phrase goes to the talk layer's rules first (docs/plans/audio-interface.md, «Порядок разбора»): the answer to
 /// the computer's question, the open door, the works' words — what they take never reaches the model. The rest goes
 /// to the brain; the answer comes as events. Refused in words when no model is chosen.
-pub fn begin(app: &Arc<App>, principal: &Principal, turn: Turn) -> Result<Talk, ApiError> {
+pub fn begin(parts: &Parts, principal: &Principal, turn: Turn) -> Result<Talk, ApiError> {
     // A phrase the microphone heard by itself goes through the closed window first: what it does not take, nothing
     // keeps (docs/plans/audio-interface-2.md, «К2»).
-    if let Some(talk) = window::begin(app, principal, &turn) {
+    if let Some(talk) = window::begin(parts, principal, &turn) {
         return Ok(talk);
     }
     // The brain's question is answered now — or the person went on with the button: it is not awaited any more.
     let device = &turn.origin.device;
-    if app.talk.asked.open_any(device).is_some_and(|question| question.kind == asked::Kind::Talk) {
-        app.talk.asked.take(device);
+    if parts.talk.asked.open_any(device).is_some_and(|question| question.kind == asked::Kind::Talk) {
+        parts.talk.asked.take(device);
     }
-    if let Some(talk) = by_rules(app, principal, &turn) {
+    if let Some(talk) = by_rules(parts, principal, &turn) {
         return Ok(talk);
     }
-    if !app.dialog.enabled() {
+    if !parts.dialog.enabled() {
         return Err(ApiError::conflict(NO_MODEL));
     }
     let key = format!("panel:{}", principal.id);
     if turn.fresh {
-        app.dialog.forget(&key);
+        parts.dialog.forget(&key);
     }
-    let brain = Brain::of(app);
+    let brain = Brain::of(parts);
     let kind = if turn.origin.via == Via::Voice { RequestKind::Voice } else { RequestKind::Text };
     // «Своё» whatever the mode: a talk without a station never goes to Yandex.
-    let trip = app.requests.begin_in(
-        RequestStart {
-            device: turn.origin.device.clone(),
-            session: None,
-            kind,
-            text: Some(turn.text.clone()),
-            parent: None,
-        },
-        "own",
-    );
+    let trip = (parts.journal)(RequestStart {
+        device: turn.origin.device.clone(),
+        session: None,
+        kind,
+        text: Some(turn.text.clone()),
+        parent: None,
+    });
     if let Some(heard) = &turn.heard {
         trip.heard_before(heard.by, heard.what.as_deref(), heard.ms.unwrap_or(0));
     }
@@ -223,7 +259,7 @@ pub fn begin(app: &Arc<App>, principal: &Principal, turn: Turn) -> Result<Talk, 
     let _ = events.send(TalkEvent::Start { request: trip.id(), by: brain.place() });
     let cancel = CancellationToken::new();
     let toolbox = tools::toolbox(tools::Deps {
-        app: app.clone(),
+        parts: parts.clone(),
         principal: principal.clone(),
         text: turn.text.clone(),
         origin: turn.origin.clone().by(Some(principal.name.clone())),
@@ -241,9 +277,9 @@ pub fn begin(app: &Arc<App>, principal: &Principal, turn: Turn) -> Result<Talk, 
         ..DialogContext::default()
     };
     // A phrase about the works is read first: the layer does and says it (reader.rs).
-    let reader = app.talk.reader().filter(|reader| reader.wants(&turn.origin.device, &turn.text));
+    let reader = parts.talk.reader().filter(|reader| reader.wants(&turn.origin.device, &turn.text));
     let origin = turn.origin.clone().by(Some(principal.name.clone()));
-    let (app, answering) = (app.clone(), cancel.clone());
+    let (parts, answering) = (parts.clone(), cancel.clone());
     tokio::spawn(async move {
         if let Some(reader) = reader {
             let read = tokio::select! {
@@ -256,15 +292,15 @@ pub fn begin(app: &Arc<App>, principal: &Principal, turn: Turn) -> Result<Talk, 
             if let Some(read) = read {
                 trip.step(RequestPhase::Tool, Some(Place::Own), Some("talk:read"));
                 if turn.voice {
-                    let voice = app.voice.own_choice().map(|choice| choice.voice);
+                    let voice = parts.voice.own_choice().map(|choice| choice.voice);
                     trip.step(RequestPhase::Speak, Some(Place::Own), voice.as_deref());
                 }
                 trip.answered(&read.said);
                 trip.finish(RequestStatus::Answered, None, None);
                 let _ = events.send(TalkEvent::Phrase { text: read.said.clone() });
                 let ms = started.elapsed().as_millis() as u64;
-                let work = app.talk.touched_since(&turn.origin.device, since);
-                let (asks, remind) = closing(&app, &turn.origin.device, &read.said, turn.voice, false);
+                let work = parts.talk.touched_since(&turn.origin.device, since);
+                let (asks, remind) = closing(&parts, &turn.origin.device, &read.said, turn.voice, false);
                 let _ = events.send(TalkEvent::Done {
                     said: read.said,
                     by: brain.place(),
@@ -277,7 +313,7 @@ pub fn begin(app: &Arc<App>, principal: &Principal, turn: Turn) -> Result<Talk, 
                 return;
             }
         }
-        let mut phrases = app.dialog.answer(&key, &turn.text, context, answering.clone(), toolbox);
+        let mut phrases = parts.dialog.answer(&key, &turn.text, context, answering.clone(), toolbox);
         let mut said: Vec<String> = Vec::new();
         loop {
             let next = tokio::select! {
@@ -290,7 +326,7 @@ pub fn begin(app: &Arc<App>, principal: &Principal, turn: Turn) -> Result<Talk, 
             match next {
                 Some(Ok(text)) => {
                     if said.is_empty() && turn.voice {
-                        let voice = app.voice.own_choice().map(|choice| choice.voice);
+                        let voice = parts.voice.own_choice().map(|choice| choice.voice);
                         trip.step(RequestPhase::Speak, Some(Place::Own), voice.as_deref());
                     }
                     said.push(text.clone());
@@ -302,7 +338,7 @@ pub fn begin(app: &Arc<App>, principal: &Principal, turn: Turn) -> Result<Talk, 
                         trip.finish(RequestStatus::Cancelled, None, None);
                         return;
                     }
-                    let message: String = app.secrets.redact(&format!("{error:#}")).chars().take(300).collect();
+                    let message: String = parts.secrets.redact(&format!("{error:#}")).chars().take(300).collect();
                     trip.finish(RequestStatus::Failed, Some(&message), None);
                     let _ = events.send(TalkEvent::Error { message });
                     return;
@@ -311,10 +347,10 @@ pub fn begin(app: &Arc<App>, principal: &Principal, turn: Turn) -> Result<Talk, 
                     let status = if said.is_empty() { RequestStatus::Silent } else { RequestStatus::Answered };
                     trip.finish(status, None, None);
                     let ms = started.elapsed().as_millis() as u64;
-                    let work = app.talk.touched_since(&turn.origin.device, since);
+                    let work = parts.talk.touched_since(&turn.origin.device, since);
                     let said = said.join(" ");
                     // A work's line («Делаю: … Что-то ещё добавить?») is the layer's question, not the brain's.
-                    let (asks, remind) = closing(&app, &turn.origin.device, &said, turn.voice, work.is_none());
+                    let (asks, remind) = closing(&parts, &turn.origin.device, &said, turn.voice, work.is_none());
                     let _ = events.send(TalkEvent::Done {
                         said,
                         by: brain.place(),
@@ -334,19 +370,19 @@ pub fn begin(app: &Arc<App>, principal: &Principal, turn: Turn) -> Result<Talk, 
 
 /// The phrase as the talk layer's rules take it, without the model: the answer to the computer's question (a phrase
 /// said after it, `answer`), the open door, the works' words. None — the brain's.
-fn by_rules(app: &Arc<App>, principal: &Principal, turn: &Turn) -> Option<Talk> {
-    let rules = rules::TalkRules::new(&app.talk);
+fn by_rules(parts: &Parts, principal: &Principal, turn: &Turn) -> Option<Talk> {
+    let rules = rules::TalkRules::new(&parts.talk);
     let device = turn.origin.device.clone();
     let normalized = crate::skills::text::normalize(&turn.text);
     let answer = (turn.origin.activator == Activator::Answer).then(|| rules.answer_on(&normalized, &device)).flatten();
     let heard =
         answer.or_else(|| rules.through_door(&normalized, &device)).or_else(|| rules.hear(&normalized, &device))?;
-    Some(by_heard(app, principal, turn, rules, heard))
+    Some(by_heard(parts, principal, turn, rules, heard))
 }
 
 /// What the layer's rules heard in a phrase, done and said: a request of the journal, the work's line in the history.
 pub(crate) fn by_heard(
-    app: &Arc<App>,
+    parts: &Parts,
     principal: &Principal,
     turn: &Turn,
     rules: Arc<rules::TalkRules>,
@@ -354,11 +390,11 @@ pub(crate) fn by_heard(
 ) -> Talk {
     let device = turn.origin.device.clone();
     let origin = turn.origin.clone().by(Some(principal.name.clone()));
-    let trip = journal(app, turn, &origin, "plugins", "talk:works");
+    let trip = journal(parts, turn, &origin, "plugins", "talk:works");
     let (events, receiver) = mpsc::unbounded_channel();
     let _ = events.send(TalkEvent::Start { request: trip.id(), by: "home" });
     let cancel = CancellationToken::new();
-    let (app, started, since, voice) = (app.clone(), Instant::now(), crate::utils::time::now_ms(), turn.voice);
+    let (parts, started, since, voice) = (parts.clone(), Instant::now(), crate::utils::time::now_ms(), turn.voice);
     let (key, text) = (format!("panel:{}", principal.id), turn.text.clone());
     tokio::spawn(async move {
         let said = rules.act(heard, origin).await.unwrap_or_default();
@@ -366,15 +402,16 @@ pub(crate) fn by_heard(
             trip.finish(RequestStatus::Silent, None, None);
         } else {
             // The conversation goes on with the brain: it knows what the layer did — the work's line, not the phrase.
-            let kept = app.talk.fact_since(&device, since);
+            let kept = parts.talk.fact_since(&device, since);
             let remembered = kept.as_deref().unwrap_or(&said);
-            app.dialog.remember(&key, &text, remembered, crate::dialog::AnsweredBy::Skill, None);
-            spoken(&app, &trip, voice, &said);
+            parts.dialog.remember(&key, &text, remembered, crate::dialog::AnsweredBy::Skill, None);
+            spoken(&parts, &trip, voice, &said);
             let _ = events.send(TalkEvent::Phrase { text: said.clone() });
         }
-        let work = app.talk.touched_since(&device, since);
+        let work = parts.talk.touched_since(&device, since);
         let ms = started.elapsed().as_millis() as u64;
-        let (asks, remind) = if said.is_empty() { (false, None) } else { closing(&app, &device, &said, voice, false) };
+        let (asks, remind) =
+            if said.is_empty() { (false, None) } else { closing(&parts, &device, &said, voice, false) };
         let _ = events.send(TalkEvent::Done { said, by: "home", ms, work, asks, remind, dropped: false });
     });
     Talk { events: receiver, cancel }
@@ -382,23 +419,20 @@ pub(crate) fn by_heard(
 
 /// A request of the journal for a phrase the layer takes: where it was heard, where it came from, which rule.
 pub(crate) fn journal(
-    app: &App,
+    parts: &Parts,
     turn: &Turn,
     origin: &Origin,
     route: &str,
     rule: &str,
 ) -> Arc<crate::core::requests::RequestHandle> {
     let kind = if turn.origin.via == Via::Voice { RequestKind::Voice } else { RequestKind::Text };
-    let trip = app.requests.begin_in(
-        RequestStart {
-            device: turn.origin.device.clone(),
-            session: None,
-            kind,
-            text: Some(turn.text.clone()),
-            parent: None,
-        },
-        "own",
-    );
+    let trip = (parts.journal)(RequestStart {
+        device: turn.origin.device.clone(),
+        session: None,
+        kind,
+        text: Some(turn.text.clone()),
+        parent: None,
+    });
     if let Some(heard) = &turn.heard {
         trip.heard_before(heard.by, heard.what.as_deref(), heard.ms.unwrap_or(0));
     }
@@ -409,9 +443,9 @@ pub(crate) fn journal(
 }
 
 /// The layer's phrase is said: the voice's step when the computer says it, the answer in the journal.
-pub(crate) fn spoken(app: &App, trip: &crate::core::requests::RequestHandle, voice: bool, said: &str) {
+pub(crate) fn spoken(parts: &Parts, trip: &crate::core::requests::RequestHandle, voice: bool, said: &str) {
     if voice {
-        let voice = app.voice.own_choice().map(|choice| choice.voice);
+        let voice = parts.voice.own_choice().map(|choice| choice.voice);
         trip.step(RequestPhase::Speak, Some(Place::Own), voice.as_deref());
     }
     trip.answered(said);

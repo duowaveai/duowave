@@ -71,6 +71,45 @@ use crate::settings::SettingsService;
 use crate::speech::asr::speech_recognizer::SpeechRecognizer;
 use crate::speech::tts::own_speech::OwnSpeech;
 
+/// What the helpers' sheet and «Где сейчас» work with: the helpers, who this gateway and its home are, the secrets (a
+/// pairing's key), the brain and the configuration (the model's road), the modes, the placement, the voice, and
+/// whether this computer's own Telegram bot is on (src/calls, a floor above: asked through the gateway). The gateway
+/// makes it (src/links/http.rs).
+#[derive(Clone)]
+pub struct Parts {
+    pub helpers: Arc<Helpers>,
+    pub identity: Arc<crate::core::identity::home::Identity>,
+    pub secrets: Arc<crate::secrets::SecretsService>,
+    pub brain: Arc<crate::dialog::brain::BrainService>,
+    pub config: Arc<crate::config::Config>,
+    pub modes: Arc<crate::gateway::mode::ModeService>,
+    pub placement: Arc<crate::placement::PlacementService>,
+    pub voice: Arc<crate::speech::VoiceService>,
+    pub own_bot: OwnBot,
+}
+
+/// Whether this computer's own Telegram bot is on (none on the station).
+pub type OwnBot = Arc<dyn Fn() -> bool + Send + Sync>;
+
+#[cfg(feature = "pc")]
+crate::route_needs!(
+    Parts,
+    Arc<Helpers>,
+    Arc<crate::core::identity::home::Identity>,
+    Arc<crate::settings::SettingsService>,
+    crate::core::events::EventBus,
+    Arc<link_serve::LinkServer>,
+    Arc<crate::placement::watch::StationGateways>,
+);
+#[cfg(not(feature = "pc"))]
+crate::route_needs!(
+    Parts,
+    Arc<Helpers>,
+    Arc<crate::core::identity::home::Identity>,
+    Arc<crate::settings::SettingsService>,
+    crate::core::events::EventBus,
+);
+
 /// Where a helper is, as a person says it: «дома», «мой сервер», «Облако DuoWave».
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -2027,7 +2066,7 @@ impl link::UpDoor for EntryDoor {
 
     fn origin(&self, person: &Value) -> Option<crate::platform::http::UpOrigin> {
         let app = self.app.upgrade()?;
-        crate::platform::http::caller::up_origin(&app, &self.entry, person)
+        crate::platform::http::caller::up_origin(&*app, &self.entry, person)
     }
 }
 

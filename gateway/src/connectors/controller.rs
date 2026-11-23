@@ -4,21 +4,21 @@
 
 use std::sync::Arc;
 
-use axum::extract::{Path, State};
+use axum::extract::Path;
 use axum::routing::{get, post};
 use axum::Router;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use super::checks::{Checker, FeedPreview};
-use super::settings::{ConnectorId, ConnectorSettingsView};
-use crate::app::App;
+use super::settings::{ConnectorId, ConnectorSettings, ConnectorSettingsView};
+use crate::config::Config;
 use crate::core::identity::permissions::{CONNECTORS_MANAGE, CONNECTORS_VIEW};
 use crate::core::identity::PrincipalKind;
-use crate::platform::http::{ok, ApiError, ApiResult, Body, Caller, Zone};
+use crate::platform::http::{ok, ApiError, ApiResult, Body, Caller, Uses, Zone};
 use crate::skills::lookups::news_catalog::{NewsCatalog, NEWS_CATALOG};
 
-pub fn routes() -> Router<Arc<App>> {
+pub fn routes<S: super::RouteNeeds>() -> Router<S> {
     Router::new()
         .route("/api/v1/connectors/news/catalog", get(catalog))
         .route("/api/v1/connectors/news/preview", post(preview))
@@ -40,6 +40,16 @@ fn connector(id: &str) -> Result<ConnectorId, ApiError> {
     ConnectorId::parse(id).ok_or_else(|| ApiError::not_found(crate::tr!("Нет такого подключения.")))
 }
 
+/// What a connector's sheet works with: its settings, the configuration (the weather's checks), and on a computer the
+/// calls a change would end (src/calls). The gateway makes it (src/links/http.rs).
+#[derive(Clone)]
+pub struct Parts {
+    pub connector_settings: Arc<ConnectorSettings>,
+    pub config: Arc<Config>,
+    #[cfg(feature = "pc")]
+    pub calls: Arc<crate::calls::CallsService>,
+}
+
 /// A connector's settings, and whether a call goes on through it now (a change would end it).
 #[derive(Debug, Serialize)]
 struct Settings {
@@ -48,31 +58,31 @@ struct Settings {
     busy: bool,
 }
 
-fn answer(app: &App, id: ConnectorId) -> Settings {
-    Settings { view: app.connector_settings.view(id), busy: busy(app, id) }
+fn answer(parts: &Parts, id: ConnectorId) -> Settings {
+    Settings { view: parts.connector_settings.view(id), busy: busy(parts, id) }
 }
 
 #[cfg(feature = "pc")]
-fn busy(app: &App, id: ConnectorId) -> bool {
+fn busy(parts: &Parts, id: ConnectorId) -> bool {
     match id {
-        ConnectorId::Sip => app.calls.busy_through("sip:"),
-        ConnectorId::LiveKit => app.calls.busy_through("livekit:"),
+        ConnectorId::Sip => parts.calls.busy_through("sip:"),
+        ConnectorId::LiveKit => parts.calls.busy_through("livekit:"),
         _ => false,
     }
 }
 
 #[cfg(not(feature = "pc"))]
-fn busy(_app: &App, _id: ConnectorId) -> bool {
+fn busy(_parts: &Parts, _id: ConnectorId) -> bool {
     false
 }
 
-async fn view(State(app): State<Arc<App>>, caller: Caller, Path(id): Path<String>) -> ApiResult<Settings> {
+async fn view(Uses(parts): Uses<Parts>, caller: Caller, Path(id): Path<String>) -> ApiResult<Settings> {
     manager(&caller)?;
-    Ok(ok(answer(&app, connector(&id)?)))
+    Ok(ok(answer(&parts, connector(&id)?)))
 }
 
 async fn update(
-    State(app): State<Arc<App>>,
+    Uses(parts): Uses<Parts>,
     caller: Caller,
     Path(id): Path<String>,
     Body(body): Body<Value>,
@@ -83,19 +93,19 @@ async fn update(
         return Err(ApiError::bad_request(crate::tr!("Нужен объект с полями.")));
     };
     if id == ConnectorId::Telegram {
-        strangers_to_chats(&app, &mut input)?;
+        strangers_to_chats(&parts, &mut input)?;
     }
-    app.connector_settings.update(id, &input, caller.actor())?;
-    Ok(ok(answer(&app, id)))
+    parts.connector_settings.update(id, &input, caller.actor())?;
+    Ok(ok(answer(&parts, id)))
 }
 
 /// A contact made of someone who wrote to the bot (`{name, stranger}`): their chat, which the panel never sees.
 #[cfg(feature = "pc")]
-fn strangers_to_chats(app: &App, input: &mut Map<String, Value>) -> Result<(), ApiError> {
+fn strangers_to_chats(parts: &Parts, input: &mut Map<String, Value>) -> Result<(), ApiError> {
     let Some(Value::Array(contacts)) = input.get_mut("contacts") else { return Ok(()) };
     for contact in contacts.iter_mut().filter_map(Value::as_object_mut) {
         let Some(stranger) = contact.remove("stranger") else { continue };
-        let found = stranger.as_str().and_then(|handle| app.calls.telegram.stranger(handle));
+        let found = stranger.as_str().and_then(|handle| parts.calls.telegram.stranger(handle));
         let Some(found) = found else {
             return Err(ApiError::bad_request(crate::tr!(
                 "Этого чата уже нет среди написавших боту: откройте лист заново."
@@ -107,33 +117,33 @@ fn strangers_to_chats(app: &App, input: &mut Map<String, Value>) -> Result<(), A
 }
 
 #[cfg(not(feature = "pc"))]
-fn strangers_to_chats(_app: &App, _input: &mut Map<String, Value>) -> Result<(), ApiError> {
+fn strangers_to_chats(_parts: &Parts, _input: &mut Map<String, Value>) -> Result<(), ApiError> {
     Ok(())
 }
 
-async fn clear(State(app): State<Arc<App>>, caller: Caller, Path(id): Path<String>) -> ApiResult<Settings> {
+async fn clear(Uses(parts): Uses<Parts>, caller: Caller, Path(id): Path<String>) -> ApiResult<Settings> {
     manager(&caller)?;
     let id = connector(&id)?;
-    app.connector_settings.clear(id, caller.actor())?;
-    Ok(ok(answer(&app, id)))
+    parts.connector_settings.clear(id, caller.actor())?;
+    Ok(ok(answer(&parts, id)))
 }
 
-async fn check(State(app): State<Arc<App>>, caller: Caller, Path(id): Path<String>) -> ApiResult<Settings> {
+async fn check(Uses(parts): Uses<Parts>, caller: Caller, Path(id): Path<String>) -> ApiResult<Settings> {
     manager(&caller)?;
     let id = connector(&id)?;
-    Checker::new(app.config.skills.weather.clone()).check(&app.connector_settings, id).await;
-    Ok(ok(answer(&app, id)))
+    Checker::new(parts.config.skills.weather.clone()).check(&parts.connector_settings, id).await;
+    Ok(ok(answer(&parts, id)))
 }
 
 /// Who wrote to the bot lately and is no contact: a name and the chat's last digits.
-async fn chats(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<Vec<Value>> {
+async fn chats(Uses(parts): Uses<Parts>, caller: Caller) -> ApiResult<Vec<Value>> {
     manager(&caller)?;
     #[cfg(feature = "pc")]
     let strangers: Vec<Value> =
-        app.calls.telegram.strangers().iter().filter_map(|stranger| serde_json::to_value(stranger).ok()).collect();
+        parts.calls.telegram.strangers().iter().filter_map(|stranger| serde_json::to_value(stranger).ok()).collect();
     #[cfg(not(feature = "pc"))]
     let strangers: Vec<Value> = {
-        let _ = &app;
+        let _ = parts;
         Vec::new()
     };
     Ok(ok(strangers))
@@ -150,15 +160,20 @@ struct PreviewBody {
     url: String,
 }
 
-async fn preview(State(app): State<Arc<App>>, caller: Caller, Body(body): Body<PreviewBody>) -> ApiResult<FeedPreview> {
+async fn preview(
+    Uses(config): Uses<Arc<Config>>,
+    caller: Caller,
+    Body(body): Body<PreviewBody>,
+) -> ApiResult<FeedPreview> {
     manager(&caller)?;
-    Ok(ok(Checker::new(app.config.skills.weather.clone()).preview(&body.url).await?))
+    Ok(ok(Checker::new(config.skills.weather.clone()).preview(&body.url).await?))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::app;
+    use crate::app::App;
     use crate::config::{Config, Env};
     use crate::core::identity::principal::{api_key_principal, user_principal};
     use crate::core::identity::Role;
@@ -199,7 +214,7 @@ mod tests {
             ("TELEGRAM_CONTACTS", "мама=111222333"),
             ("NEWS_FEEDS", "https://tass.ru/rss/v2.xml"),
         ]);
-        let state = || State(app.clone());
+        let state = || Uses::of(&app);
         let (status, telegram) = body(view(state(), admin(&app), Path("telegram".into())).await);
         assert_eq!(status, StatusCode::OK);
         assert_eq!(telegram["fromEnv"], json!(true));
@@ -225,7 +240,7 @@ mod tests {
     #[tokio::test]
     async fn lets_the_household_see_the_list_and_the_catalog_but_not_change_or_read_settings() {
         let app = app_with(&[]);
-        let state = || State(app.clone());
+        let state = || Uses::of(&app);
         let (status, catalog) = body(catalog(member(&app)).await);
         assert_eq!(status, StatusCode::OK);
         assert!(catalog["feeds"].as_array().unwrap().len() >= 25);

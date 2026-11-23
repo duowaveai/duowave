@@ -37,3 +37,20 @@ pub mod workshop;
 pub use catalog::{CatalogDeps, PackageCatalog};
 pub use controller::{PluginHost, PluginsDeps};
 pub use routes::routes;
+
+crate::route_needs!(
+    Option<std::sync::Arc<history::History>>,
+    std::sync::Arc<workshop::Workshop>,
+    std::sync::Arc<crate::dialog::DialogService>,
+    std::sync::Arc<PackageCatalog>,
+    std::sync::Arc<PluginHost>,
+    std::sync::Arc<crate::bus::Bus>,
+    std::sync::Arc<crate::characters::CharactersService>,
+    std::sync::Arc<files::PluginFiles>,
+    std::sync::Arc<schedule::Scheduler>,
+    std::sync::Arc<watch::WatchPages>,
+    std::sync::Arc<crate::secrets::SecretsService>,
+    std::sync::Arc<crate::settings::SettingsService>,
+    std::sync::Arc<crate::dialog::brain::BrainService>,
+    std::sync::Arc<crate::capabilities::publish::Publishers>
+);

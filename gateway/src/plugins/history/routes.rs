@@ -7,7 +7,7 @@
 //! - `/api/v1/workshop/drafts/{id}/merge` — a merge: start, its state, the answer to the agent's question, «Отменить».
 use std::sync::Arc;
 
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, Query};
 use axum::routing::{get, post, put};
 use axum::Router;
 use futures::StreamExt;
@@ -19,14 +19,16 @@ use super::gc::Place;
 use super::merge::MergeReport;
 use super::restore::{RestorePlan, RestoreReport};
 use super::{Author, Comparison, Feed, History, What, Who};
-use crate::app::App;
-use crate::platform::http::{ok, ApiError, ApiResult, Body, Caller};
+use crate::characters::CharactersService;
+use crate::dialog::DialogService;
+use crate::platform::http::{ok, ApiError, ApiResult, Body, Caller, Uses};
 use crate::plugins::routes::admin;
 use crate::plugins::workshop::agent::{self, ChatStep};
-use crate::plugins::workshop::DraftView;
+use crate::plugins::workshop::{DraftView, Workshop};
 use crate::settings::definitions::PACKAGE_HISTORY;
+use crate::settings::SettingsService;
 
-pub fn routes() -> Router<Arc<App>> {
+pub fn routes<S: crate::plugins::RouteNeeds>() -> Router<S> {
     Router::new()
         .route("/api/v1/history", get(room))
         .route("/api/v1/history/settings", put(set_settings))
@@ -41,8 +43,8 @@ pub fn routes() -> Router<Arc<App>> {
         .route("/api/v1/workshop/drafts/{id}/merge/answer", post(answer))
 }
 
-fn history_of(app: &App) -> Result<Arc<History>, ApiError> {
-    app.history
+fn history_of(history: &Option<Arc<crate::plugins::history::History>>) -> Result<Arc<History>, ApiError> {
+    history
         .clone()
         .ok_or_else(|| ApiError::conflict(crate::tr!("Истории приложений здесь нет: её папка не создаётся.")))
 }
@@ -51,9 +53,12 @@ fn by_of(actor: Option<&crate::core::events::Actor>) -> Author {
     Author::of(actor, Who::Hand)
 }
 
-async fn room(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<super::gc::Room> {
+async fn room(
+    Uses(history): Uses<Option<Arc<crate::plugins::history::History>>>,
+    caller: Caller,
+) -> ApiResult<super::gc::Room> {
     admin(&caller)?;
-    Ok(ok(history_of(&app)?.room()))
+    Ok(ok(history_of(&history)?.room()))
 }
 
 #[derive(Debug, Deserialize)]
@@ -66,13 +71,14 @@ pub struct SettingsBody {
 }
 
 async fn set_settings(
-    State(app): State<Arc<App>>,
+    Uses(history_service): Uses<Option<Arc<crate::plugins::history::History>>>,
+    Uses(settings): Uses<Arc<SettingsService>>,
     caller: Caller,
     Body(body): Body<SettingsBody>,
 ) -> ApiResult<super::gc::Room> {
     let actor = admin(&caller)?;
-    let history = history_of(&app)?;
-    let mut stored = app.settings.get(&PACKAGE_HISTORY, None).unwrap_or_else(|| json!({}));
+    let history = history_of(&history_service)?;
+    let mut stored = settings.get(&PACKAGE_HISTORY, None).unwrap_or_else(|| json!({}));
     if let Some(place) = body.place {
         let place = Place::parse(&place).ok_or_else(|| ApiError::field("place", crate::tr!("here, home или both")))?;
         if place != Place::Here && !history.on_station() {
@@ -88,13 +94,16 @@ async fn set_settings(
             stored[key] = json!(value);
         }
     }
-    app.settings.set(&PACKAGE_HISTORY, &stored, actor)?;
+    settings.set(&PACKAGE_HISTORY, &stored, actor)?;
     Ok(ok(history.room()))
 }
 
-async fn clean(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<super::gc::Cleaned> {
+async fn clean(
+    Uses(history_service): Uses<Option<Arc<crate::plugins::history::History>>>,
+    caller: Caller,
+) -> ApiResult<super::gc::Cleaned> {
     admin(&caller)?;
-    let history = history_of(&app)?;
+    let history = history_of(&history_service)?;
     let cleaned = tokio::task::spawn_blocking(move || history.clean()).await.map_err(ApiError::internal)?;
     Ok(ok(cleaned))
 }
@@ -106,13 +115,13 @@ pub struct FeedQuery {
 }
 
 async fn feed(
-    State(app): State<Arc<App>>,
+    Uses(history_service): Uses<Option<Arc<crate::plugins::history::History>>>,
     caller: Caller,
     Path(id): Path<String>,
     Query(query): Query<FeedQuery>,
 ) -> ApiResult<Feed> {
     admin(&caller)?;
-    let history = history_of(&app)?;
+    let history = history_of(&history_service)?;
     // On the station that sent its history to the computer: the records it cleaned come back for the feed.
     if history.on_station() {
         let missing: Vec<String> =
@@ -131,13 +140,13 @@ pub struct CompareQuery {
 }
 
 async fn compare(
-    State(app): State<Arc<App>>,
+    Uses(history_service): Uses<Option<Arc<crate::plugins::history::History>>>,
     caller: Caller,
     Path(id): Path<String>,
     Query(query): Query<CompareQuery>,
 ) -> ApiResult<Comparison> {
     admin(&caller)?;
-    let history = history_of(&app)?;
+    let history = history_of(&history_service)?;
     let resolve = |record: Option<String>| -> Result<Option<String>, ApiError> {
         match record.filter(|record| !record.is_empty()) {
             Some(record) => history
@@ -156,12 +165,12 @@ async fn compare(
 }
 
 async fn record(
-    State(app): State<Arc<App>>,
+    Uses(history_service): Uses<Option<Arc<crate::plugins::history::History>>>,
     caller: Caller,
     Path((id, record)): Path<(String, String)>,
 ) -> ApiResult<Value> {
     admin(&caller)?;
-    let history = history_of(&app)?;
+    let history = history_of(&history_service)?;
     let record = history.resolve(&id, &record).ok_or_else(|| ApiError::not_found(crate::tr!("Такой записи нет.")))?;
     history.ensure_local(&record).await;
     let view = history.record_view(&id, &record).ok_or_else(|| ApiError::not_found(crate::tr!("Такой записи нет.")))?;
@@ -175,12 +184,12 @@ async fn record(
 }
 
 async fn file(
-    State(app): State<Arc<App>>,
+    Uses(history_service): Uses<Option<Arc<crate::plugins::history::History>>>,
     caller: Caller,
     Path((id, record, path)): Path<(String, String, String)>,
 ) -> ApiResult<Value> {
     admin(&caller)?;
-    let history = history_of(&app)?;
+    let history = history_of(&history_service)?;
     let record = history.resolve(&id, &record).ok_or_else(|| ApiError::not_found(crate::tr!("Такой записи нет.")))?;
     history.ensure_local(&record).await;
     let tree = history
@@ -208,13 +217,13 @@ fn what_of(text: Option<&str>) -> Result<What, ApiError> {
 }
 
 async fn restore_plan(
-    State(app): State<Arc<App>>,
+    Uses(history_service): Uses<Option<Arc<crate::plugins::history::History>>>,
     caller: Caller,
     Path(id): Path<String>,
     Query(query): Query<RestoreQuery>,
 ) -> ApiResult<RestorePlan> {
     admin(&caller)?;
-    let history = history_of(&app)?;
+    let history = history_of(&history_service)?;
     let record =
         history.resolve(&id, &query.record).ok_or_else(|| ApiError::not_found(crate::tr!("Такой записи нет.")))?;
     history.ensure_local(&record).await;
@@ -230,13 +239,14 @@ pub struct RestoreBody {
 }
 
 async fn restore(
-    State(app): State<Arc<App>>,
+    Uses(history_service): Uses<Option<Arc<crate::plugins::history::History>>>,
+    Uses(characters): Uses<Arc<CharactersService>>,
     caller: Caller,
     Path(id): Path<String>,
     Body(body): Body<RestoreBody>,
 ) -> ApiResult<RestoreReport> {
     let actor = admin(&caller)?;
-    let history = history_of(&app)?;
+    let history = history_of(&history_service)?;
     let record =
         history.resolve(&id, &body.record).ok_or_else(|| ApiError::not_found(crate::tr!("Такой записи нет.")))?;
     history.ensure_local(&record).await;
@@ -244,7 +254,7 @@ async fn restore(
     let report =
         history.restore_installed(&id, &record, what, body.approve, by_of(actor.as_ref()), actor.clone()).await?;
     if report.restored {
-        app.characters.sync();
+        characters.sync();
     }
     Ok(ok(report))
 }
@@ -255,23 +265,30 @@ pub struct DraftRestoreBody {
 }
 
 async fn restore_draft(
-    State(app): State<Arc<App>>,
+    Uses(history_service): Uses<Option<Arc<crate::plugins::history::History>>>,
+    Uses(workshop): Uses<Arc<Workshop>>,
     caller: Caller,
     Path(id): Path<String>,
     Body(body): Body<DraftRestoreBody>,
 ) -> ApiResult<DraftView> {
     let actor = admin(&caller)?;
-    if let Some(history) = &app.history {
+    if let Some(history) = &history_service {
         if let Some(record) = history.resolve(&id, &body.record) {
             history.ensure_local(&record).await;
         }
     }
-    Ok(ok(app.workshop.restore_step(&id, &body.record, by_of(actor.as_ref()))?))
+    Ok(ok(workshop.restore_step(&id, &body.record, by_of(actor.as_ref()))?))
 }
 
 /// The agent's work on a draft in the background, as the panel's chat starts it: the plaque and the log follow it.
-pub fn start_agent(app: &App, caller: &Caller, id: &str, message: String) -> Result<(), ApiError> {
-    if !app.dialog.enabled() {
+pub fn start_agent(
+    dialog: &Arc<DialogService>,
+    workshop: &Arc<Workshop>,
+    caller: &Caller,
+    id: &str,
+    message: String,
+) -> Result<(), ApiError> {
+    if !dialog.enabled() {
         return Err(ApiError::conflict(crate::tr!(
             "Модель не выбрана: добавьте провайдера в «Персонаж» → «Мышление»."
         )));
@@ -279,8 +296,7 @@ pub fn start_agent(app: &App, caller: &Caller, id: &str, message: String) -> Res
     let principal = caller.principal().map(|principal| principal.id.clone()).unwrap_or_default();
     let key = format!("workshop:{principal}:{id}");
     let told: Arc<dyn Fn(ChatStep) + Send + Sync> = Arc::new(|_| {});
-    let mut phrases =
-        agent::chat(&app.dialog, app.workshop.clone(), &key, id, &message, told, CancellationToken::new());
+    let mut phrases = agent::chat(dialog, workshop.clone(), &key, id, &message, told, CancellationToken::new());
     tokio::spawn(async move { while phrases.next().await.is_some() {} });
     Ok(())
 }
@@ -296,13 +312,15 @@ pub struct MergeBody {
 }
 
 async fn merge(
-    State(app): State<Arc<App>>,
+    Uses(history_service): Uses<Option<Arc<crate::plugins::history::History>>>,
+    Uses(workshop): Uses<Arc<Workshop>>,
+    Uses(dialog): Uses<Arc<DialogService>>,
     caller: Caller,
     Path(id): Path<String>,
     Body(body): Body<MergeBody>,
 ) -> ApiResult<MergeReport> {
     let actor = admin(&caller)?;
-    let history = history_of(&app)?;
+    let history = history_of(&history_service)?;
     let record = if body.record == "upstream" {
         history
             .upstream_record(&id)
@@ -320,16 +338,20 @@ async fn merge(
     };
     history.ensure_local(&record).await;
     let asked = body.asked.map(|asked| asked.trim().chars().take(600).collect::<String>()).filter(|a| !a.is_empty());
-    let report = app.workshop.merge(&id, &record, body.agent, by_of(actor.as_ref()), asked).await?;
+    let report = workshop.merge(&id, &record, body.agent, by_of(actor.as_ref()), asked).await?;
     if let Some(merge) = report.merge.as_ref() {
-        start_agent(&app, &caller, &id, app.workshop.merge_brief(merge))?;
+        start_agent(&dialog, &workshop, &caller, &id, workshop.merge_brief(merge))?;
     }
     Ok(ok(report))
 }
 
-async fn merge_state(State(app): State<Arc<App>>, caller: Caller, Path(id): Path<String>) -> ApiResult<Value> {
+async fn merge_state(
+    Uses(history_service): Uses<Option<Arc<crate::plugins::history::History>>>,
+    caller: Caller,
+    Path(id): Path<String>,
+) -> ApiResult<Value> {
     admin(&caller)?;
-    let history = history_of(&app)?;
+    let history = history_of(&history_service)?;
     Ok(ok(json!({ "merge": super::merge::state(&history, &id) })))
 }
 
@@ -339,7 +361,8 @@ pub struct AnswerBody {
 }
 
 async fn answer(
-    State(app): State<Arc<App>>,
+    Uses(workshop): Uses<Arc<Workshop>>,
+    Uses(dialog): Uses<Arc<DialogService>>,
     caller: Caller,
     Path(id): Path<String>,
     Body(body): Body<AnswerBody>,
@@ -348,20 +371,25 @@ async fn answer(
     if body.choice.trim().is_empty() {
         return Err(ApiError::field("choice", crate::tr!("ответ на вопрос")));
     }
-    let message = app.workshop.answer_merge(&id, &body.choice)?;
-    start_agent(&app, &caller, &id, message)?;
+    let message = workshop.answer_merge(&id, &body.choice)?;
+    start_agent(&dialog, &workshop, &caller, &id, message)?;
     Ok(ok(json!({ "answered": true })))
 }
 
-async fn cancel_merge(State(app): State<Arc<App>>, caller: Caller, Path(id): Path<String>) -> ApiResult<DraftView> {
+async fn cancel_merge(
+    Uses(workshop): Uses<Arc<Workshop>>,
+    caller: Caller,
+    Path(id): Path<String>,
+) -> ApiResult<DraftView> {
     admin(&caller)?;
-    app.workshop.cancel_merge(&id)?;
-    Ok(ok(app.workshop.draft(&id)?))
+    workshop.cancel_merge(&id)?;
+    Ok(ok(workshop.draft(&id)?))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::App;
     use crate::config::{Config, Env};
     use crate::core::identity::principal::user_principal;
     use crate::core::identity::Role;
@@ -400,11 +428,10 @@ mod tests {
         assert_ne!(v1, v2);
         kv_replace(&app.db, "notes", &[("list".into(), "[\"хлеб\"]".into())]).unwrap();
 
-        let feed =
-            feed(State(app.clone()), admin(), Path("notes".into()), Query(FeedQuery { before: None, limit: None }))
-                .await
-                .unwrap()
-                .1;
+        let feed = feed(Uses::of(&app), admin(), Path("notes".into()), Query(FeedQuery { before: None, limit: None }))
+            .await
+            .unwrap()
+            .1;
         let install = |version: &str| {
             feed.records
                 .iter()
@@ -430,7 +457,8 @@ mod tests {
         assert_eq!(app.plugins.installed("notes").unwrap().version(), v2);
         // The data as it was when the first version gave way.
         let report = restore(
-            State(app.clone()),
+            Uses::of(&app),
+            Uses::of(&app),
             admin(),
             Path("notes".into()),
             Body(RestoreBody { record: install1[..7].to_string(), what: Some("data".into()), approve: false }),
@@ -444,13 +472,19 @@ mod tests {
         let steps = history.store().log("notes").len();
         let first_step = history.store().log("notes")[0].clone();
         let first_tree = history.record(&first_step).unwrap().tree;
-        restore_draft(State(app.clone()), admin(), Path("notes".into()), Body(DraftRestoreBody { record: first_step }))
-            .await
-            .unwrap();
+        restore_draft(
+            Uses::of(&app),
+            Uses::of(&app),
+            admin(),
+            Path("notes".into()),
+            Body(DraftRestoreBody { record: first_step }),
+        )
+        .await
+        .unwrap();
         let readme = std::fs::read(dir.path().join("data/packages-dev/notes/README.md")).ok();
         assert_eq!(readme, history.file_at(&first_tree, "README.md"), "the template's README as it was");
         assert_eq!(history.store().log("notes").len(), steps + 1);
-        let room = room(State(app.clone()), admin()).await.unwrap().1;
+        let room = room(Uses::of(&app), admin()).await.unwrap().1;
         assert!(room.bytes > 0 && room.budget_bytes == 200 * 1024 * 1024);
     }
 

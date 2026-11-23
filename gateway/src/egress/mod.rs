@@ -58,6 +58,8 @@ use reach::ReachData;
 use registry::{Goer, Sources};
 use rules::{Context, Decision, Learned, Mode, OnDown, OnDownAll, Route, RowRule, Why};
 
+crate::route_needs!(Arc<Egress>);
+
 /// The bus's participant the connections come to.
 pub const NETWORK: &str = "system/network";
 

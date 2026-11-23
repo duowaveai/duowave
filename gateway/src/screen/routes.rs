@@ -3,23 +3,23 @@
 //! this computer: the windows are its own.
 use std::sync::Arc;
 
-use axum::extract::{Path as UrlPath, State};
+use axum::extract::Path as UrlPath;
 use axum::routing::{get, post};
 use axum::Router;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use crate::app::App;
 use crate::core::identity::permissions::STATION_VIEW;
-use crate::platform::http::{ok, ApiError, ApiResult, Body, Caller, Zone};
+use crate::platform::http::{ok, ApiError, ApiResult, Body, Caller, Uses, Zone};
+use crate::screen::Screen;
 
-pub fn routes() -> Router<Arc<App>> {
+pub fn routes<S: crate::screen::RouteNeeds>() -> Router<S> {
     Router::new().route("/api/v1/screen", get(view)).route("/api/v1/screen/{id}", post(act))
 }
 
-async fn view(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<Value> {
+async fn view(Uses(screen): Uses<Arc<Screen>>, caller: Caller) -> ApiResult<Value> {
     caller.permitted(STATION_VIEW)?;
-    Ok(ok(json!({ "available": app.screen.available(), "windows": app.screen.windows() })))
+    Ok(ok(json!({ "available": screen.available(), "windows": screen.windows() })))
 }
 
 #[derive(Deserialize)]
@@ -29,14 +29,14 @@ struct ActBody {
 }
 
 async fn act(
-    State(app): State<Arc<App>>,
+    Uses(screen_service): Uses<Arc<Screen>>,
     caller: Caller,
     UrlPath(id): UrlPath<String>,
     Body(body): Body<ActBody>,
 ) -> ApiResult<Value> {
     caller.permitted(STATION_VIEW)?;
     caller.zone_at_least(Zone::Local)?;
-    let screen = &app.screen;
+    let screen = &screen_service;
     if !screen.windows().iter().any(|window| window.id == id) {
         return Err(ApiError::not_found(crate::tr!("окна уже нет")));
     }

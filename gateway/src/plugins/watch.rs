@@ -9,7 +9,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use axum::extract::{Form, Path as UrlPath, Request, State};
+use axum::extract::{Form, Path as UrlPath, Request};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
@@ -17,7 +17,9 @@ use axum::Router;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::app::App;
+use crate::platform::http::Uses;
+use crate::plugins::files::PluginFiles;
+use crate::plugins::PluginHost;
 
 const DAYS: i64 = 30;
 const PER_APP: usize = 200;
@@ -132,7 +134,7 @@ impl WatchPages {
     }
 }
 
-pub fn router() -> Router<Arc<App>> {
+pub fn router<S: crate::plugins::RouteNeeds>() -> Router<S> {
     Router::new()
         .route("/watch/{token}", get(page))
         .route("/watch/{token}/video", get(video))
@@ -200,16 +202,21 @@ fn voted_here(headers: &HeaderMap, token: &str) -> Option<usize> {
     })
 }
 
-async fn page(State(app): State<Arc<App>>, UrlPath(token): UrlPath<String>, headers: HeaderMap) -> Response {
-    match app.watch.get(&token) {
+async fn page(Uses(watch): Uses<Arc<WatchPages>>, UrlPath(token): UrlPath<String>, headers: HeaderMap) -> Response {
+    match watch.get(&token) {
         Some(page) => secured(Html(render(&token, &page, voted_here(&headers, &token))).into_response()),
         None => (StatusCode::NOT_FOUND, "Ссылка устарела или её нет.").into_response(),
     }
 }
 
-async fn video(State(app): State<Arc<App>>, UrlPath(token): UrlPath<String>, request: Request) -> Response {
-    let Some(page) = app.watch.get(&token) else { return StatusCode::NOT_FOUND.into_response() };
-    let Some(file) = file_of(&app.files, &page.app, &page.file) else { return StatusCode::NOT_FOUND.into_response() };
+async fn video(
+    Uses(watch): Uses<Arc<WatchPages>>,
+    Uses(files): Uses<Arc<PluginFiles>>,
+    UrlPath(token): UrlPath<String>,
+    request: Request,
+) -> Response {
+    let Some(page) = watch.get(&token) else { return StatusCode::NOT_FOUND.into_response() };
+    let Some(file) = file_of(&files, &page.app, &page.file) else { return StatusCode::NOT_FOUND.into_response() };
     // The one media engine (gateway/media): Range for seeking, the type by the bytes, nothing a browser runs.
     match crate::gateway::media::engine::serve(file, crate::gateway::media::Allow::Media, request, "no-store").await {
         Ok(response) => secured(response),
@@ -217,7 +224,7 @@ async fn video(State(app): State<Arc<App>>, UrlPath(token): UrlPath<String>, req
     }
 }
 
-fn file_of(files: &crate::plugins::files::PluginFiles, app: &str, path: &str) -> Option<PathBuf> {
+fn file_of(files: &PluginFiles, app: &str, path: &str) -> Option<PathBuf> {
     let file = files.inside(app, path).ok()?;
     (file.is_file() && Path::new(path).extension().is_some_and(|ext| ext == "mp4")).then_some(file)
 }
@@ -228,7 +235,8 @@ struct Vote {
 }
 
 async fn vote(
-    State(app): State<Arc<App>>,
+    Uses(watch): Uses<Arc<WatchPages>>,
+    Uses(plugins_service): Uses<Arc<PluginHost>>,
     UrlPath(token): UrlPath<String>,
     headers: HeaderMap,
     Form(form): Form<Vote>,
@@ -240,8 +248,8 @@ async fn vote(
     };
     // One vote per browser and page: a second only changes nothing.
     if voted_here(&headers, &token).is_none() {
-        let Some(page) = app.watch.vote(&token, side) else { return StatusCode::NOT_FOUND.into_response() };
-        let plugins = app.plugins.clone();
+        let Some(page) = watch.vote(&token, side) else { return StatusCode::NOT_FOUND.into_response() };
+        let plugins = plugins_service.clone();
         tokio::spawn(async move {
             let input = json!({ "id": page.id, "choice": if side == 0 { "a" } else { "b" }, "votes": page.votes });
             let _: Result<Value, _> =

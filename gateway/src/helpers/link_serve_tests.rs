@@ -623,10 +623,10 @@ async fn a_removed_home_is_cut_off_at_the_next_look() {
 }
 
 /// «Помогаю» made unreadable (an I/O error of a small disk, say; writing still works).
-fn unreadable(app: &App, broken: bool) {
+fn unreadable(db: &Arc<crate::storage::Db>, broken: bool) {
     let flag = if broken { "'unreadable'" } else { "0" };
     let sql = format!("UPDATE settings SET is_default = {flag} WHERE key = 'helper_clients'");
-    app.db.with(|c| c.execute(&sql, [])).unwrap();
+    db.with(|c| c.execute(&sql, [])).unwrap();
 }
 
 /// «Помогаю» that does not read cuts no live link (review of stage 7): the next look keeps it — what the home is given
@@ -641,7 +641,7 @@ async fn a_record_that_does_not_read_cuts_no_live_link_at_the_next_look() {
     let (_, mut gateway) = home_link(&app, &client).await;
     let welcome = next_frame(&mut gateway).await.unwrap();
     assert_eq!(welcome["t"], "welcome");
-    unreadable(&app, true);
+    unreadable(&app.db, true);
     // The next look (15 s): the link stays.
     let told = next_frame(&mut gateway).await.unwrap_or_else(|close| panic!("the link was cut: {close:?}"));
     assert_eq!((told["t"].as_str(), told["name"].as_str()), (Some("event"), Some("status")), "{told}");
@@ -649,7 +649,7 @@ async fn a_record_that_does_not_read_cuts_no_live_link_at_the_next_look() {
     assert!(abilities.is_empty(), "nothing given meanwhile: {abilities:?}");
     assert_eq!(app.link.live_links(), 1);
     // Read again: what it is given comes back over the same link.
-    unreadable(&app, false);
+    unreadable(&app.db, false);
     app.link.tell_status();
     let told = next_frame(&mut gateway).await.unwrap();
     assert_eq!((told["name"].as_str(), &told["data"]), (Some("status"), &welcome["status"]), "{told}");
@@ -664,10 +664,10 @@ async fn a_right_key_is_told_to_come_again_while_the_record_does_not_read() {
     let (port, stop, _) = link_port(&app, Duration::from_secs(10)).await;
     let (id, key) = app.clients.pair("home-1", "gw-1", false, None).unwrap();
     assert!(app.clients.confirm(&id, Names { gateway: "Колонка".into(), home: "Дача".into() }));
-    unreadable(&app, true);
+    unreadable(&app.db, true);
     assert_eq!(open_link(&app, port, &key).await.err(), Some(503));
     assert_eq!(upgrade(port, &[(LINK_ID_HEADER, "000000000000")]).await.0, 401);
-    unreadable(&app, false);
+    unreadable(&app.db, false);
     assert!(open_link(&app, port, &key).await.is_ok());
     stop.cancel();
 }
@@ -1368,7 +1368,15 @@ async fn an_up_request_over_a_real_link_reaches_the_centres_api_as_the_person_si
     centre.helpers.set_local_port(9);
     let key = turbo.link.connection_key(true).shown();
     let url = format!("https://127.0.0.1:{port}");
-    let entry = crate::helpers::routes::pair_with_key(&centre, &url, &key, None, None).await.expect("paired");
+    let entry = crate::helpers::routes::pair_with_key(
+        (&centre.identity, &centre.secrets, &centre.helpers),
+        &url,
+        &key,
+        None,
+        None,
+    )
+    .await
+    .expect("paired");
     assert!(centre.helpers.takes_up(&entry), "a Turbo at home");
     let client = turbo.clients.view(&[]).into_iter().find(|view| view.via == "link").expect("the centre's home").id;
     let linked = tokio::time::timeout(Duration::from_secs(10), async {

@@ -12,7 +12,7 @@
 //! - `GET|PUT /api/v1/gateway/self` — this gateway's own id and name (src/core/identity/home.rs).
 use std::sync::Arc;
 
-use axum::extract::{DefaultBodyLimit, Query, State};
+use axum::extract::{DefaultBodyLimit, Query};
 use axum::routing::{get, post};
 use axum::Router;
 use serde::{Deserialize, Serialize};
@@ -22,17 +22,22 @@ use super::availability::AvailabilityView;
 use super::service::Role;
 use super::station_fs::{RealSystem, StationFs, Target};
 use super::transfer::{self, Bundle};
-use crate::app::App;
+use crate::config::Config;
 use crate::core::availability::Placement;
-use crate::core::identity::home::GatewayView;
+use crate::core::events::EventBus;
+use crate::core::identity::home::{GatewayView, Identity};
 use crate::core::identity::permissions::{SETTINGS_EDIT, STATIONS_MANAGE, STATION_VIEW, USERS_MANAGE};
-use crate::platform::http::{created, ok, ApiError, ApiResult, Body, Caller};
+use crate::placement::{AvailabilityService, PlacementService};
+use crate::platform::http::{created, ok, ApiError, ApiResult, Body, Caller, Uses};
+use crate::plugins::files::PluginFiles;
+use crate::secrets::SecretsService;
 use crate::settings::definitions::GatewayState;
+use crate::storage::Db;
 
 /// A settings package and a sealed one are small (tens of KB), a few MB at most with many people and servers.
 const BODY_LIMIT: usize = 8 * 1024 * 1024;
 
-pub fn router() -> Router<Arc<App>> {
+pub fn router<S: crate::placement::RouteNeeds>() -> Router<S> {
     let router = Router::new()
         .route("/api/v1/availability", get(availability))
         .route("/api/v1/placement", get(view))
@@ -67,11 +72,11 @@ pub fn router() -> Router<Arc<App>> {
 /// becomes its helper without SSH and without copying PEER_KEY by hand (docs/plans/desk.md, stage 4). A station whose
 /// .env has no key makes one now and keeps it. The key is not taken back yet (the plan's «Открыто»), so it goes only to
 /// a person signed in here as the admin — not to a key, nor through the computer's pass.
-async fn pair(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<Value> {
+async fn pair(Uses(placement): Uses<Arc<PlacementService>>, caller: Caller) -> ApiResult<Value> {
     use crate::core::identity::principal::PrincipalKind;
     use crate::core::identity::roles::Role as PersonRole;
     caller.zone_at_least(crate::platform::http::Zone::Home)?;
-    if super::peer::from_peer(&caller, app.placement.peer_key()) {
+    if super::peer::from_peer(&caller, placement.peer_key()) {
         return Err(ApiError::forbidden(crate::tr!(
             "Ключ пары отдаётся администратору, вошедшему в пульт самой колонки."
         )));
@@ -82,17 +87,20 @@ async fn pair(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<Value> {
             "Ключ пары отдаётся только администратору колонки, вошедшему по паролю."
         )));
     }
-    if app.placement.role() != Role::Station {
+    if placement.role() != Role::Station {
         return Err(ApiError::conflict(crate::tr!("Ключ пары отдаёт колонка, а это компьютер.")));
     }
-    let key = app.placement.pair_key()?;
+    let key = placement.pair_key()?;
     tracing::info!(target: "placement", "pair: the key given to a computer from {}", caller.source);
     Ok(ok(json!({ "key": key })))
 }
 
-async fn availability(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<AvailabilityView> {
+async fn availability(
+    Uses(availability): Uses<Arc<AvailabilityService>>,
+    caller: Caller,
+) -> ApiResult<AvailabilityView> {
     caller.permitted(STATION_VIEW)?;
-    Ok(ok(app.availability.view()))
+    Ok(ok(availability.view()))
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -135,16 +143,28 @@ struct Pick {
 }
 
 #[cfg(feature = "pc")]
-fn chosen(app: &App, pick: &Pick) -> Result<Arc<super::watch::StationGateway>, ApiError> {
-    app.station_gateway
+fn chosen(
+    station_gateway: &Arc<crate::placement::watch::StationGateways>,
+    pick: &Pick,
+) -> Result<Arc<super::watch::StationGateway>, ApiError> {
+    station_gateway
         .pick(pick.station.as_deref())
         .ok_or_else(|| ApiError::conflict(crate::tr!("Какая колонка? Хаб есть на нескольких — укажите её (station).")))
 }
 
 #[cfg_attr(not(feature = "pc"), allow(unused_variables))]
-async fn view(State(app): State<Arc<App>>, caller: Caller, Query(pick): Query<Pick>) -> ApiResult<PlacementView> {
+async fn view(
+    Uses(placement_service): Uses<Arc<PlacementService>>,
+    #[cfg(feature = "pc")] Uses(station_gateway): Uses<Arc<crate::placement::watch::StationGateways>>,
+    #[cfg(feature = "pc")] Uses(moves): Uses<Arc<crate::placement::moves::MovesService>>,
+    #[cfg(feature = "pc")] Uses(station_connect): Uses<
+        Arc<crate::stations::connect::station_connect::StationConnectService>,
+    >,
+    caller: Caller,
+    Query(pick): Query<Pick>,
+) -> ApiResult<PlacementView> {
     caller.permitted(STATION_VIEW)?;
-    let placement = &app.placement;
+    let placement = &placement_service;
     Ok(ok(PlacementView {
         role: placement.role(),
         placement: crate::placement::PlacementSource::placement(placement.as_ref()),
@@ -154,17 +174,17 @@ async fn view(State(app): State<Arc<App>>, caller: Caller, Query(pick): Query<Pi
         managed_by: placement.managed_by(),
         #[cfg(feature = "pc")]
         station: if placement.role() == Role::Pc {
-            app.station_gateway.pick(pick.station.as_deref()).map(|station| station.view())
+            station_gateway.pick(pick.station.as_deref()).map(|station| station.view())
         } else {
             None
         },
         #[cfg(feature = "pc")]
-        stations: if placement.role() == Role::Pc { app.station_gateway.views() } else { Vec::new() },
+        stations: if placement.role() == Role::Pc { station_gateway.views() } else { Vec::new() },
         #[cfg(feature = "pc")]
-        job: if placement.role() == Role::Pc { app.moves.running() } else { None },
+        job: if placement.role() == Role::Pc { moves.running() } else { None },
         #[cfg(feature = "pc")]
         home_addresses: if placement.role() == Role::Pc {
-            app.station_connect.home_addresses(
+            station_connect.home_addresses(
                 &crate::stations::connect::station_connect::host_interfaces(),
                 crate::stations::connect::station_connect::in_container(),
             )
@@ -177,7 +197,8 @@ async fn view(State(app): State<Arc<App>>, caller: Caller, Query(pick): Query<Pi
 /// The safety net on or off: on the station itself; from the computer, told to the station.
 #[cfg_attr(not(feature = "pc"), allow(unused_variables))]
 async fn safety(
-    State(app): State<Arc<App>>,
+    Uses(placement): Uses<Arc<PlacementService>>,
+    #[cfg(feature = "pc")] Uses(station_gateway): Uses<Arc<crate::placement::watch::StationGateways>>,
     caller: Caller,
     Query(pick): Query<Pick>,
     Body(body): Body<Value>,
@@ -186,16 +207,16 @@ async fn safety(
         .get("on")
         .and_then(Value::as_bool)
         .ok_or_else(|| ApiError::bad_request(crate::tr!("on: true или false")))?;
-    match app.placement.role() {
+    match placement.role() {
         Role::Station => {
-            super::peer::peer_or_permitted(&caller, app.placement.peer_key(), SETTINGS_EDIT)?;
-            Ok(created(json!({ "state": app.placement.set_safety(on, caller.actor())? })))
+            super::peer::peer_or_permitted(&caller, placement.peer_key(), SETTINGS_EDIT)?;
+            Ok(created(json!({ "state": placement.set_safety(on, caller.actor())? })))
         }
         Role::Pc => {
             caller.permitted(STATIONS_MANAGE)?;
             #[cfg(feature = "pc")]
             {
-                let client = chosen(&app, &pick)?
+                let client = chosen(&station_gateway, &pick)?
                     .client()
                     .ok_or_else(|| ApiError::conflict(crate::tr!("Хаб не на колонке.")))?;
                 client.post("/api/v1/placement/safety", json!({ "on": on })).await.map_err(ApiError::unavailable)?;
@@ -205,8 +226,8 @@ async fn safety(
     }
 }
 
-fn on_station(app: &App) -> Result<(), ApiError> {
-    if app.placement.role() != Role::Station {
+fn on_station(placement: &Arc<PlacementService>) -> Result<(), ApiError> {
+    if placement.role() != Role::Station {
         return Err(ApiError::conflict(crate::tr!("Это делает хаб на самой колонке.")));
     }
     // Its voice switched in the station's files, then a reboot: none of it on a pretend station.
@@ -220,14 +241,18 @@ fn on_station(app: &App) -> Result<(), ApiError> {
 /// «Отдать голос Яндексу» from the station's own panel: no computer needed — the gateway runs as root on the
 /// station and changes quasar.cfg itself (a dated copy, the check), then the station reboots. Its gateway keeps
 /// running for its panel: «Вернуть голос DuoWave» undoes it.
-async fn give_back(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<Value> {
-    on_station(&app)?;
-    super::peer::peer_or_permitted(&caller, app.placement.peer_key(), STATIONS_MANAGE)?;
+async fn give_back(
+    Uses(placement): Uses<Arc<PlacementService>>,
+    Uses(events): Uses<EventBus>,
+    caller: Caller,
+) -> ApiResult<Value> {
+    on_station(&placement)?;
+    super::peer::peer_or_permitted(&caller, placement.peer_key(), STATIONS_MANAGE)?;
     let pointed = tokio::task::spawn_blocking(|| StationFs::real().point(&Target::Yandex, true, &RealSystem))
         .await
         .map_err(ApiError::internal)?
         .map_err(ApiError::conflict)?;
-    app.events.emit(crate::core::events::GatewayEvent::StationSwitched {
+    events.emit(crate::core::events::GatewayEvent::StationSwitched {
         address: "127.0.0.1".into(),
         to: "yandex".into(),
         result: "done".into(),
@@ -240,14 +265,18 @@ async fn give_back(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<Val
 }
 
 /// «Вернуть голос DuoWave»: the station's voice back to its own gateway, then a reboot.
-async fn point_local(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<Value> {
-    on_station(&app)?;
-    super::peer::peer_or_permitted(&caller, app.placement.peer_key(), STATIONS_MANAGE)?;
+async fn point_local(
+    Uses(placement): Uses<Arc<PlacementService>>,
+    Uses(events): Uses<EventBus>,
+    caller: Caller,
+) -> ApiResult<Value> {
+    on_station(&placement)?;
+    super::peer::peer_or_permitted(&caller, placement.peer_key(), STATIONS_MANAGE)?;
     let pointed = tokio::task::spawn_blocking(|| StationFs::real().point(&Target::Local, true, &RealSystem))
         .await
         .map_err(ApiError::internal)?
         .map_err(ApiError::conflict)?;
-    app.events.emit(crate::core::events::GatewayEvent::StationSwitched {
+    events.emit(crate::core::events::GatewayEvent::StationSwitched {
         address: "127.0.0.1".into(),
         to: "gateway".into(),
         result: "done".into(),
@@ -260,31 +289,35 @@ async fn point_local(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<V
 }
 
 /// The computer asks the station's gateway to start again (new settings are applied at the start).
-async fn restart(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<Value> {
-    if !super::peer::from_peer(&caller, app.placement.peer_key()) {
+async fn restart(Uses(placement): Uses<Arc<PlacementService>>, caller: Caller) -> ApiResult<Value> {
+    if !super::peer::from_peer(&caller, placement.peer_key()) {
         return Err(ApiError::forbidden(crate::tr!("Только для компьютера пары.")));
     }
-    app.placement.restart();
+    placement.restart();
     Ok(created(json!({ "restarting": true })))
 }
 
 /// This gateway as its panel's rename reads it: its own id, the name people see, the default and its home.
-async fn gateway_self(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<GatewayView> {
+async fn gateway_self(Uses(identity): Uses<Arc<Identity>>, caller: Caller) -> ApiResult<GatewayView> {
     caller.permitted(STATION_VIEW)?;
-    Ok(ok(app.identity.view()?))
+    Ok(ok(identity.view()?))
 }
 
 /// A person's name for this gateway, `{"name": "Кухня"}`; empty or null — the default again. The name is this gateway's
 /// own, not a setting the computer sends: a station whose settings live on the computer is renamed too — in its panel,
 /// or from the computer through its pass (`/station/<key>/api/v1/gateway/self`).
-async fn rename(State(app): State<Arc<App>>, caller: Caller, Body(body): Body<Value>) -> ApiResult<GatewayView> {
+async fn rename(
+    Uses(identity): Uses<Arc<Identity>>,
+    caller: Caller,
+    Body(body): Body<Value>,
+) -> ApiResult<GatewayView> {
     caller.permitted(SETTINGS_EDIT)?;
     let name = match body.get("name") {
         None | Some(Value::Null) => None,
         Some(Value::String(name)) => Some(name.as_str()),
         Some(_) => return Err(ApiError::bad_request(crate::tr!("{name}: нужна строка.", name = "name"))),
     };
-    Ok(ok(app.identity.rename(name, caller.actor())?))
+    Ok(ok(identity.rename(name, caller.actor())?))
 }
 
 /// What the package is asked with: `?plugins=1` — the plugins' state too (a move back takes it, moves.rs).
@@ -296,32 +329,46 @@ struct Asked {
 
 /// The settings package: sealed for the computer of the pair, plain for an admin (it holds the keys of the clouds).
 /// With `?plugins=1` the plugins' state goes in it as well — only a move carries that (transfer.rs).
-async fn export(State(app): State<Arc<App>>, caller: Caller, Query(asked): Query<Asked>) -> ApiResult<Value> {
-    let peer = super::peer::peer_or_permitted(&caller, app.placement.peer_key(), USERS_MANAGE)?;
-    let from = match app.placement.role() {
+async fn export(
+    Uses(placement): Uses<Arc<PlacementService>>,
+    Uses(db): Uses<Arc<Db>>,
+    Uses(secrets): Uses<Arc<SecretsService>>,
+    Uses(files): Uses<Arc<PluginFiles>>,
+    caller: Caller,
+    Query(asked): Query<Asked>,
+) -> ApiResult<Value> {
+    let peer = super::peer::peer_or_permitted(&caller, placement.peer_key(), USERS_MANAGE)?;
+    let from = match placement.role() {
         Role::Pc => "pc",
         Role::Station => "station",
     };
-    let mut bundle = transfer::export(&app.db, &app.secrets, from)?;
-    bundle.revision = app.placement.settings_revision().unwrap_or(0);
+    let mut bundle = transfer::export(&db, &secrets, from)?;
+    bundle.revision = placement.settings_revision().unwrap_or(0);
     if asked.plugins.as_deref().is_some_and(|value| matches!(value, "1" | "true")) {
-        bundle.plugins = Some(transfer::plugins(&app.db)?);
+        bundle.plugins = Some(transfer::plugins(&db)?);
         // A move to the computer: every picture of the plugins goes along (plugins/files.rs).
-        bundle.pictures = Some(transfer::pictures(app.files.root(), None));
+        bundle.pictures = Some(transfer::pictures(files.root(), None));
     }
     if peer {
-        transfer::note_sync(&app.db, "copied");
-        let key = app.placement.peer_key().unwrap_or_default();
+        transfer::note_sync(&db, "copied");
+        let key = placement.peer_key().unwrap_or_default();
         return Ok(ok(transfer::seal(&bundle, key)));
     }
     Ok(ok(serde_json::to_value(bundle)?))
 }
 
 /// A settings package received: kept beside the database and applied as the gateway starts again, a moment later.
-async fn import(State(app): State<Arc<App>>, caller: Caller, Body(body): Body<Value>) -> ApiResult<Value> {
-    let peer = super::peer::peer_or_permitted(&caller, app.placement.peer_key(), USERS_MANAGE)?;
+async fn import(
+    Uses(placement): Uses<Arc<PlacementService>>,
+    Uses(config): Uses<Arc<Config>>,
+    Uses(db): Uses<Arc<Db>>,
+    Uses(events): Uses<EventBus>,
+    caller: Caller,
+    Body(body): Body<Value>,
+) -> ApiResult<Value> {
+    let peer = super::peer::peer_or_permitted(&caller, placement.peer_key(), USERS_MANAGE)?;
     let bundle: Bundle = if peer {
-        transfer::open(&body, app.placement.peer_key().unwrap_or_default()).map_err(ApiError::bad_request)?
+        transfer::open(&body, placement.peer_key().unwrap_or_default()).map_err(ApiError::bad_request)?
     } else {
         serde_json::from_value(body).map_err(|_| ApiError::bad_request(crate::tr!("Это не набор настроек DuoWave.")))?
     };
@@ -329,33 +376,37 @@ async fn import(State(app): State<Arc<App>>, caller: Caller, Body(body): Body<Va
         return Err(ApiError::bad_request(transfer::NOT_FOR_THIS_GATEWAY));
     }
     let dir =
-        app.config.skills.state_dir.clone().ok_or_else(|| {
+        config.skills.state_dir.clone().ok_or_else(|| {
             ApiError::conflict(crate::tr!("У DuoWave здесь нет папки данных: настройки не сохранить."))
         })?;
     if peer {
-        transfer::note_sync(&app.db, "received");
+        transfer::note_sync(&db, "received");
     }
     let file = transfer::incoming_file(&dir);
     let text = serde_json::to_vec(&bundle)?;
     super::station_fs::write_atomic(&file, &text).map_err(ApiError::internal)?;
     tracing::info!("settings: a package from the {} received; the gateway starts again on it", bundle.from);
-    app.events.emit(crate::core::events::GatewayEvent::GatewayStateChanged {
+    events.emit(crate::core::events::GatewayEvent::GatewayStateChanged {
         what: format!("settings from the {}", bundle.from),
         actor: caller.actor(),
     });
-    app.placement.restart();
+    placement.restart();
     Ok(created(json!({ "applied": "restart" })))
 }
 
 #[cfg(feature = "pc")]
 mod pc {
     use super::*;
+    use crate::access::AccessService;
     use crate::core::identity::permissions::SYSTEM_UPDATE;
+    use crate::home::join::Joins;
     use crate::placement::moves::{MoveJob, MoveRequest, MoveTo};
     use crate::stations::connect::quasar_config::{parse_gateway_host, parse_gateway_host_or, plain_address};
 
     pub async fn start_move(
-        State(app): State<Arc<App>>,
+        Uses(station_gateway): Uses<Arc<crate::placement::watch::StationGateways>>,
+        Uses(station_connect): Uses<Arc<crate::stations::connect::station_connect::StationConnectService>>,
+        Uses(moves): Uses<Arc<crate::placement::moves::MovesService>>,
         caller: Caller,
         Body(body): Body<Value>,
     ) -> ApiResult<MoveJob> {
@@ -363,7 +414,7 @@ mod pc {
         let to: MoveTo = serde_json::from_value(body.get("to").cloned().unwrap_or(Value::Null))
             .map_err(|_| ApiError::bad_request(crate::tr!("to: station, stationServer, pc, yandex или ear")))?;
         let picked = body.get("station").and_then(Value::as_str);
-        let record = app.station_gateway.pick(picked).and_then(|station| station.record());
+        let record = station_gateway.pick(picked).and_then(|station| station.record());
         let address = body
             .get("address")
             .and_then(Value::as_str)
@@ -374,12 +425,12 @@ mod pc {
         let gateway = match body.get("gateway").and_then(Value::as_str).map(str::trim).filter(|text| !text.is_empty()) {
             // Typed without a port: this gateway's own port, not 80.
             Some(text) => Some(
-                parse_gateway_host_or(text, app.station_connect.port())
+                parse_gateway_host_or(text, station_connect.port())
                     .ok_or_else(|| ApiError::bad_request(crate::tr!("gateway: адрес[:порт]")))?,
             ),
             // Nobody typed it: this computer's address in the station's network.
             None if to != MoveTo::Yandex => {
-                let addresses = app.station_connect.home_addresses(
+                let addresses = station_connect.home_addresses(
                     &crate::stations::connect::station_connect::host_interfaces(),
                     crate::stations::connect::station_connect::in_container(),
                 );
@@ -391,7 +442,7 @@ mod pc {
         let settings_home = crate::settings::definitions::SettingsHome::Station;
         // «Ещё колонка» (stage 5): the centre the new ear joins — found before the move links the station here.
         let ear_of = if to == MoveTo::Ear {
-            let (address, port, key, name) = crate::home::ear::centre_for_ear(&app)?;
+            let (address, port, key, name) = crate::home::ear::centre_for_ear(&station_gateway)?;
             Some(crate::placement::moves::EarTarget { address, port, key, name })
         } else {
             None
@@ -408,20 +459,20 @@ mod pc {
             replace_home: body.get("replaceHome").and_then(Value::as_bool).unwrap_or(false),
             ear_of,
         };
-        Ok(created(app.moves.start(request, caller.actor())?))
+        Ok(created(moves.start(request, caller.actor())?))
     }
 
     pub async fn move_job(
-        State(app): State<Arc<App>>,
+        Uses(moves): Uses<Arc<crate::placement::moves::MovesService>>,
         caller: Caller,
         axum::extract::Path(id): axum::extract::Path<String>,
     ) -> ApiResult<MoveJob> {
         caller.permitted(STATION_VIEW)?;
-        Ok(ok(app.moves.job(&id)?))
+        Ok(ok(moves.job(&id)?))
     }
 
     pub async fn auto_update(
-        State(app): State<Arc<App>>,
+        Uses(station_gateway): Uses<Arc<crate::placement::watch::StationGateways>>,
         caller: Caller,
         Query(pick): Query<Pick>,
         Body(body): Body<Value>,
@@ -431,41 +482,49 @@ mod pc {
             .get("on")
             .and_then(Value::as_bool)
             .ok_or_else(|| ApiError::bad_request(crate::tr!("on: true или false")))?;
-        chosen(&app, &pick)?.set_auto_update(on, caller.actor())?;
+        chosen(&station_gateway, &pick)?.set_auto_update(on, caller.actor())?;
         Ok(created(json!({ "on": on })))
     }
 
     /// «Обновить колонку»: `{version}` — what the station's own panel saw offered, when it asks through this computer.
     pub async fn update_station(
-        State(app): State<Arc<App>>,
+        Uses(station_gateway): Uses<Arc<crate::placement::watch::StationGateways>>,
         caller: Caller,
         Query(pick): Query<Pick>,
         Body(body): Body<Value>,
     ) -> ApiResult<Value> {
         caller.permitted(SYSTEM_UPDATE)?;
         let wanted = body.get("version").and_then(Value::as_str).map(str::trim).filter(|version| !version.is_empty());
-        let started = chosen(&app, &pick)?.start_update(wanted, caller.actor()).await?;
+        let started = chosen(&station_gateway, &pick)?.start_update(wanted, caller.actor()).await?;
         Ok(created(json!({ "updating": true, "way": started.way, "version": started.version })))
     }
 
-    fn station_address(app: &App, pick: &Pick) -> Result<String, ApiError> {
-        chosen(app, pick)?
+    fn station_address(
+        station_gateway: &Arc<crate::placement::watch::StationGateways>,
+        pick: &Pick,
+    ) -> Result<String, ApiError> {
+        chosen(station_gateway, pick)?
             .record()
             .map(|record| record.address)
             .ok_or_else(|| ApiError::conflict(crate::tr!("Хаб не на колонке.")))
     }
 
     /// «Что случилось»: the station's own account, over SSH.
-    pub async fn inspect(State(app): State<Arc<App>>, caller: Caller, Query(pick): Query<Pick>) -> ApiResult<Value> {
+    pub async fn inspect(
+        Uses(station_gateway): Uses<Arc<crate::placement::watch::StationGateways>>,
+        Uses(moves): Uses<Arc<crate::placement::moves::MovesService>>,
+        caller: Caller,
+        Query(pick): Query<Pick>,
+    ) -> ApiResult<Value> {
         caller.permitted(STATIONS_MANAGE)?;
-        let address = station_address(&app, &pick)?;
-        Ok(created(app.moves.inspect(&address).await.map_err(ApiError::unavailable)?))
+        let address = station_address(&station_gateway, &pick)?;
+        Ok(created(moves.inspect(&address).await.map_err(ApiError::unavailable)?))
     }
 
     /// The station's voice from the computer's panel: back to its own gateway, or to Yandex — the station's gateway
     /// does it, asked with the pair's key.
     pub async fn station_voice(
-        State(app): State<Arc<App>>,
+        Uses(station_gateway): Uses<Arc<crate::placement::watch::StationGateways>>,
         caller: Caller,
         Query(pick): Query<Pick>,
         Body(body): Body<Value>,
@@ -476,15 +535,20 @@ mod pc {
             Some("yandex") => "/api/v1/placement/give-back",
             _ => return Err(ApiError::bad_request(crate::tr!("to: local или yandex"))),
         };
-        let client =
-            chosen(&app, &pick)?.client().ok_or_else(|| ApiError::conflict(crate::tr!("Хаб не на колонке.")))?;
+        let client = chosen(&station_gateway, &pick)?
+            .client()
+            .ok_or_else(|| ApiError::conflict(crate::tr!("Хаб не на колонке.")))?;
         let answer = client.post(path, json!({})).await.map_err(ApiError::unavailable)?;
         Ok(created(answer))
     }
 
     /// A gateway put on the station by hand (yse, `duowave station install`): the computer links to it with its
     /// address and the pair's key, without SSH — it then watches it, keeps its settings' copies, updates it.
-    pub async fn link(State(app): State<Arc<App>>, caller: Caller, Body(body): Body<Value>) -> ApiResult<Value> {
+    pub async fn link(
+        Uses(station_gateway): Uses<Arc<crate::placement::watch::StationGateways>>,
+        caller: Caller,
+        Body(body): Body<Value>,
+    ) -> ApiResult<Value> {
         caller.permitted(STATIONS_MANAGE)?;
         let address = body
             .get("address")
@@ -497,7 +561,7 @@ mod pc {
         if key.len() < 16 {
             return Err(ApiError::bad_request(crate::tr!("key: ключ пары — PEER_KEY из .env DuoWave на колонке")));
         }
-        let view = app.station_gateway.link(&address, port, key, caller.actor()).await.map_err(ApiError::conflict)?;
+        let view = station_gateway.link(&address, port, key, caller.actor()).await.map_err(ApiError::conflict)?;
         Ok(created(serde_json::to_value(view)?))
     }
 
@@ -505,7 +569,7 @@ mod pc {
     /// password, takes the pair's key (`POST /api/v1/placement/pair` there) and links — no SSH, no key copied by hand.
     /// The password goes to the station only and is not kept.
     pub async fn pair_station(
-        State(app): State<Arc<App>>,
+        Uses(station_gateway): Uses<Arc<crate::placement::watch::StationGateways>>,
         caller: Caller,
         Body(body): Body<Value>,
     ) -> ApiResult<Value> {
@@ -562,18 +626,18 @@ mod pc {
                 .unwrap_or_else(|| crate::tr!("DuoWave на колонке постарше: обновите его"));
             return Err(ApiError::conflict(crate::tr!("Ключ пары колонка не отдала: {said}", said = said)));
         };
-        let view = app.station_gateway.link(&address, port, key, caller.actor()).await.map_err(ApiError::conflict)?;
+        let view = station_gateway.link(&address, port, key, caller.actor()).await.map_err(ApiError::conflict)?;
         Ok(created(serde_json::to_value(view)?))
     }
 
     /// «Не давать компьютеру спать» of the desktop app, from the helper's panel (docs/plans/desk.md, stage 4): the
     /// app's own setting beside the gateway's data (desktop.json, `keepAwake`, on unless switched off); the app reads
     /// it again every few seconds and holds the computer awake or lets it sleep.
-    fn desktop_json(app: &App) -> Result<std::path::PathBuf, ApiError> {
-        if app.config.placement.managed_by.as_deref() != Some("desktop") {
+    fn desktop_json(config: &Arc<Config>) -> Result<std::path::PathBuf, ApiError> {
+        if config.placement.managed_by.as_deref() != Some("desktop") {
             return Err(ApiError::conflict(crate::tr!("Это настройка приложения DuoWave на компьютере.")));
         }
-        app.config
+        config
             .data_dir
             .as_ref()
             .map(|dir| dir.join("desktop.json"))
@@ -588,20 +652,24 @@ mod pc {
             .unwrap_or_else(|| json!({}))
     }
 
-    pub async fn awake(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<Value> {
+    pub async fn awake(Uses(config): Uses<Arc<Config>>, caller: Caller) -> ApiResult<Value> {
         caller.permitted(STATION_VIEW)?;
-        let Ok(path) = desktop_json(&app) else { return Ok(ok(json!({ "managed": false }))) };
+        let Ok(path) = desktop_json(&config) else { return Ok(ok(json!({ "managed": false }))) };
         let on = read_desktop(&path).get("keepAwake").and_then(Value::as_bool).unwrap_or(true);
         Ok(ok(json!({ "managed": true, "keepAwake": on })))
     }
 
-    pub async fn set_awake(State(app): State<Arc<App>>, caller: Caller, Body(body): Body<Value>) -> ApiResult<Value> {
+    pub async fn set_awake(
+        Uses(config): Uses<Arc<Config>>,
+        caller: Caller,
+        Body(body): Body<Value>,
+    ) -> ApiResult<Value> {
         caller.permitted(SETTINGS_EDIT)?;
         let on = body
             .get("on")
             .and_then(Value::as_bool)
             .ok_or_else(|| ApiError::bad_request(crate::tr!("on: true или false")))?;
-        let path = desktop_json(&app)?;
+        let path = desktop_json(&config)?;
         let mut settings = read_desktop(&path);
         settings["keepAwake"] = Value::Bool(on);
         std::fs::write(&path, format!("{}\n", serde_json::to_string_pretty(&settings).unwrap_or_default()))
@@ -648,13 +716,14 @@ mod pc {
     /// «ПК помогает колонке»: on — the station leans on this computer (a key made here first, if it has none of
     /// ours); off — it works alone, the address and the key kept.
     pub async fn helper(
-        State(app): State<Arc<App>>,
+        Uses(station_gateway): Uses<Arc<crate::placement::watch::StationGateways>>,
+        Uses(access): Uses<Arc<AccessService>>,
         caller: Caller,
         Query(pick): Query<Pick>,
         Body(body): Body<Value>,
     ) -> ApiResult<Value> {
         caller.permitted(STATIONS_MANAGE)?;
-        let station = chosen(&app, &pick)?;
+        let station = chosen(&station_gateway, &pick)?;
         // «Что даю колонке»: слух, голос, модель и сообщения по отдельности — без переключения самой помощи.
         if let Some(without) = body.get("without").and_then(Value::as_array) {
             let without: Vec<String> = without.iter().filter_map(Value::as_str).map(str::to_string).collect();
@@ -667,19 +736,19 @@ mod pc {
             .get("on")
             .and_then(Value::as_bool)
             .ok_or_else(|| ApiError::bad_request(crate::tr!("on: true или false")))?;
-        switch_helper(&app, &station, on, caller.actor()).await?;
+        switch_helper(&access, &station, on, caller.actor()).await?;
         Ok(created(serde_json::to_value(station.view())?))
     }
 
     /// «ПК помогает колонке» on or off: on — a key made here first, if the station has none of ours.
     async fn switch_helper(
-        app: &App,
+        access: &AccessService,
         station: &super::super::watch::StationGateway,
         on: bool,
         actor: Option<crate::core::events::Actor>,
     ) -> Result<(), ApiError> {
         let key = if on && station.needs_home_key() {
-            let created = app.access.keys.create(
+            let created = access.keys.create(
                 &serde_json::Map::from_iter([
                     ("name".into(), json!("Колонка: домашний сервер")),
                     ("grants".into(), json!(["home.models"])),
@@ -741,7 +810,9 @@ mod pc {
     /// The pair's key a centre gave: the station is linked as today's `pair-station` links it, and this computer
     /// helps it at once — «Что даёт этот компьютер» comes next in the panel, no switch to find.
     async fn joined(
-        app: &Arc<App>,
+        station_gateway: &Arc<crate::placement::watch::StationGateways>,
+        events: &crate::core::events::EventBus,
+        access: &AccessService,
         outgoing: &crate::home::join::Outgoing,
         grant: &Value,
         actor: Option<crate::core::events::Actor>,
@@ -755,19 +826,18 @@ mod pc {
             ApiError::conflict(crate::tr!("Хаб дома впустил, но не дал ключ пары: обновите DuoWave на нём."))
         })?;
         if outgoing.kind == crate::home::join::JoinKind::Ear {
-            return joined_as_ear(app, outgoing, key, actor).await;
+            return joined_as_ear(station_gateway, events, outgoing, key, actor).await;
         }
-        let view = app
-            .station_gateway
+        let view = station_gateway
             .link(&outgoing.address, outgoing.port, key, actor.clone())
             .await
             .map_err(ApiError::conflict)?;
         // By the key the link gave it: two stations may share an address (a test's sockets), never a key.
-        let station = app.station_gateway.find(&view.key).ok_or_else(|| {
+        let station = station_gateway.find(&view.key).ok_or_else(|| {
             ApiError::conflict(crate::tr!("Колонка связалась, но её не видно среди колонок этого компьютера."))
         })?;
         // Helping on at once (stage 3): a failure leaves the link — the switch is in «Что даёт этот компьютер».
-        let helping = switch_helper(app, &station, true, actor).await;
+        let helping = switch_helper(access, &station, true, actor).await;
         if let Err(error) = &helping {
             tracing::warn!(target: "placement", "pair-code: linked, helping not switched on: {}", error.message);
         }
@@ -781,25 +851,26 @@ mod pc {
     /// centre's ear — the centre found before the link, so the new record is never taken for it. Its settings,
     /// people and characters give way to the home's copy; its memory is merged (src/home/copy.rs).
     async fn joined_as_ear(
-        app: &Arc<App>,
+        station_gateway: &Arc<crate::placement::watch::StationGateways>,
+        events: &crate::core::events::EventBus,
         outgoing: &crate::home::join::Outgoing,
         key: &str,
         actor: Option<crate::core::events::Actor>,
     ) -> Result<Value, ApiError> {
-        let (address, port, centre_key, name) = crate::home::ear::centre_for_ear(app)?;
+        let (address, port, centre_key, name) = crate::home::ear::centre_for_ear(station_gateway)?;
         if address == outgoing.address && port == outgoing.port {
             return Err(ApiError::conflict(crate::tr!("Это и есть хаб дома.")));
         }
         let view =
-            app.station_gateway.link(&outgoing.address, outgoing.port, key, actor).await.map_err(ApiError::conflict)?;
-        let client = app.station_gateway.find(&view.key).and_then(|station| station.client()).ok_or_else(|| {
+            station_gateway.link(&outgoing.address, outgoing.port, key, actor).await.map_err(ApiError::conflict)?;
+        let client = station_gateway.find(&view.key).and_then(|station| station.client()).ok_or_else(|| {
             ApiError::conflict(crate::tr!("Колонка связалась, но её не видно среди колонок этого компьютера."))
         })?;
         client
             .put("/api/v1/home/ear", json!({ "address": address, "port": port, "key": centre_key, "name": name }))
             .await
             .map_err(ApiError::unavailable)?;
-        app.events.emit(crate::core::events::GatewayEvent::HomeDevicesChanged { reason: "join".into() });
+        events.emit(crate::core::events::GatewayEvent::HomeDevicesChanged { reason: "join".into() });
         let mut answer = serde_json::to_value(view)?;
         answer["joined"] = json!(true);
         answer["ear"] = json!(true);
@@ -808,7 +879,15 @@ mod pc {
 
     /// «Дом уже есть»: this computer asks the home's centre in as its Turbo (`POST /api/v1/home/join` there); the
     /// centre tells a code. `{address, port?}` → `{id, expiresAt, tries, told}`.
-    pub async fn pair_code(State(app): State<Arc<App>>, caller: Caller, Body(body): Body<Value>) -> ApiResult<Value> {
+    pub async fn pair_code(
+        Uses(station_connect): Uses<Arc<crate::stations::connect::station_connect::StationConnectService>>,
+        Uses(station_gateway): Uses<Arc<crate::placement::watch::StationGateways>>,
+        Uses(identity): Uses<Arc<Identity>>,
+        Uses(link_service): Uses<Arc<crate::helpers::link_serve::LinkServer>>,
+        Uses(joins): Uses<Arc<Joins>>,
+        caller: Caller,
+        Body(body): Body<Value>,
+    ) -> ApiResult<Value> {
         caller.permitted(STATIONS_MANAGE)?;
         let address = body
             .get("address")
@@ -817,7 +896,7 @@ mod pc {
             .ok_or_else(|| ApiError::bad_request(crate::tr!("address: адрес колонки, IPv4")))?;
         let port =
             body.get("port").and_then(Value::as_u64).filter(|port| (1..=65535).contains(port)).unwrap_or(8790) as u16;
-        let addresses = app.station_connect.home_addresses(
+        let addresses = station_connect.home_addresses(
             &crate::stations::connect::station_connect::host_interfaces(),
             crate::stations::connect::station_connect::in_container(),
         );
@@ -830,17 +909,17 @@ mod pc {
         };
         let name = match kind {
             crate::home::join::JoinKind::Ear => {
-                let (_, _, _, centre) = crate::home::ear::centre_for_ear(&app)?;
-                centre.unwrap_or_else(|| app.identity.home_name())
+                let (_, _, _, centre) = crate::home::ear::centre_for_ear(&station_gateway)?;
+                centre.unwrap_or_else(|| identity.home_name())
             }
-            crate::home::join::JoinKind::Turbo => app.identity.as_helper().name,
+            crate::home::join::JoinKind::Turbo => identity.as_helper().name,
         };
         // A centre on a computer or a server (stage 6 finds those): it pairs with this computer's own connection key
         // over the link, as «Подключить Турбо» with that key does — offered with the request, armed for its minutes.
         let link = if kind == crate::home::join::JoinKind::Turbo
             && centre_role(&address, port).await.as_deref() == Some("pc")
         {
-            let link_port = app.link.port().filter(|_| app.link.helps()).ok_or_else(|| {
+            let link_port = link_service.port().filter(|_| link_service.helps()).ok_or_else(|| {
                 ApiError::conflict(crate::tr!(
                     "Этот компьютер сейчас не принимает связь Турбо: обновите или перезапустите DuoWave."
                 ))
@@ -849,7 +928,8 @@ mod pc {
                 .as_deref()
                 .map(link_host)
                 .ok_or_else(|| ApiError::conflict(crate::tr!("Не нашёл адрес этого компьютера в сети хаба.")))?;
-            Some(json!({ "url": format!("https://{host}:{link_port}"), "key": app.link.connection_key(true).shown() }))
+            let url = format!("https://{host}:{link_port}");
+            Some(json!({ "url": url, "key": link_service.connection_key(true).shown() }))
         } else {
             None
         };
@@ -878,7 +958,7 @@ mod pc {
             .map(|at| at.timestamp_millis().max(0) as u64)
             .unwrap_or_else(|| crate::utils::time::now_ms() + crate::home::join::CODE_MS);
         let outgoing = crate::home::join::Outgoing { address: address.clone(), port, token, expires_ms, kind };
-        app.joins.keep_outgoing(&id, outgoing, crate::utils::time::now_ms());
+        joins.keep_outgoing(&id, outgoing, crate::utils::time::now_ms());
         tracing::info!(target: "placement", "pair-code: asked {address}:{port} ({})", kind.as_str());
         Ok(created(json!({
             "id": id,
@@ -890,21 +970,22 @@ mod pc {
         })))
     }
 
-    fn outgoing_of(app: &App, id: &str) -> Result<crate::home::join::Outgoing, ApiError> {
-        app.joins
-            .outgoing(id)
-            .ok_or_else(|| ApiError::not_found(crate::tr!("Такого запроса нет: попросите новый код.")))
+    fn outgoing_of(joins: &Arc<Joins>, id: &str) -> Result<crate::home::join::Outgoing, ApiError> {
+        joins.outgoing(id).ok_or_else(|| ApiError::not_found(crate::tr!("Такого запроса нет: попросите новый код.")))
     }
 
     /// The code the household heard: `{code}` → the centre's answer; the right one links and helps.
     pub async fn pair_code_enter(
-        State(app): State<Arc<App>>,
+        Uses(joins): Uses<Arc<Joins>>,
+        Uses(station_gateway): Uses<Arc<crate::placement::watch::StationGateways>>,
+        Uses(events): Uses<crate::core::events::EventBus>,
+        Uses(access): Uses<Arc<AccessService>>,
         caller: Caller,
         axum::extract::Path(id): axum::extract::Path<String>,
         Body(body): Body<Value>,
     ) -> ApiResult<Value> {
         caller.permitted(STATIONS_MANAGE)?;
-        let outgoing = outgoing_of(&app, &id)?;
+        let outgoing = outgoing_of(&joins, &id)?;
         let code = body.get("code").and_then(Value::as_str).unwrap_or_default();
         let answer = to_centre(
             reqwest::Method::POST,
@@ -913,20 +994,23 @@ mod pc {
         )
         .await?;
         let grant = answer.get("grant").cloned().unwrap_or(Value::Null);
-        let view = joined(&app, &outgoing, &grant, caller.actor()).await?;
-        app.joins.forget_outgoing(&id);
+        let view = joined(&station_gateway, &events, &access, &outgoing, &grant, caller.actor()).await?;
+        joins.forget_outgoing(&id);
         Ok(created(view))
     }
 
     /// The asker's look while it waits for «Разрешить» in the home's panel: `{status, why?}`, and — once allowed —
     /// the station linked and helped, `joined`.
     pub async fn pair_code_look(
-        State(app): State<Arc<App>>,
+        Uses(joins): Uses<Arc<Joins>>,
+        Uses(station_gateway): Uses<Arc<crate::placement::watch::StationGateways>>,
+        Uses(events): Uses<crate::core::events::EventBus>,
+        Uses(access): Uses<Arc<AccessService>>,
         caller: Caller,
         axum::extract::Path(id): axum::extract::Path<String>,
     ) -> ApiResult<Value> {
         caller.permitted(STATIONS_MANAGE)?;
-        let outgoing = outgoing_of(&app, &id)?;
+        let outgoing = outgoing_of(&joins, &id)?;
         let mut look = to_centre(
             reqwest::Method::GET,
             &format!("http://{}:{}/api/v1/home/join/{id}?token={}", outgoing.address, outgoing.port, outgoing.token),
@@ -934,8 +1018,8 @@ mod pc {
         )
         .await?;
         if let Some(grant) = look.get("grant").cloned() {
-            let view = joined(&app, &outgoing, &grant, caller.actor()).await?;
-            app.joins.forget_outgoing(&id);
+            let view = joined(&station_gateway, &events, &access, &outgoing, &grant, caller.actor()).await?;
+            joins.forget_outgoing(&id);
             look["station"] = view;
             look["joined"] = json!(true);
         }
@@ -947,12 +1031,12 @@ mod pc {
 
     /// «Сказать ещё раз».
     pub async fn pair_code_say(
-        State(app): State<Arc<App>>,
+        Uses(joins): Uses<Arc<Joins>>,
         caller: Caller,
         axum::extract::Path(id): axum::extract::Path<String>,
     ) -> ApiResult<Value> {
         caller.permitted(STATIONS_MANAGE)?;
-        let outgoing = outgoing_of(&app, &id)?;
+        let outgoing = outgoing_of(&joins, &id)?;
         let answer = to_centre(
             reqwest::Method::POST,
             &format!("http://{}:{}/api/v1/home/join/{id}/say", outgoing.address, outgoing.port),
@@ -963,10 +1047,15 @@ mod pc {
     }
 
     /// «Попробовать снова» after the safety net.
-    pub async fn retry(State(app): State<Arc<App>>, caller: Caller, Query(pick): Query<Pick>) -> ApiResult<Value> {
+    pub async fn retry(
+        Uses(station_gateway): Uses<Arc<crate::placement::watch::StationGateways>>,
+        Uses(moves): Uses<Arc<crate::placement::moves::MovesService>>,
+        caller: Caller,
+        Query(pick): Query<Pick>,
+    ) -> ApiResult<Value> {
         caller.permitted(STATIONS_MANAGE)?;
-        let address = station_address(&app, &pick)?;
-        app.moves.retry(&address).await.map_err(ApiError::unavailable)?;
+        let address = station_address(&station_gateway, &pick)?;
+        moves.retry(&address).await.map_err(ApiError::unavailable)?;
         Ok(created(json!({ "retried": true })))
     }
 }
@@ -983,6 +1072,7 @@ mod tests {
     use tower::ServiceExt;
 
     use super::*;
+    use crate::app::App;
     use crate::config::{Config, Env};
     use crate::placement::peer::{HELPER_PERSON, HELPER_ROLE};
 
@@ -1130,7 +1220,17 @@ mod tests {
         assert!(centre.stations.admit("h:centres-own", "127.0.0.1").ok);
         let mut headers = axum::http::HeaderMap::new();
         headers.insert("x-uprx-device-id", axum::http::HeaderValue::from_static("BEDROOMSTATION"));
-        assert!(crate::home::ear::dial(&bedroom, &headers).await.is_some(), "the centre took the ear's socket");
+        assert!(
+            crate::home::ear::dial(
+                &bedroom.settings,
+                &bedroom.secrets,
+                &bedroom.config.gateway.uniproxy_path,
+                &headers
+            )
+            .await
+            .is_some(),
+            "the centre took the ear's socket"
+        );
         let approved = centre
             .stations
             .list()

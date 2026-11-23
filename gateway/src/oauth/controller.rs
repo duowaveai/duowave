@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, Query};
 use axum::http::StatusCode;
 use axum::response::Response;
 use axum::routing::{get, post};
@@ -14,16 +14,18 @@ use serde::{Deserialize, Serialize};
 
 use super::page::page;
 use super::{plain_token, stale, Credential, Delivered, Given, SignInStatus, Target};
-use crate::app::App;
 use crate::core::events::Actor;
 use crate::core::identity::permissions::CONNECTORS_MANAGE;
 use crate::core::identity::PrincipalKind;
-use crate::platform::http::{ok, ApiError, ApiResult, Body, Caller, Zone};
+use crate::dialog::brain::BrainService;
+use crate::oauth::OAuthService;
+use crate::platform::http::{ok, ApiError, ApiResult, Body, Caller, Provides, RouteState, Uses, Zone};
 
 /// The return of a service that takes 127.0.0.1 with this path only (ChatGPT).
 pub const LOOPBACK_PATH: &str = "/auth/callback";
 
-pub fn routes() -> Router<Arc<App>> {
+/// What the sign-in routes use of the gateway: the sign-ins, and the model providers they end at.
+pub fn routes<S: RouteState + Provides<Arc<OAuthService>> + Provides<Arc<BrainService>>>() -> Router<S> {
     Router::new()
         .route(super::CALLBACK_PATH, get(callback))
         .route(LOOPBACK_PATH, get(callback))
@@ -58,18 +60,19 @@ const CODE_MAX: usize = 2048;
 /// The browser back from the service (on this computer it lands by itself). No sign-in to the panel is asked — the
 /// state of a sign-in begun from the panel is the check; a page in words answers, never the service's own text.
 async fn callback(
-    State(app): State<Arc<App>>,
+    Uses(oauth): Uses<Arc<OAuthService>>,
+    Uses(brain): Uses<Arc<BrainService>>,
     caller: Caller,
     Query(query): Query<Vec<(String, String)>>,
 ) -> Result<Response, ApiError> {
     caller.zone_at_least(Zone::Home)?;
     let get = |key: &str| query.iter().find(|(name, _)| name == key).map(|(_, value)| value.trim().to_string());
     let outcome = match (get("state").filter(|state| !state.is_empty()), get("code"), get("error")) {
-        (Some(id), _, Some(_)) => Err(cancel(&app, &id)),
+        (Some(id), _, Some(_)) => Err(cancel(&oauth, &id)),
         (None, _, Some(_)) => Err(cancelled()),
         (Some(id), Some(code), None) if plain_token(&code, CODE_MAX) => {
             let given = given_of(get, code);
-            finish(app, id, given, None).await
+            finish(oauth, brain, id, given, None).await
         }
         _ => Err(stale()),
     };
@@ -89,10 +92,10 @@ async fn callback(
 }
 
 /// The owner said no on the service's page: the panel that waits learns it at once.
-fn cancel(app: &App, id: &str) -> ApiError {
+fn cancel(oauth: &OAuthService, id: &str) -> ApiError {
     let error = cancelled();
-    if app.oauth.take(id).is_ok() {
-        app.oauth.settle(id, &Err(error.clone()));
+    if oauth.take(id).is_ok() {
+        oauth.settle(id, &Err(error.clone()));
     }
     error
 }
@@ -109,7 +112,8 @@ pub struct CompleteBody {
 
 /// From another device: the code the service's page showed, or the address of the return, pasted into the panel.
 async fn complete(
-    State(app): State<Arc<App>>,
+    Uses(oauth): Uses<Arc<OAuthService>>,
+    Uses(brain): Uses<Arc<BrainService>>,
     caller: Caller,
     Body(body): Body<CompleteBody>,
 ) -> ApiResult<SignInDone> {
@@ -126,7 +130,7 @@ async fn complete(
             let get = |key: &str| url.query_pairs().find(|(name, _)| name == key).map(|(_, value)| value.into_owned());
             if get("error").is_some() {
                 return Err(match get("state").or(named) {
-                    Some(id) => cancel(&app, &id),
+                    Some(id) => cancel(&oauth, &id),
                     None => cancelled(),
                 });
             }
@@ -139,34 +143,49 @@ async fn complete(
         }
     };
     let id = id.ok_or_else(stale)?;
-    Ok(ok(finish(app.clone(), id, given, caller.actor()).await?))
+    Ok(ok(finish(oauth, brain, id, given, caller.actor()).await?))
 }
 
 /// «Вошли?» — the panel asks while the owner signs in on the service's page.
-async fn status(State(app): State<Arc<App>>, caller: Caller, Path(id): Path<String>) -> ApiResult<SignInStatus> {
+async fn status(
+    Uses(oauth): Uses<Arc<OAuthService>>,
+    caller: Caller,
+    Path(id): Path<String>,
+) -> ApiResult<SignInStatus> {
     caller.permitted(CONNECTORS_MANAGE)?;
-    app.oauth.status(&id).map(ok).ok_or_else(|| ApiError::not_found(crate::tr!("Такого входа нет: он устарел.")))
+    oauth.status(&id).map(ok).ok_or_else(|| ApiError::not_found(crate::tr!("Такого входа нет: он устарел.")))
 }
 
 /// Exchanges the code and gives what it brought to who began the sign-in; the panel that waits learns how it ended.
 /// It goes on when the browser leaves meanwhile: a sign-in is not lost half-way.
-async fn finish(app: Arc<App>, id: String, given: Given, actor: Option<Actor>) -> Result<SignInDone, ApiError> {
+async fn finish(
+    oauth: Arc<OAuthService>,
+    brain: Arc<BrainService>,
+    id: String,
+    given: Given,
+    actor: Option<Actor>,
+) -> Result<SignInDone, ApiError> {
     tokio::spawn(async move {
-        let taken = app.oauth.take(&id)?;
-        let outcome = match app.oauth.exchange(&taken, &given).await {
-            Ok(credential) => deliver(&app, &taken.target, credential, actor),
+        let taken = oauth.take(&id)?;
+        let outcome = match oauth.exchange(&taken, &given).await {
+            Ok(credential) => deliver(&brain, &taken.target, credential, actor),
             Err(error) => Err(error),
         };
-        app.oauth.settle(&id, &outcome);
+        oauth.settle(&id, &outcome);
         outcome.map(|done| SignInDone { title: done.title, note: done.note })
     })
     .await
     .map_err(ApiError::internal)?
 }
 
-fn deliver(app: &App, target: &Target, credential: Credential, actor: Option<Actor>) -> Result<Delivered, ApiError> {
+fn deliver(
+    brain: &BrainService,
+    target: &Target,
+    credential: Credential,
+    actor: Option<Actor>,
+) -> Result<Delivered, ApiError> {
     match target {
-        Target::Provider { id, created_at } => app.brain.signed_in(id, created_at, credential, actor),
+        Target::Provider { id, created_at } => brain.signed_in(id, created_at, credential, actor),
     }
 }
 
@@ -180,6 +199,7 @@ mod tests {
     use tower::ServiceExt;
 
     use super::*;
+    use crate::app::App;
     use crate::config::{Config, Env};
     use crate::core::identity::principal::{api_key_principal, user_principal};
     use crate::core::identity::Role;
@@ -254,7 +274,7 @@ mod tests {
     }
 
     async fn status_of(app: &Arc<App>, id: &str) -> (StatusCode, Value) {
-        match status(State(app.clone()), admin(app), Path(id.to_string())).await {
+        match status(Uses::of(&app), admin(app), Path(id.to_string())).await {
             Ok(answer) => (answer.0, serde_json::to_value(&answer.1).unwrap()),
             Err(error) => (error.status, json!({"message": error.message})),
         }
@@ -268,9 +288,14 @@ mod tests {
 
         let started = app.oauth.start(&sign_in, target.clone(), false, &Default::default()).unwrap();
         shown(&service, &started.url);
-        let done = complete(State(app.clone()), admin(&app), body(json!({"id": started.id, "text": " good-code \n"})))
-            .await
-            .unwrap();
+        let done = complete(
+            Uses::of(&app),
+            Uses::of(&app),
+            admin(&app),
+            body(json!({"id": started.id, "text": " good-code \n"})),
+        )
+        .await
+        .unwrap();
         assert_eq!(done.1, SignInDone { title: "OpenRouter".into(), note: None });
         assert_eq!(app.secrets.get("llm:openrouter:key").as_deref(), Some(SERVICE_KEY));
 
@@ -278,7 +303,7 @@ mod tests {
         let again = app.oauth.start(&sign_in, target, true, &Default::default()).unwrap();
         shown(&service, &again.url);
         let address = format!("http://localhost:7780/api/v1/oauth/callback?code=good-code&state={}", again.id);
-        let done = complete(State(app.clone()), admin(&app), body(json!({"text": address}))).await.unwrap();
+        let done = complete(Uses::of(&app), Uses::of(&app), admin(&app), body(json!({"text": address}))).await.unwrap();
         assert_eq!(done.1.title, "OpenRouter");
         assert_eq!(app.secrets.get("llm:openrouter:key").as_deref(), Some(SERVICE_KEY));
     }
@@ -296,10 +321,15 @@ mod tests {
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert!(page.contains("устарел или начат не здесь"), "{page}");
 
-        let refused = complete(State(app.clone()), admin(&app), body(json!({"id": started.id, "text": "stolen-code"})))
-            .await
-            .err()
-            .unwrap();
+        let refused = complete(
+            Uses::of(&app),
+            Uses::of(&app),
+            admin(&app),
+            body(json!({"id": started.id, "text": "stolen-code"})),
+        )
+        .await
+        .err()
+        .unwrap();
         assert!(refused.message.contains("не подтвердил вход"), "{}", refused.message);
         assert!(!app.secrets.has("llm:openrouter:key"));
         assert_eq!(status_of(&app, &started.id).await.1["state"], json!("failed"));
@@ -318,7 +348,8 @@ mod tests {
             status_of(&app, &declined.id).await.1,
             json!({"state": "failed", "message": "Вход отменён на странице сервиса. Нажмите «Войти» ещё раз."})
         );
-        let empty = complete(State(app.clone()), admin(&app), body(json!({"id": declined.id, "text": "  "}))).await;
+        let empty =
+            complete(Uses::of(&app), Uses::of(&app), admin(&app), body(json!({"id": declined.id, "text": "  "}))).await;
         assert!(empty.err().unwrap().message.starts_with("Вставьте код"));
         assert_eq!(status_of(&app, "nobody").await.0, StatusCode::NOT_FOUND);
     }
@@ -334,10 +365,11 @@ mod tests {
         // Another provider takes the id meanwhile: it is not the one who signed in.
         tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         app.brain.add(&ProviderInput::from_value(json!({"preset": "openrouter"})), None).unwrap();
-        let gone = complete(State(app.clone()), admin(&app), body(json!({"id": started.id, "text": "good-code"})))
-            .await
-            .err()
-            .unwrap();
+        let gone =
+            complete(Uses::of(&app), Uses::of(&app), admin(&app), body(json!({"id": started.id, "text": "good-code"})))
+                .await
+                .err()
+                .unwrap();
         assert_eq!(gone.status, StatusCode::NOT_FOUND, "{}", gone.message);
         assert!(!app.secrets.has("llm:openrouter:key"));
         assert_eq!(status_of(&app, &started.id).await.1["state"], json!("failed"));
@@ -469,7 +501,8 @@ mod tests {
             assert_eq!(status, StatusCode::UNAUTHORIZED, "{method} {uri}: {text}");
         }
         let key = Caller::local(app.clone(), Some(api_key_principal("k1", "script", &["*".to_string()])));
-        let refused = complete(State(app.clone()), key, body(json!({"id": "x", "text": "y"}))).await.err().unwrap();
+        let refused =
+            complete(Uses::of(&app), Uses::of(&app), key, body(json!({"id": "x", "text": "y"}))).await.err().unwrap();
         assert_eq!(
             (refused.status, refused.message.as_str()),
             (StatusCode::FORBIDDEN, "Это для людей, не для ключей.")

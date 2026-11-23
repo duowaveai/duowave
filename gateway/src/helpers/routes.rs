@@ -11,7 +11,7 @@
 
 use std::sync::Arc;
 
-use axum::extract::{Path, State};
+use axum::extract::Path;
 use axum::routing::{get, post, put};
 use axum::Router;
 use serde::Serialize;
@@ -19,13 +19,14 @@ use serde_json::{json, Value};
 
 use super::contract::Ability;
 use super::now::NowRow;
-use super::{AddInput, Away, Change, HelperKind, HelperView};
-use crate::app::App;
-use crate::core::identity::home::GatewayHealth;
+use super::{AddInput, Away, Change, HelperKind, HelperView, Parts};
+use crate::core::identity::home::{GatewayHealth, Identity};
 use crate::core::identity::permissions::{CONNECTORS_MANAGE, CONNECTORS_VIEW};
-use crate::platform::http::{created, ok, ApiError, ApiResult, Body, Caller};
+use crate::helpers::Helpers;
+use crate::platform::http::{created, ok, ApiError, ApiResult, Body, Caller, Uses};
+use crate::secrets::SecretsService;
 
-pub fn router() -> Router<Arc<App>> {
+pub fn router<S: crate::helpers::RouteNeeds>() -> Router<S> {
     let router = Router::new()
         .route("/api/v1/helpers", get(list).post(add))
         .route("/api/v1/helpers/order", put(order))
@@ -52,18 +53,18 @@ pub struct HelpersView {
     pub gateway: Option<GatewayHealth>,
 }
 
-pub fn view(app: &App) -> HelpersView {
+pub fn view(parts: &Parts) -> HelpersView {
     HelpersView {
-        helpers: app.helpers.views(),
-        now: super::now::rows(app),
-        away: app.helpers.away(),
-        gateway: app.identity.gateway(),
+        helpers: parts.helpers.views(),
+        now: super::now::rows(parts),
+        away: parts.helpers.away(),
+        gateway: parts.identity.gateway(),
     }
 }
 
-async fn list(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<HelpersView> {
+async fn list(Uses(parts): Uses<Parts>, caller: Caller) -> ApiResult<HelpersView> {
     caller.permitted(CONNECTORS_VIEW)?;
-    Ok(ok(view(&app)))
+    Ok(ok(view(&parts)))
 }
 
 /// A text field of the body: absent or null — None.
@@ -86,7 +87,7 @@ fn abilities(body: &Value, field: &str) -> Option<Vec<Ability>> {
 /// A connection key pairs over the link; a `vgw_` key is a plain helper at home. Both answers name the entry a
 /// re-pairing renews (`matched`): the one `replace` names («Подключить заново»), or — for a connection key — the one
 /// of the same helper with the very certificate pinned.
-async fn add(State(app): State<Arc<App>>, caller: Caller, Body(body): Body<Value>) -> ApiResult<Value> {
+async fn add(Uses(parts): Uses<Parts>, caller: Caller, Body(body): Body<Value>) -> ApiResult<Value> {
     caller.permitted(CONNECTORS_MANAGE)?;
     let kind = match text(&body, "kind")? {
         None => None,
@@ -105,13 +106,13 @@ async fn add(State(app): State<Arc<App>>, caller: Caller, Body(body): Body<Value
     let dry = body.get("dryRun").and_then(Value::as_bool) == Some(true);
     let key = input.key.trim().to_string();
     if let Some(connection) = super::link::ConnectionKey::parse(&key) {
-        return pair(&app, &caller, input, connection, dry).await;
+        return pair(&parts, &caller, input, connection, dry).await;
     }
     if !key.is_empty() && !key.starts_with("vgw_") {
         return Err(ApiError::bad_request(crate::tr!("Ключ подключения — 26 букв и цифр, как его показывает Турбо.")));
     }
     if dry {
-        let helper = app.helpers.probe(&input).await?;
+        let helper = parts.helpers.probe(&input).await?;
         let mut answer = json!({ "helper": helper });
         if let Some(replace) = &input.replace {
             answer["matched"] = json!(replace);
@@ -119,8 +120,8 @@ async fn add(State(app): State<Arc<App>>, caller: Caller, Body(body): Body<Value
         return Ok(ok(answer));
     }
     let replace = input.replace.clone();
-    let id = app.helpers.add(input, caller.actor()).await?;
-    let mut answer = serde_json::to_value(view(&app))?;
+    let id = parts.helpers.add(input, caller.actor()).await?;
+    let mut answer = serde_json::to_value(view(&parts))?;
     answer["id"] = json!(id);
     if let Some(replace) = replace {
         answer["matched"] = json!(replace);
@@ -159,7 +160,7 @@ fn link_url(text: &str) -> Option<String> {
 /// own connection key and its link's address is paired here as a Turbo at home — as «Подключить Турбо» with that key
 /// pairs it, the household's code (or an admin's «Разрешить») in place of the key typed by hand. The entry's id.
 pub async fn pair_with_key(
-    app: &Arc<App>,
+    (identity, secrets, helpers): (&Identity, &SecretsService, &Helpers),
     url: &str,
     key: &str,
     name: Option<&str>,
@@ -174,21 +175,21 @@ pub async fn pair_with_key(
         return Err(ApiError::bad_request(crate::tr!("Турбо по адресу вне дома не может быть «дома».")));
     }
     let name = name.map(super::helper_name).transpose()?;
-    let me = super::remote::Me::of(&app.identity);
-    let home_key = app.secrets.get(crate::core::identity::home::HOME_KEY).unwrap_or_default();
-    let check = app.helpers.pair_check(None);
-    let timing = app.helpers.link_timing();
+    let me = super::remote::Me::of(identity);
+    let home_key = secrets.get(crate::core::identity::home::HOME_KEY).unwrap_or_default();
+    let check = helpers.pair_check(None);
+    let timing = helpers.link_timing();
     let paired = super::link::pair(&url, &connection, &me, &home_key, &timing, false, &check)
         .await
         .map_err(|error| error.into_api(&url))?;
-    let (id, _) = app.helpers.add_linked(&url, name, Some(HelperKind::Home), Vec::new(), None, paired, actor).await?;
+    let (id, _) = helpers.add_linked(&url, name, Some(HelperKind::Home), Vec::new(), None, paired, actor).await?;
     Ok(id)
 }
 
 /// The pairing: the helper's link, the connection key, this gateway's home proven, `pair_check` before anything is
 /// spent; a probe stops there. Every check of the input comes first: once the helper confirms, its key is spent.
 async fn pair(
-    app: &Arc<App>,
+    parts: &Parts,
     caller: &Caller,
     mut input: super::AddInput,
     key: super::link::ConnectionKey,
@@ -200,26 +201,26 @@ async fn pair(
         return Err(ApiError::bad_request(crate::tr!("Турбо по адресу вне дома не может быть «дома».")));
     }
     input.name = input.name.as_deref().map(super::helper_name).transpose()?;
-    let me = super::remote::Me::of(&app.identity);
-    let home_key = app.secrets.get(crate::core::identity::home::HOME_KEY).unwrap_or_default();
-    let check = app.helpers.pair_check(input.replace.clone());
-    let timing = app.helpers.link_timing();
+    let me = super::remote::Me::of(&parts.identity);
+    let home_key = parts.secrets.get(crate::core::identity::home::HOME_KEY).unwrap_or_default();
+    let check = parts.helpers.pair_check(input.replace.clone());
+    let timing = parts.helpers.link_timing();
     let paired = super::link::pair(&url, &key, &me, &home_key, &timing, dry, &check)
         .await
         .map_err(|error| error.into_api(&url))?;
     if dry {
-        let helper = app.helpers.paired_view(&url, input.name.as_deref(), input.kind, &paired);
+        let helper = parts.helpers.paired_view(&url, input.name.as_deref(), input.kind, &paired);
         let mut answer = json!({ "helper": helper });
-        if let Some(matched) = app.helpers.matched(input.replace.as_deref(), &paired)? {
+        if let Some(matched) = parts.helpers.matched(input.replace.as_deref(), &paired)? {
             answer["matched"] = json!(matched);
         }
         return Ok(ok(answer));
     }
-    let (id, matched) = app
+    let (id, matched) = parts
         .helpers
         .add_linked(&url, input.name, input.kind, input.without, input.replace, paired, caller.actor())
         .await?;
-    let mut answer = serde_json::to_value(view(app))?;
+    let mut answer = serde_json::to_value(view(parts))?;
     answer["id"] = json!(id);
     if let Some(matched) = matched {
         answer["matched"] = json!(matched);
@@ -229,7 +230,7 @@ async fn pair(
 
 /// `{name?, enabled?, without?}`. «Модель» is not let go while «Мозг» answers with the model reached through it.
 async fn update(
-    State(app): State<Arc<App>>,
+    Uses(parts): Uses<Parts>,
     caller: Caller,
     Path(id): Path<String>,
     Body(body): Body<Value>,
@@ -241,57 +242,57 @@ async fn update(
         Some(_) => return Err(ApiError::bad_request(crate::tr!("enabled: true или false"))),
     };
     let change = Change { name: text(&body, "name")?, enabled, without: abilities(&body, "without") };
-    if app.helpers.entry(&id).is_none() {
+    if parts.helpers.entry(&id).is_none() {
         return Err(ApiError::not_found(crate::tr!("Нет такого Турбо.")));
     }
     if let Some(without) = &change.without {
-        crate::home_server::check_model_kept(&app.helpers, &app.brain, &id, without)?;
+        crate::home_server::check_model_kept(&parts.helpers, &parts.brain, &id, without)?;
     }
-    app.helpers.update(&id, change, caller.actor())?;
-    Ok(ok(view(&app)))
+    parts.helpers.update(&id, change, caller.actor())?;
+    Ok(ok(view(&parts)))
 }
 
 /// `{ids}`: every stored helper once, in the new order.
-async fn order(State(app): State<Arc<App>>, caller: Caller, Body(body): Body<Value>) -> ApiResult<HelpersView> {
+async fn order(Uses(parts): Uses<Parts>, caller: Caller, Body(body): Body<Value>) -> ApiResult<HelpersView> {
     caller.permitted(CONNECTORS_MANAGE)?;
     let ids: Vec<String> = body
         .get("ids")
         .and_then(Value::as_array)
         .map(|ids| ids.iter().filter_map(Value::as_str).map(str::to_string).collect())
         .ok_or_else(|| ApiError::bad_request(crate::tr!("ids: каждое Турбо списка по одному разу.")))?;
-    app.helpers.order(&ids, caller.actor())?;
-    Ok(ok(view(&app)))
+    parts.helpers.order(&ids, caller.actor())?;
+    Ok(ok(view(&parts)))
 }
 
-async fn remove(State(app): State<Arc<App>>, caller: Caller, Path(id): Path<String>) -> ApiResult<HelpersView> {
+async fn remove(Uses(parts): Uses<Parts>, caller: Caller, Path(id): Path<String>) -> ApiResult<HelpersView> {
     caller.permitted(CONNECTORS_MANAGE)?;
-    app.helpers.remove(&id, caller.actor())?;
-    Ok(ok(view(&app)))
+    parts.helpers.remove(&id, caller.actor())?;
+    Ok(ok(view(&parts)))
 }
 
 /// «Проверить сейчас»: one look at the helper now, a switched-off one too; one the regulator keeps out is not looked
 /// at.
-async fn check(State(app): State<Arc<App>>, caller: Caller, Path(id): Path<String>) -> ApiResult<HelpersView> {
+async fn check(Uses(parts): Uses<Parts>, caller: Caller, Path(id): Path<String>) -> ApiResult<HelpersView> {
     caller.permitted(CONNECTORS_VIEW)?;
-    app.helpers.check(&id).await?;
-    Ok(ok(view(&app)))
+    parts.helpers.check(&id).await?;
+    Ok(ok(view(&parts)))
 }
 
-async fn away(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<Value> {
+async fn away(Uses(helpers): Uses<Arc<Helpers>>, caller: Caller) -> ApiResult<Value> {
     caller.permitted(CONNECTORS_VIEW)?;
-    Ok(ok(json!({ "away": app.helpers.away() })))
+    Ok(ok(json!({ "away": helpers.away() })))
 }
 
 /// `{away: "home" | "mine" | "any"}`: «Что может уходить из дома».
-async fn set_away(State(app): State<Arc<App>>, caller: Caller, Body(body): Body<Value>) -> ApiResult<HelpersView> {
+async fn set_away(Uses(parts): Uses<Parts>, caller: Caller, Body(body): Body<Value>) -> ApiResult<HelpersView> {
     caller.permitted(CONNECTORS_MANAGE)?;
     let away = body
         .get("away")
         .and_then(Value::as_str)
         .and_then(Away::parse)
         .ok_or_else(|| ApiError::bad_request(crate::tr!("away: home, mine или any.")))?;
-    app.helpers.set_away(away, caller.actor())?;
-    Ok(ok(view(&app)))
+    parts.helpers.set_away(away, caller.actor())?;
+    Ok(ok(view(&parts)))
 }
 
 /// This computer as a helper (pc): its connection key for «Подключить шлюз» and who it helps («Помогаю»). Only on a
@@ -300,22 +301,24 @@ async fn set_away(State(app): State<Arc<App>>, caller: Caller, Body(body): Body<
 mod helping {
     use std::sync::Arc;
 
-    use axum::extract::{Path, State};
+    use axum::extract::Path;
     use axum::http::{header, HeaderValue};
     use axum::response::{IntoResponse, Response};
     use serde::Serialize;
     use serde_json::{json, Value};
 
-    use crate::app::App;
+    use crate::core::events::EventBus;
     use crate::core::events::GatewayEvent;
+    use crate::core::identity::home::Identity;
     use crate::core::identity::permissions::{CONNECTORS_MANAGE, CONNECTORS_VIEW, USERS_MANAGE};
     use crate::core::identity::principal::PrincipalKind;
     use crate::core::identity::roles::Role;
     use crate::helpers::clients::ClientView;
     use crate::helpers::contract::Ability;
     use crate::operations::networks::in_networks;
-    use crate::platform::http::{ok, ApiError, ApiResult, Body, Caller};
+    use crate::platform::http::{ok, ApiError, ApiResult, Body, Caller, Uses};
     use crate::settings::definitions::{HelperOutside, HELPER_OUTSIDE};
+    use crate::settings::SettingsService;
 
     /// The key sheet («Подключить шлюз»).
     #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -346,8 +349,8 @@ mod helping {
     }
 
     /// The key only to an admin person signed in with a password: never a key, never the pair's pass.
-    fn admin(app: &App, caller: &Caller) -> Result<(), ApiError> {
-        if !app.link.helps() {
+    fn admin(link: &Arc<crate::helpers::link_serve::LinkServer>, caller: &Caller) -> Result<(), ApiError> {
+        if !link.helps() {
             return Err(not_here());
         }
         let principal = caller.permitted(USERS_MANAGE)?;
@@ -372,9 +375,15 @@ mod helping {
     /// The sheet of «Подключить шлюз». In a container (`contained`) the link's port and the addresses this gateway sees
     /// are the container's own, not the machine's — compose.yaml publishes the port as another one —, so neither is
     /// shown: the key alone, with «Адрес снаружи» when it is set.
-    fn sheet(app: &App, key: &crate::helpers::link::ConnectionKey, contained: bool) -> HelperKeyView {
-        let server = &app.link;
-        let outside = app.settings.get(&HELPER_OUTSIDE, None).map(|outside| outside.url);
+    fn sheet(
+        link: &Arc<crate::helpers::link_serve::LinkServer>,
+        settings: &Arc<SettingsService>,
+        identity: &Arc<Identity>,
+        key: &crate::helpers::link::ConnectionKey,
+        contained: bool,
+    ) -> HelperKeyView {
+        let server = &link;
+        let outside = settings.get(&HELPER_OUTSIDE, None).map(|outside| outside.url);
         let port = server.port().filter(|_| !contained);
         let mut addresses: Vec<String> = outside.iter().cloned().collect();
         if let Some(port) = port {
@@ -391,16 +400,21 @@ mod helping {
             outside,
             payload,
             since: server.key_since(),
-            name: app.identity.gateway().map(|me| me.name).unwrap_or_default(),
+            name: identity.gateway().map(|me| me.name).unwrap_or_default(),
             armed_until: server.armed_until(),
             port,
             problem: server.problem(),
         }
     }
 
-    fn key_view(app: &App, key: &crate::helpers::link::ConnectionKey) -> Response {
+    fn key_view(
+        link: &Arc<crate::helpers::link_serve::LinkServer>,
+        settings: &Arc<SettingsService>,
+        identity: &Arc<Identity>,
+        key: &crate::helpers::link::ConnectionKey,
+    ) -> Response {
         let contained = crate::stations::connect::station_connect::in_container();
-        let mut response = ok(sheet(app, key, contained)).into_response();
+        let mut response = ok(sheet(link, settings, identity, key, contained)).into_response();
         response.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
         response
     }
@@ -409,33 +423,46 @@ mod helping {
     /// meanwhile — the sheet re-reads it as the panel changes — it is the same key with the same `armedUntil`, never
     /// moved on; read after that, a new key for a new quarter of an hour. A pairing that spends it, or «Сменить ключ»,
     /// shows a new one at once.
-    pub async fn key(State(app): State<Arc<App>>, caller: Caller) -> Result<Response, ApiError> {
-        admin(&app, &caller)?;
-        let key = app.link.connection_key(true);
-        Ok(key_view(&app, &key))
+    pub async fn key(
+        Uses(link): Uses<Arc<crate::helpers::link_serve::LinkServer>>,
+        Uses(settings): Uses<Arc<SettingsService>>,
+        Uses(identity): Uses<Arc<Identity>>,
+        caller: Caller,
+    ) -> Result<Response, ApiError> {
+        admin(&link, &caller)?;
+        let key = link.connection_key(true);
+        Ok(key_view(&link, &settings, &identity, &key))
     }
 
     /// «Сменить ключ».
-    pub async fn rotate(State(app): State<Arc<App>>, caller: Caller) -> Result<Response, ApiError> {
-        admin(&app, &caller)?;
-        let key = app.link.rotate(caller.actor());
+    pub async fn rotate(
+        Uses(link): Uses<Arc<crate::helpers::link_serve::LinkServer>>,
+        Uses(settings): Uses<Arc<SettingsService>>,
+        Uses(identity): Uses<Arc<Identity>>,
+        caller: Caller,
+    ) -> Result<Response, ApiError> {
+        admin(&link, &caller)?;
+        let key = link.rotate(caller.actor());
         tracing::info!("link: the connection key changed");
-        Ok(key_view(&app, &key))
+        Ok(key_view(&link, &settings, &identity, &key))
     }
 
     /// «Адрес снаружи»: `https://` with a name or an address and an optional port; null removes it.
     pub async fn outside(
-        State(app): State<Arc<App>>,
+        Uses(link): Uses<Arc<crate::helpers::link_serve::LinkServer>>,
+        Uses(settings): Uses<Arc<SettingsService>>,
+        Uses(events): Uses<EventBus>,
+        Uses(identity): Uses<Arc<Identity>>,
         caller: Caller,
         Body(body): Body<Value>,
     ) -> Result<Response, ApiError> {
-        admin(&app, &caller)?;
+        admin(&link, &caller)?;
         let wrong = || ApiError::bad_request(crate::tr!("Адрес снаружи: https://имя или https://адрес:порт."));
         // Removed: the setting forgotten, its change told (and logged, with who) as a write would tell it.
         let forget = || -> Result<(), ApiError> {
-            if app.settings.get(&HELPER_OUTSIDE, None).is_some() {
-                app.settings.forget(&HELPER_OUTSIDE)?;
-                app.events.emit(GatewayEvent::SettingsChanged {
+            if settings.get(&HELPER_OUTSIDE, None).is_some() {
+                settings.forget(&HELPER_OUTSIDE)?;
+                events.emit(GatewayEvent::SettingsChanged {
                     key: HELPER_OUTSIDE.key.into(),
                     user_id: None,
                     actor: caller.actor(),
@@ -459,31 +486,37 @@ mod helping {
                 }
                 let port = parsed.port().map(|port| format!(":{port}")).unwrap_or_default();
                 let url = format!("https://{}{port}", host.to_ascii_lowercase());
-                app.settings.set(&HELPER_OUTSIDE, &HelperOutside { url }, caller.actor())?;
+                settings.set(&HELPER_OUTSIDE, &HelperOutside { url }, caller.actor())?;
             }
             Some(_) => return Err(wrong()),
         }
-        let key = app.link.connection_key(false);
-        Ok(key_view(&app, &key))
+        let key = link.connection_key(false);
+        Ok(key_view(&link, &settings, &identity, &key))
     }
 
-    fn views(app: &App) -> Vec<ClientView> {
-        let placements: Vec<(String, Option<String>)> = app
-            .station_gateway
+    fn views(
+        station_gateway: &Arc<crate::placement::watch::StationGateways>,
+        link: &Arc<crate::helpers::link_serve::LinkServer>,
+    ) -> Vec<ClientView> {
+        let placements: Vec<(String, Option<String>)> = station_gateway
             .all()
             .iter()
             .filter_map(|station| station.record().map(|record| (station.key().to_string(), record.home_key_id)))
             .collect();
-        app.link.clients.view(&placements)
+        link.clients.view(&placements)
     }
 
     /// «Помогаю»: who this computer helps.
-    pub async fn clients(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<Value> {
+    pub async fn clients(
+        Uses(link): Uses<Arc<crate::helpers::link_serve::LinkServer>>,
+        Uses(station_gateway): Uses<Arc<crate::placement::watch::StationGateways>>,
+        caller: Caller,
+    ) -> ApiResult<Value> {
         caller.permitted(CONNECTORS_VIEW)?;
-        if !app.link.helps() {
+        if !link.helps() {
             return Err(not_here());
         }
-        Ok(ok(json!({ "clients": views(&app) })))
+        Ok(ok(json!({ "clients": views(&station_gateway, &link) })))
     }
 
     fn link_client(id: &str) -> Result<(), ApiError> {
@@ -497,13 +530,14 @@ mod helping {
 
     /// `{gives}`: what a home over the link is given.
     pub async fn set_gives(
-        State(app): State<Arc<App>>,
+        Uses(link): Uses<Arc<crate::helpers::link_serve::LinkServer>>,
+        Uses(station_gateway): Uses<Arc<crate::placement::watch::StationGateways>>,
         caller: Caller,
         Path(id): Path<String>,
         Body(body): Body<Value>,
     ) -> ApiResult<Value> {
         caller.permitted(CONNECTORS_MANAGE)?;
-        if !app.link.helps() {
+        if !link.helps() {
             return Err(not_here());
         }
         link_client(&id)?;
@@ -512,23 +546,24 @@ mod helping {
             .and_then(Value::as_array)
             .map(|list| list.iter().filter_map(Value::as_str).filter_map(Ability::parse).collect())
             .ok_or_else(|| ApiError::bad_request(crate::tr!("gives: список умений.")))?;
-        app.link.clients.set_gives(&id, gives, caller.actor())?;
-        Ok(ok(json!({ "clients": views(&app) })))
+        link.clients.set_gives(&id, gives, caller.actor())?;
+        Ok(ok(json!({ "clients": views(&station_gateway, &link) })))
     }
 
     /// A home removed: its key forgotten, its links cut.
     pub async fn remove_client(
-        State(app): State<Arc<App>>,
+        Uses(link): Uses<Arc<crate::helpers::link_serve::LinkServer>>,
+        Uses(station_gateway): Uses<Arc<crate::placement::watch::StationGateways>>,
         caller: Caller,
         Path(id): Path<String>,
     ) -> ApiResult<Value> {
         caller.permitted(CONNECTORS_MANAGE)?;
-        if !app.link.helps() {
+        if !link.helps() {
             return Err(not_here());
         }
         link_client(&id)?;
-        app.link.clients.remove(&id, caller.actor())?;
-        Ok(ok(json!({ "clients": views(&app) })))
+        link.clients.remove(&id, caller.actor())?;
+        Ok(ok(json!({ "clients": views(&station_gateway, &link) })))
     }
 
     #[cfg(test)]
@@ -544,16 +579,16 @@ mod helping {
             let (app, _dir) = computer(&[]);
             app.link.set_port(3001);
             let key = app.link.connection_key(true);
-            let sheet_in = sheet(&app, &key, true);
+            let sheet_in = sheet(&app.link, &app.settings, &app.identity, &key, true);
             assert_eq!((sheet_in.port, sheet_in.addresses.len()), (None, 0), "{sheet_in:?}");
             assert_eq!(sheet_in.payload, key.shown(), "the key alone");
             let shown = serde_json::to_value(&sheet_in).unwrap();
             assert!(shown.get("port").is_none(), "{shown}");
-            assert_eq!(sheet(&app, &key, false).port, Some(3001));
+            assert_eq!(sheet(&app.link, &app.settings, &app.identity, &key, false).port, Some(3001));
 
             let outside = HelperOutside { url: "https://helper.example.com".into() };
             app.settings.set(&HELPER_OUTSIDE, &outside, None).unwrap();
-            let sheet_in = sheet(&app, &key, true);
+            let sheet_in = sheet(&app.link, &app.settings, &app.identity, &key, true);
             assert_eq!(sheet_in.addresses, ["https://helper.example.com"]);
             assert_eq!(sheet_in.payload, format!("https://helper.example.com {}", key.shown()));
             assert_eq!(sheet_in.port, None);

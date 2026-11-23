@@ -19,7 +19,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use axum::body::{Body, Bytes};
-use axum::extract::{Path, RawQuery, State};
+use axum::extract::{Path, RawQuery};
 use axum::http::{header, HeaderMap, HeaderName, HeaderValue, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::any;
@@ -28,18 +28,27 @@ use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::app::App;
+use crate::config::Config;
 use crate::core::identity::permissions::STATION_VIEW;
 use crate::core::identity::principal::{Principal, PrincipalKind};
 use crate::core::identity::roles::Role;
 use crate::helpers::link::{plain_path, LinkError, UpPerson, BODY_MAX};
-use crate::platform::http::{ApiError, Caller, Zone};
+use crate::placement::PlacementService;
+use crate::platform::http::{ApiError, Caller, Uses, Zone};
+use crate::storage::Db;
 use crate::utils::time::now_ms;
 
 /// The header a copy carries: when the station answered it, unix ms.
 pub const COPY_AT: &str = "x-duowave-copy-at";
 /// And since when the station is away, unix ms, when its watch knows it.
 pub const AWAY_SINCE: &str = "x-duowave-away-since";
+/// A request that waits for the station itself (the first steps, docs/plans/home-setup-flow.md): while it is away —
+/// a move's reboot, about 40 s — no copy and no queued change, but the answer below, and the panel asks again. A change
+/// kept in the queue answers with nothing of the station's, and a step that goes on from it (a provider added, then its
+/// sign-in) would go on from nothing: 24.11, `providers/undefined/signin`.
+pub const WAIT_FOR: &str = "x-duowave-wait";
+/// The mark of an answer to such a request: the station is away (not slow) — asked again in a few seconds, it may be back.
+pub const AWAY: &str = "x-duowave-away";
 /// Who on the computer made the change (for the station's history), and their role (for their rights there).
 use super::peer::{HELPER_PERSON, HELPER_PERSON_ID, HELPER_ROLE};
 /// A body to pass on: the panel's requests are small; a voice take or a package is the largest.
@@ -56,7 +65,7 @@ const COPIES_KEPT: usize = 400;
 /// An answer this big or bigger is not copied: a page of the journal is tens of KB.
 const COPY_LIMIT: usize = 2 * 1024 * 1024;
 
-pub fn routes() -> Router<Arc<App>> {
+pub fn routes<S: crate::placement::RouteNeeds>() -> Router<S> {
     Router::new().route("/station/{key}/{*rest}", any(pass)).layer(axum::extract::DefaultBodyLimit::max(BODY_LIMIT))
 }
 
@@ -151,8 +160,8 @@ fn copies_of(state_dir: Option<&FsPath>, key: &str) -> Option<PathBuf> {
     state_dir.map(|dir| dir.join("station-copies").join(folder))
 }
 
-fn copies_dir(app: &App, key: &str) -> Option<PathBuf> {
-    copies_of(app.config.skills.state_dir.as_deref(), key)
+fn copies_dir(config: &Arc<Config>, key: &str) -> Option<PathBuf> {
+    copies_of(config.skills.state_dir.as_deref(), key)
 }
 
 /// The station's record is gone (src/placement/watch.rs): what it showed through the pass goes with it.
@@ -165,8 +174,8 @@ pub(crate) fn forget_copies(state_dir: Option<&FsPath>, key: &str) {
 }
 
 /// A copy is the role's: what the station showed an admin is never shown to a member while it is away.
-fn copy_path(app: &App, key: &str, role: Role, rest: &str, query: Option<&str>) -> Option<PathBuf> {
-    copies_dir(app, key).map(|dir| dir.join(copy_name(role, rest, query)))
+fn copy_path(config: &Arc<Config>, key: &str, role: Role, rest: &str, query: Option<&str>) -> Option<PathBuf> {
+    copies_dir(config, key).map(|dir| dir.join(copy_name(role, rest, query)))
 }
 
 fn copy_name(role: Role, rest: &str, query: Option<&str>) -> String {
@@ -219,8 +228,15 @@ fn away(name: &str) -> String {
     crate::tr!("Колонка «{name}» не на связи: изменения можно сделать, когда она вернётся.", name = name)
 }
 
+/// The station's panel through this computer: the pass takes its parts — placement, configuration (the copies'
+/// folder), the database (the person behind the key) — and every part of the request, each an extractor of its own.
+#[allow(clippy::too_many_arguments)]
 async fn pass(
-    State(app): State<Arc<App>>,
+    Uses(placement): Uses<Arc<PlacementService>>,
+    Uses(config): Uses<Arc<Config>>,
+    Uses(db): Uses<Arc<Db>>,
+    Uses(clients): Uses<Arc<crate::helpers::clients::Clients>>,
+    Uses(link): Uses<Arc<crate::helpers::link_serve::LinkServer>>,
     caller: Caller,
     method: Method,
     headers: HeaderMap,
@@ -234,9 +250,10 @@ async fn pass(
     // The centre of a home this computer is the Turbo of over the link: back over that link.
     if link_client(&key) {
         let asked = Asked { method, headers: &headers, rest: &rest, query: query.as_deref(), body };
-        return link_pass(&app, &caller, &key, asked).await;
+        return link_pass(&clients, &link, &caller, &key, asked).await;
     }
     let reading = matches!(method, Method::GET | Method::HEAD);
+    let waits = headers.contains_key(WAIT_FOR);
     // The station's plugins' panel parts and the workshop's previews are public there and come without a key
     // (`import()`, `<link>`): no session asked. Everything else — the person on the computer: reading needs the right
     // to see the station; a change — an admin here. On the station they have their role's rights (HELPER_ROLE), no
@@ -250,7 +267,7 @@ async fn pass(
         return Err(ApiError::not_found("Not Found"));
     }
     // Only a station with a placement here: an unknown key makes no watch.
-    let Some(gateway) = app.placement.station().and_then(|stations| stations.find(&key)) else {
+    let Some(gateway) = placement.station().and_then(|stations| stations.find(&key)) else {
         return Err(ApiError::not_found(crate::tr!("Такой колонки у этого компьютера нет.")));
     };
     let record = gateway.record();
@@ -271,7 +288,7 @@ async fn pass(
         .ok_or_else(|| ApiError::not_found("Not Found"))?;
     let role = principal.as_ref().map(helper_role);
     let copy =
-        role.filter(|_| method == Method::GET).and_then(|role| copy_path(&app, &key, role, &rest, query.as_deref()));
+        role.filter(|_| method == Method::GET).and_then(|role| copy_path(&config, &key, role, &rest, query.as_deref()));
 
     let mut request = client().request(method.clone(), url);
     // The panel's language too: the station answers its words in it, as to its own panel (test 19.11, remark 12: «Добавить
@@ -318,7 +335,7 @@ async fn pass(
                 None => {}
             }
             // Away: the last copy of what was asked, read-only; a change waits for the station.
-            if let Some(found) = copy.as_ref().and_then(read_copy) {
+            if let Some(found) = copy.as_ref().filter(|_| !waits).and_then(read_copy) {
                 return Ok(copy_response(found, gateway.away_since()));
             }
             if slow {
@@ -329,6 +346,11 @@ async fn pass(
             }
             // A change while the home's centre is away waits for it here (docs/plans/home-and-devices.md, stage 3): it
             // goes in order when the centre is back, under the person who made it.
+            if waits {
+                let mut out = ApiError::unavailable(away(&name)).into_response();
+                out.headers_mut().insert(HeaderName::from_static(AWAY), HeaderValue::from_static("1"));
+                return Ok(out);
+            }
             if changing {
                 if let (Some(principal), Some(role)) = (&principal, role) {
                     let content_type = headers.get(header::CONTENT_TYPE).and_then(|value| value.to_str().ok());
@@ -341,7 +363,7 @@ async fn pass(
                         person_id: (principal.kind == PrincipalKind::User).then_some(principal.id.as_str()),
                         role: role.as_str(),
                     };
-                    return match crate::home::queue::keep(&app.db, &change) {
+                    return match crate::home::queue::keep(&db, &change) {
                         Ok(_) => Ok((
                             StatusCode::ACCEPTED,
                             [(header::CONTENT_TYPE, "application/json")],
@@ -440,7 +462,13 @@ struct Asked<'a> {
 /// the home and a change an admin here; a person only — a key's script is nobody at home —, named to the centre with
 /// their role here; the panel's API and the centre's health only; no copies while the centre is away. The centre lets
 /// in only a Turbo of its own at home and acts as that person with that role, never above it (`Helpers::takes_up`).
-async fn link_pass(app: &Arc<App>, caller: &Caller, client: &str, asked: Asked<'_>) -> Result<Response, ApiError> {
+async fn link_pass(
+    clients: &Arc<crate::helpers::clients::Clients>,
+    link: &Arc<crate::helpers::link_serve::LinkServer>,
+    caller: &Caller,
+    client: &str,
+    asked: Asked<'_>,
+) -> Result<Response, ApiError> {
     let Asked { method, headers, rest, query, body } = asked;
     let reading = matches!(method, Method::GET | Method::HEAD);
     let principal = caller.permitted(STATION_VIEW)?;
@@ -455,15 +483,15 @@ async fn link_pass(app: &Arc<App>, caller: &Caller, client: &str, asked: Asked<'
     if !plain_path(rest) || !(rest.starts_with("api/v1/") || (reading && rest == "health")) {
         return Err(ApiError::not_found("Not Found"));
     }
-    let Some(record) = app.clients.record_of(client).filter(|record| record.confirmed) else {
+    let Some(record) = clients.record_of(client).filter(|record| record.confirmed) else {
         return Err(ApiError::not_found(crate::tr!("Такого дома у этого компьютера нет.")));
     };
     let name = if record.home.name.trim().is_empty() { client.to_string() } else { record.home.name };
     if body.len() > BODY_MAX {
         return Err(ApiError::new(StatusCode::PAYLOAD_TOO_LARGE, crate::tr!("Запрос слишком большой для хаба дома.")));
     }
-    let Some(calls) = app.link.up_of(client) else {
-        return Err(match app.link.takes_up(client) {
+    let Some(calls) = link.up_of(client) else {
+        return Err(match link.takes_up(client) {
             Some(false) => ApiError::conflict(crate::tr!(
                 "Хаб дома «{name}» не открывает свой пульт через этот компьютер: на нём DuoWave постарше, или этот компьютер для него не Турбо дома.",
                 name = name
@@ -559,6 +587,7 @@ mod tests {
 
     use super::*;
     use crate::access::auth_service::LoginResult;
+    use crate::app::App;
     use crate::config::{Config, Env};
     use crate::core::availability::Placement;
     use crate::core::identity::principal::user_principal;
@@ -738,6 +767,18 @@ mod tests {
 
     /// A request to the computer's gateway as it comes from `from`, signed with `token` (none: an empty one).
     async fn send(app: &Arc<App>, from: &str, method: &str, uri: &str, token: &str) -> (StatusCode, HeaderMap, Value) {
+        send_with(app, from, method, uri, token, &[]).await
+    }
+
+    /// The same with headers of its own.
+    async fn send_with(
+        app: &Arc<App>,
+        from: &str,
+        method: &str,
+        uri: &str,
+        token: &str,
+        extra: &[(&str, &str)],
+    ) -> (StatusCode, HeaderMap, Value) {
         let body = if method == "GET" || method == "HEAD" { String::new() } else { "{}".into() };
         // The panel always says its language: the station answers its words in it (test 19.11, remark 12).
         let mut request = Request::builder()
@@ -747,6 +788,9 @@ mod tests {
             .header("accept-language", "ru");
         if !token.is_empty() {
             request = request.header("authorization", format!("Bearer {token}"));
+        }
+        for (name, value) in extra {
+            request = request.header(*name, *value);
         }
         let mut request = request.body(HttpBody::from(body)).unwrap();
         request.extensions_mut().insert(ConnectInfo(SocketAddr::new(from.parse().unwrap(), 5000)));
@@ -786,6 +830,53 @@ mod tests {
             .unwrap();
         let (_, _, body) = send(&app, "192.168.1.20", "GET", brain, &admin).await;
         assert_eq!(body["message"], away("Кухня"));
+    }
+
+    /// The first steps, 24.11: the hub on the station rebooted after its move, the pass kept «Применить» of the invite
+    /// code in the queue and answered with its own words — the step took them for the hub's brain and fell, and a
+    /// provider «added» that way had no id: `providers/undefined/signin`. A request that waits for the station gets
+    /// neither a queued change nor a copy: an «away» answer, marked, and the panel asks again.
+    #[tokio::test]
+    async fn a_request_that_waits_for_the_station_is_neither_queued_nor_answered_with_a_copy() {
+        let asked = Arc::new(Mutex::new(Vec::new()));
+        let port = pretend_station(asked.clone()).await;
+        let state = tempfile::tempdir().unwrap();
+        let env = Env::from_pairs([
+            ("STATE_DIR", state.path().to_string_lossy().into_owned()),
+            ("PANEL_REMOTE", "true".to_string()),
+        ]);
+        let app = App::build(Config::for_tests(&env)).unwrap();
+        let admin = app.access.auth.setup("admin-password-1", "Мама", "test").await.unwrap().unwrap().token;
+        app.secrets.set(&crate::placement::peer::station_secret("h:kitchen"), Some(PAIR)).unwrap();
+        let watch = app.station_gateway.watch("h:kitchen");
+        watch.set_record(Some(&kitchen(port, SettingsHome::Station)), None).unwrap();
+        let (home, brain, invite) =
+            ("192.168.1.20", "/station/h:kitchen/api/v1/brain", "/station/h:kitchen/api/v1/brain/invite");
+        let wait = [(WAIT_FOR, "1")];
+
+        // On the station: a copy of the brain is kept.
+        let (status, _, _) = send_with(&app, home, "GET", brain, &admin, &wait).await;
+        assert_eq!(status, StatusCode::OK);
+
+        // It reboots: nobody listens on its port.
+        let gone = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        watch.set_record(Some(&kitchen(gone, SettingsHome::Station)), None).unwrap();
+        let (status, headers, body) = send_with(&app, home, "GET", brain, &admin, &wait).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "no copy for the one who waits: {body}");
+        assert!(headers.contains_key(AWAY) && !headers.contains_key(COPY_AT));
+        let (status, headers, _) = send_with(&app, home, "PUT", invite, &admin, &wait).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert!(headers.contains_key(AWAY));
+        assert!(crate::home::queue::list(&app.db).is_empty(), "nothing waits in the queue");
+
+        // Without the mark — as before: the copy, and the change kept for the station.
+        let (status, headers, _) = send(&app, home, "GET", brain, &admin).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(headers.contains_key(COPY_AT) && !headers.contains_key(AWAY));
+        let (status, _, body) = send(&app, home, "PUT", invite, &admin).await;
+        assert_eq!(status, StatusCode::ACCEPTED);
+        assert_eq!(body["queued"], true);
+        assert_eq!(crate::home::queue::list(&app.db).len(), 1);
     }
 
     /// A tester's Mini 2, 22.11: its Wi-Fi dropped many times a day, and every request of the panel waited for it and
@@ -951,7 +1042,7 @@ mod tests {
         // A big answer is not copied.
         let (status, _, _) = send(&app, home, "GET", "/station/h:kitchen/api/v1/big", &admin).await;
         assert_eq!(status, StatusCode::OK);
-        assert!(!copy_path(&app, "h:kitchen", Role::Admin, "api/v1/big", None).unwrap().exists());
+        assert!(!copy_path(&app.config, "h:kitchen", Role::Admin, "api/v1/big", None).unwrap().exists());
 
         // The station away: each role gets its own copy, nobody another's.
         watch.set_record(Some(&kitchen(9, SettingsHome::Station)), None).unwrap();
@@ -965,7 +1056,7 @@ mod tests {
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "a key never got a copy of the journal");
 
         // The station's record removed: what it showed through the pass goes with it.
-        let copies = copies_dir(&app, "h:kitchen").unwrap();
+        let copies = copies_dir(&app.config, "h:kitchen").unwrap();
         assert!(copies.is_dir());
         watch.set_record(None, None).unwrap();
         assert!(!copies.exists(), "the copies go with the record");

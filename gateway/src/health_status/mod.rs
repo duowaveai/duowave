@@ -5,3 +5,5 @@ pub mod service;
 
 pub use controller::routes;
 pub use service::{HealthSources, HealthStatus, HealthStatusService, PublicHealth, StationHealth};
+
+crate::route_needs!(std::sync::Arc<HealthStatusService>);

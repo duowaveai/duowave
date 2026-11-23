@@ -14,17 +14,15 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use axum::extract::State;
 use axum::routing::{get, post};
 use axum::Router;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::app::App;
 use crate::config::{AsrConfig, OwnSpeechConfig};
 use crate::core::identity::permissions::{CONNECTORS_VIEW, MODELS_MANAGE};
 use crate::operations::networks::is_local_url;
-use crate::platform::http::{ok, ApiError, ApiResult, Body, Caller};
+use crate::platform::http::{ok, ApiError, ApiResult, Body, Caller, Uses};
 use crate::secrets::SecretsService;
 use crate::settings::definitions::CLOUD_SPEECH;
 use crate::settings::SettingsService;
@@ -521,32 +519,40 @@ struct CheckView {
     problem: Option<String>,
 }
 
-pub fn routes() -> Router<Arc<App>> {
+pub fn routes<S: crate::speech::RouteNeeds>() -> Router<S> {
     Router::new().route("/api/v1/speech/cloud", get(view).put(change)).route("/api/v1/speech/cloud/check", post(check))
 }
 
-async fn view(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<CloudSpeechView> {
+async fn view(Uses(cloud_speech): Uses<Arc<CloudSpeech>>, caller: Caller) -> ApiResult<CloudSpeechView> {
     caller.permitted(CONNECTORS_VIEW)?;
-    Ok(ok(app.cloud_speech.view()))
+    Ok(ok(cloud_speech.view()))
 }
 
-async fn change(State(app): State<Arc<App>>, caller: Caller, Body(body): Body<Value>) -> ApiResult<CloudSpeechView> {
+async fn change(
+    Uses(cloud_speech): Uses<Arc<CloudSpeech>>,
+    caller: Caller,
+    Body(body): Body<Value>,
+) -> ApiResult<CloudSpeechView> {
     caller.permitted(MODELS_MANAGE)?;
-    if !app.cloud_speech.active() {
+    if !cloud_speech.active() {
         return Err(ApiError::conflict(crate::tr!(
             "Облачный слух и голос настраиваются на колонке: компьютер слышит и говорит своими моделями."
         )));
     }
     let change: Change = serde_json::from_value(body).map_err(|error| ApiError::bad_request(error.to_string()))?;
-    app.cloud_speech.set(&change, caller.actor())?;
+    cloud_speech.set(&change, caller.actor())?;
     tracing::info!(target: "speech", "cloud {}: {}", change.part.as_str(), change.service.title());
-    Ok(ok(app.cloud_speech.view()))
+    Ok(ok(cloud_speech.view()))
 }
 
-async fn check(State(app): State<Arc<App>>, caller: Caller, Body(body): Body<Value>) -> ApiResult<CheckView> {
+async fn check(
+    Uses(cloud_speech): Uses<Arc<CloudSpeech>>,
+    caller: Caller,
+    Body(body): Body<Value>,
+) -> ApiResult<CheckView> {
     caller.permitted(CONNECTORS_VIEW)?;
     let body: CheckBody = serde_json::from_value(body).map_err(|error| ApiError::bad_request(error.to_string()))?;
-    Ok(ok(CheckView { problem: app.cloud_speech.check(body.part).await }))
+    Ok(ok(CheckView { problem: cloud_speech.check(body.part).await }))
 }
 
 #[cfg(test)]

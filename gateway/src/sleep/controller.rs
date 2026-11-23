@@ -4,17 +4,17 @@
 
 use std::sync::Arc;
 
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, Query};
 use axum::routing::{get, post};
 use axum::Router;
 use serde::{Deserialize, Serialize};
 
 use super::{Run, RunDetail, SleepView};
-use crate::app::App;
 use crate::core::identity::permissions::{MEMORY_MANAGE, MEMORY_VIEW};
-use crate::platform::http::{ok, ApiResult, Body, Caller};
+use crate::platform::http::{ok, ApiResult, Body, Caller, Uses};
+use crate::sleep::SleepService;
 
-pub fn routes() -> Router<Arc<App>> {
+pub fn routes<S: crate::sleep::RouteNeeds>() -> Router<S> {
     Router::new()
         .route("/api/v1/sleep", get(view).put(set))
         .route("/api/v1/sleep/run", post(run_now))
@@ -23,9 +23,9 @@ pub fn routes() -> Router<Arc<App>> {
         .route("/api/v1/sleep/runs/{id}/rollback", post(roll_back))
 }
 
-async fn view(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<SleepView> {
+async fn view(Uses(sleep): Uses<Arc<SleepService>>, caller: Caller) -> ApiResult<SleepView> {
     caller.permitted(MEMORY_VIEW)?;
-    Ok(ok(app.sleep.view()))
+    Ok(ok(sleep.view()))
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -34,12 +34,12 @@ struct SetBody {
     time: Option<String>,
 }
 
-async fn set(State(app): State<Arc<App>>, caller: Caller, Body(body): Body<SetBody>) -> ApiResult<SleepView> {
+async fn set(Uses(sleep): Uses<Arc<SleepService>>, caller: Caller, Body(body): Body<SetBody>) -> ApiResult<SleepView> {
     caller.permitted(MEMORY_MANAGE)?;
     if let Some(time) = body.time {
-        app.sleep.set_time(&time, caller.actor())?;
+        sleep.set_time(&time, caller.actor())?;
     }
-    Ok(ok(app.sleep.view()))
+    Ok(ok(sleep.view()))
 }
 
 #[derive(Debug, Serialize)]
@@ -47,9 +47,9 @@ struct Started {
     id: String,
 }
 
-async fn run_now(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<Started> {
+async fn run_now(Uses(sleep): Uses<Arc<SleepService>>, caller: Caller) -> ApiResult<Started> {
     let principal = caller.permitted(MEMORY_MANAGE)?;
-    Ok(ok(Started { id: app.sleep.run_now(principal)? }))
+    Ok(ok(Started { id: sleep.run_now(principal)? }))
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -57,17 +57,21 @@ struct RunsQuery {
     limit: Option<i64>,
 }
 
-async fn runs(State(app): State<Arc<App>>, caller: Caller, Query(query): Query<RunsQuery>) -> ApiResult<Vec<Run>> {
+async fn runs(
+    Uses(sleep): Uses<Arc<SleepService>>,
+    caller: Caller,
+    Query(query): Query<RunsQuery>,
+) -> ApiResult<Vec<Run>> {
     caller.permitted(MEMORY_VIEW)?;
-    Ok(ok(app.sleep.runs(query.limit.unwrap_or(30))?))
+    Ok(ok(sleep.runs(query.limit.unwrap_or(30))?))
 }
 
-async fn run(State(app): State<Arc<App>>, caller: Caller, Path(id): Path<String>) -> ApiResult<RunDetail> {
+async fn run(Uses(sleep): Uses<Arc<SleepService>>, caller: Caller, Path(id): Path<String>) -> ApiResult<RunDetail> {
     caller.permitted(MEMORY_VIEW)?;
-    Ok(ok(app.sleep.run(&id)?))
+    Ok(ok(sleep.run(&id)?))
 }
 
-async fn roll_back(State(app): State<Arc<App>>, caller: Caller, Path(id): Path<String>) -> ApiResult<Run> {
+async fn roll_back(Uses(sleep): Uses<Arc<SleepService>>, caller: Caller, Path(id): Path<String>) -> ApiResult<Run> {
     let principal = caller.permitted(MEMORY_MANAGE)?;
-    Ok(ok(app.sleep.roll_back(&id, principal)?))
+    Ok(ok(sleep.roll_back(&id, principal)?))
 }

@@ -15,17 +15,17 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{Query, State};
+use axum::extract::Query;
 use axum::response::Response;
 use futures::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
 use super::{ChannelSink, LiveHub, LIFETIME, PING, QUEUE};
-use crate::app::App;
+use crate::config::Config;
 use crate::core::identity::permissions::STATION_VIEW;
 use crate::core::identity::Principal;
-use crate::platform::http::{created, ApiError, ApiResult, Caller, Zone};
+use crate::platform::http::{created, ApiError, ApiResult, Caller, Uses, Zone};
 
 /// A ticket is good this long after it was given.
 pub const TICKET_LIFETIME: Duration = Duration::from_secs(30);
@@ -97,9 +97,9 @@ pub(super) struct TicketView {
 }
 
 /// A ticket for the live socket: whoever may see the station.
-pub(super) async fn ticket(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<TicketView> {
+pub(super) async fn ticket(Uses(live): Uses<Arc<crate::live::LiveHub>>, caller: Caller) -> ApiResult<TicketView> {
     let principal = caller.permitted(STATION_VIEW)?;
-    Ok(created(TicketView { ticket: app.live.tickets.issue(principal), expires_in: TICKET_LIFETIME.as_secs() }))
+    Ok(created(TicketView { ticket: live.tickets.issue(principal), expires_in: TICKET_LIFETIME.as_secs() }))
 }
 
 #[derive(Debug, Deserialize)]
@@ -111,21 +111,22 @@ pub(super) struct SocketQuery {
 /// The live socket: its ticket's principal, and the stations' channels for a panel at home (the helper's pass to the
 /// station is for the home network only, and so is what the station says).
 pub(super) async fn socket(
-    State(app): State<Arc<App>>,
+    Uses(config): Uses<Arc<Config>>,
+    Uses(live): Uses<Arc<crate::live::LiveHub>>,
     caller: Caller,
     Query(query): Query<SocketQuery>,
     upgrade: WebSocketUpgrade,
 ) -> Result<Response, ApiError> {
-    if caller.zone == Zone::Remote && !app.config.gateway.panel_remote {
+    if caller.zone == Zone::Remote && !config.gateway.panel_remote {
         return Err(ApiError::forbidden(crate::tr!("Пульт вне дома выключен (PANEL_REMOTE).")));
     }
     let principal = query
         .ticket
         .as_deref()
-        .and_then(|ticket| app.live.tickets.take(ticket))
+        .and_then(|ticket| live.tickets.take(ticket))
         .ok_or_else(|| ApiError::unauthorized(crate::tr!("Билет живого канала не подошёл: возьмите новый.")))?;
     let stations = matches!(caller.zone, Zone::Local | Zone::Home);
-    let hub = app.live.clone();
+    let hub = live.clone();
     Ok(upgrade
         .read_buffer_size(READ_LIMIT)
         .max_message_size(READ_LIMIT)

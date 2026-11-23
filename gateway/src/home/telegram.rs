@@ -8,8 +8,10 @@ use std::time::Duration;
 
 use serde_json::json;
 
-use crate::app::App;
+use super::Parts;
+use crate::core::events::EventBus;
 use crate::helpers::contract::Ability;
+use crate::platform::http::Uses;
 
 /// Whether this build runs a bot of its own: then it keeps its Telegram to itself.
 const OWN_BOT: bool = cfg!(feature = "pc");
@@ -23,12 +25,11 @@ fn tells(name: &str, connector: Option<&str>) -> bool {
 }
 
 /// Starts handing the home's Telegram to the Турбо that runs the bot.
-pub fn watch(app: &Arc<App>) {
+pub fn watch(events: &EventBus, parts: impl Fn() -> Option<Parts> + Clone + Send + Sync + 'static) {
     if OWN_BOT {
         return;
     }
-    let weak = Arc::downgrade(app);
-    app.events.on("home.telegram", move |event| {
+    events.on("home.telegram", move |event| {
         let connector = match event.as_ref() {
             crate::core::events::GatewayEvent::ConnectorChanged { connector, .. } => Some(connector.as_str()),
             _ => None,
@@ -36,10 +37,10 @@ pub fn watch(app: &Arc<App>) {
         if !tells(event.name(), connector) {
             return;
         }
-        let Some(app) = weak.upgrade() else { return };
+        let Some(home) = parts() else { return };
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(500)).await;
-            if let Err(error) = hand(&app).await {
+            if let Err(error) = hand(&home.helpers, &home.connector_settings).await {
                 tracing::info!(target: "home", "Telegram to the Турбо: {error}");
             }
         });
@@ -47,9 +48,12 @@ pub fn watch(app: &Arc<App>) {
 }
 
 /// Hands the home's Telegram to the Турбо that gives the messages, when one is on the line.
-pub async fn hand(app: &App) -> Result<(), String> {
-    let Some(remote) = app.helpers.pick_remote(Ability::Messages) else { return Ok(()) };
-    let (setting, token) = app.connector_settings.telegram_for_turbo();
+pub async fn hand(
+    helpers: &Arc<crate::helpers::Helpers>,
+    connector_settings: &Arc<crate::connectors::settings::ConnectorSettings>,
+) -> Result<(), String> {
+    let Some(remote) = helpers.pick_remote(Ability::Messages) else { return Ok(()) };
+    let (setting, token) = connector_settings.telegram_for_turbo();
     if token.is_none() && setting.contacts.is_empty() {
         return Ok(());
     }
@@ -71,22 +75,22 @@ pub async fn hand(app: &App) -> Result<(), String> {
 }
 
 /// The routes: a copy holder's bot the home takes when it has none (`adopt`).
-pub fn routes() -> axum::Router<Arc<App>> {
+pub fn routes<S: crate::home::RouteNeeds>() -> axum::Router<S> {
     axum::Router::new().route("/api/v1/home/telegram-adopt", axum::routing::post(adopt))
 }
 
 /// At the centre, from a device of the home with the pair's key, when its first copy is taken: the Telegram bot that
 /// device ran before it joined becomes the home's — only while the home has none; one the home has stays.
 async fn adopt(
-    axum::extract::State(app): axum::extract::State<Arc<App>>,
+    Uses(parts): Uses<Parts>,
     caller: crate::platform::http::Caller,
     crate::platform::http::Body(body): crate::platform::http::Body<serde_json::Value>,
 ) -> crate::platform::http::ApiResult<serde_json::Value> {
     use crate::platform::http::{ok, ApiError};
-    if !crate::placement::peer::from_peer(&caller, app.placement.peer_key()) {
+    if !crate::placement::peer::from_peer(&caller, parts.placement.peer_key()) {
         return Err(ApiError::forbidden(crate::tr!("Бот дома передаёт только устройство этого дома с ключом пары.")));
     }
-    let (_, home_token) = app.connector_settings.telegram_for_turbo();
+    let (_, home_token) = parts.connector_settings.telegram_for_turbo();
     if home_token.is_some_and(|token| !token.trim().is_empty()) {
         return Err(ApiError::conflict(crate::tr!("У дома уже есть свой бот Telegram: он и остаётся.")));
     }
@@ -96,7 +100,7 @@ async fn adopt(
     }
     let setting: crate::settings::definitions::TelegramSetting =
         serde_json::from_value(body.clone()).unwrap_or_default();
-    app.connector_settings.take_home_telegram(&setting, Some(&token))?;
+    parts.connector_settings.take_home_telegram(&setting, Some(&token))?;
     tracing::info!(target: "home", "the home took the Telegram bot of a device that joined it");
     Ok(ok(json!({ "taken": true })))
 }

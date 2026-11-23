@@ -34,7 +34,7 @@ use std::task::{Context, Poll};
 use std::time::Duration;
 
 use axum::body::{Body, Bytes};
-use axum::extract::{ConnectInfo, Request, State};
+use axum::extract::{ConnectInfo, Request};
 use axum::http::{header, HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use axum::Router;
@@ -63,9 +63,9 @@ use tower::ServiceExt;
 
 use super::contract::{HelperIdentity, HelperStatus};
 use super::remote::Me;
-use crate::app::App;
 use crate::core::identity::home::clean_name;
-use crate::platform::http::{ApiError, Caller, UpOrigin, Zone};
+use crate::helpers::Helpers;
+use crate::platform::http::{ApiError, Caller, UpOrigin, Uses, Zone};
 use crate::settings::definitions::HelperPin;
 use crate::utils::time::now_iso;
 
@@ -2461,13 +2461,13 @@ pub fn inner_of(raw: &str) -> Option<(String, String)> {
 }
 
 /// `/via/{entry}/home/v1/*` on the gateway's own router.
-pub fn via_routes() -> Router<Arc<App>> {
+pub fn via_routes<S: crate::helpers::RouteNeeds>() -> Router<S> {
     Router::new().route("/via/{entry}/{*rest}", axum::routing::any(via))
 }
 
 /// The bridge: only from this computer, never from a page or through a proxy, only with this start's token, only to
 /// `/home/v1/` (the link itself aside); then the request goes over the entry's link as it came.
-async fn via(State(app): State<Arc<App>>, caller: Caller, request: Request) -> Response {
+async fn via(Uses(helpers): Uses<Arc<Helpers>>, caller: Caller, request: Request) -> Response {
     if caller.zone != Zone::Local || crate::platform::http::zone::forwarded(&caller.headers) {
         return StatusCode::FORBIDDEN.into_response();
     }
@@ -2480,13 +2480,13 @@ async fn via(State(app): State<Arc<App>>, caller: Caller, request: Request) -> R
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.strip_prefix("Bearer "))
         .unwrap_or("");
-    let local = app.helpers.local();
+    let local = helpers.local();
     if !same(token.as_bytes(), local.token().as_bytes()) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
     let raw = request.uri().path_and_query().map(|path| path.as_str().to_string()).unwrap_or_default();
     let Some((entry, inner)) = inner_of(&raw) else { return StatusCode::NOT_FOUND.into_response() };
-    let Some(link) = app.helpers.link_of(&entry) else { return StatusCode::NOT_FOUND.into_response() };
+    let Some(link) = helpers.link_of(&entry) else { return StatusCode::NOT_FOUND.into_response() };
     let (mut parts, body) = request.into_parts();
     let Ok(uri) = inner.parse() else { return StatusCode::NOT_FOUND.into_response() };
     parts.uri = uri;

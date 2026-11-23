@@ -9,3 +9,14 @@ pub mod protocol;
 pub mod station_http;
 pub mod uniproxy;
 pub mod yandex;
+
+crate::route_needs!(
+    std::sync::Arc<crate::config::Config>,
+    std::sync::Arc<mode::ModeService>,
+    std::sync::Arc<uniproxy::SessionRegistry>,
+    std::sync::Arc<crate::skills::SkillsService>,
+    std::sync::Arc<crate::bus::Bus>,
+    std::sync::Arc<media::stream::StreamRelays>,
+    std::sync::Arc<crate::plugins::PluginHost>,
+    std::sync::Arc<crate::home::turbo_devices::HouseDevices>
+);

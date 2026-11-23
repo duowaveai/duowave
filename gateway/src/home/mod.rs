@@ -40,8 +40,84 @@ pub mod turbo_devices;
 
 pub use devices::watch;
 
+use std::sync::Arc;
+
+/// What the home's centre works with: its configuration and database, the bus, the secrets and settings, who this
+/// gateway is, the helpers and the Турбо, the packages and their catalog, the characters, the stations and their
+/// presence, the placement, the connectors' settings, the requests to come in by a code, the sessions, the voice, the
+/// modes, the health and the brain — and on a computer the stations it serves, the models, the voice lab, and the
+/// link with its clients (a Turbo of a home whose centre is another computer). The gateway makes it
+/// (src/links/http.rs); the watches get it through the gateway's weak handle (app.rs), as they always held the gateway.
+#[derive(Clone)]
+pub struct Parts {
+    pub config: Arc<crate::config::Config>,
+    pub db: Arc<crate::storage::Db>,
+    pub events: crate::core::events::EventBus,
+    pub secrets: Arc<crate::secrets::SecretsService>,
+    pub settings: Arc<crate::settings::SettingsService>,
+    pub identity: Arc<crate::core::identity::home::Identity>,
+    pub helpers: Arc<crate::helpers::Helpers>,
+    pub plugins: Arc<crate::plugins::PluginHost>,
+    pub catalog: Arc<crate::plugins::PackageCatalog>,
+    pub characters: Arc<crate::characters::CharactersService>,
+    pub stations: Arc<crate::stations::StationsService>,
+    pub presence: Arc<crate::stations::PresenceService>,
+    pub placement: Arc<crate::placement::PlacementService>,
+    pub connector_settings: Arc<crate::connectors::settings::ConnectorSettings>,
+    pub joins: Arc<crate::home::join::Joins>,
+    pub sessions: Arc<crate::gateway::uniproxy::SessionRegistry>,
+    pub voice: Arc<crate::speech::VoiceService>,
+    pub modes: Arc<crate::gateway::mode::ModeService>,
+    pub health: Arc<crate::health_status::HealthStatusService>,
+    pub brain: Arc<crate::dialog::brain::BrainService>,
+    #[cfg(feature = "pc")]
+    pub station_gateway: Arc<crate::placement::watch::StationGateways>,
+    #[cfg(feature = "pc")]
+    pub models: Arc<crate::models::ModelsService>,
+    #[cfg(feature = "pc")]
+    pub voice_lab: Arc<crate::voice_lab::VoiceLabService>,
+    #[cfg(feature = "pc")]
+    pub link: Arc<crate::helpers::link_serve::LinkServer>,
+    #[cfg(feature = "pc")]
+    pub clients: Arc<crate::helpers::clients::Clients>,
+}
+
+#[cfg(feature = "pc")]
+crate::route_needs!(
+    Parts,
+    Arc<crate::characters::CharactersService>,
+    Arc<crate::config::Config>,
+    Arc<crate::core::identity::home::Identity>,
+    Arc<crate::gateway::mode::ModeService>,
+    Arc<crate::gateway::uniproxy::SessionRegistry>,
+    Arc<crate::placement::PlacementService>,
+    Arc<crate::secrets::SecretsService>,
+    Arc<crate::settings::SettingsService>,
+    Arc<crate::stations::StationsService>,
+    Arc<crate::storage::Db>,
+    crate::core::events::EventBus,
+    Arc<crate::placement::watch::StationGateways>,
+    Arc<turbo_devices::HouseDevices>,
+);
+#[cfg(not(feature = "pc"))]
+crate::route_needs!(
+    Parts,
+    Arc<crate::characters::CharactersService>,
+    Arc<crate::config::Config>,
+    Arc<crate::core::identity::home::Identity>,
+    Arc<crate::gateway::mode::ModeService>,
+    Arc<crate::gateway::uniproxy::SessionRegistry>,
+    Arc<crate::placement::PlacementService>,
+    Arc<crate::secrets::SecretsService>,
+    Arc<crate::settings::SettingsService>,
+    Arc<crate::stations::StationsService>,
+    Arc<crate::storage::Db>,
+    crate::core::events::EventBus,
+    Arc<turbo_devices::HouseDevices>,
+);
+
 /// The home's routes: its devices and its one list of apps.
-pub fn routes() -> axum::Router<std::sync::Arc<crate::app::App>> {
+pub fn routes<S: crate::home::RouteNeeds>() -> axum::Router<S> {
     devices::routes()
         .merge(apps::routes())
         .merge(rooms::routes())

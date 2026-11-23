@@ -41,6 +41,8 @@ use crate::utils::time::now_iso;
 pub use contributes::{Character, Gender, Rejected, Tone};
 pub use controller::routes;
 
+crate::route_needs!(Arc<CharactersService>);
+
 /// A package's character, for the panel's link to its files.
 pub fn media_url(package: &str, path: &str) -> String {
     let parts: Vec<String> = path.split('/').map(crate::skills::js::encode_uri_component).collect();

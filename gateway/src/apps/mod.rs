@@ -10,3 +10,5 @@ pub mod node;
 pub mod supervisor;
 
 pub use supervisor::{AppTokens, ProcessRuntime};
+
+crate::route_needs!(std::sync::Arc<crate::plugins::PluginHost>, std::sync::Arc<crate::tasks::Tasks>);

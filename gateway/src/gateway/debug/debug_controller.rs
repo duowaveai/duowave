@@ -5,24 +5,25 @@
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
-use axum::extract::{DefaultBodyLimit, OriginalUri, Path, Query, State};
+use axum::extract::{DefaultBodyLimit, OriginalUri, Path, Query};
 use axum::routing::{get, post};
 use axum::Router;
 use serde::Serialize;
 use serde_json::{json, Value};
 
 use crate::access::audit_service::parse_int;
-use crate::app::App;
+use crate::config::Config;
 use crate::core::identity::permissions::{JOURNAL_VIEW, ROUTES_EDIT, STATION_MODE, STATION_SAY, STATION_VIEW};
-use crate::gateway::mode::ModeView;
+use crate::gateway::mode::{ModeService, ModeView};
 use crate::gateway::observability::session_recorder::SessionEventRecord;
-use crate::gateway::uniproxy::session_registry::AnySession;
+use crate::gateway::uniproxy::session_registry::{AnySession, SessionRegistry};
 use crate::gateway::uniproxy::station_session::{SayVoice, SessionSnapshot, StationSession};
-use crate::platform::http::{created, ok, ApiError, ApiResult, Body, Caller, Zone};
+use crate::platform::http::{created, ok, ApiError, ApiResult, Body, Caller, Uses, Zone};
 use crate::skills::skill_stats::UnsupportedEntry;
 use crate::skills::skills_service::{RoutesSetting, RoutesUpdate};
+use crate::skills::SkillsService;
 
-pub fn router() -> Router<Arc<App>> {
+pub fn router<S: crate::gateway::RouteNeeds>() -> Router<S> {
     let mut router = Router::new();
     for base in ["/api/v1/station", "/debug"] {
         router = router
@@ -44,12 +45,12 @@ pub fn router() -> Router<Arc<App>> {
 }
 
 /// The /debug paths: off with DEBUG_API_ENABLED=false, and at home only, as they always were.
-fn gate(app: &App, caller: &Caller, uri: &OriginalUri) -> Result<(), ApiError> {
+fn gate(config: &Config, caller: &Caller, uri: &OriginalUri) -> Result<(), ApiError> {
     if !uri.path().starts_with("/debug") {
         return Ok(());
     }
     let home = matches!(caller.zone, Zone::Home | Zone::Local);
-    if !app.config.gateway.debug_api || !home {
+    if !config.gateway.debug_api || !home {
         // Nest's NotFoundException without a message.
         return Err(ApiError::not_found("Not Found"));
     }
@@ -63,89 +64,119 @@ fn limit_of(query: &HashMap<String, String>, fallback: i64) -> usize {
 }
 
 /// The station's mode as the panel shows it: Яндекс, Шлюз, Свой — and its note.
-async fn mode(State(app): State<Arc<App>>, caller: Caller, uri: OriginalUri) -> ApiResult<ModeView> {
+async fn mode(
+    Uses(config): Uses<Arc<Config>>,
+    Uses(modes): Uses<Arc<ModeService>>,
+    caller: Caller,
+    uri: OriginalUri,
+) -> ApiResult<ModeView> {
     caller.permitted(STATION_VIEW)?;
-    gate(&app, &caller, &uri)?;
-    Ok(ok(app.modes.view()))
+    gate(&config, &caller, &uri)?;
+    Ok(ok(modes.view()))
 }
 
 /// The Яндекс/Шлюз/Свой switch: the station reconnects into the new mode within seconds. No gateway restart.
 async fn set_mode(
-    State(app): State<Arc<App>>,
+    Uses(config): Uses<Arc<Config>>,
+    Uses(modes): Uses<Arc<ModeService>>,
     caller: Caller,
     uri: OriginalUri,
     Body(body): Body<Value>,
 ) -> ApiResult<ModeView> {
     caller.permitted(STATION_MODE)?;
-    gate(&app, &caller, &uri)?;
-    Ok(created(app.modes.switch(body.get("mode"), caller.actor())?))
+    gate(&config, &caller, &uri)?;
+    Ok(created(modes.switch(body.get("mode"), caller.actor())?))
 }
 
 /// «Остаться»: the mode the gateway switched to by itself becomes the person's; it will not switch back.
-async fn keep_mode(State(app): State<Arc<App>>, caller: Caller, uri: OriginalUri) -> ApiResult<ModeView> {
+async fn keep_mode(
+    Uses(config): Uses<Arc<Config>>,
+    Uses(modes): Uses<Arc<ModeService>>,
+    caller: Caller,
+    uri: OriginalUri,
+) -> ApiResult<ModeView> {
     caller.permitted(STATION_MODE)?;
-    gate(&app, &caller, &uri)?;
-    Ok(created(app.modes.keep(caller.actor())?))
+    gate(&config, &caller, &uri)?;
+    Ok(created(modes.keep(caller.actor())?))
 }
 
 /// «Слух Яндекса» on or off (`{"on": true}`): from the next request on, no reconnect.
 async fn set_yandex_ear(
-    State(app): State<Arc<App>>,
+    Uses(config): Uses<Arc<Config>>,
+    Uses(modes): Uses<Arc<ModeService>>,
     caller: Caller,
     uri: OriginalUri,
     Body(body): Body<Value>,
 ) -> ApiResult<ModeView> {
     caller.permitted(STATION_MODE)?;
-    gate(&app, &caller, &uri)?;
+    gate(&config, &caller, &uri)?;
     let Some(on) = body.get("on").and_then(Value::as_bool) else {
         return Err(ApiError::bad_request(crate::tr!("on: true или false")));
     };
-    Ok(created(app.modes.set_yandex_ear(on, caller.actor())?))
+    Ok(created(modes.set_yandex_ear(on, caller.actor())?))
 }
 
-async fn sessions(State(app): State<Arc<App>>, caller: Caller, uri: OriginalUri) -> ApiResult<Vec<SessionSnapshot>> {
+async fn sessions(
+    Uses(config): Uses<Arc<Config>>,
+    Uses(sessions): Uses<Arc<SessionRegistry>>,
+    caller: Caller,
+    uri: OriginalUri,
+) -> ApiResult<Vec<SessionSnapshot>> {
     caller.permitted(STATION_VIEW)?;
-    gate(&app, &caller, &uri)?;
-    Ok(ok(app.sessions.list()))
+    gate(&config, &caller, &uri)?;
+    Ok(ok(sessions.list()))
 }
 
 /// The routes in force and whether they are still the seeded default.
-async fn routes(State(app): State<Arc<App>>, caller: Caller, uri: OriginalUri) -> ApiResult<RoutesSetting> {
+async fn routes(
+    Uses(config): Uses<Arc<Config>>,
+    Uses(skills): Uses<Arc<SkillsService>>,
+    caller: Caller,
+    uri: OriginalUri,
+) -> ApiResult<RoutesSetting> {
     caller.permitted(STATION_VIEW)?;
-    gate(&app, &caller, &uri)?;
-    Ok(ok(app.skills.routes_setting()))
+    gate(&config, &caller, &uri)?;
+    Ok(ok(skills.routes_setting()))
 }
 
 /// New routes from now on, without a restart: the whole map (`{"routes": {"radio": "yandex", …}}`); a capability
 /// missing from it goes back to ROUTE_DEFAULT. Invalid names or steps change nothing.
 async fn post_routes(
-    State(app): State<Arc<App>>,
+    Uses(config): Uses<Arc<Config>>,
+    Uses(skills): Uses<Arc<SkillsService>>,
     caller: Caller,
     uri: OriginalUri,
     Body(body): Body<Value>,
 ) -> ApiResult<RoutesUpdate> {
     caller.permitted(ROUTES_EDIT)?;
-    Ok(created(write_routes(&app, &caller, &uri, &body)?))
+    Ok(created(write_routes(&config, &skills, &caller, &uri, &body)?))
 }
 
 async fn put_routes(
-    State(app): State<Arc<App>>,
+    Uses(config): Uses<Arc<Config>>,
+    Uses(skills): Uses<Arc<SkillsService>>,
     caller: Caller,
     uri: OriginalUri,
     Body(body): Body<Value>,
 ) -> ApiResult<RoutesUpdate> {
     caller.permitted(ROUTES_EDIT)?;
-    Ok(ok(write_routes(&app, &caller, &uri, &body)?))
+    Ok(ok(write_routes(&config, &skills, &caller, &uri, &body)?))
 }
 
-fn write_routes(app: &App, caller: &Caller, uri: &OriginalUri, body: &Value) -> Result<RoutesUpdate, ApiError> {
-    gate(app, caller, uri)?;
+fn write_routes(
+    config: &Config,
+    skills: &SkillsService,
+    caller: &Caller,
+    uri: &OriginalUri,
+    body: &Value,
+) -> Result<RoutesUpdate, ApiError> {
+    gate(config, caller, uri)?;
     let Some(routes) = body.get("routes").and_then(Value::as_object) else {
         return Err(ApiError::bad_request("body: {\"routes\": {\"radio\": \"own|yandex|off|own,yandex\", …}}"));
     };
     let routes: BTreeMap<String, String> =
         routes.iter().map(|(name, route)| (name.clone(), crate::skills::js::string_of(route))).collect();
-    let result = app.skills.replace_routes(&routes, caller.actor())?;
+    let result = skills.replace_routes(&routes, caller.actor())?;
     if !result.problems.is_empty() {
         return Err(ApiError::bad_request(result.problems.join("; ")));
     }
@@ -154,27 +185,29 @@ fn write_routes(app: &App, caller: &Caller, uri: &OriginalUri, body: &Value) -> 
 
 /// The latest requests nobody could serve, newest first: the queue of what to build next. Holds what was said.
 async fn unsupported(
-    State(app): State<Arc<App>>,
+    Uses(config): Uses<Arc<Config>>,
+    Uses(skills): Uses<Arc<SkillsService>>,
     caller: Caller,
     uri: OriginalUri,
     Query(query): Query<HashMap<String, String>>,
 ) -> ApiResult<Vec<UnsupportedEntry>> {
     caller.permitted(JOURNAL_VIEW)?;
-    gate(&app, &caller, &uri)?;
-    Ok(ok(app.skills.stats.recent_unsupported(limit_of(&query, 50))))
+    gate(&config, &caller, &uri)?;
+    Ok(ok(skills.stats.recent_unsupported(limit_of(&query, 50))))
 }
 
 /// A session's journal: every frame and decision, recognised speech included.
 async fn events(
-    State(app): State<Arc<App>>,
+    Uses(config): Uses<Arc<Config>>,
+    Uses(sessions): Uses<Arc<SessionRegistry>>,
     caller: Caller,
     uri: OriginalUri,
     Path(id): Path<String>,
     Query(query): Query<HashMap<String, String>>,
 ) -> ApiResult<Vec<SessionEventRecord>> {
     caller.permitted(JOURNAL_VIEW)?;
-    gate(&app, &caller, &uri)?;
-    let session = app.sessions.find(&id).ok_or_else(|| ApiError::not_found(format!("session {id} not found")))?;
+    gate(&config, &caller, &uri)?;
+    let session = sessions.find(&id).ok_or_else(|| ApiError::not_found(format!("session {id} not found")))?;
     Ok(ok(session.recent_events(limit_of(&query, 100))))
 }
 
@@ -193,25 +226,29 @@ struct TimersView {
 /// The device a widget means when it names none (the helper's pass does not): the one heard from last, else the
 /// station on the line now, else one with timers of ours — after a restart the states the requests carried are gone
 /// until the next one.
-fn widget_device(app: &App, query: &HashMap<String, String>) -> Option<String> {
-    let live = || app.sessions.speaking_on("*").map(|session| session.device_tag.clone());
-    app.skills.device_for_panel(query.get("device").map(String::as_str), live, crate::utils::time::now_ms())
+fn widget_device(
+    sessions: &SessionRegistry,
+    skills: &SkillsService,
+    query: &HashMap<String, String>,
+) -> Option<String> {
+    let live = || sessions.speaking_on("*").map(|session| session.device_tag.clone());
+    skills.device_for_panel(query.get("device").map(String::as_str), live, crate::utils::time::now_ms())
 }
 
 /// The station's timers for the panel's widget: ours with their names, and the station's own it reported.
 async fn timers(
-    State(app): State<Arc<App>>,
+    Uses(config): Uses<Arc<Config>>,
+    Uses(sessions): Uses<Arc<SessionRegistry>>,
+    Uses(skills): Uses<Arc<SkillsService>>,
     caller: Caller,
     uri: OriginalUri,
     Query(query): Query<HashMap<String, String>>,
 ) -> ApiResult<TimersView> {
-    gate(&app, &caller, &uri)?;
+    gate(&config, &caller, &uri)?;
     caller.permitted(STATION_VIEW)?;
-    let device = widget_device(&app, &query);
-    let timers = device
-        .as_deref()
-        .map(|device| app.skills.timer_views(device, crate::utils::time::now_ms()))
-        .unwrap_or_default();
+    let device = widget_device(&sessions, &skills, &query);
+    let timers =
+        device.as_deref().map(|device| skills.timer_views(device, crate::utils::time::now_ms())).unwrap_or_default();
     Ok(ok(TimersView { device, timers }))
 }
 
@@ -225,17 +262,19 @@ struct PlayerView {
 
 /// What plays on the station, for the panel's widget.
 async fn player(
-    State(app): State<Arc<App>>,
+    Uses(config): Uses<Arc<Config>>,
+    Uses(sessions): Uses<Arc<SessionRegistry>>,
+    Uses(skills): Uses<Arc<SkillsService>>,
     caller: Caller,
     uri: OriginalUri,
     Query(query): Query<HashMap<String, String>>,
 ) -> ApiResult<PlayerView> {
-    gate(&app, &caller, &uri)?;
+    gate(&config, &caller, &uri)?;
     caller.permitted(STATION_VIEW)?;
-    let device = widget_device(&app, &query);
+    let device = widget_device(&sessions, &skills, &query);
     let now = match device.as_deref() {
-        Some(device) => app.skills.now_playing(device, crate::utils::time::now_ms()),
-        None => app.skills.now_playing("", crate::utils::time::now_ms()),
+        Some(device) => skills.now_playing(device, crate::utils::time::now_ms()),
+        None => skills.now_playing("", crate::utils::time::now_ms()),
     };
     Ok(ok(PlayerView { device, now }))
 }
@@ -254,25 +293,29 @@ const SAID_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 /// The player from the panel: pause, resume, next, previous, stop, like — pushed to the station's live session as
 /// the voice commands would answer them. What Yandex plays while its session is up: the button's words go to Yandex
 /// as if said aloud (`run_words`, the owner's decision 5 of 16.11, docs/plans/speaker-alone.md) — Yandex holds its
-/// queue.
+/// queue. Each part it uses is an extractor of its own, hence the count.
+#[allow(clippy::too_many_arguments)]
 async fn player_command(
-    State(app): State<Arc<App>>,
+    Uses(config): Uses<Arc<Config>>,
+    Uses(skills): Uses<Arc<SkillsService>>,
+    Uses(sessions): Uses<Arc<SessionRegistry>>,
+    Uses(modes): Uses<Arc<ModeService>>,
     caller: Caller,
     uri: OriginalUri,
     Path(action): Path<String>,
     Query(query): Query<HashMap<String, String>>,
 ) -> ApiResult<Pushed> {
-    gate(&app, &caller, &uri)?;
+    gate(&config, &caller, &uri)?;
     caller.permitted(STATION_SAY)?;
     if !matches!(action.as_str(), "pause" | "resume" | "next" | "previous" | "stop" | "like" | "dislike") {
         return Err(ApiError::bad_request(crate::tr!("action: pause, resume, next, previous, stop, like или dislike")));
     }
-    let device = app.skills.device_or_latest(query.get("device").map(String::as_str)).unwrap_or_else(|| "*".into());
-    let Some(session) = app.sessions.speaking_on(&device) else {
+    let device = skills.device_or_latest(query.get("device").map(String::as_str)).unwrap_or_else(|| "*".into());
+    let Some(session) = sessions.speaking_on(&device) else {
         return Err(ApiError::conflict(crate::tr!("Колонка не на связи.")));
     };
-    let yandex = app.modes.yandex_allowed() && session.yandex_connected();
-    if let Some(words) = app.skills.yandex_words(&session.device_tag, &action, yandex) {
+    let yandex = modes.yandex_allowed() && session.yandex_connected();
+    if let Some(words) = skills.yandex_words(&session.device_tag, &action, yandex) {
         let done = tokio::time::timeout(SAID_WAIT, session.run_words(words.to_string())).await.unwrap_or(false);
         if !done {
             return Err(ApiError::conflict(crate::tr!(
@@ -282,7 +325,7 @@ async fn player_command(
         }
         return Ok(ok(Pushed { pushed: 0, said: Some(words) }));
     }
-    let directives = app.skills.player_command(&session.device_tag, &action, yandex).await?;
+    let directives = skills.player_command(&session.device_tag, &action, yandex).await?;
     let pushed = directives.len();
     for directive in directives {
         session.push(directive);
@@ -292,14 +335,15 @@ async fn player_command(
 
 /// Speaks `text` on the station; `latest` picks the station's main connection.
 async fn say(
-    State(app): State<Arc<App>>,
+    Uses(config): Uses<Arc<Config>>,
+    Uses(sessions): Uses<Arc<SessionRegistry>>,
     caller: Caller,
     uri: OriginalUri,
     Path(id): Path<String>,
     Body(body): Body<Value>,
 ) -> ApiResult<Said> {
     caller.permitted(STATION_SAY)?;
-    let (session, text) = speaking(&app, &caller, &uri, &id, &body)?;
+    let (session, text) = speaking(&config, &sessions, &caller, &uri, &id, &body)?;
     // «Сказать» in the panel (owner 20.11): the character's voice or Alice's for this phrase; none — as speech is set.
     let voice = match body.get("voice").and_then(Value::as_str) {
         None => None,
@@ -313,7 +357,8 @@ async fn say(
 
 /// Synthesizes `text` through Yandex without playing it: checks the speech session silently.
 async fn tts(
-    State(app): State<Arc<App>>,
+    Uses(config): Uses<Arc<Config>>,
+    Uses(sessions): Uses<Arc<SessionRegistry>>,
     caller: Caller,
     uri: OriginalUri,
     Path(id): Path<String>,
@@ -321,7 +366,7 @@ async fn tts(
 ) -> ApiResult<Value> {
     caller.zone_at_least(Zone::Home)?;
     caller.permitted(STATION_SAY)?;
-    let (session, text) = speaking(&app, &caller, &uri, &id, &body)?;
+    let (session, text) = speaking(&config, &sessions, &caller, &uri, &id, &body)?;
     Ok(created(match session.synthesize_only(&text).await {
         Ok(check) => serde_json::to_value(check).map_err(ApiError::from)?,
         Err(error) => json!({ "error": error.to_string() }),
@@ -329,20 +374,20 @@ async fn tts(
 }
 
 fn speaking(
-    app: &App,
+    config: &Config,
+    sessions: &SessionRegistry,
     caller: &Caller,
     uri: &OriginalUri,
     id: &str,
     body: &Value,
 ) -> Result<(Arc<StationSession>, String), ApiError> {
-    gate(app, caller, uri)?;
+    gate(config, caller, uri)?;
     let text = body.get("text").and_then(Value::as_str).filter(|text| !crate::skills::js::trim(text).is_empty());
     let Some(text) = text else { return Err(ApiError::bad_request("body: {\"text\": \"...\"}")) };
     if text.encode_utf16().count() > 1000 {
         return Err(ApiError::bad_request(crate::tr!("text: до 1000 символов")));
     }
-    let session =
-        if id == "latest" { app.sessions.latest_speaking().map(AnySession::Station) } else { app.sessions.find(id) };
+    let session = if id == "latest" { sessions.latest_speaking().map(AnySession::Station) } else { sessions.find(id) };
     let Some(session) = session else {
         return Err(ApiError::not_found(if id == "latest" {
             "no live station session with credentials".to_string()

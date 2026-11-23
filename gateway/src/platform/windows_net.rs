@@ -13,17 +13,15 @@
 //!
 //! The gateway logs the look at its start, so a pasted gateway.log says it.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 use std::time::Duration;
 
-use axum::extract::State;
 use axum::routing::{get, post};
 use axum::Router;
 use serde::{Deserialize, Serialize};
 
-use crate::app::App;
 use crate::core::identity::permissions::{SETTINGS_EDIT, STATION_VIEW};
-use crate::platform::http::{ok, ApiResult, Caller};
+use crate::platform::http::{ok, ApiResult, Caller, RouteState};
 
 /// What the firewall and the network say about inbound connections to this program.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -229,7 +227,7 @@ fn view_of(network: Option<WindowsNetwork>) -> NetworkView {
 
 /// `GET /api/v1/system/windows-network` — the look now; `POST …/allow` — the firewall's allowance (one UAC prompt on
 /// this computer's screen), then the look again.
-pub fn routes() -> Router<Arc<App>> {
+pub fn routes<S: RouteState>() -> Router<S> {
     Router::new()
         .route("/api/v1/system/windows-network", get(read))
         .route("/api/v1/system/windows-network/allow", post(allow))
@@ -238,7 +236,7 @@ pub fn routes() -> Router<Arc<App>> {
 
 /// «Открыть настройки Windows» (owner 22.11): Windows Security on «App & browser control», where Smart App Control
 /// is — the person decides there; nothing is changed from here.
-async fn open_app_control(State(_app): State<Arc<App>>, caller: Caller) -> ApiResult<serde_json::Value> {
+async fn open_app_control(caller: Caller) -> ApiResult<serde_json::Value> {
     caller.permitted(SETTINGS_EDIT)?;
     if !cfg!(windows) {
         return Err(crate::platform::http::ApiError::conflict(crate::tr!("Это нужно только на Windows.")));
@@ -252,12 +250,12 @@ async fn open_app_control(State(_app): State<Arc<App>>, caller: Caller) -> ApiRe
     Ok(ok(serde_json::json!({ "opened": true })))
 }
 
-async fn read(State(_app): State<Arc<App>>, caller: Caller) -> ApiResult<NetworkView> {
+async fn read(caller: Caller) -> ApiResult<NetworkView> {
     caller.permitted(STATION_VIEW)?;
     Ok(ok(view_of(refresh().await)))
 }
 
-async fn allow(State(_app): State<Arc<App>>, caller: Caller) -> ApiResult<NetworkView> {
+async fn allow(caller: Caller) -> ApiResult<NetworkView> {
     caller.permitted(SETTINGS_EDIT)?;
     allow_inbound().await.map_err(crate::platform::http::ApiError::conflict)?;
     Ok(ok(view_of(refresh().await)))

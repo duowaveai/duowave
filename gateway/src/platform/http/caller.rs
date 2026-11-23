@@ -10,6 +10,10 @@
 //!
 //! A sign-in that cannot be checked (the database failed) is the server's error (500) where a sign-in is required —
 //! never a 401, which would make the panel drop its session — and nobody on a public route.
+//!
+//! A caller is checked against a `Gate`, not the whole gateway: the HTTP layer stands below every module
+//! (gateway/layers.json), and the gateway fills the gate in (src/links/http.rs).
+use std::any::Any;
 use std::net::SocketAddr;
 use std::sync::{Arc, OnceLock};
 
@@ -18,8 +22,8 @@ use axum::http::request::Parts;
 use axum::http::{header, HeaderMap};
 
 use super::api::ApiError;
+use super::state::RouteState;
 use super::zone::{client_address, zone_allows, zone_of, Zone};
-use crate::app::App;
 use crate::core::events::Actor;
 use crate::core::identity::permissions::title_of;
 use crate::core::identity::{can, Principal};
@@ -56,6 +60,22 @@ impl LinkOrigin {
     }
 }
 
+/// What a `Caller` asks of the gateway around it — who signed and from where — and nothing else.
+pub trait Gate: Send + Sync + 'static {
+    /// The networks besides this computer's that count as home (DEBUG_API_ALLOW).
+    fn home_networks(&self) -> &[String];
+    /// Whether the panel answers from outside the home (PANEL_REMOTE).
+    fn panel_remote(&self) -> bool;
+    /// The pair's key, when this gateway has a pair (src/placement).
+    fn peer_key(&self) -> Option<&str>;
+    /// Whether the home knows a person by this id.
+    fn knows_person(&self, id: &str) -> bool;
+    /// Who signed with this `Authorization`: nobody, somebody, or a check that failed (src/access).
+    fn authenticate(&self, authorization: Option<&str>) -> Result<Option<Principal>, ApiError>;
+    /// The gateway itself, for the modules that still take it whole (`crate::app::CallerApp`).
+    fn as_any(&self) -> &dyn Any;
+}
+
 /// A request a helper at home sent this gateway over its link — its own request, `up` (src/helpers/link.rs; stage 7 of
 /// docs/plans/home-setup-flow.md): its entry, and the person at the helper as its pass names them. Only the link's
 /// `up` inserts it, as an extension — never a header —; a caller with it is at home (never this computer) and is that
@@ -70,15 +90,15 @@ pub struct UpOrigin {
 /// (`person_principal`) — their role there (an unknown one is a guest's: never above an admin), their name, their id
 /// when this home knows it. None when it names nobody (no role): such a request is refused, never let in as the helper
 /// or as a key.
-pub(crate) fn up_origin(app: &App, entry: &str, person: &serde_json::Value) -> Option<UpOrigin> {
+pub(crate) fn up_origin(gate: &dyn Gate, entry: &str, person: &serde_json::Value) -> Option<UpOrigin> {
     let field = |name: &str| person.get(name).and_then(serde_json::Value::as_str);
     let role = field("role").map(str::trim).filter(|role| !role.is_empty())?;
-    let principal = person_principal(app, field("name"), Some(role), field("id"));
+    let principal = person_principal(gate, field("name"), Some(role), field("id"));
     Some(UpOrigin { entry: entry.to_string(), principal })
 }
 
 pub struct Caller {
-    app: Arc<App>,
+    gate: Arc<dyn Gate>,
     pub zone: Zone,
     /// The address sign-in failures are counted by.
     pub source: String,
@@ -94,10 +114,11 @@ pub struct Caller {
     principal: OnceLock<Result<Option<Principal>, ApiError>>,
 }
 
-impl FromRequestParts<Arc<App>> for Caller {
+impl<S: RouteState> FromRequestParts<S> for Caller {
     type Rejection = ApiError;
 
-    async fn from_request_parts(parts: &mut Parts, app: &Arc<App>) -> Result<Self, Self::Rejection> {
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        let gate = <S as super::state::Provides<Arc<dyn Gate>>>::provide(state);
         let peer = parts.extensions.get::<ConnectInfo<SocketAddr>>().map(|info| info.0);
         let link = parts.extensions.get::<LinkOrigin>().cloned();
         let up = parts.extensions.get::<UpOrigin>().cloned();
@@ -108,7 +129,7 @@ impl FromRequestParts<Arc<App>> for Caller {
         } else if up.is_some() {
             Zone::Home
         } else {
-            zone_of(&parts.headers, peer, &app.config.gateway.debug_api_allow)
+            zone_of(&parts.headers, peer, gate.home_networks())
         };
         // A helper's own request has no socket of its own here: it counts by its entry, and no key it carries counts.
         let (source, peer, authorization) = match &up {
@@ -120,7 +141,7 @@ impl FromRequestParts<Arc<App>> for Caller {
             ),
         };
         Ok(Caller {
-            app: app.clone(),
+            gate,
             zone,
             source,
             peer,
@@ -135,12 +156,9 @@ impl FromRequestParts<Arc<App>> for Caller {
 
 /// The person a pass names — the computer's to a station with the pair's key, or a helper's own request over its link
 /// (`up`) —: `helper_principal`, by their id only when this home knows it.
-fn person_principal(app: &App, person: Option<&str>, role: Option<&str>, id: Option<&str>) -> Principal {
+fn person_principal(gate: &dyn Gate, person: Option<&str>, role: Option<&str>, id: Option<&str>) -> Principal {
     let known = id.map(str::trim).filter(|id| {
-        !id.is_empty()
-            && id.len() <= 64
-            && id.bytes().all(|byte| byte.is_ascii_graphic())
-            && crate::access::users_repository::UsersRepository::new(app.db.clone()).by_id(id).ok().flatten().is_some()
+        !id.is_empty() && id.len() <= 64 && id.bytes().all(|byte| byte.is_ascii_graphic()) && gate.knows_person(id)
     });
     helper_principal(person, role, known)
 }
@@ -168,11 +186,11 @@ fn helper_principal(person: Option<&str>, role: Option<&str>, id: Option<&str>) 
 
 impl Caller {
     /// A caller for a test or a tool: from this computer, signed by `principal`.
-    pub fn local(app: Arc<App>, principal: Option<Principal>) -> Caller {
+    pub fn local(gate: Arc<dyn Gate>, principal: Option<Principal>) -> Caller {
         let cell = OnceLock::new();
         let _ = cell.set(Ok(principal));
         Caller {
-            app,
+            gate,
             zone: Zone::Local,
             source: "127.0.0.1".into(),
             peer: None,
@@ -220,17 +238,17 @@ impl Caller {
             // The pair's key from the home network: the helper — the computer's gateway passing its panel's requests
             // to this station (src/placement/proxy.rs) — acts here with the rights of the role of who is at the
             // computer, under their name. Both headers count only beside the key. A name comes as UTF-8 («Мама»).
-            if crate::placement::peer::from_peer(self, self.app.placement.peer_key()) {
+            if crate::placement::peer::from_peer(self, self.gate.peer_key()) {
                 let header =
                     |name: &str| self.headers.get(name).and_then(|value| std::str::from_utf8(value.as_bytes()).ok());
                 return Ok(Some(person_principal(
-                    &self.app,
+                    &*self.gate,
                     header(crate::placement::peer::HELPER_PERSON),
                     header(crate::placement::peer::HELPER_ROLE),
                     header(crate::placement::peer::HELPER_PERSON_ID),
                 )));
             }
-            self.app.access.try_authenticate(self.authorization.as_deref())
+            self.gate.authenticate(self.authorization.as_deref())
         })
     }
 
@@ -238,7 +256,7 @@ impl Caller {
     /// the link aside, which reaches only `/home/v1`. A sign-in that could not be checked is the server's error, not
     /// «sign in again».
     pub fn signed_in(&self) -> Result<&Principal, ApiError> {
-        if self.zone == Zone::Remote && !self.app.config.gateway.panel_remote && self.link.is_none() {
+        if self.zone == Zone::Remote && !self.gate.panel_remote() && self.link.is_none() {
             return Err(ApiError::forbidden(crate::tr!("Пульт вне дома выключен (PANEL_REMOTE).")));
         }
         match self.checked() {
@@ -265,8 +283,9 @@ impl Caller {
         self.principal().map(Actor::from)
     }
 
-    pub fn app(&self) -> &Arc<App> {
-        &self.app
+    /// The gate this caller was checked against.
+    pub fn gate(&self) -> &Arc<dyn Gate> {
+        &self.gate
     }
 }
 
@@ -280,6 +299,7 @@ mod tests {
     use tower::ServiceExt;
 
     use super::*;
+    use crate::app::App;
     use crate::config::{Config, Env};
     use crate::placement::peer::{HELPER_PERSON, HELPER_ROLE};
 

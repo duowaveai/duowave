@@ -159,14 +159,53 @@ export interface StationAnswer<T> {
     copyAt: number | null;
 }
 
-async function stationFetch<T>(station: string, method: string, path: string, body?: unknown, signal?: AbortSignal): Promise<StationAnswer<T>> {
+/** Заголовок запроса, который ждёт саму колонку (gateway/src/placement/proxy.rs, WAIT_FOR): без очереди и без копии. */
+const WAIT_FOR = 'x-duowave-wait';
+/** Пометка ответа на такой запрос: колонки нет на связи (не «медленно») — спросить снова через пару секунд. */
+const AWAY = 'x-duowave-away';
+
+/** Колонки (хаба) нет на связи, и запрос ждал её саму: перезапускается — спросить ещё раз. */
+export class HubAway extends ApiError {}
+
+async function stationFetch<T>(
+    station: string,
+    method: string,
+    path: string,
+    body?: unknown,
+    signal?: AbortSignal,
+    wait = false,
+): Promise<StationAnswer<T>> {
     const response = await fetch(`/station/${encodeURIComponent(station)}${path}`, {
         method,
-        headers: { Accept: 'application/json', ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}), ...authHeaders() },
+        headers: {
+            Accept: 'application/json',
+            ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
+            ...(wait ? { [WAIT_FOR]: '1' } : {}),
+            ...authHeaders(),
+        },
         body: body !== undefined ? JSON.stringify(body) : undefined,
         signal,
     });
-    if (!response.ok) throw new ApiError(response.status, await response.text().catch(() => ''));
+    if (!response.ok) {
+        const text = await response.text().catch(() => '');
+        if (response.headers.get(AWAY)) throw new HubAway(response.status, text);
+        throw new ApiError(response.status, text);
+    }
+    // Колонки нет на связи: компьютер сохранил правку и отдаст её, когда она вернётся (`{ message, queued: true }`).
+    // Это не ответ колонки — значением его не отдаём (24.11: шаг «Кто отвечает» брал слова «правка сохранена» за мозг
+    // колонки и падал, а «добавленный» так провайдер был без id — `providers/undefined/signin`).
+    if (response.status === 202) {
+        const text = await response.text().catch(() => '');
+        let queued = false;
+        try {
+            queued = (JSON.parse(text) as { queued?: unknown } | null)?.queued === true;
+        } catch {
+            queued = false;
+        }
+        if (queued) throw new QueuedChange(text);
+        if (!text) return { value: undefined as T, copyAt: null };
+        return { value: (JSON.parse(text) as { message: T | null }).message as T, copyAt: null };
+    }
     const header = response.headers.get('x-duowave-copy-at');
     const at = header ? Number(header) : NaN;
     const copyAt = Number.isFinite(at) ? at : null;
@@ -181,6 +220,47 @@ async function stationFetch<T>(station: string, method: string, path: string, bo
  */
 export async function stationCall<T>(station: string, method: string, path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
     return (await stationFetch<T>(station, method, path, body, signal)).value;
+}
+
+/** Сколько ждать хаб на колонке, пока он перезапускается (перенос — около 40 с; медленная сеть — дольше). */
+const HUB_WAIT_MS = 3 * 60_000;
+/** Как часто спрашивать его снова. */
+const HUB_RETRY_MS = 2000;
+
+/**
+ * Запрос к хабу на колонке через проход, который ждёт сам хаб (первые шаги, docs/plans/home-setup-flow.md): пока хаб
+ * перезапускается после переноса, проход не кладёт правку в очередь и не отдаёт копию, а говорит «нет на связи» — и
+ * запрос повторяется раз в 2 с, до 3 минут. `waiting(true)` — пошло ожидание (шаг пишет «колонка перезапускается,
+ * подождите»), `waiting(false)` — кончилось. Ответ — всегда самого хаба.
+ */
+export async function hubCall<T>(
+    station: string,
+    method: string,
+    path: string,
+    body?: unknown,
+    waiting?: (on: boolean) => void,
+    signal?: AbortSignal,
+): Promise<T> {
+    const until = Date.now() + HUB_WAIT_MS;
+    let waited = false;
+    try {
+        for (;;) {
+            try {
+                return (await stationFetch<T>(station, method, path, body, signal, true)).value;
+            } catch (e) {
+                // Нет на связи — сам хаб (HubAway) или шлюз этого компьютера (fetch не дошёл: TypeError).
+                const away = e instanceof HubAway || e instanceof TypeError;
+                if (!away || signal?.aborted || Date.now() > until) throw e;
+            }
+            if (!waited) {
+                waited = true;
+                waiting?.(true);
+            }
+            await new Promise((done) => setTimeout(done, HUB_RETRY_MS));
+        }
+    } finally {
+        if (waited) waiting?.(false);
+    }
 }
 
 /**

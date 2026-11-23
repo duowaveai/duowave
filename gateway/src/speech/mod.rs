@@ -15,5 +15,9 @@ pub mod vad;
 pub mod voice_service;
 pub mod wake_word_gains;
 
+use std::sync::Arc;
+
 pub use speech_service::{Recognition, SpeechService, SpeechStatus};
 pub use voice_service::VoiceService;
+
+crate::route_needs!(Arc<cloud_speech::CloudSpeech>, Arc<SpeechService>, Arc<crate::settings::SettingsService>);

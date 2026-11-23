@@ -37,23 +37,23 @@ pub use service::{OwnSpeech, OwnVoiceCard, PreparedVoice, RestoredVoice, VoiceLa
 #[cfg(not(feature = "pc"))]
 pub use station::router;
 
+#[cfg(feature = "pc")]
+crate::route_needs!(std::sync::Arc<VoiceLabService>, std::sync::Arc<crate::helpers::builtin::BuiltinHelper>);
+
 /// The station's build: no voice lab — every route under it answers 501 in the envelope.
 #[cfg(not(feature = "pc"))]
 mod station {
-    use std::sync::Arc;
-
     use axum::http::StatusCode;
     use axum::routing::any;
     use axum::Router;
 
-    use crate::app::App;
-    use crate::platform::http::ApiError;
+    use crate::platform::http::{ApiError, RouteState};
 
     pub fn not_in_this_build_text() -> String {
         crate::tr!("Голосовой лаборатории нет в этой сборке: свои голоса делаются в DuoWave на компьютере.")
     }
 
-    pub fn router() -> Router<Arc<App>> {
+    pub fn router<S: RouteState>() -> Router<S> {
         Router::new()
             .route("/api/v1/voice-lab", any(not_in_this_build))
             .route("/api/v1/voice-lab/{*rest}", any(not_in_this_build))
@@ -66,6 +66,7 @@ mod station {
     #[cfg(test)]
     mod tests {
         use super::*;
+        use crate::app::App;
         use crate::config::{Config, Env};
         use axum::body::Body;
         use http_body_util::BodyExt;

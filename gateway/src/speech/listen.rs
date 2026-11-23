@@ -11,17 +11,18 @@
 use std::sync::Arc;
 
 use axum::body::Bytes;
-use axum::extract::{DefaultBodyLimit, Query, State};
+use axum::extract::{DefaultBodyLimit, Query};
 use axum::http::StatusCode;
 use axum::routing::post;
 use axum::Router;
 use serde::Serialize;
 use tokio_util::sync::CancellationToken;
 
-use crate::app::App;
 use crate::core::identity::permissions::STATION_SAY;
-use crate::platform::http::{ok, ApiError, ApiResult, Caller};
+use crate::platform::http::{ok, ApiError, ApiResult, Caller, Uses};
+use crate::settings::SettingsService;
 use crate::speech::speech_pipeline::UtteranceAudio;
+use crate::speech::SpeechService;
 
 /// The phrase at most this big and this long: a sentence, not a recording.
 pub const MAX_BYTES: usize = 1024 * 1024;
@@ -29,7 +30,7 @@ pub const MAX_SECONDS: f64 = 15.0;
 /// What «Слух» takes: 16 kHz mono, 16-bit.
 pub const RATE: u32 = 16_000;
 
-pub fn routes() -> Router<Arc<App>> {
+pub fn routes<S: crate::speech::RouteNeeds>() -> Router<S> {
     Router::new().route("/api/v1/listen", post(listen)).layer(DefaultBodyLimit::max(MAX_BYTES + 4096))
 }
 
@@ -92,7 +93,8 @@ pub fn wav_pcm(bytes: &[u8]) -> Result<Vec<i16>, String> {
 
 /// The phrase recognized by «Слух», as the station's would be.
 async fn listen(
-    State(app): State<Arc<App>>,
+    Uses(speech): Uses<Arc<SpeechService>>,
+    Uses(settings): Uses<Arc<SettingsService>>,
     caller: Caller,
     Query(piece): Query<Piece>,
     body: Bytes,
@@ -106,9 +108,9 @@ async fn listen(
     if seconds > MAX_SECONDS + 0.5 {
         return Err(ApiError::bad_request(crate::tr!("Фраза длиннее 15 с.")));
     }
-    if !app.speech.recognizes() {
+    if !speech.recognizes() {
         // The page of «Слух» goes by the way the household talks (src/talk/input.rs).
-        let page = if crate::talk::input::on_computer(&app.settings) {
+        let page = if crate::talk::input::on_computer(&settings) {
             crate::tr!("Микрофон")
         } else {
             crate::tr!("Колонка")
@@ -119,12 +121,12 @@ async fn listen(
         ));
     }
     let audio = UtteranceAudio { pcm, from_ms: 0.0, to_ms: seconds * 1000.0, gain_db: 0.0 };
-    let recognition = app.speech.recognize(&audio, &[], &CancellationToken::new()).await.map_err(|error| {
+    let recognition = speech.recognize(&audio, &[], &CancellationToken::new()).await.map_err(|error| {
         ApiError::bad_gateway(crate::tr!("«Слух» не ответил: {error}", error = format!("{error:#}")))
     })?;
     let first = piece.piece.unwrap_or(1) <= 1;
     let thought = crate::talk::thought::judge(&recognition.text, crate::talk::words::household(), first);
-    Ok(ok(Heard { text: recognition.text, heard: if app.speech.at_home() { "home" } else { "cloud" }, thought }))
+    Ok(ok(Heard { text: recognition.text, heard: if speech.at_home() { "home" } else { "cloud" }, thought }))
 }
 
 #[cfg(test)]
@@ -174,20 +176,23 @@ mod tests {
         let phrase = Bytes::from(wav(16_000, 1, &vec![0; 16_000]));
         let status = |result: ApiResult<Heard>| result.err().map(|error| error.status);
         assert_eq!(
-            status(listen(State(app.clone()), guest(), Query(Piece::default()), phrase.clone()).await),
+            status(listen(Uses::of(&app), Uses::of(&app), guest(), Query(Piece::default()), phrase.clone()).await),
             Some(StatusCode::FORBIDDEN)
         );
         assert_eq!(
-            status(listen(State(app.clone()), admin(), Query(Piece::default()), Bytes::from_static(b"RIFF")).await),
+            status(
+                listen(Uses::of(&app), Uses::of(&app), admin(), Query(Piece::default()), Bytes::from_static(b"RIFF"))
+                    .await
+            ),
             Some(StatusCode::BAD_REQUEST)
         );
         let long = Bytes::from(wav(16_000, 1, &vec![0; 16_000 * 16]));
         assert_eq!(
-            status(listen(State(app.clone()), admin(), Query(Piece::default()), long).await),
+            status(listen(Uses::of(&app), Uses::of(&app), admin(), Query(Piece::default()), long).await),
             Some(StatusCode::BAD_REQUEST)
         );
         assert_eq!(
-            status(listen(State(app.clone()), admin(), Query(Piece::default()), phrase).await),
+            status(listen(Uses::of(&app), Uses::of(&app), admin(), Query(Piece::default()), phrase).await),
             Some(StatusCode::CONFLICT),
             "«Слух» off"
         );

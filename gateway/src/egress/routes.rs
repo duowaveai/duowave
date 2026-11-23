@@ -17,21 +17,20 @@
 
 use std::sync::Arc;
 
-use axum::extract::{Path, State};
+use axum::extract::Path;
 use axum::routing::{get, post, put};
 use axum::Router;
 use serde_json::{json, Value};
 
-use crate::app::App;
 use crate::core::identity::permissions::{CONNECTORS_VIEW, SETTINGS_EDIT};
-use crate::platform::http::{ok, ApiError, ApiResult, Body, Caller};
+use crate::platform::http::{ok, ApiError, ApiResult, Body, Caller, Uses};
 
 use super::registry::custom_host;
 use super::rules::{Mode, OnDown, OnDownAll, Route};
 use super::Egress;
 use super::Pick;
 
-pub fn routes() -> Router<Arc<App>> {
+pub fn routes<S: crate::egress::RouteNeeds>() -> Router<S> {
     Router::new()
         .route("/api/v1/egress", get(view).put(set))
         .route("/api/v1/egress/rows", axum::routing::delete(reset))
@@ -93,43 +92,47 @@ pub fn view_of(egress: &Egress) -> Value {
     })
 }
 
-async fn view(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<Value> {
+async fn view(Uses(egress): Uses<Arc<crate::egress::Egress>>, caller: Caller) -> ApiResult<Value> {
     caller.permitted(CONNECTORS_VIEW)?;
-    Ok(ok(view_of(&app.egress)))
+    Ok(ok(view_of(&egress)))
 }
 
-async fn set(State(app): State<Arc<App>>, caller: Caller, Body(body): Body<Value>) -> ApiResult<Value> {
+async fn set(
+    Uses(egress): Uses<Arc<crate::egress::Egress>>,
+    caller: Caller,
+    Body(body): Body<Value>,
+) -> ApiResult<Value> {
     caller.permitted(SETTINGS_EDIT)?;
     if let Some(mode) = body.get("mode") {
         let mode = mode
             .as_str()
             .and_then(Mode::parse)
             .ok_or_else(|| ApiError::bad_request(crate::tr!("mode: off, blocked, all или only")))?;
-        app.egress.set_mode(mode, caller.actor())?;
+        egress.set_mode(mode, caller.actor())?;
     }
     if let Some(pick) = body.get("pick") {
         let pick = pick
             .as_str()
             .and_then(Pick::parse)
             .ok_or_else(|| ApiError::bad_request(crate::tr!("pick: all, except или only")))?;
-        app.egress.set_pick(pick, caller.actor())?;
+        egress.set_pick(pick, caller.actor())?;
     }
     if let Some(home_direct) = body.get("homeDirect") {
         let on =
             home_direct.as_bool().ok_or_else(|| ApiError::bad_request(crate::tr!("homeDirect: true или false")))?;
-        app.egress.set_home_direct(on, caller.actor())?;
+        egress.set_home_direct(on, caller.actor())?;
     }
     if let Some(on_down) = body.get("onDownAll") {
         let on_down = on_down
             .as_str()
             .and_then(OnDownAll::parse)
             .ok_or_else(|| ApiError::bad_request(crate::tr!("onDownAll: safe, wait или direct")))?;
-        app.egress.set_on_down_all(on_down, caller.actor())?;
+        egress.set_on_down_all(on_down, caller.actor())?;
     }
     // The switch last: «Вкл» takes the pick and «напрямую …» sent with it.
     if let Some(on) = body.get("on") {
         let on = on.as_bool().ok_or_else(|| ApiError::bad_request(crate::tr!("on: true или false")))?;
-        app.egress.set_on(on, caller.actor())?;
+        egress.set_on(on, caller.actor())?;
     }
     if let Some(preferred) = body.get("preferred") {
         let id = match preferred {
@@ -140,13 +143,13 @@ async fn set(State(app): State<Arc<App>>, caller: Caller, Body(body): Body<Value
             },
             _ => return Err(ApiError::bad_request(crate::tr!("preferred: id подключения или null"))),
         };
-        app.egress.set_preferred(id.as_deref(), caller.actor())?;
+        egress.set_preferred(id.as_deref(), caller.actor())?;
     }
-    Ok(ok(view_of(&app.egress)))
+    Ok(ok(view_of(&egress)))
 }
 
 async fn set_row(
-    State(app): State<Arc<App>>,
+    Uses(egress): Uses<Arc<crate::egress::Egress>>,
     caller: Caller,
     Path(id): Path<String>,
     Body(body): Body<Value>,
@@ -172,20 +175,24 @@ async fn set_row(
         )),
         Some(_) => return Err(ApiError::bad_request(crate::tr!("onDown: wait, direct или null"))),
     };
-    if !app.egress.table().rows.iter().any(|row| row.goer.id == id) {
+    if !egress.table().rows.iter().any(|row| row.goer.id == id) {
         return Err(ApiError::not_found(crate::tr!("нет такой строки")));
     }
-    app.egress.set_row(&id, route, on_down, caller.actor())?;
-    Ok(ok(view_of(&app.egress)))
+    egress.set_row(&id, route, on_down, caller.actor())?;
+    Ok(ok(view_of(&egress)))
 }
 
-async fn reset(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<Value> {
+async fn reset(Uses(egress): Uses<Arc<crate::egress::Egress>>, caller: Caller) -> ApiResult<Value> {
     caller.permitted(SETTINGS_EDIT)?;
-    app.egress.reset_rows(caller.actor())?;
-    Ok(ok(view_of(&app.egress)))
+    egress.reset_rows(caller.actor())?;
+    Ok(ok(view_of(&egress)))
 }
 
-async fn set_custom(State(app): State<Arc<App>>, caller: Caller, Body(body): Body<Value>) -> ApiResult<Value> {
+async fn set_custom(
+    Uses(egress): Uses<Arc<crate::egress::Egress>>,
+    caller: Caller,
+    Body(body): Body<Value>,
+) -> ApiResult<Value> {
     caller.permitted(SETTINGS_EDIT)?;
     let list = body
         .get("hosts")
@@ -207,12 +214,12 @@ async fn set_custom(State(app): State<Arc<App>>, caller: Caller, Body(body): Bod
             hosts.push(host);
         }
     }
-    app.egress.set_custom(hosts, caller.actor())?;
-    Ok(ok(view_of(&app.egress)))
+    egress.set_custom(hosts, caller.actor())?;
+    Ok(ok(view_of(&egress)))
 }
 
-async fn seen(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<Value> {
+async fn seen(Uses(egress): Uses<Arc<crate::egress::Egress>>, caller: Caller) -> ApiResult<Value> {
     caller.permitted(CONNECTORS_VIEW)?;
-    app.egress.mark_seen()?;
+    egress.mark_seen()?;
     Ok(ok(json!({ "seen": true })))
 }

@@ -5,7 +5,7 @@ use std::convert::Infallible;
 use std::sync::Arc;
 use std::time::Instant;
 
-use axum::extract::{DefaultBodyLimit, Path, State};
+use axum::extract::{DefaultBodyLimit, Path};
 use axum::http::{header, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -20,11 +20,16 @@ use tokio_util::sync::CancellationToken;
 use super::activity::{Job, Step};
 use super::agent::{self, ChatStep};
 use super::{CheckReport, DraftView, InstallPlan, InstallReport, PhraseReport, RunReport, Trying};
-use crate::app::App;
-use crate::platform::http::{created, ok, ApiError, ApiResult, Body, Caller};
+use crate::characters::CharactersService;
+use crate::dialog::brain::BrainService;
+use crate::dialog::DialogService;
+use crate::platform::http::{created, ok, ApiError, ApiResult, Body, Caller, Uses};
 use crate::plugins::history::{Author, Who};
 use crate::plugins::routes::admin;
+use crate::plugins::workshop::Workshop;
+use crate::secrets::SecretsService;
 use crate::settings::definitions::{BrainPick, WORKSHOP_AGENT};
+use crate::settings::SettingsService;
 use crate::utils::time::now_ms;
 
 /// A file of a draft is up to 1 MB, sent as JSON.
@@ -32,7 +37,7 @@ const BODY_LIMIT: usize = 2 * 1024 * 1024;
 /// MCP's protocol version this server speaks first.
 const MCP_PROTOCOL: &str = "2025-06-18";
 
-pub fn routes() -> Router<Arc<App>> {
+pub fn routes<S: crate::plugins::RouteNeeds>() -> Router<S> {
     Router::new()
         .route("/api/v1/workshop", get(list))
         .route("/api/v1/workshop/drafts", post(create))
@@ -64,9 +69,9 @@ pub struct WorkshopView {
     drafts: Vec<DraftView>,
 }
 
-async fn list(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<WorkshopView> {
+async fn list(Uses(workshop): Uses<Arc<Workshop>>, caller: Caller) -> ApiResult<WorkshopView> {
     admin(&caller)?;
-    Ok(ok(WorkshopView { dir: app.workshop.dir().display().to_string(), drafts: app.workshop.drafts() }))
+    Ok(ok(WorkshopView { dir: workshop.dir().display().to_string(), drafts: workshop.drafts() }))
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -83,44 +88,48 @@ pub struct CreateBody {
     openapi: Option<String>,
 }
 
-async fn create(State(app): State<Arc<App>>, caller: Caller, Body(body): Body<CreateBody>) -> ApiResult<DraftView> {
+async fn create(
+    Uses(workshop): Uses<Arc<Workshop>>,
+    caller: Caller,
+    Body(body): Body<CreateBody>,
+) -> ApiResult<DraftView> {
     admin(&caller)?;
     let kind = body.kind.as_deref().or(Some("plugin")).filter(|_| body.openapi.is_none());
-    let id = app.workshop.new_draft_id(body.id.as_deref())?;
-    Ok(created(app.workshop.create(&id, kind, body.title.as_deref(), body.openapi.as_deref())?))
+    let id = workshop.new_draft_id(body.id.as_deref())?;
+    Ok(created(workshop.create(&id, kind, body.title.as_deref(), body.openapi.as_deref())?))
 }
 
 /// «Открыть в мастерской»: the draft, or one from the installed package of one's own.
-async fn open(State(app): State<Arc<App>>, caller: Caller, Path(id): Path<String>) -> ApiResult<DraftView> {
+async fn open(Uses(workshop): Uses<Arc<Workshop>>, caller: Caller, Path(id): Path<String>) -> ApiResult<DraftView> {
     admin(&caller)?;
-    Ok(ok(app.workshop.open(&id)?))
+    Ok(ok(workshop.open(&id)?))
 }
 
-async fn one(State(app): State<Arc<App>>, caller: Caller, Path(id): Path<String>) -> ApiResult<DraftView> {
+async fn one(Uses(workshop): Uses<Arc<Workshop>>, caller: Caller, Path(id): Path<String>) -> ApiResult<DraftView> {
     admin(&caller)?;
-    Ok(ok(app.workshop.draft(&id)?))
+    Ok(ok(workshop.draft(&id)?))
 }
 
-async fn remove(State(app): State<Arc<App>>, caller: Caller, Path(id): Path<String>) -> ApiResult<Value> {
+async fn remove(Uses(workshop): Uses<Arc<Workshop>>, caller: Caller, Path(id): Path<String>) -> ApiResult<Value> {
     admin(&caller)?;
-    app.workshop.delete(&id)?;
+    workshop.delete(&id)?;
     Ok(ok(json!({ "deleted": true })))
 }
 
 /// The draft's panel part to look at before installing (docs/plans/desk.md, stage 5): an address with a token.
-async fn preview(State(app): State<Arc<App>>, caller: Caller, Path(id): Path<String>) -> ApiResult<Value> {
+async fn preview(Uses(workshop): Uses<Arc<Workshop>>, caller: Caller, Path(id): Path<String>) -> ApiResult<Value> {
     admin(&caller)?;
-    let (module, styles) = app.workshop.preview(&id)?;
+    let (module, styles) = workshop.preview(&id)?;
     Ok(ok(json!({ "module": module, "styles": styles })))
 }
 
 /// The previewed file: JavaScript or CSS, only from this gateway's own panel (the panel's content policy).
 async fn preview_file(
-    State(app): State<Arc<App>>,
+    Uses(workshop): Uses<Arc<Workshop>>,
     Path((token, file)): Path<(String, String)>,
 ) -> Result<axum::response::Response, ApiError> {
     use axum::response::IntoResponse;
-    let text = app.workshop.preview_file(&token, &file).ok_or_else(|| ApiError::not_found("Not Found"))?;
+    let text = workshop.preview_file(&token, &file).ok_or_else(|| ApiError::not_found("Not Found"))?;
     let kind = if file.ends_with(".css") { "text/css; charset=utf-8" } else { "text/javascript; charset=utf-8" };
     use axum::http::header;
     // An app's window is a sandboxed frame of no origin (docs/plans/bus.md, «Окошки»): it imports the draft's part
@@ -139,12 +148,12 @@ async fn preview_file(
 }
 
 async fn read(
-    State(app): State<Arc<App>>,
+    Uses(workshop): Uses<Arc<Workshop>>,
     caller: Caller,
     Path((id, path)): Path<(String, String)>,
 ) -> ApiResult<Value> {
     admin(&caller)?;
-    let content = app.workshop.read(&id, &path)?;
+    let content = workshop.read(&id, &path)?;
     Ok(ok(json!({ "path": path, "content": content })))
 }
 
@@ -154,31 +163,31 @@ pub struct FileBody {
 }
 
 async fn write(
-    State(app): State<Arc<App>>,
+    Uses(workshop): Uses<Arc<Workshop>>,
     caller: Caller,
     Path((id, path)): Path<(String, String)>,
     Body(body): Body<FileBody>,
 ) -> ApiResult<DraftView> {
     let actor = admin(&caller)?;
-    let view = app.workshop.write(&id, &path, &body.content)?;
-    app.workshop.hand_edited(&id, Author::of(actor.as_ref(), Who::Hand));
+    let view = workshop.write(&id, &path, &body.content)?;
+    workshop.hand_edited(&id, Author::of(actor.as_ref(), Who::Hand));
     Ok(ok(view))
 }
 
 async fn delete_file(
-    State(app): State<Arc<App>>,
+    Uses(workshop): Uses<Arc<Workshop>>,
     caller: Caller,
     Path((id, path)): Path<(String, String)>,
 ) -> ApiResult<DraftView> {
     let actor = admin(&caller)?;
-    let view = app.workshop.delete_file(&id, &path)?;
-    app.workshop.hand_edited(&id, Author::of(actor.as_ref(), Who::Hand));
+    let view = workshop.delete_file(&id, &path)?;
+    workshop.hand_edited(&id, Author::of(actor.as_ref(), Who::Hand));
     Ok(ok(view))
 }
 
-async fn check(State(app): State<Arc<App>>, caller: Caller, Path(id): Path<String>) -> ApiResult<CheckReport> {
+async fn check(Uses(workshop): Uses<Arc<Workshop>>, caller: Caller, Path(id): Path<String>) -> ApiResult<CheckReport> {
     admin(&caller)?;
-    Ok(ok(app.workshop.check(&id).await?))
+    Ok(ok(workshop.check(&id).await?))
 }
 
 #[derive(Debug, Deserialize)]
@@ -195,14 +204,14 @@ pub struct RunBody {
 }
 
 async fn run(
-    State(app): State<Arc<App>>,
+    Uses(workshop): Uses<Arc<Workshop>>,
     caller: Caller,
     Path(id): Path<String>,
     Body(body): Body<RunBody>,
 ) -> ApiResult<RunReport> {
     admin(&caller)?;
-    let trying = Trying { example: body.example, settings: app.workshop.plain_settings(&id, &body.settings)? };
-    Ok(ok(app.workshop.run(&id, &body.function, body.input.unwrap_or_else(|| json!({})), &trying).await?))
+    let trying = Trying { example: body.example, settings: workshop.plain_settings(&id, &body.settings)? };
+    Ok(ok(workshop.run(&id, &body.function, body.input.unwrap_or_else(|| json!({})), &trying).await?))
 }
 
 #[derive(Debug, Deserialize)]
@@ -215,32 +224,32 @@ pub struct PhraseBody {
 }
 
 async fn phrase(
-    State(app): State<Arc<App>>,
+    Uses(workshop): Uses<Arc<Workshop>>,
     caller: Caller,
     Path(id): Path<String>,
     Body(body): Body<PhraseBody>,
 ) -> ApiResult<PhraseReport> {
     admin(&caller)?;
-    let trying = Trying { example: body.example, settings: app.workshop.plain_settings(&id, &body.settings)? };
-    Ok(ok(app.workshop.try_phrase(&id, &body.text, &trying).await?))
+    let trying = Trying { example: body.example, settings: workshop.plain_settings(&id, &body.settings)? };
+    Ok(ok(workshop.try_phrase(&id, &body.text, &trying).await?))
 }
 
-async fn journal(State(app): State<Arc<App>>, caller: Caller, Path(id): Path<String>) -> ApiResult<Value> {
+async fn journal(Uses(workshop): Uses<Arc<Workshop>>, caller: Caller, Path(id): Path<String>) -> ApiResult<Value> {
     admin(&caller)?;
-    Ok(ok(json!({ "lines": app.workshop.journal(&id) })))
+    Ok(ok(json!({ "lines": workshop.journal(&id) })))
 }
 
 /// A step as the panel gets it: what a key or a token may have put into its text is hidden.
-fn shown(app: &App, mut step: Step) -> Step {
-    step.text = app.secrets.redact(&step.text);
+fn shown(secrets: &SecretsService, mut step: Step) -> Step {
+    step.text = secrets.redact(&step.text);
     step
 }
 
 /// A draft's work with its title, for the plaque «Делаю виджет «…»».
-fn job_view(app: &App, mut job: Job) -> Value {
-    job.asked = app.secrets.redact(&job.asked);
-    job.last = job.last.map(|step| shown(app, step));
-    let title = app.workshop.draft(&job.draft).ok().and_then(|draft| draft.title);
+fn job_view(secrets: &SecretsService, workshop: &Workshop, mut job: Job) -> Value {
+    job.asked = secrets.redact(&job.asked);
+    job.last = job.last.map(|step| shown(secrets, step));
+    let title = workshop.draft(&job.draft).ok().and_then(|draft| draft.title);
     let mut view = serde_json::to_value(&job).unwrap_or_default();
     view["title"] = json!(title);
     view
@@ -250,9 +259,14 @@ fn job_view(app: &App, mut job: Job) -> Value {
 /// ones it finished in the last minute and a half.
 /// `now` is this gateway's clock (ms since the epoch): the helper's panel reads a station's work through its pass and
 /// counts how long a step goes on by the station's own clock, not the computer's.
-async fn activity(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<Value> {
+async fn activity(
+    Uses(workshop): Uses<Arc<Workshop>>,
+    Uses(secrets): Uses<Arc<SecretsService>>,
+    caller: Caller,
+) -> ApiResult<Value> {
     admin(&caller)?;
-    let jobs: Vec<Value> = app.workshop.activity().jobs().into_iter().map(|job| job_view(&app, job)).collect();
+    let jobs: Vec<Value> =
+        workshop.activity().jobs().into_iter().map(|job| job_view(&secrets, &workshop, job)).collect();
     Ok(ok(json!({ "jobs": jobs, "now": now_ms() })))
 }
 
@@ -266,23 +280,24 @@ pub struct AfterQuery {
 /// A draft's work and its steps: what was asked, the calls and their results (each naming its call), what the agent
 /// said, how it ended; `now` as in `activity`.
 async fn activity_log(
-    State(app): State<Arc<App>>,
+    Uses(workshop): Uses<Arc<Workshop>>,
+    Uses(secrets): Uses<Arc<SecretsService>>,
     caller: Caller,
     Path(id): Path<String>,
     axum::extract::Query(query): axum::extract::Query<AfterQuery>,
 ) -> ApiResult<Value> {
     admin(&caller)?;
-    let Some((job, steps)) = app.workshop.activity().log(&id, query.after) else {
+    let Some((job, steps)) = workshop.activity().log(&id, query.after) else {
         return Ok(ok(json!({ "job": null, "steps": [], "now": now_ms() })));
     };
-    let steps: Vec<Step> = steps.into_iter().map(|step| shown(&app, step)).collect();
-    Ok(ok(json!({ "job": job_view(&app, job), "steps": steps, "now": now_ms() })))
+    let steps: Vec<Step> = steps.into_iter().map(|step| shown(&secrets, step)).collect();
+    Ok(ok(json!({ "job": job_view(&secrets, &workshop, job), "steps": steps, "now": now_ms() })))
 }
 
 /// «Остановить»: the agent's work on the draft ends now, by voice or from the panel alike.
-async fn stop(State(app): State<Arc<App>>, caller: Caller, Path(id): Path<String>) -> ApiResult<Value> {
+async fn stop(Uses(workshop): Uses<Arc<Workshop>>, caller: Caller, Path(id): Path<String>) -> ApiResult<Value> {
     admin(&caller)?;
-    Ok(ok(json!({ "stopped": app.workshop.stop(&id) })))
+    Ok(ok(json!({ "stopped": workshop.stop(&id) })))
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -295,16 +310,20 @@ pub struct MakeBody {
 
 /// «Сделай…» from the panel (docs/plans/voice-creation.md): a draft of the request's face, its card, the agent in the
 /// background — the same road as the station's. Words that are not a request: 422.
-async fn make(State(app): State<Arc<App>>, caller: Caller, Body(body): Body<MakeBody>) -> ApiResult<super::Made> {
+async fn make(
+    Uses(workshop): Uses<Arc<Workshop>>,
+    caller: Caller,
+    Body(body): Body<MakeBody>,
+) -> ApiResult<super::Made> {
     let actor = admin(&caller)?;
     let who = actor.map(|actor| actor.name);
-    Ok(created(app.workshop.make(&body.words, body.draft.as_deref(), super::activity::By::Panel, who)?))
+    Ok(created(workshop.make(&body.words, body.draft.as_deref(), super::activity::By::Panel, who)?))
 }
 
 /// «В черновики»: the draft waits in the workshop, off the desk (docs/plans/voice-creation.md).
-async fn park(State(app): State<Arc<App>>, caller: Caller, Path(id): Path<String>) -> ApiResult<DraftView> {
+async fn park(Uses(workshop): Uses<Arc<Workshop>>, caller: Caller, Path(id): Path<String>) -> ApiResult<DraftView> {
     admin(&caller)?;
-    Ok(ok(app.workshop.park(&id)?))
+    Ok(ok(workshop.park(&id)?))
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -318,23 +337,24 @@ pub struct InstallBody {
 }
 
 async fn install(
-    State(app): State<Arc<App>>,
+    Uses(workshop): Uses<Arc<Workshop>>,
+    Uses(characters): Uses<Arc<CharactersService>>,
     caller: Caller,
     Path(id): Path<String>,
     Body(body): Body<InstallBody>,
 ) -> ApiResult<InstallReport> {
     let actor = admin(&caller)?;
-    let report = app.workshop.install(&id, body.approve, &body.settings, actor).await?;
+    let report = workshop.install(&id, body.approve, &body.settings, actor).await?;
     if report.installed {
-        app.characters.sync();
+        characters.sync();
     }
     Ok(ok(report))
 }
 
 /// What «Поставить» would do: shown before the admin says «да», whether or not it asks for new rights.
-async fn plan(State(app): State<Arc<App>>, caller: Caller, Path(id): Path<String>) -> ApiResult<InstallPlan> {
+async fn plan(Uses(workshop): Uses<Arc<Workshop>>, caller: Caller, Path(id): Path<String>) -> ApiResult<InstallPlan> {
     admin(&caller)?;
-    Ok(ok(app.workshop.plan(&id).await?))
+    Ok(ok(workshop.plan(&id).await?))
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -348,13 +368,13 @@ pub struct TrialBody {
 
 /// «Проба на колонке»: the draft runs on the gateway for a while, then the version before comes back by itself.
 async fn trial(
-    State(app): State<Arc<App>>,
+    Uses(workshop): Uses<Arc<Workshop>>,
     caller: Caller,
     Path(id): Path<String>,
     Body(body): Body<TrialBody>,
 ) -> ApiResult<InstallReport> {
     let actor = admin(&caller)?;
-    Ok(ok(app.workshop.start_trial(&id, body.minutes.unwrap_or(10), body.approve, actor).await?))
+    Ok(ok(workshop.start_trial(&id, body.minutes.unwrap_or(10), body.approve, actor).await?))
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -365,26 +385,31 @@ pub struct EndTrialQuery {
 }
 
 async fn end_trial(
-    State(app): State<Arc<App>>,
+    Uses(workshop): Uses<Arc<Workshop>>,
     caller: Caller,
     Path(id): Path<String>,
     axum::extract::Query(query): axum::extract::Query<EndTrialQuery>,
 ) -> ApiResult<Value> {
     let actor = admin(&caller)?;
-    let message = app.workshop.end_trial(&id, query.keep, actor).await?;
-    Ok(ok(json!({ "message": message, "draft": app.workshop.draft(&id).ok() })))
+    let message = workshop.end_trial(&id, query.keep, actor).await?;
+    Ok(ok(json!({ "message": message, "draft": workshop.draft(&id).ok() })))
 }
 
 /// The agent's model: its own choice (null — the smart profile of «Мозг») and the model that answers now.
-fn agent_view(app: &App) -> Value {
-    let choice = app.settings.get(&WORKSHOP_AGENT, None);
-    let context = agent::context(&app.workshop, "", choice.clone());
-    json!({ "choice": choice, "answers": app.dialog.profile_for(&context), "smart": app.dialog.brain().profiles.smart })
+fn agent_view(settings: &SettingsService, workshop: &Workshop, dialog: &DialogService) -> Value {
+    let choice = settings.get(&WORKSHOP_AGENT, None);
+    let context = agent::context(workshop, "", choice.clone());
+    json!({ "choice": choice, "answers": dialog.profile_for(&context), "smart": dialog.brain().profiles.smart })
 }
 
-async fn agent_model(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<Value> {
+async fn agent_model(
+    Uses(settings): Uses<Arc<SettingsService>>,
+    Uses(workshop): Uses<Arc<Workshop>>,
+    Uses(dialog): Uses<Arc<DialogService>>,
+    caller: Caller,
+) -> ApiResult<Value> {
     admin(&caller)?;
-    Ok(ok(agent_view(&app)))
+    Ok(ok(agent_view(&settings, &workshop, &dialog)))
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -395,22 +420,29 @@ pub struct AgentBody {
 }
 
 /// The agent's own model; «Мозг» itself does not change.
-async fn set_agent_model(State(app): State<Arc<App>>, caller: Caller, Body(body): Body<AgentBody>) -> ApiResult<Value> {
+async fn set_agent_model(
+    Uses(settings): Uses<Arc<SettingsService>>,
+    Uses(brain): Uses<Arc<BrainService>>,
+    Uses(workshop): Uses<Arc<Workshop>>,
+    Uses(dialog): Uses<Arc<DialogService>>,
+    caller: Caller,
+    Body(body): Body<AgentBody>,
+) -> ApiResult<Value> {
     let actor = admin(&caller)?;
     match body.choice {
-        None => app.settings.forget(&WORKSHOP_AGENT)?,
+        None => settings.forget(&WORKSHOP_AGENT)?,
         Some(pick) => {
             let pick = BrainPick { provider: pick.provider.trim().to_string(), model: pick.model.trim().to_string() };
             if pick.model.is_empty() {
                 return Err(ApiError::field("model", crate::tr!("выберите модель")));
             }
-            if !app.brain.view().providers.iter().any(|provider| provider.id == pick.provider) {
+            if !brain.view().providers.iter().any(|provider| provider.id == pick.provider) {
                 return Err(ApiError::field("provider", crate::tr!("такого провайдера нет в «Мышлении»")));
             }
-            app.settings.set(&WORKSHOP_AGENT, &pick, actor)?;
+            settings.set(&WORKSHOP_AGENT, &pick, actor)?;
         }
     }
-    Ok(ok(agent_view(&app)))
+    Ok(ok(agent_view(&settings, &workshop, &dialog)))
 }
 
 /// One event of the agent's chat.
@@ -435,7 +467,9 @@ pub struct ChatBody {
 
 /// The agent's answer as server-sent events: its words, every tool it calls and what came back.
 async fn chat(
-    State(app): State<Arc<App>>,
+    Uses(dialog): Uses<Arc<DialogService>>,
+    Uses(workshop): Uses<Arc<Workshop>>,
+    Uses(secrets_service): Uses<Arc<SecretsService>>,
     caller: Caller,
     Path(id): Path<String>,
     Body(body): Body<ChatBody>,
@@ -446,19 +480,19 @@ async fn chat(
     if message.is_empty() {
         return Err(ApiError::bad_request(crate::tr!("Напишите, что сделать.")));
     }
-    if !app.dialog.enabled() {
+    if !dialog.enabled() {
         return Err(ApiError::conflict(crate::tr!(
             "Модель не выбрана: добавьте провайдера в «Персонаж» → «Мышление»."
         )));
     }
     let key = format!("workshop:{principal}:{id}");
     if body.fresh {
-        app.dialog.forget(&key);
+        dialog.forget(&key);
     }
     let started = Instant::now();
     let ms = move || started.elapsed().as_millis() as u64;
     let (events, receiver) = mpsc::unbounded_channel();
-    let answers = app.dialog.profile_for(&agent::context(&app.workshop, &id, agent::model_of(&app.workshop)));
+    let answers = dialog.profile_for(&agent::context(&workshop, &id, agent::model_of(&workshop)));
     let _ = events.send(WorkshopEvent::Start {
         model: answers.as_ref().map(|answers| answers.model.clone()).unwrap_or_default(),
         provider: answers.map(|answers| answers.title).unwrap_or_default(),
@@ -475,9 +509,8 @@ async fn chat(
     });
     // The work goes on when this panel closes (the plaque «Делаю виджет» and the workshop's log follow it):
     // «Остановить» ends it (activity.rs), not the connection.
-    let mut phrases =
-        agent::chat(&app.dialog, app.workshop.clone(), &key, &id, &message, told, CancellationToken::new());
-    let secrets = app.secrets.clone();
+    let mut phrases = agent::chat(&dialog, workshop.clone(), &key, &id, &message, told, CancellationToken::new());
+    let secrets = secrets_service.clone();
     tokio::spawn(async move {
         loop {
             let next = phrases.next().await;
@@ -524,7 +557,11 @@ fn rpc_error(id: &Value, code: i64, message: &str) -> Value {
 
 /// The workshop as an MCP server: `initialize`, `tools/list`, `tools/call`, `ping`. The admin's key (a panel key with
 /// the right to plugins) goes in `Authorization: Bearer`.
-async fn mcp(State(app): State<Arc<App>>, caller: Caller, Body(request): Body<Value>) -> Result<Response, ApiError> {
+async fn mcp(
+    Uses(workshop): Uses<Arc<Workshop>>,
+    caller: Caller,
+    Body(request): Body<Value>,
+) -> Result<Response, ApiError> {
     admin(&caller)?;
     let id = request.get("id").cloned().unwrap_or(Value::Null);
     let method = request.get("method").and_then(Value::as_str).unwrap_or_default();
@@ -558,10 +595,10 @@ async fn mcp(State(app): State<Arc<App>>, caller: Caller, Body(request): Body<Va
             let name = params.get("name").and_then(Value::as_str).unwrap_or_default();
             let arguments = params.get("arguments").and_then(Value::as_object).cloned().unwrap_or_default();
             let draft = arguments.get("draft").and_then(Value::as_str).unwrap_or_default().to_string();
-            let (text, failed) = agent::run_tool(&app.workshop, &draft, name, &arguments).await;
+            let (text, failed) = agent::run_tool(&workshop, &draft, name, &arguments).await;
             // Claude Code's saves are steps of the draft's history, as the panel's by hand.
             if !failed && matches!(name, "write_file" | "append_file" | "edit_file" | "delete_file") {
-                app.workshop.hand_edited(&draft, Author { who: Who::Mcp, name: None, via: Some("mcp".into()) });
+                workshop.hand_edited(&draft, Author { who: Who::Mcp, name: None, via: Some("mcp".into()) });
             }
             rpc_result(&id, json!({ "content": [{ "type": "text", "text": text }], "isError": failed }))
         }
@@ -598,13 +635,14 @@ mod tests {
         let member = || Caller::local(app.clone(), Some(user_principal("u2", "Аня", Role::Member, None)));
         app.workshop.create("widget-a", Some("plugin"), Some("Курс крипты"), None).unwrap();
         let before = now_ms();
-        let idle = activity(State(app.clone()), admin()).await.unwrap().1;
+        let idle = activity(Uses::of(&app), Uses::of(&app), admin()).await.unwrap().1;
         assert_eq!(idle["jobs"], json!([]));
         // The gateway's clock comes with each answer: the helper's panel counts a station's work by the station's.
         assert!(idle["now"].as_u64().is_some_and(|now| now >= before && now <= now_ms()), "{idle}");
-        assert!(activity(State(app.clone()), member()).await.is_err(), "the workshop is the admin's");
+        assert!(activity(Uses::of(&app), Uses::of(&app), member()).await.is_err(), "the workshop is the admin's");
         let from = |after: u64| axum::extract::Query(AfterQuery { after });
-        let none = activity_log(State(app.clone()), admin(), Path("widget-a".into()), from(0)).await.unwrap().1;
+        let none =
+            activity_log(Uses::of(&app), Uses::of(&app), admin(), Path("widget-a".into()), from(0)).await.unwrap().1;
         assert!(none["job"].is_null() && none["now"].as_u64().is_some(), "{none}");
 
         let run = app.workshop.activity().begin(
@@ -615,14 +653,15 @@ mod tests {
         );
         let file = json!({"path": "panel.js", "content": "…"});
         let call = app.workshop.activity().call(&run, "write_file", file.as_object().unwrap());
-        let jobs = activity(State(app.clone()), admin()).await.unwrap().1;
+        let jobs = activity(Uses::of(&app), Uses::of(&app), admin()).await.unwrap().1;
         let job = &jobs["jobs"][0];
         assert_eq!(
             (job["title"].clone(), job["by"].clone(), job["busy"].clone(), job["last"]["tool"].clone()),
             (json!("Курс крипты"), json!("voice"), json!(true), json!("write_file"))
         );
         app.workshop.activity().answer(&run, call, "write_file", "Записано.", false);
-        let log = activity_log(State(app.clone()), admin(), Path("widget-a".into()), from(0)).await.unwrap().1;
+        let log =
+            activity_log(Uses::of(&app), Uses::of(&app), admin(), Path("widget-a".into()), from(0)).await.unwrap().1;
         assert!(log["now"].as_u64().is_some_and(|now| now >= before), "{log}");
         let steps = log["steps"].as_array().unwrap().clone();
         assert_eq!(
@@ -632,11 +671,12 @@ mod tests {
         assert_eq!((steps[1]["seq"].clone(), steps[2]["call"].clone()), (json!(call), json!(call)), "its call");
 
         // «Остановить»: the run's token is cancelled, the log ends with it.
-        assert_eq!(stop(State(app.clone()), admin(), Path("widget-a".into())).await.unwrap().1["stopped"], json!(true));
+        assert_eq!(stop(Uses::of(&app), admin(), Path("widget-a".into())).await.unwrap().1["stopped"], json!(true));
         assert!(run.cancel.is_cancelled());
         let after = steps[2]["seq"].as_u64().unwrap();
         let log = activity_log(
-            State(app.clone()),
+            Uses::of(&app),
+            Uses::of(&app),
             admin(),
             Path("widget-a".into()),
             axum::extract::Query(AfterQuery { after }),
@@ -645,10 +685,7 @@ mod tests {
         .unwrap()
         .1;
         assert_eq!((log["job"]["busy"].clone(), log["steps"][0]["kind"].clone()), (json!(false), json!("stopped")));
-        assert_eq!(
-            stop(State(app.clone()), admin(), Path("widget-a".into())).await.unwrap().1["stopped"],
-            json!(false)
-        );
+        assert_eq!(stop(Uses::of(&app), admin(), Path("widget-a".into())).await.unwrap().1["stopped"], json!(false));
     }
 
     /// Stage 2 of docs/plans/voice-creation.md: a draft's card says who asked and where it is; the agent's work moves
@@ -682,7 +719,7 @@ mod tests {
         app.workshop.write("widget-1", "manifest.json", &manifest.to_string()).unwrap();
 
         // No card yet: one read from what is known — the panel's, a widget by its card, waiting in the workshop.
-        let view = one(State(app.clone()), admin(), Path("widget-1".into())).await.unwrap().1;
+        let view = one(Uses::of(&app), admin(), Path("widget-1".into())).await.unwrap().1;
         assert_eq!(
             (view.meta.by, view.meta.stage, view.meta.kind, view.meta.kept),
             (By::Panel, Stage::Parked, Face::Widget, false)
@@ -714,7 +751,7 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(25)).await;
         }
 
-        let view = one(State(app.clone()), admin(), Path("widget-1".into())).await.unwrap().1;
+        let view = one(Uses::of(&app), admin(), Path("widget-1".into())).await.unwrap().1;
         assert_eq!((view.meta.stage, view.meta.who.as_deref()), (Stage::Ready, Some("Админ")));
         assert_eq!(
             view.meta.note.as_deref(),
@@ -730,11 +767,11 @@ mod tests {
             json!({ "key": "token", "title": "Ключ Todoist", "type": "string", "secret": true, "required": true })
         );
         assert_eq!((needs[1]["default"].clone(), needs[1]["required"].clone()), (json!(5), json!(false)));
-        let listed = list(State(app.clone()), admin()).await.unwrap().1;
+        let listed = list(Uses::of(&app), admin()).await.unwrap().1;
         assert_eq!(serde_json::to_value(&listed).unwrap()["drafts"][0]["meta"]["stage"], json!("ready"));
 
         // «В черновики».
-        let parked = park(State(app.clone()), admin(), Path("widget-1".into())).await.unwrap().1;
+        let parked = park(Uses::of(&app), admin(), Path("widget-1".into())).await.unwrap().1;
         assert_eq!(parked.meta.stage, Stage::Parked);
         // The panel heard which draft and what happened to it, between the agent's steps.
         let mut changes = Vec::new();
@@ -770,7 +807,7 @@ mod tests {
         let made = app.workshop.create("widget-2", Some("widget"), Some("Отметки"), None).unwrap();
         assert!(made.files.iter().any(|file| file.path == "examples.json"), "the template carries an empty example");
         assert!(app.workshop.read("widget-2", "examples.json").is_ok(), "a root file of a draft");
-        let checked = check(State(app.clone()), admin(), Path("widget-2".into())).await.unwrap().1;
+        let checked = check(Uses::of(&app), admin(), Path("widget-2".into())).await.unwrap().1;
         assert!(checked.ok && checked.warnings.is_empty(), "{checked:?}");
         let mut manifest: Value =
             serde_json::from_str(&app.workshop.read("widget-2", "manifest.json").unwrap()).unwrap();
@@ -785,13 +822,13 @@ mod tests {
             example: true,
             settings: settings.as_object().unwrap().clone(),
         };
-        let ran = run(State(app.clone()), admin(), Path("widget-2".into()), Body(body(json!({ "caption": "дел" }))))
+        let ran = run(Uses::of(&app), admin(), Path("widget-2".into()), Body(body(json!({ "caption": "дел" }))))
             .await
             .unwrap()
             .1;
         assert!(ran.ok && ran.example, "{ran:?}");
         let Err(private) =
-            run(State(app.clone()), admin(), Path("widget-2".into()), Body(body(json!({ "token": "x-1234" })))).await
+            run(Uses::of(&app), admin(), Path("widget-2".into()), Body(body(json!({ "token": "x-1234" })))).await
         else {
             panic!("a private setting reached the sandbox")
         };
@@ -799,10 +836,8 @@ mod tests {
             .errors
             .as_ref()
             .is_some_and(|errors| errors["token"][0].as_str().unwrap().starts_with("личное")));
-        assert!(run(State(app.clone()), admin(), Path("widget-2".into()), Body(body(json!({ "nope": 1 }))))
-            .await
-            .is_err());
-        assert!(run(State(app.clone()), admin(), Path("widget-2".into()), Body(body(json!({ "caption": 3 }))))
+        assert!(run(Uses::of(&app), admin(), Path("widget-2".into()), Body(body(json!({ "nope": 1 })))).await.is_err());
+        assert!(run(Uses::of(&app), admin(), Path("widget-2".into()), Body(body(json!({ "caption": 3 }))))
             .await
             .is_err());
     }
@@ -845,21 +880,31 @@ mod tests {
         let stored = || app.settings.get(&PACKAGE_SETTINGS, None).unwrap_or_default().get("todo").cloned();
 
         // The «да» is awaited: nothing written yet — the key lives in the page alone.
-        let asked =
-            install(State(app.clone()), admin(), Path("todo".into()), Body(body(false, json!({ "token": "td-0123" }))))
-                .await
-                .unwrap()
-                .1;
+        let asked = install(
+            Uses::of(&app),
+            Uses::of(&app),
+            admin(),
+            Path("todo".into()),
+            Body(body(false, json!({ "token": "td-0123" }))),
+        )
+        .await
+        .unwrap()
+        .1;
         assert!(asked.needs_approval.is_some() && !asked.installed);
         assert!(!app.secrets.has("plugin:todo:token") && stored().is_none());
         // A wrong value, an unknown one: nothing installed, nothing written.
         for wrong in [json!({ "token": "td-0123", "count": "три" }), json!({ "token": "td-0123", "nope": 1 })] {
-            assert!(install(State(app.clone()), admin(), Path("todo".into()), Body(body(true, wrong))).await.is_err());
+            assert!(install(Uses::of(&app), Uses::of(&app), admin(), Path("todo".into()), Body(body(true, wrong)))
+                .await
+                .is_err());
         }
         assert!(app.plugins.installed("todo").is_none() && !app.secrets.has("plugin:todo:token"));
 
         let given = json!({ "token": "td-0123", "count": 3 });
-        let done = install(State(app.clone()), admin(), Path("todo".into()), Body(body(true, given))).await.unwrap().1;
+        let done = install(Uses::of(&app), Uses::of(&app), admin(), Path("todo".into()), Body(body(true, given)))
+            .await
+            .unwrap()
+            .1;
         assert!(done.installed, "{}", done.message);
         assert_eq!(app.plugins.call("todo", "tasks", json!({}), CallKind::Voice).await.unwrap(), json!("td-0123 3"));
         assert_eq!(
@@ -893,13 +938,13 @@ mod tests {
         let admin = || Caller::local(app.clone(), Some(user_principal("u1", "Админ", Role::Admin, None)));
         let member = || Caller::local(app.clone(), Some(user_principal("u2", "Аня", Role::Member, None)));
         let words = |words: &str| Body(MakeBody { words: words.into(), draft: None });
-        assert!(make(State(app.clone()), member(), words("Сделай виджет: погода")).await.is_err(), "the admin's");
-        let Err(not) = make(State(app.clone()), admin(), words("Какая погода завтра?")).await else {
+        assert!(make(Uses::of(&app), member(), words("Сделай виджет: погода")).await.is_err(), "the admin's");
+        let Err(not) = make(Uses::of(&app), admin(), words("Какая погода завтра?")).await else {
             panic!("not a request, made")
         };
         assert_eq!(not.status, StatusCode::UNPROCESSABLE_ENTITY);
         let made =
-            make(State(app.clone()), admin(), words("Сделай виджет: мои дела на сегодня из Тудуиста")).await.unwrap().1;
+            make(Uses::of(&app), admin(), words("Сделай виджет: мои дела на сегодня из Тудуиста")).await.unwrap().1;
         // The draft's id is random: who asked and what is its card's, not its id's.
         assert!(crate::plugins::manifest::random_id(&made.draft), "{}", made.draft);
         assert_eq!((made.kind, made.title.as_str()), (Face::Widget, "Мои дела на сегодня из тудуиста"));
@@ -919,7 +964,7 @@ mod tests {
         assert_eq!(app.workshop.card(id).stage, Stage::Ready);
         // «Переделай» on the same draft.
         let again = make(
-            State(app.clone()),
+            Uses::of(&app),
             admin(),
             Body(MakeBody { words: "Переделай: крупнее".into(), draft: Some(id.into()) }),
         )
@@ -956,22 +1001,22 @@ mod tests {
             title: Some("Привет".into()),
             openapi: None,
         };
-        assert!(create(State(app.clone()), member(), Body(CreateBody::default())).await.is_err());
+        assert!(create(Uses::of(&app), member(), Body(CreateBody::default())).await.is_err());
         // A new draft's id is random: the workshop gives one, a readable one is refused.
-        let Err(readable) = create(State(app.clone()), admin(), Body(body(Some("greeter")))).await else {
+        let Err(readable) = create(Uses::of(&app), admin(), Body(body(Some("greeter")))).await else {
             panic!("a readable id is refused")
         };
         assert!(readable.errors.as_ref().is_some_and(|errors| errors.get("id").is_some()), "{}", readable.message);
-        let given = create(State(app.clone()), admin(), Body(body(None))).await.unwrap().1;
+        let given = create(Uses::of(&app), admin(), Body(body(None))).await.unwrap().1;
         assert!(crate::plugins::manifest::random_id(&given.id), "{}", given.id);
         app.workshop.delete(&given.id).unwrap();
-        let made = create(State(app.clone()), admin(), Body(body(Some(HELLO)))).await.unwrap().1;
+        let made = create(Uses::of(&app), admin(), Body(body(Some(HELLO)))).await.unwrap().1;
         assert_eq!(made.id, HELLO);
         assert!(made.files.iter().any(|file| file.path == "backend.js"));
-        let checked = check(State(app.clone()), admin(), Path(HELLO.into())).await.unwrap().1;
+        let checked = check(Uses::of(&app), admin(), Path(HELLO.into())).await.unwrap().1;
         assert!(checked.ok, "{checked:?}");
         let tried = phrase(
-            State(app.clone()),
+            Uses::of(&app),
             admin(),
             Path(HELLO.into()),
             Body(PhraseBody { text: "Скажи привет Маша".into(), example: false, settings: Map::new() }),
@@ -983,7 +1028,8 @@ mod tests {
 
         // The first install waits for the admin's «ок»; then it is on.
         let asked = install(
-            State(app.clone()),
+            Uses::of(&app),
+            Uses::of(&app),
             admin(),
             Path(HELLO.into()),
             Body(InstallBody { approve: false, ..InstallBody::default() }),
@@ -993,7 +1039,8 @@ mod tests {
         .1;
         assert!(!asked.installed && asked.needs_approval.as_ref().is_some_and(|approval| approval.first));
         let done = install(
-            State(app.clone()),
+            Uses::of(&app),
+            Uses::of(&app),
             admin(),
             Path(HELLO.into()),
             Body(InstallBody { approve: true, ..InstallBody::default() }),
@@ -1006,7 +1053,8 @@ mod tests {
         assert!(app.plugins.is_active(HELLO));
         // The same version again is the next patch; nothing new asked of the admin.
         let again = install(
-            State(app.clone()),
+            Uses::of(&app),
+            Uses::of(&app),
             admin(),
             Path(HELLO.into()),
             Body(InstallBody { approve: false, ..InstallBody::default() }),
@@ -1028,19 +1076,18 @@ mod tests {
         assert!(app.workshop.create(HELLO, None, None, None).is_ok(), "opening the own plugin itself still works");
 
         // The workshop as an MCP server.
-        let listed = mcp(State(app.clone()), admin(), Body(json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})))
+        let listed = mcp(Uses::of(&app), admin(), Body(json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})))
             .await
             .unwrap();
         let listed: Value = serde_json::from_slice(&listed.into_body().collect().await.unwrap().to_bytes()).unwrap();
         assert!(listed["result"]["tools"].as_array().unwrap().iter().any(|tool| tool["name"] == "try_phrase"));
         let call = json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "read_file", "arguments": {"draft": HELLO, "path": "manifest.json"}}});
-        let answer = mcp(State(app.clone()), admin(), Body(call)).await.unwrap();
+        let answer = mcp(Uses::of(&app), admin(), Body(call)).await.unwrap();
         let answer: Value = serde_json::from_slice(&answer.into_body().collect().await.unwrap().to_bytes()).unwrap();
         assert!(answer["result"]["content"][0]["text"].as_str().unwrap().contains("\"0.1.1\""), "{answer}");
-        let note =
-            mcp(State(app.clone()), admin(), Body(json!({"jsonrpc": "2.0", "method": "notifications/initialized"})))
-                .await
-                .unwrap();
+        let note = mcp(Uses::of(&app), admin(), Body(json!({"jsonrpc": "2.0", "method": "notifications/initialized"})))
+            .await
+            .unwrap();
         assert_eq!(note.status(), StatusCode::ACCEPTED);
     }
 
@@ -1062,14 +1109,15 @@ mod tests {
 
         // The plan of the first install: nothing installed yet; the template asks for no rights (Host API 2: what it
         // gives is no right).
-        assert!(plan(State(app.clone()), member(), Path("hello".into())).await.is_err());
-        let first = plan(State(app.clone()), admin(), Path("hello".into())).await.unwrap().1;
+        assert!(plan(Uses::of(&app), member(), Path("hello".into())).await.is_err());
+        let first = plan(Uses::of(&app), admin(), Path("hello".into())).await.unwrap().1;
         assert!(first.first && first.from.is_none(), "{first:?}");
         assert_eq!(first.to, "0.1.0");
         assert!(first.added.is_empty() && first.removed.is_empty() && first.kept.is_empty(), "{first:?}");
         assert!(!first.phrases.is_empty(), "the template's phrases: {first:?}");
         let done = install(
-            State(app.clone()),
+            Uses::of(&app),
+            Uses::of(&app),
             admin(),
             Path("hello".into()),
             Body(InstallBody { approve: true, ..InstallBody::default() }),
@@ -1079,7 +1127,7 @@ mod tests {
         .1;
         assert!(done.installed, "{}", done.message);
         // The plan of the next one: the same rights kept, the next patch, nothing installed by asking.
-        let next = plan(State(app.clone()), admin(), Path("hello".into())).await.unwrap().1;
+        let next = plan(Uses::of(&app), admin(), Path("hello".into())).await.unwrap().1;
         assert_eq!((next.first, next.from.as_deref(), next.to.as_str()), (false, Some("0.1.0"), "0.1.1"));
         assert!(next.added.is_empty() && next.removed.is_empty(), "{next:?}");
         assert!(next.enabled);
@@ -1087,43 +1135,69 @@ mod tests {
 
         // A trial puts the draft in for a while; taken back, the version before is there again.
         let body = || Body(TrialBody { approve: false, minutes: Some(5) });
-        let tried = trial(State(app.clone()), admin(), Path("hello".into()), body()).await.unwrap().1;
+        let tried = trial(Uses::of(&app), admin(), Path("hello".into()), body()).await.unwrap().1;
         assert!(tried.installed && tried.message.contains("Проба"), "{}", tried.message);
         assert_eq!(app.plugins.installed("hello").unwrap().version(), "0.1.1");
         let running = app.workshop.draft("hello").unwrap().trial.expect("the draft shows its trial");
         assert_eq!((running.version.as_str(), running.previous.as_deref()), ("0.1.1", Some("0.1.0")));
-        assert!(trial(State(app.clone()), admin(), Path("hello".into()), body()).await.is_err(), "one at a time");
+        assert!(trial(Uses::of(&app), admin(), Path("hello".into()), body()).await.is_err(), "one at a time");
         let query = |keep| axum::extract::Query(EndTrialQuery { keep });
-        end_trial(State(app.clone()), admin(), Path("hello".into()), query(false)).await.unwrap();
+        end_trial(Uses::of(&app), admin(), Path("hello".into()), query(false)).await.unwrap();
         assert_eq!(app.plugins.installed("hello").unwrap().version(), "0.1.0");
         assert!(app.plugins.is_active("hello"));
         assert!(app.workshop.draft("hello").unwrap().trial.is_none());
         // Kept, the trial's version stays as an install.
-        trial(State(app.clone()), admin(), Path("hello".into()), body()).await.unwrap();
-        end_trial(State(app.clone()), admin(), Path("hello".into()), query(true)).await.unwrap();
+        trial(Uses::of(&app), admin(), Path("hello".into()), body()).await.unwrap();
+        end_trial(Uses::of(&app), admin(), Path("hello".into()), query(true)).await.unwrap();
         assert_eq!(app.plugins.installed("hello").unwrap().version(), "0.1.1");
-        assert!(end_trial(State(app.clone()), admin(), Path("hello".into()), query(false)).await.is_err());
+        assert!(end_trial(Uses::of(&app), admin(), Path("hello".into()), query(false)).await.is_err());
 
         // A trial of a plugin that was not installed: it asks the first install's approval, and goes after.
         app.workshop.create("bye", Some("plugin"), Some("Пока"), None).unwrap();
-        let asked = trial(State(app.clone()), admin(), Path("bye".into()), body()).await.unwrap().1;
+        let asked = trial(Uses::of(&app), admin(), Path("bye".into()), body()).await.unwrap().1;
         assert!(!asked.installed && asked.needs_approval.is_some());
         let approved = Body(TrialBody { approve: true, minutes: None });
-        assert!(trial(State(app.clone()), admin(), Path("bye".into()), approved).await.unwrap().1.installed);
+        assert!(trial(Uses::of(&app), admin(), Path("bye".into()), approved).await.unwrap().1.installed);
         assert!(app.plugins.is_active("bye"));
-        end_trial(State(app.clone()), admin(), Path("bye".into()), query(false)).await.unwrap();
+        end_trial(Uses::of(&app), admin(), Path("bye".into()), query(false)).await.unwrap();
         assert!(app.plugins.installed("bye").is_none());
 
         // The agent's own model: a provider of «Мозг» or none; «Мозг» itself stays as it was.
         let brain = app.settings.get(&crate::settings::definitions::BRAIN, None);
         let unknown = Some(BrainPick { provider: "nope".into(), model: "big".into() });
-        assert!(set_agent_model(State(app.clone()), admin(), Body(AgentBody { choice: unknown.clone() }))
-            .await
-            .is_err());
-        assert!(set_agent_model(State(app.clone()), member(), Body(AgentBody { choice: None })).await.is_err());
+        assert!(set_agent_model(
+            Uses::of(&app),
+            Uses::of(&app),
+            Uses::of(&app),
+            Uses::of(&app),
+            admin(),
+            Body(AgentBody { choice: unknown.clone() })
+        )
+        .await
+        .is_err());
+        assert!(set_agent_model(
+            Uses::of(&app),
+            Uses::of(&app),
+            Uses::of(&app),
+            Uses::of(&app),
+            member(),
+            Body(AgentBody { choice: None })
+        )
+        .await
+        .is_err());
         app.settings.set(&WORKSHOP_AGENT, &unknown.clone().unwrap(), None).unwrap();
         assert_eq!(agent::context(&app.workshop, "hello", agent::model_of(&app.workshop)).model, unknown);
-        let reset = set_agent_model(State(app.clone()), admin(), Body(AgentBody { choice: None })).await.unwrap().1;
+        let reset = set_agent_model(
+            Uses::of(&app),
+            Uses::of(&app),
+            Uses::of(&app),
+            Uses::of(&app),
+            admin(),
+            Body(AgentBody { choice: None }),
+        )
+        .await
+        .unwrap()
+        .1;
         assert!(reset["choice"].is_null(), "{reset}");
         assert!(agent::model_of(&app.workshop).is_none());
         assert_eq!(app.settings.get(&crate::settings::definitions::BRAIN, None), brain);
@@ -1176,7 +1250,8 @@ mod tests {
             .unwrap();
 
         let done = install(
-            State(app.clone()),
+            Uses::of(&app),
+            Uses::of(&app),
             admin(),
             Path("widget-wash".into()),
             Body(InstallBody { approve: true, ..InstallBody::default() }),
@@ -1241,7 +1316,7 @@ mod tests {
         let token = module.trim_start_matches("/panel-preview/").trim_end_matches("/panel.js").to_string();
 
         // The app's window is a sandboxed frame of no origin: its `import()` is across origins and needs the allowance.
-        let response = preview_file(State(app.clone()), Path((token.clone(), "panel.js".into()))).await.unwrap();
+        let response = preview_file(Uses::of(&app), Path((token.clone(), "panel.js".into()))).await.unwrap();
         let headers = response.headers();
         assert_eq!(headers[axum::http::header::ACCESS_CONTROL_ALLOW_ORIGIN], "*");
         assert_eq!(headers[axum::http::header::CONTENT_TYPE], "text/javascript; charset=utf-8");
@@ -1250,7 +1325,7 @@ mod tests {
         assert_eq!(&body[..], b"export default {};\n");
 
         // Only its two parts, only by a live token.
-        assert!(preview_file(State(app.clone()), Path((token, "manifest.json".into()))).await.is_err());
-        assert!(preview_file(State(app.clone()), Path(("0".repeat(32), "panel.js".into()))).await.is_err());
+        assert!(preview_file(Uses::of(&app), Path((token, "manifest.json".into()))).await.is_err());
+        assert!(preview_file(Uses::of(&app), Path(("0".repeat(32), "panel.js".into()))).await.is_err());
     }
 }

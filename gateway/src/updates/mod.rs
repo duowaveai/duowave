@@ -21,22 +21,23 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
-use axum::extract::State;
 use axum::routing::{get, post};
 use axum::Router;
 use futures::future::BoxFuture;
 use minisign_verify::PublicKey;
 use serde::Serialize;
 
-use crate::app::App;
 use crate::config::Config;
 use crate::core::events::{EventBus, GatewayEvent};
 use crate::core::identity::permissions::{STATION_VIEW, SYSTEM_UPDATE};
 use crate::placement::station_fs::{self, StationFs};
-use crate::platform::http::{ok, ApiError, ApiResult, Caller};
+use crate::placement::PlacementService;
+use crate::platform::http::{ok, ApiError, ApiResult, Caller, Uses};
 use crate::utils::time::now_iso;
 
 pub use feed::{Asset, Feed};
+
+crate::route_needs!(Arc<crate::placement::PlacementService>, Arc<UpdatesService>);
 
 /// The feed this build checks when UPDATE_FEED_URL is not set: given at build time (the release workflow names the
 /// repository's latest.json), none in a local build.
@@ -997,7 +998,7 @@ async fn fetch_feed(url: &str) -> Result<Feed, String> {
 }
 
 /// `/api/v1/updates`: the status (who can see the station), a check now and the install (who may update).
-pub fn router() -> Router<Arc<App>> {
+pub fn router<S: RouteNeeds>() -> Router<S> {
     Router::new()
         .route("/api/v1/updates", get(status))
         .route("/api/v1/updates/check", post(check))
@@ -1016,47 +1017,49 @@ pub const SIGNATURE_HEADER: &str = "x-duowave-signature";
 /// kernel killed the gateway midway (11.11.2026). The work runs on a blocking thread; its answer comes when the new
 /// program is in place, just before the gateway becomes it.
 async fn archive(
-    State(app): State<Arc<App>>,
+    Uses(placement): Uses<Arc<PlacementService>>,
+    Uses(updates_service): Uses<Arc<UpdatesService>>,
     caller: Caller,
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
 ) -> ApiResult<UpdateStatus> {
-    if !crate::placement::peer::from_peer(&caller, app.placement.peer_key()) {
+    if !crate::placement::peer::from_peer(&caller, placement.peer_key()) {
         return Err(ApiError::forbidden(crate::tr!("Обновление колонке присылает только компьютер пары.")));
     }
     let header = |name: &str| headers.get(name).and_then(|value| value.to_str().ok()).unwrap_or("").trim().to_string();
     let (version, signature) = (header(VERSION_HEADER), header(SIGNATURE_HEADER));
-    let updates = app.updates.clone();
+    let updates = updates_service.clone();
     let status = tokio::task::spawn_blocking(move || updates.install_upload(&version, &body, &signature))
         .await
         .map_err(ApiError::internal)??;
     Ok(crate::platform::http::created(status))
 }
 
-async fn status(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<UpdateStatus> {
+async fn status(Uses(updates): Uses<Arc<UpdatesService>>, caller: Caller) -> ApiResult<UpdateStatus> {
     caller.permitted(STATION_VIEW)?;
-    Ok(ok(app.updates.status()))
+    Ok(ok(updates.status()))
 }
 
-async fn check(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<UpdateStatus> {
+async fn check(Uses(updates): Uses<Arc<UpdatesService>>, caller: Caller) -> ApiResult<UpdateStatus> {
     caller.permitted(SYSTEM_UPDATE)?;
-    Ok(ok(app.updates.check().await?))
+    Ok(ok(updates.check().await?))
 }
 
-async fn install_now(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<UpdateStatus> {
+async fn install_now(Uses(updates): Uses<Arc<UpdatesService>>, caller: Caller) -> ApiResult<UpdateStatus> {
     caller.permitted(SYSTEM_UPDATE)?;
-    Ok(ok(app.updates.install()?))
+    Ok(ok(updates.install()?))
 }
 
 /// «Поставить без компьютера»: the station's gateway that its computer updates installs the offered version itself.
-async fn install_alone(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<UpdateStatus> {
+async fn install_alone(Uses(updates): Uses<Arc<UpdatesService>>, caller: Caller) -> ApiResult<UpdateStatus> {
     caller.permitted(SYSTEM_UPDATE)?;
-    Ok(ok(app.updates.install_alone()?))
+    Ok(ok(updates.install_alone()?))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
     use crate::config::Env;
 
     fn service(feed: &str) -> Arc<UpdatesService> {

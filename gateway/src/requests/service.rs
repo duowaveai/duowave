@@ -7,14 +7,13 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::Duration;
 
-use axum::extract::{Query, State};
+use axum::extract::Query;
 use axum::routing::{get, put};
 use axum::Router;
 use rusqlite::{params, Row};
 use serde::Serialize;
 use serde_json::{Map, Value};
 
-use crate::app::App;
 use crate::config::UniproxyMode;
 use crate::core::events::{Actor, EventBus, GatewayEvent};
 use crate::core::identity::permissions::{JOURNAL_VIEW, SETTINGS_EDIT};
@@ -22,7 +21,7 @@ use crate::core::requests::{
     monotonic_clock, note_step, Place, RequestHandle, RequestHooks, RequestKind, RequestPhase, RequestStart,
     RequestStarter, RequestStatus, RequestStep, RequestView,
 };
-use crate::platform::http::{ok, ApiError, ApiResult, Body, Caller};
+use crate::platform::http::{ok, ApiError, ApiResult, Body, Caller, Uses};
 use crate::settings::definitions::{PanelMode, KEEP_REQUESTS, MODE};
 use crate::settings::SettingsService;
 use crate::storage::Db;
@@ -604,7 +603,7 @@ fn js_number(text: &str) -> f64 {
     }
 }
 
-pub fn routes() -> Router<Arc<App>> {
+pub fn routes<S: crate::requests::RouteNeeds>() -> Router<S> {
     Router::new().route("/api/v1/requests", get(list)).route("/api/v1/requests/keep", put(keep))
 }
 
@@ -617,7 +616,7 @@ struct Journal {
 
 /// The journal of requests, newest first, and how many days it is kept.
 async fn list(
-    State(app): State<Arc<App>>,
+    Uses(requests): Uses<Arc<RequestsService>>,
     caller: Caller,
     Query(query): Query<HashMap<String, String>>,
 ) -> ApiResult<Journal> {
@@ -627,7 +626,7 @@ async fn list(
         before: query.get("before").filter(|before| !before.is_empty()).cloned(),
         device: query.get("device").filter(|device| !device.is_empty()).cloned(),
     };
-    Ok(ok(Journal { requests: app.requests.history(&query)?, keep_days: app.requests.keep() }))
+    Ok(ok(Journal { requests: requests.history(&query)?, keep_days: requests.keep() }))
 }
 
 #[derive(Debug, Serialize)]
@@ -636,9 +635,13 @@ struct Keep {
 }
 
 /// How many days the journal is kept: 0 — none, the older rows go at once.
-async fn keep(State(app): State<Arc<App>>, caller: Caller, Body(body): Body<Map<String, Value>>) -> ApiResult<Keep> {
+async fn keep(
+    Uses(requests): Uses<Arc<RequestsService>>,
+    caller: Caller,
+    Body(body): Body<Map<String, Value>>,
+) -> ApiResult<Keep> {
     caller.permitted(SETTINGS_EDIT)?;
-    Ok(ok(Keep { days: app.requests.set_keep(body.get("days"), caller.actor())? }))
+    Ok(ok(Keep { days: requests.set_keep(body.get("days"), caller.actor())? }))
 }
 
 #[cfg(test)]

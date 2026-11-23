@@ -23,7 +23,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use axum::body::{Body, Bytes};
-use axum::extract::{DefaultBodyLimit, State};
+use axum::extract::DefaultBodyLimit;
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -31,19 +31,25 @@ use axum::Router;
 use serde_json::{json, Value};
 use tokio_util::sync::CancellationToken;
 
-use crate::app::App;
+use crate::characters::CharactersService;
+use crate::config::Config;
+use crate::connectors::settings::ConnectorSettings;
+use crate::core::identity::home::Identity;
 use crate::core::identity::permissions::HOME_MODELS;
 use crate::helpers::builtin::Hearing;
+use crate::helpers::clients::Clients;
 use crate::helpers::contract::{Ability, Contract};
 use crate::helpers::OwnParts;
 use crate::operations::networks::is_local_url;
-use crate::platform::http::{ApiError, Caller, Zone};
+use crate::platform::http::{ApiError, Caller, Uses, Zone};
+use crate::plugins::{PackageCatalog, PluginHost};
 use crate::speech::asr::local::supervisor::LocalAsr;
+use crate::speech::VoiceService;
 
 /// A minute of speech as WAV is ~2 MB; a request with history for the model, less.
 const BODY_LIMIT: usize = 16 * 1024 * 1024;
 
-pub fn router() -> Router<Arc<App>> {
+pub fn router<S: crate::home_server::RouteNeeds>() -> Router<S> {
     Router::new()
         .route("/home/v1/status", get(status))
         .route("/home/v1/asr/audio/transcriptions", post(transcribe))
@@ -121,6 +127,14 @@ pub fn served_today() -> Value {
     })
 }
 
+/// The door of `/home/v1`: the homes this computer serves — what it gives each and what it gave today — and its voice
+/// (another home hears only a stock one). The gateway makes it (src/links/http.rs).
+#[derive(Clone)]
+pub struct Door {
+    pub clients: Arc<Clients>,
+    pub voice: Arc<crate::speech::VoiceService>,
+}
+
 /// What a handler needs of its caller besides the right: only the status, or one ability.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Needs {
@@ -132,13 +146,12 @@ pub(crate) enum Needs {
 /// what this computer gives that home (another home's voice only a stock one, `voice_for_others`); anyone else only
 /// from this computer or the home network (a proxied request is judged by its client), with the right. Then the
 /// caller is seen for «Помогаю».
-pub(crate) fn allowed(caller: &Caller, needs: Needs) -> Result<(), ApiError> {
-    let app = caller.app();
+pub(crate) fn allowed(door: &Door, caller: &Caller, needs: Needs) -> Result<(), ApiError> {
     if let Some(link) = caller.link() {
         caller.permitted(HOME_MODELS)?;
         if let Needs::Ability(ability) = needs {
-            let given = app.clients.gives(&link.client, ability)
-                && (ability != Ability::Voice || link.own_home || voice_for_others(app));
+            let given = door.clients.gives(&link.client, ability)
+                && (ability != Ability::Voice || link.own_home || voice_for_others(&door.voice));
             if !given {
                 return Err(ApiError::forbidden(crate::tr!("Это Турбо не даёт этого вашему дому.")));
             }
@@ -147,22 +160,22 @@ pub(crate) fn allowed(caller: &Caller, needs: Needs) -> Result<(), ApiError> {
         caller.zone_at_least(Zone::Home)?;
         caller.permitted(HOME_MODELS)?;
     }
-    app.clients.saw(caller);
+    door.clients.saw(caller);
     Ok(())
 }
 
 /// Whether another home may hear this computer's voice now (D31): only a stock engine of this computer — Silero or
 /// Piper at a home address —, never «Мой голос», a voice lab's voice or a cloud voice.
-pub(crate) fn voice_for_others(app: &App) -> bool {
-    let Some(own) = app.voice.own_speech() else { return false };
-    let stock = app.voice.own_choice().is_some_and(|pair| matches!(pair.model.as_str(), "silero" | "piper"));
+pub(crate) fn voice_for_others(voice: &Arc<VoiceService>) -> bool {
+    let Some(own) = voice.own_speech() else { return false };
+    let stock = voice.own_choice().is_some_and(|pair| matches!(pair.model.as_str(), "silero" | "piper"));
     stock && is_local_url(Some(&own.base_url()))
 }
 
 /// One answer given: today's «Что даю колонке» and the client's own count.
-fn served(caller: &Caller, which: usize, ability: Ability, started: Instant) {
+fn served(door: &Door, caller: &Caller, which: usize, ability: Ability, started: Instant) {
     count(which, started);
-    caller.app().clients.served(caller, ability, started);
+    door.clients.served(caller, ability, started);
 }
 
 #[derive(serde::Deserialize)]
@@ -178,14 +191,15 @@ struct CatalogQuery {
 /// hours, at once with `fresh`. Before 20.11 it went as it was, and the station took it for read that moment: a
 /// station without internet of its own never saw an update while the Mac's panel was the station's.
 async fn catalog(
-    State(app): State<Arc<App>>,
+    Uses(door): Uses<Door>,
+    Uses(catalog): Uses<Arc<PackageCatalog>>,
     caller: Caller,
     axum::extract::Query(query): axum::extract::Query<CatalogQuery>,
 ) -> Result<Response, ApiError> {
-    allowed(&caller, Needs::Ability(Ability::Catalog))?;
-    let _ = app.catalog.feed(query.fresh.is_some()).await;
+    allowed(&door, &caller, Needs::Ability(Ability::Catalog))?;
+    let _ = catalog.feed(query.fresh.is_some()).await;
     let copy =
-        app.catalog.export_for_station().ok_or_else(|| ApiError::not_found(crate::tr!("Копии каталога здесь нет.")))?;
+        catalog.export_for_station().ok_or_else(|| ApiError::not_found(crate::tr!("Копии каталога здесь нет.")))?;
     Ok(axum::Json(copy).into_response())
 }
 
@@ -198,36 +212,40 @@ struct FileQuery {
 /// demo feed closed to it, open to the computer beside it): this computer's copy of it, only of a feed it reads too
 /// (`PackageCatalog::feed_for_station`); none — 404.
 async fn catalog_feed(
-    State(app): State<Arc<App>>,
+    Uses(door): Uses<Door>,
+    Uses(catalog): Uses<Arc<PackageCatalog>>,
     caller: Caller,
     axum::extract::Query(query): axum::extract::Query<FileQuery>,
 ) -> Result<Response, ApiError> {
-    allowed(&caller, Needs::Ability(Ability::Catalog))?;
-    let copy = app
-        .catalog
-        .feed_for_station(&query.url)
-        .ok_or_else(|| ApiError::not_found(crate::tr!("Этой ленты здесь нет.")))?;
+    allowed(&door, &caller, Needs::Ability(Ability::Catalog))?;
+    let copy =
+        catalog.feed_for_station(&query.url).ok_or_else(|| ApiError::not_found(crate::tr!("Этой ленты здесь нет.")))?;
     Ok(axum::Json(copy).into_response())
 }
 
 /// A file of the catalog for the station: an archive, only from the origin of one of the catalog's feeds — the main
 /// one, an extra one it names or an own source; the station checks its hash.
 async fn catalog_file(
-    State(app): State<Arc<App>>,
+    Uses(door): Uses<Door>,
+    Uses(catalog): Uses<Arc<PackageCatalog>>,
     caller: Caller,
     axum::extract::Query(query): axum::extract::Query<FileQuery>,
 ) -> Result<Response, ApiError> {
-    allowed(&caller, Needs::Ability(Ability::Catalog))?;
-    let bytes = app.catalog.fetch_for_station(&query.url).await?;
+    allowed(&door, &caller, Needs::Ability(Ability::Catalog))?;
+    let bytes = catalog.fetch_for_station(&query.url).await?;
     Ok(bytes.into_response())
 }
 
 /// The packages on here (docs/plans/home-and-devices.md, stage 5а): each with its version, title, kind, engine and
 /// state — the home's one list «Установлено» shows them with this Турбо's name as their place. `ready` — on and
 /// running (what the station may hand over).
-async fn plugins(State(app): State<Arc<App>>, caller: Caller) -> Result<Response, ApiError> {
-    allowed(&caller, Needs::Ability(Ability::Apps))?;
-    let view = app.plugins.view().await;
+async fn plugins(
+    Uses(door): Uses<Door>,
+    Uses(plugins): Uses<Arc<PluginHost>>,
+    caller: Caller,
+) -> Result<Response, ApiError> {
+    allowed(&door, &caller, Needs::Ability(Ability::Apps))?;
+    let view = plugins.view().await;
     let all: Vec<Value> = view
         .packages
         .iter()
@@ -248,8 +266,8 @@ async fn plugins(State(app): State<Arc<App>>, caller: Caller) -> Result<Response
 }
 
 /// Only the computer's own home names the character it speaks as, or asks how its voice would stand here.
-fn own_home_only(caller: &Caller) -> Result<(), ApiError> {
-    allowed(caller, Needs::Ability(Ability::Voice))?;
+fn own_home_only(door: &Door, caller: &Caller) -> Result<(), ApiError> {
+    allowed(door, caller, Needs::Ability(Ability::Voice))?;
     if caller.link().is_some_and(|link| !link.own_home) {
         return Err(ApiError::forbidden(crate::tr!("Голос персонажа меняет только свой дом этого компьютера.")));
     }
@@ -279,9 +297,20 @@ fn speaks_for_own_home(caller: &Caller) -> bool {
 /// gives, checked here) when the centre sends one, else from this computer's catalog —, the character chosen here
 /// with its voice — so the station speaks it through `/home/v1/tts`. `engine`, the model the owner chose at the centre
 /// (clean-path check 18.11, item 40), is kept for the character and its voice goes with it instead of this computer's
-/// pick. Only the computer's own home: another home gets a stock voice only.
-async fn character(State(app): State<Arc<App>>, caller: Caller, body: Bytes) -> Result<Response, ApiError> {
-    own_home_only(&caller)?;
+/// pick. Only the computer's own home: another home gets a stock voice only. A character settles in every part it
+/// lives in — the voice lab, the characters, the packages, the catalog, the models — each an extractor of its own.
+#[allow(clippy::too_many_arguments)]
+async fn character(
+    Uses(door): Uses<Door>,
+    Uses(voice_lab): Uses<Arc<crate::voice_lab::VoiceLabService>>,
+    Uses(characters): Uses<Arc<CharactersService>>,
+    Uses(plugins): Uses<Arc<PluginHost>>,
+    Uses(catalog): Uses<Arc<PackageCatalog>>,
+    Uses(models): Uses<Arc<crate::models::ModelsService>>,
+    caller: Caller,
+    body: Bytes,
+) -> Result<Response, ApiError> {
+    own_home_only(&door, &caller)?;
     let request: Value = serde_json::from_slice(&body)
         .map_err(|_| ApiError::bad_request("JSON: {id, package: {id, version}, engine, archive}".to_string()))?;
     let id = request.get("id").and_then(Value::as_str).unwrap_or_default().to_string();
@@ -293,12 +322,12 @@ async fn character(State(app): State<Arc<App>>, caller: Caller, body: Bytes) -> 
             return Err(ApiError::bad_request(crate::tr!("Нет такой модели голоса: {engine}.", engine = engine)));
         }
         // A model that does not fit on the disk here is never downloaded, nor kept.
-        super::voice_plan::check_room(&app, engine).await?;
-        app.characters.name_engine(&id, engine)?;
+        super::voice_plan::check_room(&voice_lab, engine).await?;
+        characters.name_engine(&id, engine)?;
     }
     if let Some(package) = request.get("package").and_then(|package| package.get("id")).and_then(Value::as_str) {
         let version = request.get("package").and_then(|package| package.get("version")).and_then(Value::as_str);
-        let here = app.plugins.installed(package).map(|installed| installed.manifest.version.to_string());
+        let here = plugins.installed(package).map(|installed| installed.manifest.version.to_string());
         if here.is_none() || (version.is_some() && here.as_deref() != version) {
             let archive = request.get("archive").and_then(|archive| {
                 Some((archive.get("url")?.as_str()?.to_string(), archive.get("sha256")?.as_str()?.to_string()))
@@ -307,11 +336,11 @@ async fn character(State(app): State<Arc<App>>, caller: Caller, body: Bytes) -> 
                 (Some((url, sha256)), Some(version)) => {
                     // The home's own centre vouches for the package's voice (items 41, 41б).
                     let vouched = speaks_for_own_home(&caller);
-                    app.catalog.install_from_centre(package, version, &url, &sha256, vouched, None).await?;
+                    catalog.install_from_centre(package, version, &url, &sha256, vouched, None).await?;
                 }
                 (Some(_), None) => return Err(ApiError::bad_request("archive: package.version".to_string())),
                 (None, _) => {
-                    app.catalog.install(package, version, here.is_some(), None).await?;
+                    catalog.install(package, version, here.is_some(), None).await?;
                 }
             }
         }
@@ -319,10 +348,10 @@ async fn character(State(app): State<Arc<App>>, caller: Caller, body: Bytes) -> 
     // The owner's own voice put on top of the character's (test 19.11, remark 11) stays when the centre names the same
     // character again — on every persona save and every reconnect of this computer it does. Another character comes
     // with its own voice, as decided on 17.11; «Вернуть голос персонажа» in «Голос» takes the character's back.
-    let on_top = app.models.chosen_voice().is_some_and(|chosen| own_on_top(&chosen.model_id));
-    let same = app.characters.active_id().as_deref() == Some(id.as_str());
+    let on_top = models.chosen_voice().is_some_and(|chosen| own_on_top(&chosen.model_id));
+    let same = characters.active_id().as_deref() == Some(id.as_str());
     let body = crate::characters::ChooseBody { voice: Some(!(on_top && same)), install: true, ..Default::default() };
-    let answer = app.characters.choose(&id, body, true, None).await?;
+    let answer = characters.choose(&id, body, true, None).await?;
     Ok(axum::Json(json!({ "character": id, "voice": answer.voice })).into_response())
 }
 
@@ -333,44 +362,77 @@ fn own_on_top(model_id: &str) -> bool {
 
 /// How the character's voice would stand on this computer (clean-path check 18.11, item 40): the plan the centre's
 /// panel shows before and while the voice comes (voice_plan.rs). Only the computer's own home.
-async fn character_plan(State(app): State<Arc<App>>, caller: Caller, body: Bytes) -> Result<Response, ApiError> {
-    own_home_only(&caller)?;
+async fn character_plan(
+    Uses(door): Uses<Door>,
+    Uses(characters): Uses<Arc<CharactersService>>,
+    Uses(voice_lab): Uses<Arc<crate::voice_lab::VoiceLabService>>,
+    Uses(models): Uses<Arc<crate::models::ModelsService>>,
+    Uses(identity): Uses<Arc<Identity>>,
+    caller: Caller,
+    body: Bytes,
+) -> Result<Response, ApiError> {
+    own_home_only(&door, &caller)?;
     let request: super::voice_plan::PlanRequest = serde_json::from_slice(&body)
         .map_err(|_| ApiError::bad_request("JSON: {id, package: {id, version}, voices, reference}".to_string()))?;
     if request.id.is_empty() {
         return Err(ApiError::bad_request("id".to_string()));
     }
-    Ok(axum::Json(super::voice_plan::plan(&app, &request).await).into_response())
+    Ok(axum::Json(super::voice_plan::plan(&characters, &voice_lab, &models, &identity, &request).await).into_response())
 }
 
 /// The voice waiting on this computer (voice_plan.rs, `waiting`): `{pending: … | null, computer}`. Only its own home.
-async fn voice_pending(State(app): State<Arc<App>>, caller: Caller) -> Result<Response, ApiError> {
-    own_home_only(&caller)?;
-    Ok(axum::Json(waiting_answer(&app).await).into_response())
+async fn voice_pending(
+    Uses(door): Uses<Door>,
+    Uses(models): Uses<Arc<crate::models::ModelsService>>,
+    Uses(characters): Uses<Arc<CharactersService>>,
+    Uses(voice_lab): Uses<Arc<crate::voice_lab::VoiceLabService>>,
+    Uses(identity): Uses<Arc<Identity>>,
+    caller: Caller,
+) -> Result<Response, ApiError> {
+    own_home_only(&door, &caller)?;
+    Ok(axum::Json(waiting_answer(&models, &characters, &voice_lab, &identity).await).into_response())
 }
 
 /// The owner's answer to the waiting voice, from the home's centre: `{"answer": "anyway" | "retry" | "cancel"}` →
 /// what waits now. Only its own home.
-async fn voice_pending_answer(State(app): State<Arc<App>>, caller: Caller, body: Bytes) -> Result<Response, ApiError> {
-    own_home_only(&caller)?;
+async fn voice_pending_answer(
+    Uses(door): Uses<Door>,
+    Uses(models): Uses<Arc<crate::models::ModelsService>>,
+    Uses(characters): Uses<Arc<CharactersService>>,
+    Uses(voice_lab): Uses<Arc<crate::voice_lab::VoiceLabService>>,
+    Uses(identity): Uses<Arc<Identity>>,
+    caller: Caller,
+    body: Bytes,
+) -> Result<Response, ApiError> {
+    own_home_only(&door, &caller)?;
     let request: Value = serde_json::from_slice(&body)
         .map_err(|_| ApiError::bad_request(r#"JSON: {"answer": "anyway" | "retry" | "cancel"}"#.to_string()))?;
     let answer = request.get("answer").and_then(Value::as_str).unwrap_or_default();
-    super::voice_plan::answer(&app, answer, caller.actor()).await?;
-    Ok(axum::Json(waiting_answer(&app).await).into_response())
+    super::voice_plan::answer(&models, answer, caller.actor()).await?;
+    Ok(axum::Json(waiting_answer(&models, &characters, &voice_lab, &identity).await).into_response())
 }
 
-async fn waiting_answer(app: &App) -> Value {
+async fn waiting_answer(
+    models: &Arc<crate::models::ModelsService>,
+    characters: &Arc<CharactersService>,
+    voice_lab: &Arc<crate::voice_lab::VoiceLabService>,
+    identity: &Arc<Identity>,
+) -> Value {
     json!({
-        "pending": super::voice_plan::waiting(app).await,
-        "computer": app.identity.gateway().map(|me| me.name).unwrap_or_default(),
+        "pending": super::voice_plan::waiting(models, characters, voice_lab).await,
+        "computer": identity.gateway().map(|me| me.name).unwrap_or_default(),
     })
 }
 
 /// The home's Telegram (docs/plans/home-and-devices.md, stage 2): the centre keeps the token and the contacts, this
 /// Турбо runs the bot with them (`{enabled, contacts, alertChat, token}`). Only the computer's own home.
-async fn messenger_bot(State(app): State<Arc<App>>, caller: Caller, body: Bytes) -> Result<Response, ApiError> {
-    allowed(&caller, Needs::Ability(Ability::Messages))?;
+async fn messenger_bot(
+    Uses(door): Uses<Door>,
+    Uses(connector_settings): Uses<Arc<ConnectorSettings>>,
+    caller: Caller,
+    body: Bytes,
+) -> Result<Response, ApiError> {
+    allowed(&door, &caller, Needs::Ability(Ability::Messages))?;
     if caller.link().is_some_and(|link| !link.own_home) {
         return Err(ApiError::forbidden(crate::tr!("Бот Telegram этого компьютера настраивает только его свой дом.")));
     }
@@ -379,7 +441,7 @@ async fn messenger_bot(State(app): State<Arc<App>>, caller: Caller, body: Bytes)
     let setting: crate::settings::definitions::TelegramSetting =
         serde_json::from_value(request.clone()).map_err(|error| ApiError::bad_request(format!("Telegram: {error}")))?;
     let token = request.get("token").and_then(Value::as_str);
-    app.connector_settings.take_home_telegram(&setting, token)?;
+    connector_settings.take_home_telegram(&setting, token)?;
     Ok(axum::Json(json!({ "enabled": setting.enabled, "contacts": setting.contacts.len() })).into_response())
 }
 
@@ -387,8 +449,14 @@ async fn messenger_bot(State(app): State<Arc<App>>, caller: Caller, body: Bytes)
 /// Турбо for the code — by id and version from this computer's own signed feed (its catalog checks the signature and
 /// the archive's hash), installed or updated to that version and switched on. The centre checked the person's right;
 /// only the computer's own home asks this, another home never installs anything here.
-async fn plugin_install(State(app): State<Arc<App>>, caller: Caller, body: Bytes) -> Result<Response, ApiError> {
-    allowed(&caller, Needs::Ability(Ability::Apps))?;
+async fn plugin_install(
+    Uses(door): Uses<Door>,
+    Uses(plugins): Uses<Arc<PluginHost>>,
+    Uses(catalog): Uses<Arc<PackageCatalog>>,
+    caller: Caller,
+    body: Bytes,
+) -> Result<Response, ApiError> {
+    allowed(&door, &caller, Needs::Ability(Ability::Apps))?;
     if caller.link().is_some_and(|link| !link.own_home) {
         return Err(ApiError::forbidden(crate::tr!("Чужой дом ничего не ставит на этот компьютер.")));
     }
@@ -399,34 +467,35 @@ async fn plugin_install(State(app): State<Arc<App>>, caller: Caller, body: Bytes
     if id.is_empty() {
         return Err(ApiError::bad_request("id".to_string()));
     }
-    let here = app.plugins.installed(id).map(|installed| installed.manifest.version.to_string());
+    let here = plugins.installed(id).map(|installed| installed.manifest.version.to_string());
     // Here already at that version or newer — switched off, say: switched on as it is. Asking the catalog for an older
     // one answered «Новее X в каталоге нет» and left it off (before 20.11).
     let newer_here = matches!((here.as_deref(), version), (Some(here), Some(wanted)) if crate::home::apps::newer_or_same(here, wanted));
     if !newer_here {
-        match app.catalog.install(id, version, here.is_some(), None).await {
+        match catalog.install(id, version, here.is_some(), None).await {
             Ok(_) => {}
             // Not in this computer's catalog: the feed the centre has it from (clean-path check 19.11, YouTube from a
             // demo feed the station's admin added), taken only as this catalog pinned it.
             Err(error) if error.status == StatusCode::NOT_FOUND => {
                 let Some(feed) = request.get("feed").and_then(Value::as_str) else { return Err(error) };
-                app.catalog.install_pinned_from(id, version, feed, None).await?;
+                catalog.install_pinned_from(id, version, feed, None).await?;
             }
             Err(error) => return Err(error),
         }
     }
-    let view = app.plugins.enable(id, None).await?;
+    let view = plugins.enable(id, None).await?;
     Ok(axum::Json(json!({ "id": id, "version": view.version, "state": view.state })).into_response())
 }
 
 /// A call of a plugin of this computer for the station: its function, its input, how long it may take.
 async fn plugin_call(
-    State(app): State<Arc<App>>,
+    Uses(door): Uses<Door>,
+    Uses(plugins): Uses<Arc<PluginHost>>,
     caller: Caller,
     axum::extract::Path(id): axum::extract::Path<String>,
     body: Bytes,
 ) -> Result<Response, ApiError> {
-    allowed(&caller, Needs::Ability(Ability::Apps))?;
+    allowed(&door, &caller, Needs::Ability(Ability::Apps))?;
     let request: Value =
         serde_json::from_slice(&body).map_err(|_| ApiError::bad_request("JSON: {function, input, kind}"))?;
     let function = request.get("function").and_then(Value::as_str).unwrap_or_default();
@@ -437,19 +506,20 @@ async fn plugin_call(
         Some("agent") => crate::plugins::runtime::CallKind::Agent,
         _ => crate::plugins::runtime::CallKind::Tool,
     };
-    if !app.plugins.is_active(&id) {
+    if !plugins.is_active(&id) {
         return Err(ApiError::conflict(crate::tr!("Приложение {id} здесь не включено.", id = id)));
     }
-    let answer = app
-        .plugins
+    let answer = plugins
         .call(&id, function, input, kind)
         .await
         .map_err(|error| ApiError::bad_gateway(crate::tr!("Приложение не ответило: {error}.", error = error)))?;
     Ok(axum::Json(json!({ "result": answer })).into_response())
 }
 
-fn history_of(app: &App) -> Result<Arc<crate::plugins::history::History>, ApiError> {
-    app.history.clone().ok_or_else(|| ApiError::conflict(crate::tr!("Истории приложений на этом компьютере нет.")))
+fn history_of(
+    history: &Option<Arc<crate::plugins::history::History>>,
+) -> Result<Arc<crate::plugins::history::History>, ApiError> {
+    history.clone().ok_or_else(|| ApiError::conflict(crate::tr!("Истории приложений на этом компьютере нет.")))
 }
 
 fn ids_of(body: &Bytes) -> Result<Vec<String>, ApiError> {
@@ -478,16 +548,26 @@ fn peer_of(caller: &Caller) -> String {
 }
 
 /// Of the station's history objects, the ones this computer lacks.
-async fn history_have(State(app): State<Arc<App>>, caller: Caller, body: Bytes) -> Result<Response, ApiError> {
-    allowed(&caller, Needs::Ability(Ability::History))?;
-    let history = history_of(&app)?;
+async fn history_have(
+    Uses(door): Uses<Door>,
+    Uses(history_service): Uses<Option<Arc<crate::plugins::history::History>>>,
+    caller: Caller,
+    body: Bytes,
+) -> Result<Response, ApiError> {
+    allowed(&door, &caller, Needs::Ability(Ability::History))?;
+    let history = history_of(&history_service)?;
     Ok(axum::Json(json!({ "missing": history.missing(&ids_of(&body)?) })).into_response())
 }
 
 /// The station's history objects: each kept only when its name is its hash.
-async fn history_objects(State(app): State<Arc<App>>, caller: Caller, body: Bytes) -> Result<Response, ApiError> {
-    allowed(&caller, Needs::Ability(Ability::History))?;
-    let history = history_of(&app)?;
+async fn history_objects(
+    Uses(door): Uses<Door>,
+    Uses(history_service): Uses<Option<Arc<crate::plugins::history::History>>>,
+    caller: Caller,
+    body: Bytes,
+) -> Result<Response, ApiError> {
+    allowed(&door, &caller, Needs::Ability(Ability::History))?;
+    let history = history_of(&history_service)?;
     let request: Value = serde_json::from_slice(&body).map_err(|_| ApiError::bad_request("JSON: {objects}"))?;
     let objects = request.get("objects").and_then(Value::as_array).cloned().unwrap_or_default();
     let stored = tokio::task::spawn_blocking(move || history.receive(&objects)).await.map_err(ApiError::internal)?;
@@ -495,9 +575,14 @@ async fn history_objects(State(app): State<Arc<App>>, caller: Caller, body: Byte
 }
 
 /// The station's lines and marks: its marks apart, its records into the apps' lines here.
-async fn history_lines(State(app): State<Arc<App>>, caller: Caller, body: Bytes) -> Result<Response, ApiError> {
-    allowed(&caller, Needs::Ability(Ability::History))?;
-    let history = history_of(&app)?;
+async fn history_lines(
+    Uses(door): Uses<Door>,
+    Uses(history_service): Uses<Option<Arc<crate::plugins::history::History>>>,
+    caller: Caller,
+    body: Bytes,
+) -> Result<Response, ApiError> {
+    allowed(&door, &caller, Needs::Ability(Ability::History))?;
+    let history = history_of(&history_service)?;
     let request: Value = serde_json::from_slice(&body).map_err(|_| ApiError::bad_request("JSON: {apps}"))?;
     let apps = request.get("apps").and_then(Value::as_object).cloned().unwrap_or_default();
     let peer = peer_of(&caller);
@@ -509,9 +594,14 @@ async fn history_lines(State(app): State<Arc<App>>, caller: Caller, body: Bytes)
 }
 
 /// Objects the station cleaned and needs back (a step back, its feed).
-async fn history_fetch(State(app): State<Arc<App>>, caller: Caller, body: Bytes) -> Result<Response, ApiError> {
-    allowed(&caller, Needs::Ability(Ability::History))?;
-    let history = history_of(&app)?;
+async fn history_fetch(
+    Uses(door): Uses<Door>,
+    Uses(history_service): Uses<Option<Arc<crate::plugins::history::History>>>,
+    caller: Caller,
+    body: Bytes,
+) -> Result<Response, ApiError> {
+    allowed(&door, &caller, Needs::Ability(Ability::History))?;
+    let history = history_of(&history_service)?;
     Ok(axum::Json(json!({ "objects": history.give(&ids_of(&body)?) })).into_response())
 }
 
@@ -523,9 +613,13 @@ fn send_shape() -> String {
 }
 
 /// The names of this computer's Telegram contacts, for the station's «передай …»: no chats.
-async fn messenger_contacts(State(app): State<Arc<App>>, caller: Caller) -> Result<Response, ApiError> {
-    allowed(&caller, Needs::Ability(Ability::Messages))?;
-    let bot = &app.calls.telegram;
+async fn messenger_contacts(
+    Uses(door): Uses<Door>,
+    Uses(calls): Uses<Arc<crate::calls::CallsService>>,
+    caller: Caller,
+) -> Result<Response, ApiError> {
+    allowed(&door, &caller, Needs::Ability(Ability::Messages))?;
+    let bot = &calls.telegram;
     if !bot.enabled() {
         return Err(ApiError::unavailable(no_bot()));
     }
@@ -533,8 +627,13 @@ async fn messenger_contacts(State(app): State<Arc<App>>, caller: Caller) -> Resu
 }
 
 /// The station's «передай маме, что …»: a text to a contact of this computer's bot.
-async fn messenger_send(State(app): State<Arc<App>>, caller: Caller, body: Bytes) -> Result<Response, ApiError> {
-    allowed(&caller, Needs::Ability(Ability::Messages))?;
+async fn messenger_send(
+    Uses(door): Uses<Door>,
+    Uses(calls): Uses<Arc<crate::calls::CallsService>>,
+    caller: Caller,
+    body: Bytes,
+) -> Result<Response, ApiError> {
+    allowed(&door, &caller, Needs::Ability(Ability::Messages))?;
     let request: Value = serde_json::from_slice(&body).map_err(|_| ApiError::bad_request(send_shape()))?;
     let field = |name: &str| request.get(name).and_then(Value::as_str).map(str::trim).unwrap_or_default().to_string();
     let (contact, text) = (field("contact"), field("text"));
@@ -542,8 +641,8 @@ async fn messenger_send(State(app): State<Arc<App>>, caller: Caller, body: Bytes
         return Err(ApiError::bad_request(send_shape()));
     }
     let started = Instant::now();
-    let name = pass_on(&app.calls.telegram, &contact, &text).await?;
-    served(&caller, 3, Ability::Messages, started);
+    let name = pass_on(&calls.telegram, &contact, &text).await?;
+    served(&door, &caller, 3, Ability::Messages, started);
     tracing::info!("home server: a message from the station passed on to «{name}»");
     Ok(axum::Json(json!({ "sent": true, "contact": name })).into_response())
 }
@@ -567,8 +666,8 @@ async fn pass_on(bot: &crate::calls::TelegramMessenger, contact: &str, text: &st
 
 /// What hears for the station: the built-in helper's hearing (helpers/builtin.rs) — this computer's own engine, or its
 /// recognition server at home.
-fn hearing(app: &App) -> Option<Hearing> {
-    app.builtin.hearing().cloned()
+fn hearing(builtin: &Arc<crate::helpers::builtin::BuiltinHelper>) -> Option<Hearing> {
+    builtin.hearing().cloned()
 }
 
 /// The parts of a multipart/form-data body by name (what an OpenAI-compatible client sends: `file`, `model`,
@@ -618,8 +717,8 @@ fn form_parts(headers: &HeaderMap, body: &[u8]) -> Vec<(String, Vec<u8>)> {
 /// This computer's own model: the built-in helper's (helpers/builtin.rs) — the first OpenAI-compatible provider of
 /// «Мозг» at home, and its key, never a helper's model: a computer does not pass a station's questions on to another
 /// helper, nor to a link's bridge.
-fn own_model(app: &App) -> Option<(String, Option<String>)> {
-    app.builtin.model_route()
+fn own_model(builtin: &Arc<crate::helpers::builtin::BuiltinHelper>) -> Option<(String, Option<String>)> {
+    builtin.model_route()
 }
 
 /// The language of a Piper voice by its id: «piper/ru_RU-irina-medium» — «ru». Other voices say none. The built-in
@@ -637,8 +736,8 @@ pub(crate) fn piper_language(pair: &str) -> Option<String> {
 
 /// What this computer serves now as a helper — the contract of `/home/v1/status` (helpers/contract.rs): the built-in
 /// helper's (helpers/builtin.rs), one answer for the gateways it helps and for itself.
-pub(crate) fn contract(app: &App) -> Contract {
-    app.builtin.contract()
+pub(crate) fn contract(builtin: &Arc<crate::helpers::builtin::BuiltinHelper>) -> Contract {
+    builtin.contract()
 }
 
 /// What a home over the link is given (stage 7): its abilities, and whether its home key proved it this computer's own.
@@ -651,14 +750,19 @@ pub(crate) struct Given {
 /// What is ready here, for the station: the fields a station of 0.11 and before reads, and the contract they are
 /// worked out of — one look at the parts. The contract says this computer speaks the link while it helps; a home
 /// over the link sees only what it is given, and another home's voice ready only when it is a stock one.
-pub(crate) fn status_of(app: &App, given: Option<Given>) -> Value {
-    let mut contract = contract(app);
-    if app.link.helps() {
+pub(crate) fn status_of(
+    builtin: &Arc<crate::helpers::builtin::BuiltinHelper>,
+    link: &Arc<crate::helpers::link_serve::LinkServer>,
+    voice_service: &Arc<VoiceService>,
+    given: Option<Given>,
+) -> Value {
+    let mut contract = contract(builtin);
+    if link.helps() {
         contract.link = Some(crate::helpers::link::VERSION);
     }
     if let Some(given) = &given {
         contract.abilities.retain(|state| given.abilities.has(state.id));
-        if !given.own_home && !voice_for_others(app) {
+        if !given.own_home && !voice_for_others(voice_service) {
             for state in contract.abilities.iter_mut().filter(|state| state.id == Ability::Voice) {
                 state.ready = false;
             }
@@ -687,10 +791,17 @@ pub(crate) fn status_of(app: &App, given: Option<Given>) -> Value {
     status
 }
 
-async fn status(State(app): State<Arc<App>>, caller: Caller) -> Result<Response, ApiError> {
-    allowed(&caller, Needs::Status)?;
-    let given = caller.link().map(|link| Given { abilities: app.clients.given(&link.client), own_home: link.own_home });
-    Ok(axum::Json(status_of(&app, given)).into_response())
+async fn status(
+    Uses(door): Uses<Door>,
+    Uses(clients): Uses<Arc<crate::helpers::clients::Clients>>,
+    Uses(builtin): Uses<Arc<crate::helpers::builtin::BuiltinHelper>>,
+    Uses(link_service): Uses<Arc<crate::helpers::link_serve::LinkServer>>,
+    Uses(voice): Uses<Arc<VoiceService>>,
+    caller: Caller,
+) -> Result<Response, ApiError> {
+    allowed(&door, &caller, Needs::Status)?;
+    let given = caller.link().map(|link| Given { abilities: clients.given(&link.client), own_home: link.own_home });
+    Ok(axum::Json(status_of(&builtin, &link_service, &voice, given)).into_response())
 }
 
 /// A request handed on as it came, its answer handed back as it comes (a model's stream too).
@@ -729,24 +840,26 @@ fn content_type(headers: &HeaderMap) -> Option<&str> {
 }
 
 async fn transcribe(
-    State(app): State<Arc<App>>,
+    Uses(door): Uses<Door>,
+    Uses(builtin): Uses<Arc<crate::helpers::builtin::BuiltinHelper>>,
+    Uses(config): Uses<Arc<Config>>,
     caller: Caller,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, ApiError> {
-    allowed(&caller, Needs::Ability(Ability::Hearing))?;
-    let hearing = hearing(&app)
+    allowed(&door, &caller, Needs::Ability(Ability::Hearing))?;
+    let hearing = hearing(&builtin)
         .ok_or_else(|| ApiError::unavailable(crate::tr!("На этом компьютере нет своего распознавания.")))?;
     let started = Instant::now();
     let (base, key) = match hearing {
         Hearing::Server(base, key) => (base, key),
         Hearing::Local(local) => {
             let answer = recognize_here(&local, &headers, &body).await?;
-            served(&caller, 0, Ability::Hearing, started);
+            served(&door, &caller, 0, Ability::Hearing, started);
             return Ok(answer);
         }
     };
-    let wait = Duration::from_millis(app.config.speech.asr.timeout_ms.max(5000));
+    let wait = Duration::from_millis(config.speech.asr.timeout_ms.max(5000));
     let answer = forward(
         reqwest::Method::POST,
         format!("{base}/audio/transcriptions"),
@@ -757,7 +870,7 @@ async fn transcribe(
     )
     .await?;
     if answer.status().is_success() {
-        served(&caller, 0, Ability::Hearing, started);
+        served(&door, &caller, 0, Ability::Hearing, started);
     }
     Ok(answer)
 }
@@ -787,9 +900,13 @@ pub(crate) async fn recognize_here(
     Ok(axum::Json(json!({ "text": text })).into_response())
 }
 
-async fn asr_models(State(app): State<Arc<App>>, caller: Caller) -> Result<Response, ApiError> {
-    allowed(&caller, Needs::Ability(Ability::Hearing))?;
-    let (base, key) = match hearing(&app) {
+async fn asr_models(
+    Uses(door): Uses<Door>,
+    Uses(builtin): Uses<Arc<crate::helpers::builtin::BuiltinHelper>>,
+    caller: Caller,
+) -> Result<Response, ApiError> {
+    allowed(&door, &caller, Needs::Ability(Ability::Hearing))?;
+    let (base, key) = match hearing(&builtin) {
         None => return Err(ApiError::unavailable(crate::tr!("На этом компьютере нет своего распознавания."))),
         // The one model the engine serves, as an OpenAI-compatible server lists it.
         Some(Hearing::Local(local)) => {
@@ -802,22 +919,27 @@ async fn asr_models(State(app): State<Arc<App>>, caller: Caller) -> Result<Respo
 }
 
 /// The voice this computer speaks with now, whatever the station asked: Ogg/Opus.
-async fn speak(State(app): State<Arc<App>>, caller: Caller, body: Bytes) -> Result<Response, ApiError> {
-    allowed(&caller, Needs::Ability(Ability::Voice))?;
+async fn speak(
+    Uses(door): Uses<Door>,
+    Uses(voice): Uses<Arc<VoiceService>>,
+    Uses(builtin): Uses<Arc<crate::helpers::builtin::BuiltinHelper>>,
+    caller: Caller,
+    body: Bytes,
+) -> Result<Response, ApiError> {
+    allowed(&door, &caller, Needs::Ability(Ability::Voice))?;
     let request: Value =
         serde_json::from_slice(&body).map_err(|_| ApiError::bad_request(crate::tr!("input: текст")))?;
     let text = request.get("input").and_then(Value::as_str).unwrap_or("").to_string();
     if text.trim().is_empty() {
         return Err(ApiError::bad_request(crate::tr!("input: текст")));
     }
-    let own = app
-        .voice
+    let own = voice
         .own_speech()
         .cloned()
         .ok_or_else(|| ApiError::unavailable(crate::tr!("На этом компьютере нет своего голоса.")))?;
     // Its voice at a cloud's address while the regulator keeps the clouds in: the text stays home (a station of 0.11
     // reads only `tts`).
-    if app.builtin.voice_kept_in() {
+    if builtin.voice_kept_in() {
         return Err(ApiError::unavailable(crate::tr!("Регулятор не пускает облако")));
     }
     let started = Instant::now();
@@ -827,19 +949,20 @@ async fn speak(State(app): State<Arc<App>>, caller: Caller, body: Bytes) -> Resu
             crate::tr!("Голос этого компьютера: {error}", error = format!("{error:#}")),
         )
     })?;
-    served(&caller, 1, Ability::Voice, started);
+    served(&door, &caller, 1, Ability::Voice, started);
     Ok(([(header::CONTENT_TYPE, "audio/ogg")], spoken.audio).into_response())
 }
 
 async fn chat(
-    State(app): State<Arc<App>>,
+    Uses(door): Uses<Door>,
+    Uses(builtin): Uses<Arc<crate::helpers::builtin::BuiltinHelper>>,
     caller: Caller,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, ApiError> {
-    allowed(&caller, Needs::Ability(Ability::Model))?;
+    allowed(&door, &caller, Needs::Ability(Ability::Model))?;
     let (base, key) =
-        own_model(&app).ok_or_else(|| ApiError::unavailable(crate::tr!("На этом компьютере нет своей модели.")))?;
+        own_model(&builtin).ok_or_else(|| ApiError::unavailable(crate::tr!("На этом компьютере нет своей модели.")))?;
     let started = Instant::now();
     let answer = forward(
         reqwest::Method::POST,
@@ -852,15 +975,19 @@ async fn chat(
     .await?;
     // A stream counts by its first word: how soon the model began to answer.
     if answer.status().is_success() {
-        served(&caller, 2, Ability::Model, started);
+        served(&door, &caller, 2, Ability::Model, started);
     }
     Ok(answer)
 }
 
-async fn llm_models(State(app): State<Arc<App>>, caller: Caller) -> Result<Response, ApiError> {
-    allowed(&caller, Needs::Ability(Ability::Model))?;
+async fn llm_models(
+    Uses(door): Uses<Door>,
+    Uses(builtin): Uses<Arc<crate::helpers::builtin::BuiltinHelper>>,
+    caller: Caller,
+) -> Result<Response, ApiError> {
+    allowed(&door, &caller, Needs::Ability(Ability::Model))?;
     let (base, key) =
-        own_model(&app).ok_or_else(|| ApiError::unavailable(crate::tr!("На этом компьютере нет своей модели.")))?;
+        own_model(&builtin).ok_or_else(|| ApiError::unavailable(crate::tr!("На этом компьютере нет своей модели.")))?;
     forward(reqwest::Method::GET, format!("{base}/models"), key, None, None, Duration::from_secs(10)).await
 }
 
@@ -897,6 +1024,7 @@ mod tests {
     use tower::ServiceExt;
 
     use super::*;
+    use crate::app::App;
     use crate::calls::TelegramMessenger;
     use crate::config::{Config, Env, TelegramConfig};
     use crate::helpers::contract::{HelperIdentity, HelperStatus};
@@ -1643,7 +1771,7 @@ mod tests {
             ("TTS_OWN_MODEL", "piper"),
             ("TTS_OWN_VOICE", "ru_RU-irina-medium"),
         ]);
-        assert!(!voice_for_others(&app));
+        assert!(!voice_for_others(&app.voice));
         let other = client(&app, false);
         let (status, body) = over_link(&app, "GET", STATUS, &other, false, Value::Null).await;
         assert_eq!((status, voice_ready(&body)), (StatusCode::OK, Some(false)), "{body}");
@@ -1664,14 +1792,14 @@ mod tests {
             ("TTS_OWN_MODEL", "omnivoice"),
             ("TTS_OWN_VOICE", "3f2a9c1e"),
         ]);
-        assert!(!voice_for_others(&app));
+        assert!(!voice_for_others(&app.voice));
         // A stock voice of this computer: served to another home too (the server here does not answer: 502, not 403).
         let app = computer(&[
             ("TTS_OWN_URL", "http://127.0.0.1:9/v1"),
             ("TTS_OWN_MODEL", "piper"),
             ("TTS_OWN_VOICE", "ru_RU-irina-medium"),
         ]);
-        assert!(voice_for_others(&app));
+        assert!(voice_for_others(&app.voice));
         let other = client(&app, false);
         let (_, body) = over_link(&app, "GET", STATUS, &other, false, Value::Null).await;
         assert_eq!(voice_ready(&body), Some(true));

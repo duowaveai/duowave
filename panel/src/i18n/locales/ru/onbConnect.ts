@@ -213,5 +213,6 @@ export default {
     finish: 'Готово',
     rebooting: 'колонка перезагружается…',
     linkOnline: (name: string) => (name ? `Колонка «${name}» на связи` : 'Колонка на связи'),
+    hubWait: 'Колонка перезапускается — подождите, шаг продолжит сам.',
     linkMoving: 'DuoWave переезжает на колонку…',
 };

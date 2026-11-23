@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use axum::body::Body;
 use axum::extract::ws::WebSocketUpgrade;
-use axum::extract::{Path, Query, Request, State};
+use axum::extract::{Path, Query, Request};
 use axum::http::{header, HeaderValue, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
@@ -20,15 +20,14 @@ use super::calls_service::{same_origin, CALLS_WS_PATH};
 use super::http_stations::ListenFormat;
 use super::livekit::{app_access, app_name, livekit_page, APP_TOKEN_TTL};
 use super::page::call_page;
-use crate::app::App;
 use crate::core::identity::permissions;
 use crate::operations::networks::via_tunnel;
-use crate::platform::http::{ApiError, Caller, Zone};
+use crate::platform::http::{ApiError, Caller, Uses, Zone};
 
 /// The largest message, and frame, of the calls' socket.
 const MAX_MESSAGE: usize = 1024 * 1024;
 
-pub fn router() -> Router<Arc<App>> {
+pub fn router<S: crate::calls::RouteNeeds>() -> Router<S> {
     Router::new()
         .route("/calls", get(page))
         .route(CALLS_WS_PATH, get(socket))
@@ -48,8 +47,8 @@ fn peer_address(caller: &Caller) -> String {
 
 /// The station client's routes answer an approved station's address only (any home address with
 /// STATION_PAIRING=open).
-fn refused(app: &App, caller: &Caller) -> Option<Response> {
-    if app.calls.trusted_address(&peer_address(caller)) {
+fn refused(calls: &Arc<crate::calls::CallsService>, caller: &Caller) -> Option<Response> {
+    if calls.trusted_address(&peer_address(caller)) {
         return None;
     }
     Some((StatusCode::FORBIDDEN, Json(json!({ "error": "only an approved station" }))).into_response())
@@ -60,21 +59,20 @@ async fn page() -> Html<String> {
 }
 
 /// The LiveKit page: the family room through LiveKit, from home or outside.
-async fn livekit(State(app): State<Arc<App>>) -> Html<String> {
-    let server =
-        app.calls.livekit_config().map(|config| config.public_url.clone().unwrap_or_else(|| config.url.clone()));
+async fn livekit(Uses(calls): Uses<Arc<crate::calls::CallsService>>) -> Html<String> {
+    let server = calls.livekit_config().map(|config| config.public_url.clone().unwrap_or_else(|| config.url.clone()));
     Html(livekit_page(server.as_deref()))
 }
 
 /// A join token for the family room, given only inside the home network: a phone takes it at home and keeps it (a
 /// month) to call from outside.
 async fn livekit_token(
-    State(app): State<Arc<App>>,
+    Uses(calls): Uses<Arc<crate::calls::CallsService>>,
     caller: Caller,
     Query(query): Query<HashMap<String, String>>,
 ) -> Result<Response, ApiError> {
     caller.zone_at_least(Zone::Home)?;
-    let Some(config) = app.calls.livekit_config() else {
+    let Some(config) = calls.livekit_config() else {
         return Ok(
             (StatusCode::NOT_FOUND, Json(json!({ "error": "no LiveKit: set it up in the panel" }))).into_response()
         );
@@ -84,14 +82,18 @@ async fn livekit_token(
 }
 
 /// Who is on the calls: names of contacts and their endpoints — for someone signed in.
-async fn status(State(app): State<Arc<App>>, caller: Caller) -> Result<Response, ApiError> {
+async fn status(Uses(calls): Uses<Arc<crate::calls::CallsService>>, caller: Caller) -> Result<Response, ApiError> {
     caller.permitted(permissions::STATION_VIEW)?;
-    Ok(Json(json!({ "endpoints": app.calls.hub.list(), "calls": app.calls.hub.snapshot() })).into_response())
+    Ok(Json(json!({ "endpoints": calls.hub.list(), "calls": calls.hub.snapshot() })).into_response())
 }
 
 /// The calls' socket: the call page, the simulator, a station client. Calls from outside go through LiveKit; the
 /// hub's own socket is the home network's.
-async fn socket(State(app): State<Arc<App>>, caller: Caller, upgrade: WebSocketUpgrade) -> Response {
+async fn socket(
+    Uses(calls_service): Uses<Arc<crate::calls::CallsService>>,
+    caller: Caller,
+    upgrade: WebSocketUpgrade,
+) -> Response {
     if via_tunnel(&caller.headers) {
         return StatusCode::FORBIDDEN.into_response();
     }
@@ -106,7 +108,7 @@ async fn socket(State(app): State<Arc<App>>, caller: Caller, upgrade: WebSocketU
         return StatusCode::FORBIDDEN.into_response();
     }
     let address = peer_address(&caller);
-    let calls = app.calls.clone();
+    let calls = calls_service.clone();
     // A frame is refused by its header, as ws's maxPayload did: a message's limit applies only once the whole frame
     // is in, and the frame's own limit is 16 MiB by default.
     upgrade
@@ -118,19 +120,19 @@ async fn socket(State(app): State<Arc<App>>, caller: Caller, upgrade: WebSocketU
 /// The other party's audio for the station's call, ended with the call: 16 kHz mono PCM16LE, or Ogg/Opus with
 /// `?format=ogg` (the station's GStreamer). The home network's only.
 async fn listen(
-    State(app): State<Arc<App>>,
+    Uses(calls): Uses<Arc<crate::calls::CallsService>>,
     caller: Caller,
     Path(device): Path<String>,
     Query(query): Query<HashMap<String, String>>,
 ) -> Result<Response, ApiError> {
     caller.zone_at_least(Zone::Home)?;
-    if let Some(refused) = refused(&app, &caller) {
+    if let Some(refused) = refused(&calls, &caller) {
         return Ok(refused);
     }
     let format =
         if query.get("format").map(String::as_str) == Some("ogg") { ListenFormat::Ogg } else { ListenFormat::Pcm };
     let address = peer_address(&caller);
-    let stream = app.calls.listen(&device, format, Some(address.as_str()).filter(|address| !address.is_empty()));
+    let stream = calls.listen(&device, format, Some(address.as_str()).filter(|address| !address.is_empty()));
     let mut response = Body::from_stream(stream.map(Ok::<_, Infallible>)).into_response();
     let kind = if format == ListenFormat::Ogg { "audio/ogg" } else { "application/octet-stream" };
     response.headers_mut().insert(header::CONTENT_TYPE, HeaderValue::from_static(kind));
@@ -140,40 +142,44 @@ async fn listen(
 
 /// The station client's poll: the station is a party of our calls while its client polls; the answer is `call`
 /// once its call is answered (then the client opens `listen`), `idle` after 50 s. The home network's only.
-async fn next(State(app): State<Arc<App>>, caller: Caller, Path(device): Path<String>) -> Result<Response, ApiError> {
+async fn next(
+    Uses(calls): Uses<Arc<crate::calls::CallsService>>,
+    caller: Caller,
+    Path(device): Path<String>,
+) -> Result<Response, ApiError> {
     caller.zone_at_least(Zone::Home)?;
-    if let Some(refused) = refused(&app, &caller) {
+    if let Some(refused) = refused(&calls, &caller) {
         return Ok(refused);
     }
     let address = peer_address(&caller);
-    let answer = app.calls.next(&device, Some(address.as_str()).filter(|address| !address.is_empty())).await;
+    let answer = calls.next(&device, Some(address.as_str()).filter(|address| !address.is_empty())).await;
     Ok(([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], answer.as_str()).into_response())
 }
 
 /// The station client stops: its call's stream ends and the station leaves our calls.
 async fn release(
-    State(app): State<Arc<App>>,
+    Uses(calls): Uses<Arc<crate::calls::CallsService>>,
     caller: Caller,
     Path(device): Path<String>,
 ) -> Result<Response, ApiError> {
     caller.zone_at_least(Zone::Home)?;
-    if let Some(refused) = refused(&app, &caller) {
+    if let Some(refused) = refused(&calls, &caller) {
         return Ok(refused);
     }
-    app.calls.release(&device);
+    calls.release(&device);
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
 /// The station's microphone, 16 kHz mono PCM16LE, as a chunked upload. A sample split between two chunks is put
 /// back together.
 async fn talk(
-    State(app): State<Arc<App>>,
+    Uses(calls): Uses<Arc<crate::calls::CallsService>>,
     caller: Caller,
     Path(device): Path<String>,
     request: Request,
 ) -> Result<Response, ApiError> {
     caller.zone_at_least(Zone::Home)?;
-    if let Some(refused) = refused(&app, &caller) {
+    if let Some(refused) = refused(&calls, &caller) {
         return Ok(refused);
     }
     let mut body = request.into_body().into_data_stream();
@@ -185,7 +191,7 @@ async fn talk(
         if bytes.len() % 2 == 1 {
             odd = bytes.pop();
         }
-        app.calls.talk(&device, &super::call_hub::pcm_from_bytes(&bytes));
+        calls.talk(&device, &super::call_hub::pcm_from_bytes(&bytes));
     }
     Ok(StatusCode::NO_CONTENT.into_response())
 }
@@ -205,6 +211,7 @@ mod tests {
     use tower::ServiceExt;
 
     use super::*;
+    use crate::app::App;
     use crate::calls::livekit::app_identity;
     use crate::config::{Config, Env};
 

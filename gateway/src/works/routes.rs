@@ -20,7 +20,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, Query};
 use axum::http::header;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
@@ -32,14 +32,15 @@ use super::harness::claude_code::{Auth, CLAUDE_CODE, KEY_SECRET};
 use super::harness::Ready;
 use super::runs;
 use super::{FolderWorks, Record};
-use crate::app::App;
 use crate::core::identity::permissions::SETTINGS_EDIT;
-use crate::platform::http::{ok, ApiError, ApiResult, Body, Caller};
+use crate::platform::http::{ok, ApiError, ApiResult, Body, Caller, Uses};
+use crate::secrets::SecretsService;
 use crate::settings::definitions::{WorkFolder, HARNESS_CLAUDE_AUTH, HARNESS_CLAUDE_PATH, HARNESS_PATHS};
+use crate::settings::SettingsService;
 use crate::talk::folder::{FolderAsk, FOLDER_EXECUTOR};
-use crate::talk::{Activator, Origin};
+use crate::talk::{Activator, Origin, TalkLayer};
 
-pub fn routes() -> Router<Arc<App>> {
+pub fn routes<S: crate::works::RouteNeeds>() -> Router<S> {
     Router::new()
         .route("/api/v1/work-folders", get(list_folders).post(add_folder))
         .route("/api/v1/work-folders/{id}", put(update_folder).delete(remove_folder))
@@ -75,38 +76,44 @@ struct Folders {
     folders: Vec<FolderView>,
 }
 
-fn helper(app: &App) -> Result<Arc<FolderWorks>, ApiError> {
-    app.works.clone().ok_or_else(|| ApiError::unavailable(crate::tr!("Работа в папках здесь недоступна.")))
+fn helper(works: &Option<Arc<crate::works::FolderWorks>>) -> Result<Arc<FolderWorks>, ApiError> {
+    works.clone().ok_or_else(|| ApiError::unavailable(crate::tr!("Работа в папках здесь недоступна.")))
 }
 
-async fn list_folders(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<Folders> {
+async fn list_folders(Uses(settings): Uses<Arc<SettingsService>>, caller: Caller) -> ApiResult<Folders> {
     caller.permitted(SETTINGS_EDIT)?;
     let mut views = Vec::new();
-    for folder in folders::list(&app.settings) {
+    for folder in folders::list(&settings) {
         views.push(view(folder).await);
     }
     Ok(ok(Folders { folders: views }))
 }
 
-async fn add_folder(State(app): State<Arc<App>>, caller: Caller, Body(asked): Body<Asked>) -> ApiResult<FolderView> {
+async fn add_folder(
+    Uses(works_service): Uses<Option<Arc<crate::works::FolderWorks>>>,
+    Uses(settings): Uses<Arc<SettingsService>>,
+    caller: Caller,
+    Body(asked): Body<Asked>,
+) -> ApiResult<FolderView> {
     caller.permitted(SETTINGS_EDIT)?;
-    let works = helper(&app)?;
+    let works = helper(&works_service)?;
     let guarded = Guarded { data: works.guarded.clone(), home: super::home() };
     check_agent(&works, asked.agent.as_deref())?;
-    let folder = folders::add(&app.settings, &guarded, asked, caller.actor()).await?;
+    let folder = folders::add(&settings, &guarded, asked, caller.actor()).await?;
     Ok(ok(view(folder).await))
 }
 
 async fn update_folder(
-    State(app): State<Arc<App>>,
+    Uses(works_service): Uses<Option<Arc<crate::works::FolderWorks>>>,
+    Uses(settings): Uses<Arc<SettingsService>>,
     caller: Caller,
     Path(id): Path<String>,
     Body(asked): Body<Asked>,
 ) -> ApiResult<FolderView> {
     caller.permitted(SETTINGS_EDIT)?;
-    let works = helper(&app)?;
+    let works = helper(&works_service)?;
     check_agent(&works, asked.agent.as_deref())?;
-    let folder = folders::update(&app.settings, &id, asked, caller.actor())?;
+    let folder = folders::update(&settings, &id, asked, caller.actor())?;
     Ok(ok(view(folder).await))
 }
 
@@ -125,9 +132,13 @@ struct Done {
     ok: bool,
 }
 
-async fn remove_folder(State(app): State<Arc<App>>, caller: Caller, Path(id): Path<String>) -> ApiResult<Done> {
+async fn remove_folder(
+    Uses(settings): Uses<Arc<SettingsService>>,
+    caller: Caller,
+    Path(id): Path<String>,
+) -> ApiResult<Done> {
     caller.permitted(SETTINGS_EDIT)?;
-    folders::remove(&app.settings, &id, caller.actor())?;
+    folders::remove(&settings, &id, caller.actor())?;
     Ok(ok(Done { ok: true }))
 }
 
@@ -148,24 +159,25 @@ struct Begun {
 }
 
 async fn start(
-    State(app): State<Arc<App>>,
+    Uses(works_service): Uses<Option<Arc<crate::works::FolderWorks>>>,
+    Uses(settings): Uses<Arc<SettingsService>>,
+    Uses(talk): Uses<Arc<TalkLayer>>,
     caller: Caller,
     Path(id): Path<String>,
     Body(asked): Body<StartAsked>,
 ) -> ApiResult<Begun> {
     caller.permitted(SETTINGS_EDIT)?;
-    let works = helper(&app)?;
-    folders::get(&app.settings, &id).ok_or_else(|| ApiError::not_found(crate::tr!("Такой рабочей папки нет.")))?;
+    let works = helper(&works_service)?;
+    folders::get(&settings, &id).ok_or_else(|| ApiError::not_found(crate::tr!("Такой рабочей папки нет.")))?;
     if asked.task.trim().is_empty() {
         return Err(ApiError::field("task", crate::tr!("Напишите, что сделать.")));
     }
     check_agent(&works, asked.agent.as_deref())?;
     // Typed in the panel: no limit of the works by voice holds it.
     let origin = Origin::computer(Activator::Text).by(caller.principal().map(|principal| principal.name.clone()));
-    let lang = app.talk.lang(crate::talk::COMPUTER);
+    let lang = talk.lang(crate::talk::COMPUTER);
     let ask = FolderAsk { folder: id, task: asked.task, agent: asked.agent, model: asked.model };
-    let (said, work) = app
-        .talk
+    let (said, work) = talk
         .start_folder(origin, ask)
         .map_err(|refusal| ApiError::conflict(refusal.for_person(crate::talk::pack::of(lang))))?;
     Ok(ok(Begun { said, work }))
@@ -198,7 +210,11 @@ struct Harnesses {
     harnesses: Vec<HarnessView>,
 }
 
-async fn claude_view(app: &App, works: &FolderWorks) -> HarnessView {
+async fn claude_view(
+    secrets: &Arc<SecretsService>,
+    settings: &Arc<SettingsService>,
+    works: &FolderWorks,
+) -> HarnessView {
     use super::harness::Harness;
     HarnessView {
         id: CLAUDE_CODE.into(),
@@ -206,16 +222,16 @@ async fn claude_view(app: &App, works: &FolderWorks) -> HarnessView {
         builtin: true,
         ready: works.claude.ready().await,
         auth: works.claude.auth_chosen().map(Auth::as_str),
-        key_set: Some(app.secrets.has(KEY_SECRET)),
-        path_set: app.settings.get(&HARNESS_CLAUDE_PATH, None).filter(|path| !path.is_empty()),
+        key_set: Some(secrets.has(KEY_SECRET)),
+        path_set: settings.get(&HARNESS_CLAUDE_PATH, None).filter(|path| !path.is_empty()),
         card: None,
         description: None,
     }
 }
 
-async fn agent_view(app: &App, works: &FolderWorks, card: super::agents::Card) -> HarnessView {
+async fn agent_view(settings: &Arc<SettingsService>, works: &FolderWorks, card: super::agents::Card) -> HarnessView {
     use super::harness::Harness;
-    let paths = app.settings.get(&HARNESS_PATHS, None).unwrap_or_default();
+    let paths = settings.get(&HARNESS_PATHS, None).unwrap_or_default();
     let ready = match works.agents.get(&card.id) {
         Some(agent) => agent.ready().await,
         None => Ready::not(super::harness::NotReady::Gone),
@@ -233,12 +249,17 @@ async fn agent_view(app: &App, works: &FolderWorks, card: super::agents::Card) -
     }
 }
 
-async fn harnesses(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<Harnesses> {
+async fn harnesses(
+    Uses(works_service): Uses<Option<Arc<crate::works::FolderWorks>>>,
+    Uses(secrets): Uses<Arc<SecretsService>>,
+    Uses(settings): Uses<Arc<SettingsService>>,
+    caller: Caller,
+) -> ApiResult<Harnesses> {
     caller.permitted(SETTINGS_EDIT)?;
-    let works = helper(&app)?;
-    let mut views = vec![claude_view(&app, &works).await];
+    let works = helper(&works_service)?;
+    let mut views = vec![claude_view(&secrets, &settings, &works).await];
     for card in works.agents.cards() {
-        views.push(agent_view(&app, &works, card).await);
+        views.push(agent_view(&settings, &works, card).await);
     }
     Ok(ok(Harnesses { harnesses: views }))
 }
@@ -251,18 +272,19 @@ struct PathAsked {
 
 /// Where a card's agent's program is: a path the panel sets, or by its name on the search path.
 async fn set_agent_path(
-    State(app): State<Arc<App>>,
+    Uses(works_service): Uses<Option<Arc<crate::works::FolderWorks>>>,
+    Uses(settings): Uses<Arc<SettingsService>>,
     caller: Caller,
     Path(id): Path<String>,
     Body(asked): Body<PathAsked>,
 ) -> ApiResult<HarnessView> {
     caller.permitted(SETTINGS_EDIT)?;
-    let works = helper(&app)?;
+    let works = helper(&works_service)?;
     let card =
         works.agents.cards().into_iter().find(|card| card.id == id).ok_or_else(|| {
             ApiError::not_found(crate::tr!("Такого агента нет: поставьте его карточку в MagicPlace."))
         })?;
-    let mut paths = app.settings.get(&HARNESS_PATHS, None).unwrap_or_default();
+    let mut paths = settings.get(&HARNESS_PATHS, None).unwrap_or_default();
     match asked.path.as_deref().map(str::trim).filter(|path| !path.is_empty()) {
         Some(path) if super::harness::find_program(path).is_none() => {
             return Err(ApiError::field("path", crate::tr!("Здесь нет программы: укажите полный путь к ней.")));
@@ -274,9 +296,9 @@ async fn set_agent_path(
             paths.remove(&id);
         }
     }
-    app.settings.set(&HARNESS_PATHS, &paths, caller.actor())?;
+    settings.set(&HARNESS_PATHS, &paths, caller.actor())?;
     works.agents.forget(&id);
-    Ok(ok(agent_view(&app, &works, card).await))
+    Ok(ok(agent_view(&settings, &works, card).await))
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -294,38 +316,39 @@ struct ClaudeAsked {
 }
 
 async fn set_claude_code(
-    State(app): State<Arc<App>>,
+    Uses(works_service): Uses<Option<Arc<crate::works::FolderWorks>>>,
+    Uses(settings): Uses<Arc<SettingsService>>,
+    Uses(secrets): Uses<Arc<SecretsService>>,
     caller: Caller,
     Body(asked): Body<ClaudeAsked>,
 ) -> ApiResult<HarnessView> {
     caller.permitted(SETTINGS_EDIT)?;
-    let works = helper(&app)?;
+    let works = helper(&works_service)?;
     if let Some(path) = asked.path {
         let path = path.trim().to_string();
         if path.is_empty() {
-            app.settings.forget(&HARNESS_CLAUDE_PATH)?;
+            settings.forget(&HARNESS_CLAUDE_PATH)?;
         } else if super::harness::find_program(&path).is_none() {
             return Err(ApiError::field("path", crate::tr!("Здесь нет программы: укажите полный путь к claude.")));
         } else {
-            app.settings.set(&HARNESS_CLAUDE_PATH, &path, caller.actor())?;
+            settings.set(&HARNESS_CLAUDE_PATH, &path, caller.actor())?;
         }
     }
     if let Some(auth) = asked.auth {
         let auth = Auth::parse(&auth).ok_or_else(|| ApiError::field("auth", crate::tr!("вход — terminal или key")))?;
-        app.settings.set(&HARNESS_CLAUDE_AUTH, &auth.as_str().to_string(), caller.actor())?;
+        settings.set(&HARNESS_CLAUDE_AUTH, &auth.as_str().to_string(), caller.actor())?;
     }
     if let Some(provider) = asked.key_from {
-        let key = app
-            .secrets
+        let key = secrets
             .get(&format!("llm:{}:key", provider.trim()))
             .ok_or_else(|| ApiError::field("keyFrom", crate::tr!("У этого провайдера нет ключа.")))?;
-        app.secrets.set(KEY_SECRET, Some(&key))?;
+        secrets.set(KEY_SECRET, Some(&key))?;
     }
     if let Some(key) = asked.key {
         let key = key.trim();
-        app.secrets.set(KEY_SECRET, (!key.is_empty()).then_some(key))?;
+        secrets.set(KEY_SECRET, (!key.is_empty()).then_some(key))?;
     }
-    Ok(ok(claude_view(&app, &works).await))
+    Ok(ok(claude_view(&secrets, &settings, &works).await))
 }
 
 /// A work in a folder for the panel: the record, the agent's name and the command that opens its session.
@@ -347,8 +370,8 @@ struct Runs {
 }
 
 /// The helper's work of a talk's work, by the talk's id.
-fn record_of(app: &App, works: &FolderWorks, id: &str) -> Result<Record, ApiError> {
-    let work = app.talk.works().get(id).ok_or_else(|| ApiError::not_found(crate::tr!("Такой работы нет.")))?;
+fn record_of(talk: &Arc<TalkLayer>, works: &FolderWorks, id: &str) -> Result<Record, ApiError> {
+    let work = talk.works().get(id).ok_or_else(|| ApiError::not_found(crate::tr!("Такой работы нет.")))?;
     let target = work
         .target
         .filter(|_| work.executor == FOLDER_EXECUTOR)
@@ -356,10 +379,15 @@ fn record_of(app: &App, works: &FolderWorks, id: &str) -> Result<Record, ApiErro
     works.record(&target).ok_or_else(|| ApiError::not_found(crate::tr!("Такой работы нет.")))
 }
 
-async fn runs_of(State(app): State<Arc<App>>, caller: Caller, Path(id): Path<String>) -> ApiResult<Runs> {
+async fn runs_of(
+    Uses(works_service): Uses<Option<Arc<crate::works::FolderWorks>>>,
+    Uses(talk): Uses<Arc<TalkLayer>>,
+    caller: Caller,
+    Path(id): Path<String>,
+) -> ApiResult<Runs> {
     caller.permitted(SETTINGS_EDIT)?;
-    let works = helper(&app)?;
-    let record = record_of(&app, &works, &id)?;
+    let works = helper(&works_service)?;
+    let record = record_of(&talk, &works, &id)?;
     let harness = works.harness(&record.agent);
     let agent_title = harness.as_ref().map(|harness| harness.title()).unwrap_or_else(|| record.agent.clone());
     let resume_command = match (&harness, &record.session) {
@@ -381,14 +409,15 @@ struct Log {
 }
 
 async fn log(
-    State(app): State<Arc<App>>,
+    Uses(works_service): Uses<Option<Arc<crate::works::FolderWorks>>>,
+    Uses(talk): Uses<Arc<TalkLayer>>,
     caller: Caller,
     Path((id, n)): Path<(String, u32)>,
     Query(query): Query<HashMap<String, String>>,
 ) -> ApiResult<Log> {
     caller.permitted(SETTINGS_EDIT)?;
-    let works = helper(&app)?;
-    let record = record_of(&app, &works, &id)?;
+    let works = helper(&works_service)?;
+    let record = record_of(&talk, &works, &id)?;
     let after = query.get("after").and_then(|after| after.parse().ok()).unwrap_or(0);
     let limit = query.get("limit").and_then(|limit| limit.parse().ok()).unwrap_or(runs::READ_MAX);
     let trouble = query.get("trouble").is_some_and(|trouble| trouble == "1" || trouble == "true");
@@ -400,13 +429,14 @@ async fn log(
 }
 
 async fn raw(
-    State(app): State<Arc<App>>,
+    Uses(works_service): Uses<Option<Arc<crate::works::FolderWorks>>>,
+    Uses(talk): Uses<Arc<TalkLayer>>,
     caller: Caller,
     Path((id, n)): Path<(String, u32)>,
 ) -> Result<Response, ApiError> {
     caller.permitted(SETTINGS_EDIT)?;
-    let works = helper(&app)?;
-    let record = record_of(&app, &works, &id)?;
+    let works = helper(&works_service)?;
+    let record = record_of(&talk, &works, &id)?;
     let path = runs::raw_path(&works.dir, &record.id, n);
     let bytes = tokio::fs::read(&path).await.map_err(|_| ApiError::not_found(crate::tr!("Такого запуска нет.")))?;
     let name = format!("attachment; filename=\"duowave-{}-run-{n}.jsonl\"", record.id);

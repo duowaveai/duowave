@@ -205,6 +205,7 @@ const en: Translation<typeof ru> = {
     finish: 'Done',
     rebooting: 'the speaker is restarting…',
     linkOnline: (name: string) => (name ? `The speaker "${name}" is online` : 'The speaker is online'),
+    hubWait: 'The speaker is restarting — please wait, the step will carry on by itself.',
     linkMoving: 'DuoWave is moving onto the speaker…',
 };
 

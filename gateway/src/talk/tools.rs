@@ -10,8 +10,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use super::origin::COMPUTER;
-use super::{Brain, TalkEvent};
-use crate::app::App;
+use super::{Brain, Parts, TalkEvent};
 use crate::core::connectors::ContributedOffer;
 use crate::core::identity::Principal;
 use crate::core::requests::{Place, RequestHandle, RequestPhase};
@@ -29,9 +28,9 @@ const NOT_HERE: &str =
 const NOT_ALLOWED: &str =
     "Not allowed for this person: tell the user in one short sentence that this is not permitted.";
 
-/// What one talk's tools need: the gateway, who speaks, the phrase, the request's trip and the talk's events.
+/// What one talk's tools need: the talk's parts, who speaks, the phrase, the request's trip and the talk's events.
 pub(super) struct Deps {
-    pub app: Arc<App>,
+    pub parts: Parts,
     pub principal: Principal,
     pub text: String,
     /// Where the phrase came from: the tools that keep it (the works) record it.
@@ -42,27 +41,25 @@ pub(super) struct Deps {
 }
 
 /// Whether a capability's route lets our side serve it: a server or an app bound to one is offered only then.
-fn ours(app: &App) -> impl Fn(CapabilityName) -> bool {
-    let routes = app.skills.router.routes().describe();
+fn ours(parts: &Parts) -> impl Fn(CapabilityName) -> bool {
+    let routes = parts.skills.router.routes().describe();
     move |capability| routes.get(&capability).is_some_and(|route| route.split(',').any(|step| step == "own"))
 }
 
 /// The talk's toolbox; None when the model takes no tools or there is nothing to offer.
 pub(super) fn toolbox(deps: Deps) -> Option<ToolBox> {
-    let app = &deps.app;
-    if !app.dialog.tools_enabled() {
+    let parts = &deps.parts;
+    if !parts.dialog.tools_enabled() {
         return None;
     }
-    let allowed = ours(app);
-    let mcp = app.mcp.offer(&deps.principal, OfferOptions { voice: true, capability_allowed: Some(&allowed) });
+    let allowed = ours(parts);
+    let mcp = parts.mcp.offer(&deps.principal, OfferOptions { voice: true, capability_allowed: Some(&allowed) });
     let mcp = mcp.map(Arc::new);
     let mut tools = tools_for(ToolsKind::Conversation, Some(&deps.principal));
     if let Some(mcp) = &mcp {
         tools.extend(mcp.tools.iter().cloned());
     }
-    let contributions = app
-        .connectors
-        .tools(&deps.principal)
+    let contributions = (parts.connector_tools)(&deps.principal)
         .into_iter()
         .filter(|contribution| {
             contribution.permission.strip_prefix("use:").and_then(is_capability).is_none_or(&allowed)
@@ -142,7 +139,7 @@ async fn run(
         thinking();
         return Ok(outcome);
     }
-    let intent = match deps.app.skills.intent_of(&call) {
+    let intent = match deps.parts.skills.intent_of(&call) {
         Ok(intent) => intent,
         Err(error) => return Ok(ToolOutcome::error(format!("error: {error}"))),
     };
@@ -151,7 +148,7 @@ async fn run(
         return Ok(ToolOutcome::from(NOT_HERE));
     }
     // Yandex is never there for a talk without a station: its route says «not here yet».
-    let skill = match deps.app.skills.router.resolve(&intent, false, Some(&deps.principal)) {
+    let skill = match deps.parts.skills.router.resolve(&intent, false, Some(&deps.principal)) {
         Resolution::Own(skill) => skill,
         Resolution::Unsupported { reason } if reason == RESTRICTED => return Ok(ToolOutcome::from(NOT_ALLOWED)),
         Resolution::Unsupported { .. } | Resolution::Yandex => return Ok(ToolOutcome::from(NOT_HERE)),

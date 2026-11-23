@@ -16,7 +16,7 @@ pub mod text;
 
 use std::sync::Arc;
 
-use axum::extract::{Request, State};
+use axum::extract::Request;
 use axum::middleware::Next;
 use axum::response::Response;
 use axum::routing::get;
@@ -24,9 +24,8 @@ use axum::Router;
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::app::App;
 use crate::core::identity::permissions::SETTINGS_EDIT;
-use crate::platform::http::{ok, ApiError, ApiResult, Body, Caller};
+use crate::platform::http::{ok, ApiError, ApiResult, Body, Caller, Provides, RouteState, Uses};
 use crate::settings::definitions::LANGUAGE;
 use crate::settings::SettingsService;
 
@@ -112,21 +111,25 @@ pub struct LanguageView {
     language: Option<String>,
 }
 
-pub fn routes() -> Router<Arc<App>> {
+pub fn routes<S: RouteState + Provides<Arc<SettingsService>>>() -> Router<S> {
     Router::new().route("/api/v1/language", get(view).put(set))
 }
 
-async fn view(State(app): State<Arc<App>>) -> ApiResult<LanguageView> {
-    Ok(ok(LanguageView { language: household(&app.settings) }))
+async fn view(Uses(settings): Uses<Arc<SettingsService>>) -> ApiResult<LanguageView> {
+    Ok(ok(LanguageView { language: household(&settings) }))
 }
 
-async fn set(State(app): State<Arc<App>>, caller: Caller, Body(body): Body<Value>) -> ApiResult<LanguageView> {
+async fn set(
+    Uses(settings): Uses<Arc<SettingsService>>,
+    caller: Caller,
+    Body(body): Body<Value>,
+) -> ApiResult<LanguageView> {
     caller.permitted(SETTINGS_EDIT)?;
     let Some(code) = body.get("language").and_then(Value::as_str).and_then(normalize) else {
         return Err(ApiError::bad_request(crate::tr!("language: код языка, например ru или en")));
     };
-    if household(&app.settings).as_deref() != Some(code.as_str()) {
-        app.settings.set(&LANGUAGE, &code, caller.actor())?;
+    if household(&settings).as_deref() != Some(code.as_str()) {
+        settings.set(&LANGUAGE, &code, caller.actor())?;
     }
     text::remember_household(Some(code.clone()));
     Ok(ok(LanguageView { language: Some(code) }))

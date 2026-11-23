@@ -25,15 +25,21 @@ pub use models_service::{
     VoiceIds, VoicePair, Whose,
 };
 
+#[cfg(feature = "pc")]
+crate::route_needs!(
+    home_voice::HomeVoice,
+    std::sync::Arc<ModelsService>,
+    Option<std::sync::Arc<crate::speech::asr::local::supervisor::LocalAsr>>,
+);
+#[cfg(not(feature = "pc"))]
+crate::route_needs!(home_voice::HomeVoice);
+
 #[cfg(not(feature = "pc"))]
 mod station {
-    use std::sync::Arc;
-
     use axum::http::StatusCode;
     use axum::routing::any;
     use axum::Router;
 
-    use crate::app::App;
     use crate::platform::http::ApiError;
 
     pub fn not_in_this_build_text() -> String {
@@ -42,7 +48,7 @@ mod station {
 
     /// `/api/v1/models` and everything under it: 501 in the envelope — but the computer's voice for the station's
     /// «Голос» (home_voice.rs).
-    pub fn router() -> Router<Arc<App>> {
+    pub fn router<S: super::RouteNeeds>() -> Router<S> {
         Router::new()
             .route("/api/v1/models", any(not_in_this_build))
             .route("/api/v1/models/{*rest}", any(not_in_this_build))

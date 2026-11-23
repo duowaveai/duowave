@@ -25,10 +25,12 @@ use tokio_util::sync::CancellationToken;
 
 use super::alarms_skill::DEFAULT_TIMEZONE;
 use super::reminders_skill::{CLOCK_WORD, DURATION_WORD};
+use crate::platform::http::Uses;
 use crate::skills::capabilities::{CapabilityName, Intent};
 use crate::skills::quick_commands::match_quick_command;
 use crate::skills::skill::{ContinuationRequest, ExecutionContext, Outcome, OwnSkill};
 use crate::skills::text::{normalize, parse_clock, parse_duration, read_number, say_duration};
+use crate::skills::SkillsService;
 use crate::storage::StateStore;
 use crate::utils::time::now_ms;
 
@@ -395,16 +397,15 @@ impl OwnSkill for LaterSkill {
 
 /// `/api/v1/later`: the delayed commands for the panel — whoever sees the station sees them, a person at home cancels
 /// one.
-pub fn routes() -> axum::Router<Arc<crate::app::App>> {
+pub fn routes<S: crate::skills::RouteNeeds>() -> axum::Router<S> {
     use crate::core::identity::permissions::STATION_VIEW;
     use crate::platform::http::{ok, ApiError, ApiResult, Caller, Zone};
-    use axum::extract::{Path, State};
+    use axum::extract::Path;
     use axum::routing::{delete, get};
 
-    async fn list(State(app): State<Arc<crate::app::App>>, caller: Caller) -> ApiResult<Value> {
+    async fn list(Uses(skills): Uses<Arc<SkillsService>>, caller: Caller) -> ApiResult<Value> {
         caller.permitted(STATION_VIEW)?;
-        let commands: Vec<Value> = app
-            .skills
+        let commands: Vec<Value> = skills
             .later
             .all()
             .into_iter()
@@ -416,13 +417,13 @@ pub fn routes() -> axum::Router<Arc<crate::app::App>> {
     }
 
     async fn remove(
-        State(app): State<Arc<crate::app::App>>,
+        Uses(skills): Uses<Arc<SkillsService>>,
         caller: Caller,
         Path(id): Path<String>,
     ) -> ApiResult<Value> {
         caller.zone_at_least(Zone::Home)?;
         caller.permitted(STATION_VIEW)?;
-        if !app.skills.later.remove(&id) {
+        if !skills.later.remove(&id) {
             return Err(ApiError::not_found(crate::tr!("Нет отложенной команды {id}.", id = id)));
         }
         Ok(ok(Value::Bool(true)))

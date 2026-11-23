@@ -17,7 +17,7 @@ use std::sync::{Arc, OnceLock};
 use serde::Serialize;
 
 use super::join::{JoinKind, Told};
-use crate::app::App;
+use super::Parts;
 use crate::gateway::uniproxy::station_session::{SayOutcome, SayVoice};
 
 /// A code to show, for the desktop app's window.
@@ -58,7 +58,7 @@ pub fn shown(code: &str) -> String {
 
 /// Tells the code each way this centre has; what it told — the speech a moment later (`Told::spoken` says it was
 /// started; a failure comes into the request's record).
-pub fn tell(app: Arc<App>, id: &str, name: &str, kind: JoinKind, code: &str, expires_ms: u64) -> Told {
+pub fn tell(parts: Parts, id: &str, name: &str, kind: JoinKind, code: &str, expires_ms: u64) -> Told {
     let mut told = Told::default();
     tracing::warn!(target: "home", "join: the code for «{name}» ({}) is {}", kind.as_str(), shown(code));
     // A pretend station says it in its terminal (docs/plans/pretend-stations.md): it has no speaker of its own.
@@ -68,17 +68,17 @@ pub fn tell(app: Arc<App>, id: &str, name: &str, kind: JoinKind, code: &str, exp
         told.spoken = true;
         return told;
     }
-    let relay = if app.placement.role() == crate::placement::service::Role::Station {
-        app.sessions.local_relay()
+    let relay = if parts.placement.role() == crate::placement::service::Role::Station {
+        parts.sessions.local_relay()
     } else {
         None
     };
-    if let (None, Some(relay)) = (app.sessions.speaking_on("*"), relay) {
+    if let (None, Some(relay)) = (parts.sessions.speaking_on("*"), relay) {
         // The mode «Алиса»: Yandex says it over the relayed connection, the station's own speaker plays it.
         told.spoken = true;
         let text = words(code, name);
         let id = id.to_string();
-        let app = app.clone();
+        let parts = parts.clone();
         let language = crate::locale::of_request();
         tokio::spawn(crate::locale::with_language(language, async move {
             let played = match relay.say_aloud(&text).await {
@@ -87,28 +87,28 @@ pub fn tell(app: Arc<App>, id: &str, name: &str, kind: JoinKind, code: &str, exp
             };
             if let Err(error) = played {
                 tracing::warn!(target: "home", "join: the station did not say the code (relay mode): {error}");
-                app.joins.told_failed(&id);
+                parts.joins.told_failed(&id);
             }
         }));
-    } else if let Some(session) = app.sessions.speaking_on("*") {
+    } else if let Some(session) = parts.sessions.speaking_on("*") {
         told.spoken = true;
         let text = words(code, name);
         let id = id.to_string();
         let language = crate::locale::of_request();
-        let app = app.clone();
+        let parts = parts.clone();
         tokio::spawn(crate::locale::with_language(language, async move {
             let outcome = session.say_in(text, None, Some(SayVoice::Alice)).await;
             if matches!(outcome, SayOutcome::Failed) {
                 tracing::warn!(target: "home", "join: the station did not say the code");
-                app.joins.told_failed(&id);
+                parts.joins.told_failed(&id);
             }
         }));
     }
     if let Some(shower) = SHOWER.get() {
         shower(ShownCode { id: id.to_string(), name: name.to_string(), kind, code: code.to_string(), expires_ms });
         told.window = true;
-    } else if app.placement.role() == crate::placement::service::Role::Pc
-        && app.config.placement.managed_by.as_deref() != Some("desktop")
+    } else if parts.placement.role() == crate::placement::service::Role::Pc
+        && parts.config.placement.managed_by.as_deref() != Some("desktop")
     {
         // A computer without the app's window: a server — its terminal shows it.
         println!("{}", crate::tr!("Код подключения для «{name}»: {code}.", name = name, code = shown(code)));

@@ -3,21 +3,20 @@
 
 use std::sync::Arc;
 
-use axum::extract::State;
 use axum::routing::get;
 use axum::Router;
 use serde_json::Value;
 
 use super::service::PublicHealth;
-use crate::app::App;
-use crate::platform::http::{ok, ApiResult, Caller, Zone};
+use crate::health_status::HealthStatusService;
+use crate::platform::http::{ok, ApiResult, Caller, Uses, Zone};
 
-pub fn routes() -> Router<Arc<App>> {
+pub fn routes<S: crate::health_status::RouteNeeds>() -> Router<S> {
     Router::new().route("/health", get(health))
 }
 
-async fn health(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<Value> {
-    let status = app.health.status();
+async fn health(Uses(health): Uses<Arc<HealthStatusService>>, caller: Caller) -> ApiResult<Value> {
+    let status = health.status();
     if caller.principal().is_some() || matches!(caller.zone, Zone::Local | Zone::Home) {
         return Ok(ok(serde_json::to_value(status)?));
     }

@@ -15,7 +15,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, Query};
 use axum::routing::get;
 use axum::Router;
 use chrono::{DateTime, NaiveDate, Utc};
@@ -24,15 +24,15 @@ use serde_json::{Map, Value};
 
 use super::deals::{day_of, By, Deal, DealsQuery, StatsQuery, Sums};
 use super::pool::{Price, PriceSource, Written};
-use crate::app::App;
 use crate::core::identity::permissions::SETTINGS_EDIT;
-use crate::platform::http::{ok, ApiError, ApiResult, Body, Caller};
+use crate::platform::http::{ok, ApiError, ApiResult, Body, Caller, Provides, RouteState, Uses};
 
 /// The biggest price one may write: dollars per million tokens.
 const PRICE_MAX: f64 = 100_000.0;
 const DAY_MS: u64 = 86_400_000;
 
-pub fn routes() -> Router<Arc<App>> {
+/// The pool's routes use only the pool (super::Router).
+pub fn routes<S: RouteState + Provides<Arc<super::Router>>>() -> Router<S> {
     Router::new()
         .route("/api/v1/router/deals", get(deals))
         .route("/api/v1/router/stats", get(stats))
@@ -45,7 +45,7 @@ struct DealList {
 }
 
 async fn deals(
-    State(app): State<Arc<App>>,
+    Uses(router): Uses<Arc<super::Router>>,
     caller: Caller,
     Query(query): Query<HashMap<String, String>>,
 ) -> ApiResult<DealList> {
@@ -62,7 +62,7 @@ async fn deals(
         work: given("work").map(str::to_string),
         limit,
     };
-    Ok(ok(DealList { deals: app.router.deals.list(&asked)? }))
+    Ok(ok(DealList { deals: router.deals.list(&asked)? }))
 }
 
 #[derive(Debug, Serialize)]
@@ -73,7 +73,7 @@ struct Stats {
 }
 
 async fn stats(
-    State(app): State<Arc<App>>,
+    Uses(router): Uses<Arc<super::Router>>,
     caller: Caller,
     Query(query): Query<HashMap<String, String>>,
 ) -> ApiResult<Stats> {
@@ -93,8 +93,8 @@ async fn stats(
     // `to` a day is that whole day; a moment — the day it falls in.
     let to = given("to").map(|to| moment(to, false).map(day_of)).transpose()?;
     let asked = StatsQuery { from, to, by: by.clone() };
-    let rows = app.router.deals.stats(&asked)?;
-    let total = app.router.deals.stats(&StatsQuery { by: Vec::new(), ..asked })?.into_iter().next().unwrap_or_default();
+    let rows = router.deals.stats(&asked)?;
+    let total = router.deals.stats(&StatsQuery { by: Vec::new(), ..asked })?.into_iter().next().unwrap_or_default();
     Ok(ok(Stats { by: by.iter().map(|by| by.as_str()).collect(), rows, total }))
 }
 
@@ -116,14 +116,14 @@ struct PriceNow {
 }
 
 /// What the pool says of a model's price now.
-fn price_of(app: &App, provider: String, model: String) -> PriceNow {
-    let book = app.router.pool.book(&provider);
+fn price_of(router: &super::Router, provider: String, model: String) -> PriceNow {
+    let book = router.pool.book(&provider);
     let preset = book.preset.as_deref();
-    let price = app.router.pool.price(&provider, preset, &model);
+    let price = router.pool.price(&provider, preset, &model);
     PriceNow {
         written: price.as_ref().is_some_and(|price| price.from == PriceSource::Manual),
-        unwritten: app.router.pool.unwritten(&provider, preset, &model),
-        context: app.router.pool.context(&provider, preset, &model),
+        unwritten: router.pool.unwritten(&provider, preset, &model),
+        context: router.pool.context(&provider, preset, &model),
         plan: book.plan,
         price,
         provider,
@@ -141,17 +141,17 @@ fn named(provider: String, model: String) -> Result<(String, String), ApiError> 
 }
 
 async fn price_now(
-    State(app): State<Arc<App>>,
+    Uses(router): Uses<Arc<super::Router>>,
     caller: Caller,
     Path((provider, model)): Path<(String, String)>,
 ) -> ApiResult<PriceNow> {
     caller.permitted(SETTINGS_EDIT)?;
     let (provider, model) = named(provider, model)?;
-    Ok(ok(price_of(&app, provider, model)))
+    Ok(ok(price_of(&router, provider, model)))
 }
 
 async fn price(
-    State(app): State<Arc<App>>,
+    Uses(router): Uses<Arc<super::Router>>,
     caller: Caller,
     Path((provider, model)): Path<(String, String)>,
     Body(body): Body<Map<String, Value>>,
@@ -159,8 +159,8 @@ async fn price(
     caller.permitted(SETTINGS_EDIT)?;
     let (provider, model) = named(provider, model)?;
     let written = written(&body)?;
-    app.router.pool.write(&provider, &model, written.as_ref())?;
-    Ok(ok(price_of(&app, provider, model)))
+    router.pool.write(&provider, &model, written.as_ref())?;
+    Ok(ok(price_of(&router, provider, model)))
 }
 
 /// The price in the body; None — none written (it is taken away).

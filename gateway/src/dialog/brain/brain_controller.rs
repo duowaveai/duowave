@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 
-use axum::extract::{Path, State};
+use axum::extract::Path;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, patch, post, put};
@@ -14,13 +14,14 @@ use axum::Router;
 use serde_json::{json, Map, Value};
 
 use super::brain_service::{BrainView, ProviderCheck, ProviderInput, ProviderView};
-use crate::app::App;
 use crate::core::identity::permissions::{CONNECTORS_MANAGE, CONNECTORS_VIEW, MODELS_MANAGE};
 use crate::core::identity::{Principal, PrincipalKind};
-use crate::oauth::{client_name, invite_code, Extra, SignInStart};
-use crate::platform::http::{created, ok, ApiError, ApiResult, Body, Caller, Zone};
+use crate::dialog::brain::BrainService;
+use crate::oauth::{client_name, invite_code, Extra, OAuthService, SignInStart};
+use crate::platform::http::{created, ok, ApiError, ApiResult, Body, Caller, Uses, Zone};
+use crate::secrets::SecretsService;
 
-pub fn routes() -> Router<Arc<App>> {
+pub fn routes<S: crate::dialog::RouteNeeds>() -> Router<S> {
     Router::new()
         .route("/api/v1/brain", get(view))
         .route("/api/v1/brain/providers", post(add))
@@ -47,56 +48,65 @@ fn object(value: Value) -> Map<String, Value> {
     }
 }
 
-async fn view(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<BrainView> {
+async fn view(Uses(brain): Uses<Arc<BrainService>>, caller: Caller) -> ApiResult<BrainView> {
     caller.permitted(CONNECTORS_VIEW)?;
-    Ok(ok(app.brain.view()))
+    Ok(ok(brain.view()))
 }
 
-async fn add(State(app): State<Arc<App>>, caller: Caller, Body(body): Body<Value>) -> ApiResult<ProviderView> {
+async fn add(Uses(brain): Uses<Arc<BrainService>>, caller: Caller, Body(body): Body<Value>) -> ApiResult<ProviderView> {
     person(caller.permitted(CONNECTORS_MANAGE)?)?;
-    Ok(created(app.brain.add(&ProviderInput::from_value(body), caller.actor())?))
+    Ok(created(brain.add(&ProviderInput::from_value(body), caller.actor())?))
 }
 
 async fn update(
-    State(app): State<Arc<App>>,
+    Uses(brain): Uses<Arc<BrainService>>,
     caller: Caller,
     Path(id): Path<String>,
     Body(body): Body<Value>,
 ) -> ApiResult<ProviderView> {
     person(caller.permitted(CONNECTORS_MANAGE)?)?;
-    Ok(ok(app.brain.update(&id, &ProviderInput::from_value(body), caller.actor())?))
+    Ok(ok(brain.update(&id, &ProviderInput::from_value(body), caller.actor())?))
 }
 
-async fn remove(State(app): State<Arc<App>>, caller: Caller, Path(id): Path<String>) -> Result<Response, ApiError> {
+async fn remove(
+    Uses(brain): Uses<Arc<BrainService>>,
+    caller: Caller,
+    Path(id): Path<String>,
+) -> Result<Response, ApiError> {
     person(caller.permitted(CONNECTORS_MANAGE)?)?;
-    app.brain.remove(&id, caller.actor())?;
+    brain.remove(&id, caller.actor())?;
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
 async fn check(
-    State(app): State<Arc<App>>,
+    Uses(brain): Uses<Arc<BrainService>>,
     caller: Caller,
     Path(id): Path<String>,
     Body(body): Body<Value>,
 ) -> ApiResult<ProviderCheck> {
     caller.permitted(CONNECTORS_MANAGE)?;
-    let check = app.brain.check(&id, body.get("model")).await?;
+    let check = brain.check(&id, body.get("model")).await?;
     // A provider's list just arrived: a fast cloud model may now be named exactly for the default backup.
-    app.brain.keep_backup();
+    brain.keep_backup();
     Ok(ok(check))
 }
 
-async fn models(State(app): State<Arc<App>>, caller: Caller, Path(id): Path<String>) -> ApiResult<Value> {
+async fn models(
+    Uses(brain): Uses<Arc<BrainService>>,
+    Uses(secrets): Uses<Arc<SecretsService>>,
+    caller: Caller,
+    Path(id): Path<String>,
+) -> ApiResult<Value> {
     caller.permitted(CONNECTORS_MANAGE)?;
-    match app.brain.models(&id).await {
+    match brain.models(&id).await {
         Ok(models) => {
-            app.brain.keep_backup();
+            brain.keep_backup();
             Ok(ok(json!({"models": models})))
         }
         Err(error) => Err(match error.downcast::<ApiError>() {
             Ok(api) => api,
             // A plain failure is a 500, as Nest answered it; the log gets the reason without secrets.
-            Err(error) => ApiError::internal(app.secrets.redact(&format!("models of {id}: {error:#}"))),
+            Err(error) => ApiError::internal(secrets.redact(&format!("models of {id}: {error:#}"))),
         }),
     }
 }
@@ -107,7 +117,8 @@ async fn models(State(app): State<Arc<App>>, caller: Caller, Path(id): Path<Stri
 /// DuoWave's takes more, all optional (an empty body is as before): `invite` — the invitation's code, kept for the
 /// sign-ins that follow until one brings a key; `client` — this device's name for the key in the account.
 async fn sign_in(
-    State(app): State<Arc<App>>,
+    Uses(brain): Uses<Arc<BrainService>>,
+    Uses(oauth): Uses<Arc<OAuthService>>,
     caller: Caller,
     Path(id): Path<String>,
     Body(body): Body<SignInBody>,
@@ -115,7 +126,7 @@ async fn sign_in(
     person(caller.permitted(CONNECTORS_MANAGE)?)?;
     let extra =
         Extra { invite: invite_of(body.invite.as_deref())?, client: body.client.as_deref().and_then(client_name) };
-    Ok(ok(app.brain.sign_in(&id, &app.oauth, caller.zone == Zone::Local, extra)?))
+    Ok(ok(brain.sign_in(&id, &oauth, caller.zone == Zone::Local, extra)?))
 }
 
 #[derive(Debug, Default, serde::Deserialize)]
@@ -142,20 +153,25 @@ struct InviteBody {
 }
 
 /// The invitation's code for DuoWave's next sign-in (`{code}`; null or empty forgets it). «Мозг» then says `invite`.
-async fn invite(State(app): State<Arc<App>>, caller: Caller, Body(body): Body<InviteBody>) -> ApiResult<BrainView> {
+async fn invite(
+    Uses(brain): Uses<Arc<BrainService>>,
+    caller: Caller,
+    Body(body): Body<InviteBody>,
+) -> ApiResult<BrainView> {
     person(caller.permitted(CONNECTORS_MANAGE)?)?;
-    app.brain.set_invite(invite_of(body.code.as_deref())?.as_deref(), caller.actor())?;
-    Ok(ok(app.brain.view()))
+    brain.set_invite(invite_of(body.code.as_deref())?.as_deref(), caller.actor())?;
+    Ok(ok(brain.view()))
 }
 
-async fn choose(State(app): State<Arc<App>>, caller: Caller, Body(body): Body<Value>) -> ApiResult<BrainView> {
+async fn choose(Uses(brain): Uses<Arc<BrainService>>, caller: Caller, Body(body): Body<Value>) -> ApiResult<BrainView> {
     caller.permitted(MODELS_MANAGE)?;
-    Ok(ok(app.brain.choose(&object(body), caller.actor())?))
+    Ok(ok(brain.choose(&object(body), caller.actor())?))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::App;
     use crate::config::{Config, Env};
     use crate::core::identity::principal::{api_key_principal, user_principal};
     use crate::core::identity::Role;
@@ -191,7 +207,7 @@ mod tests {
     ) {
         let (_service, url) = service().await;
         let app = app();
-        let (status, start) = body(view(State(app.clone()), admin(&app)).await);
+        let (status, start) = body(view(Uses::of(&app), admin(&app)).await);
         assert_eq!(status, StatusCode::OK);
         let ids: Vec<&str> = start["presets"].as_array().unwrap().iter().map(|p| p["id"].as_str().unwrap()).collect();
         assert_eq!(&ids[..5], &["duowave", "claude", "openai", "chatgpt", "openrouter"]);
@@ -203,7 +219,7 @@ mod tests {
         assert_eq!(start["status"]["source"], json!("env"));
 
         let added = json!({"preset": "custom-openai", "title": "Дома", "baseUrl": url, "key": "sk-test-key-1234"});
-        let (status, added) = body(add(State(app.clone()), admin(&app), Body(added)).await);
+        let (status, added) = body(add(Uses::of(&app), admin(&app), Body(added)).await);
         assert_eq!(status, StatusCode::CREATED);
         assert_eq!(added["id"], json!("custom-openai"));
         assert_eq!(added["title"], json!("Дома"));
@@ -211,14 +227,14 @@ mod tests {
         assert_eq!(added["cloud"], json!(false));
 
         let (status, checked) =
-            body(check(State(app.clone()), admin(&app), Path("custom-openai".into()), Body(json!({}))).await);
+            body(check(Uses::of(&app), admin(&app), Path("custom-openai".into()), Body(json!({}))).await);
         assert_eq!(status, StatusCode::OK);
         assert_eq!(checked["ok"], json!(true), "{checked}");
         assert_eq!(checked["model"], json!("big-model"), "no model given: the first listed");
         assert_eq!(checked["tools"], json!(true));
 
         let choice = json!({"fast": {"provider": "custom-openai", "model": "small-model"}, "smart": {"provider": "custom-openai", "model": "big-model"}});
-        let (status, chosen) = body(choose(State(app.clone()), admin(&app), Body(choice)).await);
+        let (status, chosen) = body(choose(Uses::of(&app), admin(&app), Body(choice)).await);
         assert_eq!(status, StatusCode::OK);
         assert_eq!(chosen["status"]["source"], json!("panel"));
         assert_eq!(chosen["status"]["models"], json!({"fast": "small-model", "smart": "big-model"}));
@@ -226,7 +242,7 @@ mod tests {
         assert_eq!(app.dialog.description(), "small-model, smart big-model via Дома (panel)");
         assert_eq!(app.dialog.brain().profiles.fast.unwrap().title, "Дома");
 
-        let (_, seen) = body(view(State(app.clone()), admin(&app)).await);
+        let (_, seen) = body(view(Uses::of(&app), admin(&app)).await);
         assert!(!seen.to_string().contains("sk-test-key"));
         assert!(!serde_json::to_string(&app.dialog.brain()).unwrap().contains("sk-test-key"));
     }
@@ -234,13 +250,13 @@ mod tests {
     #[tokio::test]
     async fn lets_the_household_see_the_brain_but_not_change_it() {
         let app = app();
-        assert_eq!(body(view(State(app.clone()), member(&app)).await).0, StatusCode::OK);
-        let added = add(State(app.clone()), member(&app), Body(json!({"preset": "ollama"}))).await;
+        assert_eq!(body(view(Uses::of(&app), member(&app)).await).0, StatusCode::OK);
+        let added = add(Uses::of(&app), member(&app), Body(json!({"preset": "ollama"}))).await;
         assert_eq!(body(added).0, StatusCode::FORBIDDEN);
-        let chosen = choose(State(app.clone()), member(&app), Body(json!({"fast": null}))).await;
+        let chosen = choose(Uses::of(&app), member(&app), Body(json!({"fast": null}))).await;
         assert_eq!(body(chosen).0, StatusCode::FORBIDDEN);
         let key = Caller::local(app.clone(), Some(api_key_principal("k1", "script", &["*".to_string()])));
-        let (status, refused) = body(add(State(app.clone()), key, Body(json!({"preset": "ollama"}))).await);
+        let (status, refused) = body(add(Uses::of(&app), key, Body(json!({"preset": "ollama"}))).await);
         assert_eq!(
             (status, refused["message"].as_str()),
             (StatusCode::FORBIDDEN, Some("Это для людей, не для ключей."))
@@ -252,23 +268,23 @@ mod tests {
         let (_service, url) = service().await;
         let app = app();
         let added = json!({"preset": "custom-openai", "baseUrl": url, "key": "sk-home-secret-777"});
-        body(add(State(app.clone()), admin(&app), Body(added)).await);
+        body(add(Uses::of(&app), admin(&app), Body(added)).await);
         let choice = json!({"fast": {"provider": "custom-openai", "model": "home-small"}});
-        body(choose(State(app.clone()), admin(&app), Body(choice)).await);
-        let busy = remove(State(app.clone()), admin(&app), Path("custom-openai".into())).await;
+        body(choose(Uses::of(&app), admin(&app), Body(choice)).await);
+        let busy = remove(Uses::of(&app), admin(&app), Path("custom-openai".into())).await;
         assert_eq!(busy.unwrap_err().status, StatusCode::CONFLICT);
-        let (_, back) = body(choose(State(app.clone()), admin(&app), Body(json!({"fast": null}))).await);
+        let (_, back) = body(choose(Uses::of(&app), admin(&app), Body(json!({"fast": null}))).await);
         assert_eq!(back["status"]["source"], json!("env"));
         assert_eq!(
             back["choice"],
             json!({"fast": null, "smart": null, "effort": "low", "autoBackup": true, "onLimit": "ask"})
         );
-        let gone = remove(State(app.clone()), admin(&app), Path("custom-openai".into())).await.unwrap();
+        let gone = remove(Uses::of(&app), admin(&app), Path("custom-openai".into())).await.unwrap();
         assert_eq!(gone.status(), StatusCode::NO_CONTENT);
-        let (_, after) = body(view(State(app.clone()), admin(&app)).await);
+        let (_, after) = body(view(Uses::of(&app), admin(&app)).await);
         assert_eq!(after["providers"], json!([]));
         assert!(app.secrets.ids("llm:").is_empty());
-        let failing = models(State(app.clone()), admin(&app), Path("custom-openai".into())).await;
+        let failing = models(Uses::of(&app), Uses::of(&app), admin(&app), Path("custom-openai".into())).await;
         assert_eq!(failing.err().unwrap().status, StatusCode::NOT_FOUND);
     }
 
@@ -279,8 +295,8 @@ mod tests {
         let app = app();
         let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
         let ollama = json!({"preset": "ollama", "baseUrl": format!("http://127.0.0.1:{port}/v1")});
-        assert_eq!(body(add(State(app.clone()), admin(&app), Body(ollama)).await).0, StatusCode::CREATED);
-        let (status, answer) = body(models(State(app.clone()), admin(&app), Path("ollama".into())).await);
+        assert_eq!(body(add(Uses::of(&app), admin(&app), Body(ollama)).await).0, StatusCode::CREATED);
+        let (status, answer) = body(models(Uses::of(&app), Uses::of(&app), admin(&app), Path("ollama".into())).await);
         assert_eq!((status, answer["message"].as_str()), (StatusCode::BAD_GATEWAY, Some("Адрес не отвечает.")));
     }
 
@@ -291,9 +307,16 @@ mod tests {
     #[tokio::test]
     async fn signs_in_to_openrouter_back_to_this_computer_or_with_a_code_from_another_device() {
         let app = app();
-        body(add(State(app.clone()), admin(&app), Body(json!({"preset": "openrouter"}))).await);
+        body(add(Uses::of(&app), admin(&app), Body(json!({"preset": "openrouter"}))).await);
         let (status, here) = body(
-            sign_in(State(app.clone()), admin(&app), Path("openrouter".into()), Body(SignInBody::default())).await,
+            sign_in(
+                Uses::of(&app),
+                Uses::of(&app),
+                admin(&app),
+                Path("openrouter".into()),
+                Body(SignInBody::default()),
+            )
+            .await,
         );
         assert_eq!(status, StatusCode::OK, "{here}");
         assert_eq!(here["mode"], json!("here"));
@@ -307,8 +330,10 @@ mod tests {
         // The panel on a phone: localhost there is not this computer, so the page shows a code.
         let mut phone = admin(&app);
         phone.zone = Zone::Home;
-        let (_, code) =
-            body(sign_in(State(app.clone()), phone, Path("openrouter".into()), Body(SignInBody::default())).await);
+        let (_, code) = body(
+            sign_in(Uses::of(&app), Uses::of(&app), phone, Path("openrouter".into()), Body(SignInBody::default()))
+                .await,
+        );
         assert_eq!(code["mode"], json!("code"));
         let url = code["url"].as_str().unwrap();
         assert_eq!((param(url, "callback_url"), param(url, "state")), (None, None));
@@ -318,12 +343,13 @@ mod tests {
     #[tokio::test]
     async fn duowaves_sign_in_carries_the_kept_invitation_and_the_device_name() {
         let app = app();
-        body(add(State(app.clone()), admin(&app), Body(json!({"preset": "duowave"}))).await);
+        body(add(Uses::of(&app), admin(&app), Body(json!({"preset": "duowave"}))).await);
         let start = |text: Value| {
             let app = app.clone();
             async move {
                 sign_in(
-                    State(app.clone()),
+                    Uses::of(&app),
+                    Uses::of(&app),
                     admin(&app),
                     Path("duowave".into()),
                     Body(serde_json::from_value(text).unwrap()),
@@ -346,16 +372,16 @@ mod tests {
         assert_eq!(param(&again.url, "start").as_deref(), Some("s_OfxFjzLq"));
 
         // Forgotten through its own route; OpenRouter never gets it.
-        let view =
-            invite(State(app.clone()), admin(&app), Body(serde_json::from_value(json!({"code": null})).unwrap()))
-                .await
-                .unwrap();
+        let view = invite(Uses::of(&app), admin(&app), Body(serde_json::from_value(json!({"code": null})).unwrap()))
+            .await
+            .unwrap();
         assert!(!view.1.invite);
         assert_eq!(param(&start(json!({})).await.unwrap().1.url, "start"), None);
         app.brain.set_invite(Some("s_OfxFjzLq"), None).unwrap();
-        body(add(State(app.clone()), admin(&app), Body(json!({"preset": "openrouter"}))).await);
+        body(add(Uses::of(&app), admin(&app), Body(json!({"preset": "openrouter"}))).await);
         let theirs = sign_in(
-            State(app.clone()),
+            Uses::of(&app),
+            Uses::of(&app),
             admin(&app),
             Path("openrouter".into()),
             Body(serde_json::from_value(json!({"invite": "s_OfxFjzLq"})).unwrap()),
@@ -371,28 +397,47 @@ mod tests {
         let (_service, url) = service().await;
         let app = app();
         let added = json!({"preset": "custom-openai", "baseUrl": url});
-        body(add(State(app.clone()), admin(&app), Body(added)).await);
+        body(add(Uses::of(&app), admin(&app), Body(added)).await);
         let (status, refused) = body(
-            sign_in(State(app.clone()), admin(&app), Path("custom-openai".into()), Body(SignInBody::default())).await,
+            sign_in(
+                Uses::of(&app),
+                Uses::of(&app),
+                admin(&app),
+                Path("custom-openai".into()),
+                Body(SignInBody::default()),
+            )
+            .await,
         );
         assert_eq!(
             (status, refused["message"].as_str()),
             (StatusCode::BAD_REQUEST, Some("Этот провайдер подключается только ключом."))
         );
-        let (status, _) =
-            body(sign_in(State(app.clone()), admin(&app), Path("nobody".into()), Body(SignInBody::default())).await);
+        let (status, _) = body(
+            sign_in(Uses::of(&app), Uses::of(&app), admin(&app), Path("nobody".into()), Body(SignInBody::default()))
+                .await,
+        );
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert_eq!(
             body(
-                sign_in(State(app.clone()), member(&app), Path("custom-openai".into()), Body(SignInBody::default()))
-                    .await
+                sign_in(
+                    Uses::of(&app),
+                    Uses::of(&app),
+                    member(&app),
+                    Path("custom-openai".into()),
+                    Body(SignInBody::default())
+                )
+                .await
             )
             .0,
             StatusCode::FORBIDDEN
         );
         let key = Caller::local(app.clone(), Some(api_key_principal("k1", "script", &["*".to_string()])));
         assert_eq!(
-            body(sign_in(State(app.clone()), key, Path("custom-openai".into()), Body(SignInBody::default())).await).0,
+            body(
+                sign_in(Uses::of(&app), Uses::of(&app), key, Path("custom-openai".into()), Body(SignInBody::default()))
+                    .await
+            )
+            .0,
             StatusCode::FORBIDDEN
         );
     }

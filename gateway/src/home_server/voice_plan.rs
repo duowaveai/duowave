@@ -9,10 +9,10 @@
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-use crate::app::App;
 use crate::characters::contributes::{Reference, Snapshot};
 use crate::characters::{Character, Gender};
 use crate::models::models_service::OWN_PREFIX;
@@ -168,12 +168,11 @@ fn by_package(request: &PlanRequest) -> bool {
 
 /// The character as the plan sees it: the one installed here when it is that version, else made of the centre's words.
 /// Asked by its package, the package's character installed here is the one — its voice and the model named for it.
-fn character_of(app: &App, request: &PlanRequest) -> Character {
+fn character_of(characters: &Arc<crate::characters::CharactersService>, request: &PlanRequest) -> Character {
     let version = request.package.as_ref().and_then(|package| package.version.clone());
-    let here = app
-        .characters
+    let here = characters
         .character(&request.id)
-        .or_else(|| by_package(request).then(|| app.characters.of_package(&request.id)).flatten());
+        .or_else(|| by_package(request).then(|| characters.of_package(&request.id)).flatten());
     if let Some(here) = here {
         if version.is_none() || version.as_deref() == Some(here.version.as_str()) {
             return here;
@@ -221,14 +220,14 @@ fn character_of(app: &App, request: &PlanRequest) -> Character {
 
 /// A model to install that does not fit on this computer's disk is refused before anything is downloaded (clean-path
 /// check 18.11, item 40); one installed or coming has its room.
-pub async fn check_room(app: &App, engine: &str) -> Result<(), ApiError> {
+pub async fn check_room(voice_lab: &Arc<crate::voice_lab::VoiceLabService>, engine: &str) -> Result<(), ApiError> {
     let Some(id) = EngineId::parse(engine) else { return Ok(()) };
-    let Some(card) = app.voice_lab.engine_cards().await.into_iter().find(|card| card.id == id) else { return Ok(()) };
+    let Some(card) = voice_lab.engine_cards().await.into_iter().find(|card| card.id == id) else { return Ok(()) };
     if card.status != EngineStatus::Missing {
         return Ok(());
     }
-    let (_, disk) = app.voice_lab.engine_size(id).await;
-    let free = app.voice_lab.free_disk_mb();
+    let (_, disk) = voice_lab.engine_size(id).await;
+    let free = voice_lab.free_disk_mb();
     if disk > free {
         return Err(crate::home::character::no_room(card.title, disk, free));
     }
@@ -236,9 +235,15 @@ pub async fn check_room(app: &App, engine: &str) -> Result<(), ApiError> {
 }
 
 /// The plan of the character's voice on this computer.
-pub async fn plan(app: &App, request: &PlanRequest) -> VoicePlan {
-    let character = character_of(app, request);
-    let lab = &app.voice_lab;
+pub async fn plan(
+    characters: &Arc<crate::characters::CharactersService>,
+    voice_lab: &Arc<crate::voice_lab::VoiceLabService>,
+    models: &Arc<crate::models::ModelsService>,
+    identity: &Arc<crate::core::identity::home::Identity>,
+    request: &PlanRequest,
+) -> VoicePlan {
+    let character = character_of(characters, request);
+    let lab = &voice_lab;
     let (free_disk, free_ram) = (lab.free_disk_mb(), lab.free_memory_mb().await);
     let job = lab.job();
     let running = job.as_ref().filter(|job| job.state == JobRunState::Running);
@@ -273,17 +278,17 @@ pub async fn plan(app: &App, request: &PlanRequest) -> VoicePlan {
         });
     }
     let wanted = request.engine.as_deref().filter(|engine| EngineId::parse(engine).is_some());
-    let (wanted, fallback) = app.characters.turbo_choice(&character, wanted).await;
+    let (wanted, fallback) = characters.turbo_choice(&character, wanted).await;
     // The voice waiting here is this character's: its model is the one coming, whatever the wish says now.
-    let chosen = pending_engine(app.models.pending_card().as_deref(), &character).or_else(|| wanted.clone());
+    let chosen = pending_engine(models.pending_card().as_deref(), &character).or_else(|| wanted.clone());
     let fallback = fallback.map(|fallback| FallbackPlan {
-        size_mb: app.models.voice_card_mb(&fallback.card_id),
+        size_mb: models.voice_card_mb(&fallback.card_id),
         card_id: fallback.card_id,
         title: fallback.title,
         installed: fallback.installed,
     });
     let theirs = format!("{OWN_PREFIX}c-{}-{}-", character.package, character.local);
-    let voice_on = app.models.chosen_voice().is_some_and(|voice| voice.model_id.starts_with(&theirs));
+    let voice_on = models.chosen_voice().is_some_and(|voice| voice.model_id.starts_with(&theirs));
     // The last job was this plan's model's install, and it failed: said, not hidden behind «ставится».
     let failed = job
         .as_ref()
@@ -297,7 +302,7 @@ pub async fn plan(app: &App, request: &PlanRequest) -> VoicePlan {
         fallback,
         progress: progress(job.as_ref(), &downloads),
         voice_on,
-        computer: app.identity.gateway().map(|me| me.name).unwrap_or_default(),
+        computer: identity.gateway().map(|me| me.name).unwrap_or_default(),
         failed,
     }
 }
@@ -305,20 +310,24 @@ pub async fn plan(app: &App, request: &PlanRequest) -> VoicePlan {
 /// The voice waiting on this computer, as any panel of the home shows it (clean-path check 19.11: «Голос ждёт» lived
 /// only on the computer's own page, and nobody saw it while the character was settling): the models' pending voice
 /// with its name and the character it speaks for — `{…PendingView, title, character?, package?}`; none — nothing waits.
-pub async fn waiting(app: &App) -> Option<serde_json::Value> {
-    let pending = app.models.pending()?;
-    let character = app.characters.of_voice(&pending.model_id);
+pub async fn waiting(
+    models: &Arc<crate::models::ModelsService>,
+    characters: &Arc<crate::characters::CharactersService>,
+    voice_lab: &Arc<crate::voice_lab::VoiceLabService>,
+) -> Option<serde_json::Value> {
+    let pending = models.pending()?;
+    let character = characters.of_voice(&pending.model_id);
     // Not a character's own voice: maybe the fallback of the one who answers (owner 22.11, Windows without NVIDIA:
     // «Дмитрий: ставлю модель голоса» said nothing of Рик, nor why a second voice) — then whose and why.
     let backup = match character {
         Some(_) => None,
-        None => backup_of(app, &pending.model_id).await,
+        None => backup_of(characters, &pending.model_id).await,
     };
     let title = character
         .as_ref()
         .map(|character| character.title.clone())
-        .or_else(|| pending.model_id.strip_prefix(OWN_PREFIX).and_then(|id| app.voice_lab.voice_name(id)))
-        .or_else(|| app.models.voice_card(&pending.model_id).map(|(title, _)| title))
+        .or_else(|| pending.model_id.strip_prefix(OWN_PREFIX).and_then(|id| voice_lab.voice_name(id)))
+        .or_else(|| models.voice_card(&pending.model_id).map(|(title, _)| title))
         .unwrap_or_else(|| pending.model_id.clone());
     let mut view = serde_json::to_value(&pending).ok()?;
     view["title"] = serde_json::json!(title);
@@ -340,9 +349,12 @@ pub async fn waiting(app: &App) -> Option<serde_json::Value> {
 
 /// The character who answers, when the pending voice is its fallback here — and why its own voice does not go on this
 /// computer (its plan's reason: «На Windows нужна видеокарта NVIDIA.»).
-async fn backup_of(app: &App, card: &str) -> Option<(Character, Option<String>)> {
-    let character = app.characters.active_id().and_then(|id| app.characters.character(&id))?;
-    let here = app.characters.voice_here(&character).await?;
+async fn backup_of(
+    characters: &crate::characters::CharactersService,
+    card: &str,
+) -> Option<(Character, Option<String>)> {
+    let character = characters.active_id().and_then(|id| characters.character(&id))?;
+    let here = characters.voice_here(&character).await?;
     let fallback = here.fallback.as_ref()?;
     (fallback.card_id == card).then(|| (character, here.reason.clone()))
 }
@@ -350,8 +362,12 @@ async fn backup_of(app: &App, card: &str) -> Option<(Character, Option<String>)>
 /// The owner's answer to the waiting voice: `anyway` — switch it on although memory is tight, `retry` — what it waited
 /// for failed, try again (downloading what it needs), `cancel` — forget it and stop what it waits for. As the panel's
 /// own buttons on the computer do (`POST /api/v1/models/tts/activate`, `DELETE /api/v1/models/tts/pending`).
-pub async fn answer(app: &App, answer: &str, actor: Option<crate::core::events::Actor>) -> Result<(), ApiError> {
-    let Some(pending) = app.models.pending() else {
+pub async fn answer(
+    models: &Arc<crate::models::ModelsService>,
+    answer: &str,
+    actor: Option<crate::core::events::Actor>,
+) -> Result<(), ApiError> {
+    let Some(pending) = models.pending() else {
         return Err(ApiError::conflict(crate::tr!("Голос уже не ждёт.")));
     };
     let mut body = serde_json::json!({ "modelId": pending.model_id });
@@ -362,14 +378,14 @@ pub async fn answer(app: &App, answer: &str, actor: Option<crate::core::events::
     match answer {
         "anyway" => {
             let request = crate::models::models_service::VoiceRequest { anyway: true, ..request };
-            app.models.choose(request, actor).await?;
+            models.choose(request, actor).await?;
         }
         "retry" => {
             let request = crate::models::models_service::VoiceRequest { install: true, ..request };
-            app.models.choose(request, actor).await?;
+            models.choose(request, actor).await?;
         }
         "cancel" => {
-            app.models.cancel_pending(actor).await;
+            models.cancel_pending(actor).await;
         }
         _ => return Err(ApiError::bad_request(r#"answer: "anyway", "retry" или "cancel""#.to_string())),
     }

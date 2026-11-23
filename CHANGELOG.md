@@ -3,6 +3,18 @@
 What a gateway user can see, release by release. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versions follow [SemVer](https://semver.org/).
 
+## 0.18.5 — 24.11.2026
+
+- **First steps wait for the hub on the speaker.** When DuoWave moves onto the speaker and this computer becomes its
+  Turbo, the speaker restarts for about 40 seconds. "Who answers" and "Character" now wait for it and say "The speaker
+  is restarting — please wait, the step will carry on by itself", instead of "This step didn't open". The invite code
+  is applied the first time, and signing in to a model added in this step works.
+- **Looking for a home in first steps no longer finds this computer itself.** On a computer with nothing set up,
+  first steps said a home already exists, with its hub on this very computer. The search now knows its own gateway by
+  its id. Another gateway on the same computer is still found.
+- **A found speaker without a name is named by its model**, such as "Station Lite 2", not by the firmware's label
+  `YandexIOReceiver-…` or its address.
+
 ## 0.18.4 — 23.11.2026
 
 - **A model's limit is said plainly, with the time it renews.** When DuoWave's daily limit runs out, the speaker says

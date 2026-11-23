@@ -21,20 +21,17 @@
 //! The actions are names the panel knows — `pointLocal`, `brain`, `turbo`, `firewall`, `voice`, `mode` — and each leads
 //! to a screen that is there already.
 
-use std::sync::Arc;
-
-use axum::extract::State;
 use axum::routing::get;
 use axum::Router;
 use serde::Serialize;
 use serde_json::{json, Value};
 
-use crate::app::App;
+use super::Parts;
 use crate::core::availability::State as Way;
 use crate::core::identity::permissions::STATION_VIEW;
 use crate::operations::network_watch::Outages;
 use crate::operations::system_memory::{Counters, Pressure};
-use crate::platform::http::{ok, ApiResult, Caller};
+use crate::platform::http::{ok, ApiResult, Caller, Uses};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -364,23 +361,23 @@ fn turbo_row(turbos: &[TurboFact]) -> Row {
 }
 
 /// The centre's facts now.
-pub fn facts(app: &App) -> Facts {
+pub fn facts(parts: &Parts) -> Facts {
     use crate::helpers::HelperState;
     use crate::placement::service::Role;
-    let on_station = app.placement.role() == Role::Station;
-    let health = serde_json::to_value(app.health.status()).unwrap_or(Value::Null);
-    let placement = app.placement.health_value();
+    let on_station = parts.placement.role() == Role::Station;
+    let health = serde_json::to_value(parts.health.status()).unwrap_or(Value::Null);
+    let placement = parts.placement.health_value();
     let voice = if on_station {
         placement.pointer("/voice/local").and_then(Value::as_bool)
     } else {
         // A computer centre: a station whose voice comes here now.
         health.pointer("/station/connected").and_then(Value::as_bool)
     };
-    let now = app.brain.now(crate::config::ModelProfile::Fast);
+    let now = parts.brain.now(crate::config::ModelProfile::Fast);
     // Who each computer is: the id its entry keeps, else the one its last look read.
     let named: std::collections::BTreeMap<String, String> =
-        app.helpers.list().into_iter().filter_map(|entry| Some((entry.id, entry.helper_id?))).collect();
-    let mut turbos: Vec<TurboFact> = app
+        parts.helpers.list().into_iter().filter_map(|entry| Some((entry.id, entry.helper_id?))).collect();
+    let mut turbos: Vec<TurboFact> = parts
         .helpers
         .views()
         .into_iter()
@@ -425,21 +422,21 @@ pub fn facts(app: &App) -> Facts {
         brain_title: now.title.or(now.model),
         brain_reason: now.reason,
         turbos,
-        own_voice: app.voice.chosen_provider() != crate::config::TtsProvider::Yandex,
-        voice_failed: voice_failed(app),
-        mode: app.modes.current(),
+        own_voice: parts.voice.chosen_provider() != crate::config::TtsProvider::Yandex,
+        voice_failed: voice_failed(parts),
+        mode: parts.modes.current(),
         wifi: if on_station { wifi_fact() } else { None },
     }
 }
 
 /// The Turbo's voice failed lately, with the computer that gives the voice now (the first on the list).
-fn voice_failed(app: &App) -> Option<VoiceFailed> {
+fn voice_failed(parts: &Parts) -> Option<VoiceFailed> {
     let why = turbo_voice_failed(VOICE_FAILED_FOR)?;
-    let giver = app.helpers.offer(crate::helpers::contract::Ability::Voice).and_then(|giver| match giver {
+    let giver = parts.helpers.offer(crate::helpers::contract::Ability::Voice).and_then(|giver| match giver {
         crate::helpers::Giver::Helper(remote) => Some(remote.id().to_string()),
         crate::helpers::Giver::Itself => None,
     });
-    let entry = giver.and_then(|id| app.helpers.entry(&id));
+    let entry = giver.and_then(|id| parts.helpers.entry(&id));
     Some(VoiceFailed {
         blocked_by_windows: blocked_by_windows(&why),
         turbo: entry.as_ref().and_then(|entry| entry.helper_id.clone()),
@@ -448,7 +445,7 @@ fn voice_failed(app: &App) -> Option<VoiceFailed> {
     })
 }
 
-pub fn routes() -> Router<Arc<App>> {
+pub fn routes<S: crate::home::RouteNeeds>() -> Router<S> {
     Router::new()
         .route("/api/v1/home/status", get(status))
         .route("/api/v1/home/turbo-network", axum::routing::post(turbo_network))
@@ -470,11 +467,11 @@ const REPORT_FOR: std::time::Duration = std::time::Duration::from_secs(15 * 60);
 
 /// The Turbo's network, from the computer with the pair's key only.
 async fn turbo_network(
-    State(app): State<Arc<App>>,
+    Uses(parts): Uses<Parts>,
     caller: Caller,
     crate::platform::http::Body(body): crate::platform::http::Body<Value>,
 ) -> ApiResult<Value> {
-    if !crate::placement::peer::from_peer(&caller, app.placement.peer_key()) {
+    if !crate::placement::peer::from_peer(&caller, parts.placement.peer_key()) {
         return Err(crate::platform::http::ApiError::forbidden(crate::tr!(
             "Сеть Турбо сообщает только компьютер дома, ключом пары."
         )));
@@ -499,9 +496,9 @@ fn turbo_says(who: Option<&str>) -> Option<String> {
         .and_then(|report| report.advice.clone())
 }
 
-async fn status(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<Value> {
+async fn status(Uses(parts): Uses<Parts>, caller: Caller) -> ApiResult<Value> {
     caller.permitted(STATION_VIEW)?;
-    let rows = rows(&facts(&app));
+    let rows = rows(&facts(&parts));
     let green = rows.iter().all(|row| row.state == RowState::Ok);
     Ok(ok(json!({ "rows": rows, "green": green })))
 }
@@ -509,6 +506,7 @@ async fn status(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<Value>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::App;
     use crate::settings::definitions::PanelMode;
 
     fn good() -> Facts {
@@ -730,7 +728,7 @@ mod tests {
     async fn the_route_answers_its_rows() {
         let env = crate::config::Env::from_pairs([("STATE_DIR", ""), ("DUOWAVE_ROLE", "station")]);
         let app = App::build(crate::config::Config::for_tests(&env)).unwrap();
-        let rows = rows(&facts(&app));
+        let rows = rows(&facts(&crate::platform::http::Provides::provide(&app)));
         assert_eq!(rows.len(), 5);
         assert_eq!(rows[0].id, "voice");
     }

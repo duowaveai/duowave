@@ -4,7 +4,7 @@
 //! signed in (`/api/v1/bus/call`): the chain is that person's, never more.
 use std::sync::Arc;
 
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, Query};
 use axum::http::StatusCode;
 use axum::routing::{get, post, put};
 use axum::Router;
@@ -16,12 +16,12 @@ use super::danger::DangerWord;
 use super::links::{Link, LinkSource, Mode, Options};
 use super::provider::BusError;
 use super::{Level, Trail};
-use crate::app::App;
 use crate::core::identity::permissions::{use_of, JOURNAL_VIEW, PLUGINS_MANAGE};
-use crate::platform::http::{ok, ApiError, ApiResult, Body, Caller, Zone};
+use crate::platform::http::{ok, ApiError, ApiResult, Body, Caller, Uses, Zone};
+use crate::plugins::PluginHost;
 use crate::skills::capabilities::CapabilityName;
 
-pub fn routes() -> Router<Arc<App>> {
+pub fn routes<S: crate::bus::RouteNeeds>() -> Router<S> {
     Router::new()
         .route("/api/v1/bus", get(overview))
         .route("/api/v1/bus/questions", get(questions))
@@ -69,9 +69,9 @@ fn pattern(text: &str) -> Result<Pattern, ApiError> {
 }
 
 /// Everything the «Связи» screen draws: who is there, the links, the modes, the switches, the questions.
-async fn overview(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<Value> {
+async fn overview(Uses(bus_service): Uses<Arc<crate::bus::Bus>>, caller: Caller) -> ApiResult<Value> {
     admin(&caller)?;
-    let bus = &app.bus;
+    let bus = &bus_service;
     let participants: Vec<Value> = ["app", "system", "device", "files"]
         .iter()
         .filter_map(|kind| bus.provider(kind))
@@ -88,9 +88,9 @@ async fn overview(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<Valu
     })))
 }
 
-async fn questions(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<Value> {
+async fn questions(Uses(bus): Uses<Arc<crate::bus::Bus>>, caller: Caller) -> ApiResult<Value> {
     admin(&caller)?;
-    Ok(ok(json!({ "questions": app.bus.consent.waiting() })))
+    Ok(ok(json!({ "questions": bus.consent.waiting() })))
 }
 
 #[derive(Debug, Deserialize)]
@@ -100,22 +100,21 @@ struct AnswerBody {
 
 /// A person's answer to a question: «да» or «нет».
 async fn answer(
-    State(app): State<Arc<App>>,
+    Uses(bus): Uses<Arc<crate::bus::Bus>>,
     caller: Caller,
     Path(id): Path<String>,
     Body(body): Body<AnswerBody>,
 ) -> ApiResult<Value> {
     admin(&caller)?;
-    let question = app
-        .bus
+    let question = bus
         .answer(&id, body.yes, caller.actor())?
         .ok_or_else(|| ApiError::not_found(crate::tr!("Этого вопроса уже нет: на него ответили или он устарел.")))?;
     Ok(ok(json!({ "question": question, "yes": body.yes })))
 }
 
-async fn links(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<Value> {
+async fn links(Uses(bus): Uses<Arc<crate::bus::Bus>>, caller: Caller) -> ApiResult<Value> {
     admin(&caller)?;
-    Ok(ok(json!({ "links": app.bus.links.all() })))
+    Ok(ok(json!({ "links": bus.links.all() })))
 }
 
 #[derive(Debug, Deserialize)]
@@ -127,7 +126,11 @@ struct LinkBody {
 }
 
 /// A link put by hand: the narrowest for its pair decides, a lower one too («не знает» closes a door).
-async fn put_link(State(app): State<Arc<App>>, caller: Caller, Body(body): Body<LinkBody>) -> ApiResult<Value> {
+async fn put_link(
+    Uses(bus): Uses<Arc<crate::bus::Bus>>,
+    caller: Caller,
+    Body(body): Body<LinkBody>,
+) -> ApiResult<Value> {
     admin(&caller)?;
     let level = body
         .level
@@ -136,18 +139,22 @@ async fn put_link(State(app): State<Arc<App>>, caller: Caller, Body(body): Body<
         .ok_or_else(|| ApiError::bad_request(crate::tr!("level: none, see, listen, call или edit")))?;
     let mut link = Link::new(pattern(&body.from)?, pattern(&body.to)?, level, LinkSource::Owner);
     link.by = caller.principal().map(|principal| principal.name.clone());
-    app.bus.links.grant(link, caller.actor())?;
-    app.bus.changed("link", Address::parse(&body.from).ok().as_ref(), caller.actor());
-    Ok(ok(json!({ "links": app.bus.links.all() })))
+    bus.links.grant(link, caller.actor())?;
+    bus.changed("link", Address::parse(&body.from).ok().as_ref(), caller.actor());
+    Ok(ok(json!({ "links": bus.links.all() })))
 }
 
-async fn remove_link(State(app): State<Arc<App>>, caller: Caller, Body(body): Body<LinkBody>) -> ApiResult<Value> {
+async fn remove_link(
+    Uses(bus): Uses<Arc<crate::bus::Bus>>,
+    caller: Caller,
+    Body(body): Body<LinkBody>,
+) -> ApiResult<Value> {
     admin(&caller)?;
-    let removed = app.bus.links.remove(&pattern(&body.from)?, &pattern(&body.to)?, caller.actor())?;
+    let removed = bus.links.remove(&pattern(&body.from)?, &pattern(&body.to)?, caller.actor())?;
     if removed {
-        app.bus.changed("unlink", Address::parse(&body.from).ok().as_ref(), caller.actor());
+        bus.changed("unlink", Address::parse(&body.from).ok().as_ref(), caller.actor());
     }
-    Ok(ok(json!({ "removed": removed, "links": app.bus.links.all() })))
+    Ok(ok(json!({ "removed": removed, "links": bus.links.all() })))
 }
 
 #[derive(Debug, Deserialize)]
@@ -160,7 +167,11 @@ struct ModeBody {
     mode: Option<String>,
 }
 
-async fn put_mode(State(app): State<Arc<App>>, caller: Caller, Body(body): Body<ModeBody>) -> ApiResult<Value> {
+async fn put_mode(
+    Uses(bus): Uses<Arc<crate::bus::Bus>>,
+    caller: Caller,
+    Body(body): Body<ModeBody>,
+) -> ApiResult<Value> {
     admin(&caller)?;
     let target = body.address.as_deref().map(address).transpose()?;
     let mode = match body.mode.as_deref() {
@@ -169,20 +180,28 @@ async fn put_mode(State(app): State<Arc<App>>, caller: Caller, Body(body): Body<
             Some(Mode::parse(text).ok_or_else(|| ApiError::bad_request(crate::tr!("mode: isolated, rules или free")))?)
         }
     };
-    app.bus.links.set_mode(target.as_ref(), mode, caller.actor())?;
-    app.bus.changed("mode", target.as_ref(), caller.actor());
-    Ok(ok(json!({ "modes": app.bus.links.modes() })))
+    bus.links.set_mode(target.as_ref(), mode, caller.actor())?;
+    bus.changed("mode", target.as_ref(), caller.actor());
+    Ok(ok(json!({ "modes": bus.links.modes() })))
 }
 
-async fn put_options(State(app): State<Arc<App>>, caller: Caller, Body(options): Body<Options>) -> ApiResult<Value> {
+async fn put_options(
+    Uses(bus): Uses<Arc<crate::bus::Bus>>,
+    caller: Caller,
+    Body(options): Body<Options>,
+) -> ApiResult<Value> {
     admin(&caller)?;
-    app.bus.links.set_options(&options, caller.actor())?;
-    app.bus.changed("options", None, caller.actor());
-    Ok(ok(json!({ "options": app.bus.links.options() })))
+    bus.links.set_options(&options, caller.actor())?;
+    bus.changed("options", None, caller.actor());
+    Ok(ok(json!({ "options": bus.links.options() })))
 }
 
 /// The owner's word on a dangerous handle: «всегда можно» for a caller, a mark taken off or put on.
-async fn put_danger(State(app): State<Arc<App>>, caller: Caller, Body(word): Body<DangerWord>) -> ApiResult<Value> {
+async fn put_danger(
+    Uses(bus): Uses<Arc<crate::bus::Bus>>,
+    caller: Caller,
+    Body(word): Body<DangerWord>,
+) -> ApiResult<Value> {
     admin(&caller)?;
     if let Some(mark) = word.mark.as_deref() {
         if mark != "none" && super::danger::Danger::parse(mark).is_none() {
@@ -191,9 +210,9 @@ async fn put_danger(State(app): State<Arc<App>>, caller: Caller, Body(word): Bod
             )));
         }
     }
-    app.bus.links.say_danger(word, caller.actor())?;
-    app.bus.changed("danger", None, caller.actor());
-    Ok(ok(json!({ "dangers": app.bus.links.dangers() })))
+    bus.links.say_danger(word, caller.actor())?;
+    bus.changed("danger", None, caller.actor());
+    Ok(ok(json!({ "dangers": bus.links.dangers() })))
 }
 
 #[derive(Debug, Deserialize)]
@@ -207,18 +226,27 @@ struct JournalQuery {
 }
 
 /// The journal's lines, the newest first: who wrote to whom and how it went — never what.
-async fn journal(State(app): State<Arc<App>>, caller: Caller, Query(query): Query<JournalQuery>) -> ApiResult<Value> {
+async fn journal(
+    Uses(bus): Uses<Arc<crate::bus::Bus>>,
+    caller: Caller,
+    Query(query): Query<JournalQuery>,
+) -> ApiResult<Value> {
     caller.permitted(JOURNAL_VIEW)?;
-    let lines = app.bus.journal.read(query.about.as_deref(), query.before, query.limit.unwrap_or(100));
+    let lines = bus.journal.read(query.about.as_deref(), query.before, query.limit.unwrap_or(100));
     Ok(ok(json!({ "lines": lines })))
 }
 
 /// One app as the «Связи» part of its window shows it: what it can do, what it reaches and is reached by, its mode,
 /// what it asked for, its questions waiting.
-async fn app_view(State(app): State<Arc<App>>, caller: Caller, Path(id): Path<String>) -> ApiResult<Value> {
+async fn app_view(
+    Uses(bus_service): Uses<Arc<crate::bus::Bus>>,
+    Uses(plugins): Uses<Arc<PluginHost>>,
+    caller: Caller,
+    Path(id): Path<String>,
+) -> ApiResult<Value> {
     admin(&caller)?;
     let me = Address::app(&id);
-    let bus = &app.bus;
+    let bus = &bus_service;
     let provider = bus.provider("app").ok_or_else(|| ApiError::not_found(crate::tr!("Приложений здесь нет.")))?;
     let participant = provider
         .participant(&me)
@@ -229,11 +257,11 @@ async fn app_view(State(app): State<Arc<App>>, caller: Caller, Path(id): Path<St
     // A built-in app's rights from its install are links too, though not written as such (the apps' `implicit`):
     // shown with the source «при установке», so the owner sees them and can close one — a link of his own wins.
     let built_in = matches!(
-        app.plugins.origin_of(&id),
+        plugins.origin_of(&id),
         crate::plugins::registry::Origin::System | crate::plugins::registry::Origin::Bundled
     );
     if built_in {
-        if let Some(package) = app.plugins.package(&id) {
+        if let Some(package) = plugins.package(&id) {
             for permission in &package.manifest.permissions {
                 if let crate::plugins::manifest::Permission::Bus { level, pattern } = permission {
                     if !links.iter().any(|link| link.from == exact && &link.to == pattern) {
@@ -246,8 +274,7 @@ async fn app_view(State(app): State<Arc<App>>, caller: Caller, Path(id): Path<St
         }
     }
     let reaches = bus.list(&Trail::app(&id), &me);
-    let asked: Vec<String> = app
-        .plugins
+    let asked: Vec<String> = plugins
         .package(&id)
         .map(|package| {
             package
@@ -285,7 +312,7 @@ struct PreviewQuery {
 /// A card's picture from a folder of the home folder (`picture: {address}`): made small and read as the app, for
 /// the person who looks at the card — the app's link to the folder and the person's own rights both hold.
 async fn preview(
-    State(app): State<Arc<App>>,
+    Uses(bus): Uses<Arc<crate::bus::Bus>>,
     caller: Caller,
     Query(query): Query<PreviewQuery>,
 ) -> Result<axum::response::Response, ApiError> {
@@ -296,7 +323,7 @@ async fn preview(
         .map_err(|error| api_error(error.into()))?;
     let to = address(&query.address)?;
     let input = json!({ "size": query.size.unwrap_or(super::providers::files::preview::SIDE) });
-    let shown = app.bus.call(trail, Address::app(&query.app), to, "preview", input, vec![]).await.map_err(api_error)?;
+    let shown = bus.call(trail, Address::app(&query.app), to, "preview", input, vec![]).await.map_err(api_error)?;
     super::providers::files::routes::jpeg(&shown)
 }
 
@@ -313,7 +340,7 @@ struct CallBody {
 }
 
 /// A letter from a panel face (a card's button, a window) as its own app, for the person signed in.
-async fn call(State(app): State<Arc<App>>, caller: Caller, Body(body): Body<CallBody>) -> ApiResult<Value> {
+async fn call(Uses(bus): Uses<Arc<crate::bus::Bus>>, caller: Caller, Body(body): Body<CallBody>) -> ApiResult<Value> {
     let principal = caller.permitted(&use_of(CapabilityName::Plugins))?.clone();
     let from = address(&body.from)?;
     if from.kind() != super::address::APP || from.path() != from.name().unwrap_or_default() {
@@ -327,7 +354,6 @@ async fn call(State(app): State<Arc<App>>, caller: Caller, Body(body): Body<Call
         .from_afar(caller.zone == Zone::Remote)
         .entering(&id)
         .map_err(|error| api_error(error.into()))?;
-    let result =
-        app.bus.call(trail, from, address(&body.to)?, &body.handle, body.input, files).await.map_err(api_error)?;
+    let result = bus.call(trail, from, address(&body.to)?, &body.handle, body.input, files).await.map_err(api_error)?;
     Ok(ok(json!({ "result": result })))
 }

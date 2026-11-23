@@ -33,3 +33,35 @@ pub mod watch;
 pub use availability::{AvailabilityService, HelperSource, PlacementSource};
 pub use routes::router;
 pub use service::PlacementService;
+
+#[cfg(feature = "pc")]
+crate::route_needs!(
+    std::sync::Arc<PlacementService>,
+    std::sync::Arc<crate::config::Config>,
+    std::sync::Arc<crate::storage::Db>,
+    std::sync::Arc<crate::access::AccessService>,
+    std::sync::Arc<AvailabilityService>,
+    std::sync::Arc<crate::core::identity::home::Identity>,
+    std::sync::Arc<crate::home::join::Joins>,
+    std::sync::Arc<crate::plugins::files::PluginFiles>,
+    std::sync::Arc<crate::secrets::SecretsService>,
+    crate::core::events::EventBus,
+    std::sync::Arc<watch::StationGateways>,
+    std::sync::Arc<crate::stations::connect::station_connect::StationConnectService>,
+    std::sync::Arc<moves::MovesService>,
+    std::sync::Arc<crate::helpers::clients::Clients>,
+    std::sync::Arc<crate::helpers::link_serve::LinkServer>,
+);
+#[cfg(not(feature = "pc"))]
+crate::route_needs!(
+    std::sync::Arc<PlacementService>,
+    std::sync::Arc<crate::config::Config>,
+    std::sync::Arc<crate::storage::Db>,
+    std::sync::Arc<crate::access::AccessService>,
+    std::sync::Arc<AvailabilityService>,
+    std::sync::Arc<crate::core::identity::home::Identity>,
+    std::sync::Arc<crate::home::join::Joins>,
+    std::sync::Arc<crate::plugins::files::PluginFiles>,
+    std::sync::Arc<crate::secrets::SecretsService>,
+    crate::core::events::EventBus,
+);

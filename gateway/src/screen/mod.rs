@@ -20,6 +20,8 @@ use tokio::sync::watch;
 use crate::core::events::{EventBus, GatewayEvent};
 use crate::utils::time::now_iso;
 
+crate::route_needs!(Arc<Screen>);
+
 /// No more windows at once: past it the oldest temporary one goes.
 pub const MOST: usize = 8;
 

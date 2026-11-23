@@ -173,15 +173,33 @@ pub fn stations_in(records: &[DnsRecord], from: &str, service: &str) -> Option<F
     let label = target.strip_suffix(&format!(".{service}")).unwrap_or(target);
     Some(FoundStation {
         address: from.to_string(),
-        name: (!label.is_empty()).then(|| label.to_string()),
+        name: (!label.is_empty() && !firmware_label(label)).then(|| label.to_string()),
         txt: txt.unwrap_or_default(),
         ssh: None,
     })
 }
 
+/// The instance a station's firmware announces by itself, `YandexIOReceiver-<serial>`: no name a person gave — the panel
+/// names such a station by its model («Колонка Лайт 2»), never by this (the first steps, 24.11).
+fn firmware_label(label: &str) -> bool {
+    label.get(..17).is_some_and(|head| head.eq_ignore_ascii_case("YandexIOReceiver-"))
+}
+
 /// Asks the home network for stations for `ms` and returns what answered, one entry per address.
 pub async fn discover_stations(ms: u64) -> Vec<FoundStation> {
     ask(&[SocketAddr::V4(SocketAddrV4::new(MDNS_GROUP, MDNS_PORT))], true, Duration::from_millis(ms)).await
+}
+
+/// Whether a DuoWave gateway the search heard is this gateway itself: by its id when the answer gives one, at any
+/// address — the name is not to be trusted, it is said in the language of whoever reads it (24.11: the announcement
+/// said «Mac computer» and the panel «Компьютер Mac», and the first steps offered a fresh Mac its own home as one
+/// found). An answer without an id (a gateway that announces none) is this one at an address of this computer under
+/// its name, as before.
+pub fn is_this_gateway(home: &FoundStation, own_addresses: &[String], id: &str, name: &str) -> bool {
+    match home.txt.get("id").filter(|found| !found.is_empty()) {
+        Some(found) => !id.is_empty() && found == id,
+        None => own_addresses.contains(&home.address) && home.txt.get("name").map(String::as_str) == Some(name),
+    }
 }
 
 /// DuoWave gateways that announce themselves (computers, servers) for `ms`: their TXT has `role`, `port`, `version`,
@@ -483,6 +501,30 @@ mod tests {
     use tokio::io::AsyncWriteExt;
     use tokio::net::TcpListener;
 
+    /// The search drops this gateway's own announcement by its id, whatever name it was said in and at whichever
+    /// address it came; another gateway on this very computer (a pretend station, a second DuoWave) is a home to find;
+    /// an answer without an id is this gateway only at an address of this computer under its name.
+    #[test]
+    fn the_search_knows_its_own_announcement_by_id_whatever_its_name() {
+        let found = |address: &str, txt: &[(&str, &str)]| FoundStation {
+            address: address.to_string(),
+            name: None,
+            txt: txt.iter().map(|(key, value)| (key.to_string(), value.to_string())).collect(),
+            ssh: None,
+        };
+        let own = vec!["192.0.2.10".to_string()];
+        let (id, name) = ("gateway-self-id", "Компьютер Mac");
+        let mine = |home: &FoundStation| is_this_gateway(home, &own, id, name);
+        assert!(mine(&found("192.0.2.10", &[("id", id), ("name", "Mac computer")])));
+        assert!(mine(&found("100.64.0.7", &[("id", id), ("name", "Mac computer")])));
+        assert!(!mine(&found("192.0.2.10", &[("id", "another-gateway"), ("name", name)])));
+        assert!(mine(&found("192.0.2.10", &[("name", name)])));
+        assert!(!mine(&found("192.0.2.10", &[("name", "Mac computer")])));
+        assert!(!mine(&found("192.0.2.20", &[("name", name)])));
+        // Without a record of its own yet this gateway has no id, and an answer with one is never it.
+        assert!(!is_this_gateway(&found("192.0.2.10", &[("id", id), ("name", name)]), &own, "", name));
+    }
+
     #[test]
     fn a_connect_error_says_why_nothing_answered() {
         use std::io::{Error, ErrorKind};
@@ -538,6 +580,19 @@ mod tests {
 
     fn entries(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
         pairs.iter().map(|(key, value)| (key.to_string(), value.to_string())).collect()
+    }
+
+    #[test]
+    fn the_firmwares_own_instance_is_no_name() {
+        let found = |instance: &str| {
+            let target = format!("{instance}.{YANDEX_SERVICE}");
+            let records = [DnsRecord::Ptr { name: YANDEX_SERVICE.into(), target }];
+            stations_in(&records, "192.168.1.101", YANDEX_SERVICE).unwrap().name
+        };
+        assert_eq!(found("YandexIOReceiver-FF98F0293ACA2B21"), None);
+        assert_eq!(found("yandexioreceiver-ff98"), None);
+        assert_eq!(found("Кухня").as_deref(), Some("Кухня"));
+        assert_eq!(found("YandexIO"), Some("YandexIO".into()), "a short one is someone's");
     }
 
     #[test]

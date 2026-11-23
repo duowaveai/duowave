@@ -209,22 +209,25 @@ impl App {
         // The devices of the home: the panel's top line hears when they move.
         crate::home::watch(&self.events);
         // The home's character and its voice: the Турбо that speaks hears it (stage 2).
-        crate::home::character::watch(self);
+        crate::home::character::watch(&self.events, crate::links::http::home_parts(self));
         // The character's voice up on the Турбо: the station switches to the computer's voice by itself (item 70).
-        crate::models::home_voice::watch_follow(self);
-        crate::home::telegram::watch(self);
-        crate::home::copy::watch(self);
+        let weak = Arc::downgrade(self);
+        crate::models::home_voice::watch_follow(&self.events, move || {
+            weak.upgrade().map(|app| crate::platform::http::Provides::provide(&app))
+        });
+        crate::home::telegram::watch(&self.events, crate::links::http::home_parts(self));
+        crate::home::copy::watch(&self.events, crate::links::http::home_parts(self));
         // «Поиск дома» (docs/plans/home-setup-flow.md, stage 6): this computer or server says what it is on the home
         // network — a centre, a Turbo, an ear — so another computer finds its home on any port.
         // Never by a pretend gateway: the home network does not hear of it (docs/plans/pretend-stations.md).
         #[cfg(feature = "pc")]
         if self.config.placement.pretend.is_none() {
-            crate::home::announce::start(self.clone());
+            crate::home::announce::start(crate::platform::http::Provides::provide(self));
         }
         // The apps' faces here, their code on the Турбо (stage 5б).
-        crate::home::apps::watch(self);
+        crate::home::apps::watch(&self.events, crate::links::http::home_parts(self));
         // A second station as the centre's ear: its copy of the home (stage 4).
-        crate::home::ear::start(self);
+        crate::home::ear::start(crate::links::http::home_parts(self));
         // The station's own way out (operations/network_watch.rs): its Wi-Fi drops seen and kept for «Состояние дома»,
         // and the phrase it says at once without it, recorded while it had it (gateway/uniproxy/offline_phrase.rs).
         #[cfg(feature = "station")]
@@ -1839,8 +1842,10 @@ impl App {
         #[cfg(feature = "pc")]
         {
             let weak = Arc::downgrade(&app);
-            app.placement
-                .set_centre(Arc::new(move || weak.upgrade().and_then(|app| crate::home::devices::link_centre(&app))));
+            app.placement.set_centre(Arc::new(move || {
+                weak.upgrade()
+                    .and_then(|app| crate::home::devices::link_centre(&crate::platform::http::Provides::provide(&app)))
+            }));
         }
         Ok(app)
     }
@@ -1902,6 +1907,18 @@ impl App {
         self.sessions.stop();
         // The streams relayed to the stations end: endless, they would hold the close.
         self.streams.close();
+    }
+}
+
+/// The gateway behind a caller — `caller.app()` — for the modules that still take it whole (their `-> app` in
+/// gateway/layers.json). A module whose routes say what they use (src/platform/http/state.rs) stops needing it.
+pub trait CallerApp {
+    fn app(&self) -> &App;
+}
+
+impl CallerApp for crate::platform::http::Caller {
+    fn app(&self) -> &App {
+        self.gate().as_any().downcast_ref::<App>().expect("a caller is checked against this gateway itself")
     }
 }
 
@@ -1980,7 +1997,7 @@ pub fn router(app: Arc<App>) -> Router {
         // never went through Express's middleware. The upgrade has its own checks.
         .layer(axum::middleware::from_fn_with_state(
             app.clone(),
-            crate::gateway::uniproxy::uniproxy_server::station_socket,
+            crate::gateway::uniproxy::uniproxy_server::station_socket::<Arc<App>>,
         ));
     // The link's door for a proxy on this computer (a plain upgrade to /home/v1/link), outermost: the proxy passes the
     // site's name, which the Host check does not know.
@@ -2025,7 +2042,7 @@ pub async fn serve(
     #[cfg(feature = "pc")]
     crate::helpers::link_serve::raise_open_files();
     #[cfg(feature = "pc")]
-    let link = crate::helpers::link_serve::bind(&app, &listener).await;
+    let link = crate::helpers::link_serve::bind(&app.link, &app.config, &listener).await;
     let link_stop = tokio_util::sync::CancellationToken::new();
     let stop_link = link_stop.clone();
     // Cancelled once the stop began: from then on the open requests have DRAIN_LIMIT.
@@ -2100,7 +2117,7 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
     app.start().await?;
     #[cfg(feature = "pc")]
     if let Some(pretend) = &pretend {
-        crate::stations::pretend::start(app.clone(), pretend).await;
+        crate::stations::pretend::start(&app.identity, pretend).await;
     }
     let listener = TcpListener::bind((bind, port)).await?;
     tracing::info!("HTTP server running on {bind}:{port}");

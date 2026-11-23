@@ -8,17 +8,15 @@
 
 use std::sync::Arc;
 
-use axum::extract::State;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use crate::app::App;
 use crate::bus::address::{Address, PERSON};
 use crate::bus::providers::files::PAGE_MOST;
 use crate::bus::routes::api_error;
 use crate::bus::{BusError, Trail};
 use crate::core::identity::permissions::use_of;
-use crate::platform::http::{ok, ApiError, ApiResult, Body, Caller, Zone};
+use crate::platform::http::{ok, ApiError, ApiResult, Body, Caller, Uses, Zone};
 use crate::skills::capabilities::CapabilityName;
 
 /// Files by their addresses in one request at most.
@@ -71,7 +69,11 @@ fn answered(address: &str, answer: Result<Value, BusError>) -> Value {
     }
 }
 
-pub async fn links(State(app): State<Arc<App>>, caller: Caller, Body(body): Body<LinksBody>) -> ApiResult<Value> {
+pub async fn links(
+    Uses(bus): Uses<Arc<crate::bus::Bus>>,
+    caller: Caller,
+    Body(body): Body<LinksBody>,
+) -> ApiResult<Value> {
     // No one signed in — no answer at all, not a list of refusals.
     caller.permitted(&use_of(CapabilityName::Plugins))?;
     let app_id = body.app.as_deref().filter(|id| !id.is_empty());
@@ -84,7 +86,7 @@ pub async fn links(State(app): State<Arc<App>>, caller: Caller, Body(body): Body
         let (trail, from) = sender(&caller, app_id)?;
         let mut input = input;
         input["names"] = json!(body.names);
-        let answer = app.bus.call(trail, from, to.clone(), "media", input, vec![]).await.map_err(api_error)?;
+        let answer = bus.call(trail, from, to.clone(), "media", input, vec![]).await.map_err(api_error)?;
         let links: Vec<Value> = answer
             .get("links")
             .and_then(Value::as_array)
@@ -104,7 +106,7 @@ pub async fn links(State(app): State<Arc<App>>, caller: Caller, Body(body): Body
     }
     // A letter each, each its own chain: a chain may send 32 letters in all.
     let asked = body.addresses.iter().map(|address| {
-        let (app, input) = (app.clone(), input.clone());
+        let (bus, input) = (bus.clone(), input.clone());
         let sent = sender(&caller, app_id);
         async move {
             let to = match Address::parse(address) {
@@ -112,7 +114,7 @@ pub async fn links(State(app): State<Arc<App>>, caller: Caller, Body(body): Body
                 Err(error) => return json!({ "address": address, "error": error }),
             };
             match sent {
-                Ok((trail, from)) => answered(address, app.bus.call(trail, from, to, "media", input, vec![]).await),
+                Ok((trail, from)) => answered(address, bus.call(trail, from, to, "media", input, vec![]).await),
                 Err(error) => json!({ "address": address, "error": error.to_string() }),
             }
         }

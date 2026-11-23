@@ -4,21 +4,24 @@
 use std::sync::Arc;
 
 use axum::body::Body as AxumBody;
-use axum::extract::{Path, State};
+use axum::extract::Path;
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::Response;
 use axum::routing::{get, patch};
 use axum::Router;
 use serde_json::Value;
 
-use crate::app::App;
+use crate::config::Config;
 use crate::core::identity::permissions::{STATIONS_MANAGE, STATION_VIEW};
-use crate::platform::http::{ok, ApiError, ApiResult, Body, Caller};
+use crate::platform::http::{ok, ApiError, ApiResult, Body, Caller, Uses};
 use crate::stations::connect::quasar_config::{gateway_addresses, parse_gateway_host};
+#[cfg(feature = "pc")]
+use crate::stations::connect::station_connect::StationConnectService;
 use crate::stations::connect::station_scripts::{connect_script, restore_script, uninstall_script};
 use crate::stations::service::StationEntry;
+use crate::stations::StationsService;
 
-pub fn router() -> Router<Arc<App>> {
+pub fn router<S: crate::stations::RouteNeeds>() -> Router<S> {
     let router = Router::new()
         .route("/api/v1/stations", get(list))
         .route("/api/v1/stations/{device}", patch(update).delete(remove))
@@ -38,41 +41,41 @@ pub fn router() -> Router<Arc<App>> {
     router
 }
 
-async fn list(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<Vec<StationEntry>> {
+async fn list(Uses(stations): Uses<Arc<StationsService>>, caller: Caller) -> ApiResult<Vec<StationEntry>> {
     caller.permitted(STATION_VIEW)?;
-    Ok(ok(app.stations.list()))
+    Ok(ok(stations.list()))
 }
 
 /// Approve, block or name a station; set its look (model, color — null goes back to the default; sticker — a Lite 2's).
 async fn update(
-    State(app): State<Arc<App>>,
+    Uses(stations): Uses<Arc<StationsService>>,
     caller: Caller,
     Path(device): Path<String>,
     Body(body): Body<Value>,
 ) -> ApiResult<StationEntry> {
     caller.permitted(STATIONS_MANAGE)?;
-    Ok(ok(app.stations.update(&device, &body, caller.actor())?))
+    Ok(ok(stations.update(&device, &body, caller.actor())?))
 }
 
 /// Forget a station: it is a stranger again, approved only as the policy says.
 async fn remove(
-    State(app): State<Arc<App>>,
+    Uses(stations): Uses<Arc<StationsService>>,
     caller: Caller,
     Path(device): Path<String>,
 ) -> Result<StatusCode, ApiError> {
     caller.permitted(STATIONS_MANAGE)?;
-    app.stations.remove(&device, caller.actor())?;
+    stations.remove(&device, caller.actor())?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 /// The scripts for «Сделаю сам», fetched by the station itself:
 ///   ssh -p 2222 root@<station> 'wget -qO- http://<gateway>/station/connect.sh | sh'
 /// The gateway's address in connect.sh is the one the station asked by: what it can reach. Nothing secret in them.
-async fn connect_sh(State(app): State<Arc<App>>, headers: HeaderMap) -> Result<Response, ApiError> {
+async fn connect_sh(Uses(config): Uses<Arc<Config>>, headers: HeaderMap) -> Result<Response, ApiError> {
     let host = headers.get(header::HOST).and_then(|value| value.to_str().ok()).unwrap_or("");
     let gateway = parse_gateway_host(host)
         .ok_or_else(|| ApiError::bad_request("the gateway is asked by an address the station cannot dial"))?;
-    let script = connect_script(&gateway_addresses(&gateway, &app.config.gateway.uniproxy_path))
+    let script = connect_script(&gateway_addresses(&gateway, &config.gateway.uniproxy_path))
         .map_err(|error| ApiError::internal(error.to_string()))?;
     Ok(plain_text(script))
 }
@@ -124,20 +127,24 @@ mod connect {
     }
 
     /// Stations that answer mDNS on the home network (none inside a container's bridge: type the address).
-    pub(super) async fn discover(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<Discovered> {
+    pub(super) async fn discover(
+        Uses(station_connect): Uses<Arc<StationConnectService>>,
+        Uses(identity): Uses<Arc<crate::core::identity::home::Identity>>,
+        caller: Caller,
+    ) -> ApiResult<Discovered> {
         caller.permitted(STATIONS_MANAGE)?;
         let (stations, homes) =
-            tokio::join!(app.station_connect.discover(), crate::stations::connect::discovery::discover_homes(2000));
+            tokio::join!(station_connect.discover(), crate::stations::connect::discovery::discover_homes(2000));
         let interfaces = host_interfaces();
         // This computer answers its own question too: not a home to find.
         let own: Vec<String> =
             interfaces.iter().filter(|entry| entry.ipv4).map(|entry| entry.address.clone()).collect();
-        let me = app.identity.as_helper().name;
+        let me = identity.as_helper();
         let homes: Vec<FoundStation> = homes
             .into_iter()
-            .filter(|home| !(own.contains(&home.address) && home.txt.get("name") == Some(&me)))
+            .filter(|home| !crate::stations::connect::discovery::is_this_gateway(home, &own, &me.id, &me.name))
             .collect();
-        let gateway = app.station_connect.home_addresses(&interfaces, in_container());
+        let gateway = station_connect.home_addresses(&interfaces, in_container());
         tracing::info!(
             "station search: {} found; this computer's adapters: {}",
             stations.len(),
@@ -157,18 +164,21 @@ mod connect {
         } else {
             None
         };
-        Ok(ok(Discovered { stations, homes, gateway, port: app.station_connect.port(), why_none }))
+        Ok(ok(Discovered { stations, homes, gateway, port: station_connect.port(), why_none }))
     }
 
     /// Connected stations that still dial this computer's old port (PORT changed since): the panel's banner.
-    pub(super) async fn moved(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<Vec<MovedGateway>> {
+    pub(super) async fn moved(
+        Uses(station_connect): Uses<Arc<StationConnectService>>,
+        caller: Caller,
+    ) -> ApiResult<Vec<MovedGateway>> {
         caller.permitted(STATIONS_MANAGE)?;
-        Ok(ok(app.station_connect.moved(&host_interfaces(), in_container())))
+        Ok(ok(station_connect.moved(&host_interfaces(), in_container())))
     }
 
     /// The first look at one station: reading only, with the admin's consent in the panel.
     pub(super) async fn check(
-        State(app): State<Arc<App>>,
+        Uses(station_connect): Uses<Arc<StationConnectService>>,
         caller: Caller,
         Body(body): Body<Value>,
     ) -> ApiResult<StationCheck> {
@@ -176,29 +186,29 @@ mod connect {
         let address = station_address(&body)?;
         let gateway = match body.get("gateway") {
             None => None,
-            Some(_) => Some(gateway_host(&body, "gateway", app.station_connect.port())?),
+            Some(_) => Some(gateway_host(&body, "gateway", station_connect.port())?),
         };
         // The station's own root password, when the empty one was refused: kept sealed, never logged or answered.
         let password = body.get("password").and_then(Value::as_str);
-        Ok(ok(app.station_connect.check_with_password(&address, gateway.as_ref(), password).await?))
+        Ok(ok(station_connect.check_with_password(&address, gateway.as_ref(), password).await?))
     }
 
     /// «Подключить»: a job the panel follows at jobs/:id.
     pub(super) async fn start(
-        State(app): State<Arc<App>>,
+        Uses(station_connect): Uses<Arc<StationConnectService>>,
         caller: Caller,
         Body(body): Body<Value>,
     ) -> Result<Api<ConnectJob>, ApiError> {
         caller.permitted(STATIONS_MANAGE)?;
         let address = station_address(&body)?;
-        let gateway = gateway_host(&body, "gateway", app.station_connect.port())?;
-        let job = app.station_connect.connect(&address, &gateway, caller.actor())?;
+        let gateway = gateway_host(&body, "gateway", station_connect.port())?;
+        let job = station_connect.connect(&address, &gateway, caller.actor())?;
         Ok(Api(StatusCode::ACCEPTED, job))
     }
 
     /// «Вернуть к Яндексу»: the addresses the station had before the gateway.
     pub(super) async fn restore(
-        State(app): State<Arc<App>>,
+        Uses(station_connect): Uses<Arc<StationConnectService>>,
         caller: Caller,
         Body(body): Body<Value>,
     ) -> Result<Api<ConnectJob>, ApiError> {
@@ -209,25 +219,25 @@ mod connect {
         } else {
             RestoreTo::Yandex
         };
-        let job = app.station_connect.restore(&address, to, caller.actor())?;
+        let job = station_connect.restore(&address, to, caller.actor())?;
         Ok(Api(StatusCode::ACCEPTED, job))
     }
 
     /// «Удалить DuoWave с колонки»: uninstall.sh over SSH, a check that nothing of ours is left, a reboot.
     pub(super) async fn uninstall(
-        State(app): State<Arc<App>>,
+        Uses(station_connect): Uses<Arc<StationConnectService>>,
         caller: Caller,
         Body(body): Body<Value>,
     ) -> Result<Api<ConnectJob>, ApiError> {
         caller.permitted(STATIONS_MANAGE)?;
         let address = station_address(&body)?;
-        let job = app.station_connect.uninstall(&address, caller.actor())?;
+        let job = station_connect.uninstall(&address, caller.actor())?;
         Ok(Api(StatusCode::ACCEPTED, job))
     }
 
     /// «Выключить» another mod on the station by its own switch: `{address, id}`, the id from the look's list.
     pub(super) async fn turn_off(
-        State(app): State<Arc<App>>,
+        Uses(station_connect): Uses<Arc<StationConnectService>>,
         caller: Caller,
         Body(body): Body<Value>,
     ) -> ApiResult<Value> {
@@ -237,17 +247,17 @@ mod connect {
             .get("id")
             .and_then(Value::as_str)
             .ok_or_else(|| ApiError::bad_request(crate::tr!("Не сказано, какой мод выключить.")))?;
-        app.station_connect.turn_off(&address, addon, caller.actor()).await?;
+        station_connect.turn_off(&address, addon, caller.actor()).await?;
         Ok(ok(serde_json::json!({ "turnedOff": addon })))
     }
 
     pub(super) async fn job(
-        State(app): State<Arc<App>>,
+        Uses(station_connect): Uses<Arc<StationConnectService>>,
         caller: Caller,
         Path(id): Path<String>,
     ) -> ApiResult<ConnectJob> {
         caller.permitted(STATIONS_MANAGE)?;
-        Ok(ok(app.station_connect.job(&id)?))
+        Ok(ok(station_connect.job(&id)?))
     }
 
     fn station_address(body: &Value) -> Result<String, ApiError> {

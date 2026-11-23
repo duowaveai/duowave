@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use axum::extract::{DefaultBodyLimit, Path, State};
+use axum::extract::{DefaultBodyLimit, Path};
 use axum::http::StatusCode;
 use axum::routing::{delete, get, patch, post, put};
 use axum::Router;
@@ -16,17 +16,21 @@ use super::auth_service::{LoginResult, SetupRefused, SignedIn};
 use super::passwords::password_problem;
 use super::users_repository::PersonView;
 use super::users_service::MAX_NAME;
-use super::{audit_service, js_prefix};
-use crate::app::App;
+use super::{audit_service, js_prefix, AccessService};
+use crate::config::Config;
 use crate::core::identity::permissions::{PERMISSIONS, STATION_VIEW, USERS_MANAGE};
 use crate::core::identity::policy::panel_permissions;
 use crate::core::identity::principal::PrincipalKind;
 use crate::core::identity::roles::{Role, ROLES};
-use crate::platform::http::{created, ok, ApiError, ApiResult, Body, Caller, Zone};
+use crate::platform::http::{created, ok, ApiError, ApiResult, Body, Caller, Provides, RouteState, Uses, Zone};
 use crate::settings::definitions::Household;
 use crate::skills::capabilities::CAPABILITY_NAMES;
 
-pub fn routes() -> Router<Arc<App>> {
+/// The access routes use the access services and the configuration (PANEL_REMOTE), nothing else of the gateway.
+pub fn routes<S>() -> Router<S>
+where
+    S: RouteState + Provides<Arc<AccessService>> + Provides<Arc<Config>>,
+{
     Router::new()
         .route("/api/v1/auth/state", get(state))
         .route("/api/v1/auth/setup", post(setup))
@@ -69,8 +73,8 @@ struct PanelState {
 }
 
 /// Show the wizard, the login screen, or straight in.
-async fn state(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<PanelState> {
-    let auth = &app.access.auth;
+async fn state(Uses(access): Uses<Arc<AccessService>>, caller: Caller) -> ApiResult<PanelState> {
+    let auth = &access.auth;
     let configured = auth.configured()?;
     Ok(ok(PanelState {
         configured,
@@ -82,9 +86,9 @@ async fn state(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<PanelSt
 
 /// The wizard: the first password makes the admin. Only while nobody exists, only from home; from another device
 /// than this computer, with the code from the gateway's log — wrong codes counted per source as passwords are.
-async fn setup(State(app): State<Arc<App>>, caller: Caller, Body(body): Input) -> ApiResult<SignedIn> {
+async fn setup(Uses(access): Uses<Arc<AccessService>>, caller: Caller, Body(body): Input) -> ApiResult<SignedIn> {
     caller.zone_at_least(Zone::Home)?;
-    let auth = &app.access.auth;
+    let auth = &access.auth;
     if caller.zone != Zone::Local {
         match auth.check_setup_code(body.get("code"), &caller.source) {
             Ok(()) => {}
@@ -112,13 +116,18 @@ async fn setup(State(app): State<Arc<App>>, caller: Caller, Body(body): Input) -
     }
 }
 
-async fn login(State(app): State<Arc<App>>, caller: Caller, Body(body): Input) -> ApiResult<SignedIn> {
-    if caller.zone == Zone::Remote && !app.config.gateway.panel_remote {
+async fn login(
+    Uses(access): Uses<Arc<AccessService>>,
+    Uses(config): Uses<Arc<Config>>,
+    caller: Caller,
+    Body(body): Input,
+) -> ApiResult<SignedIn> {
+    if caller.zone == Zone::Remote && !config.gateway.panel_remote {
         return Err(ApiError::forbidden(crate::tr!("Вход вне дома выключен (PANEL_REMOTE).")));
     }
     let name = body.get("name").and_then(Value::as_str);
     let password = body.get("password").and_then(Value::as_str).unwrap_or("");
-    match app.access.auth.login(name, password, &caller.source).await? {
+    match access.auth.login(name, password, &caller.source).await? {
         LoginResult::Ok(signed_in) => Ok(ok(*signed_in)),
         LoginResult::Throttled { wait_ms } => Err(too_many_tries(wait_ms)),
         LoginResult::Wrong => Err(ApiError::unauthorized(crate::tr!("Неверное имя или пароль."))),
@@ -148,20 +157,20 @@ async fn me(caller: Caller) -> ApiResult<Me> {
 }
 
 /// A new password for oneself; the other sessions end, this one gets a fresh token.
-async fn password(State(app): State<Arc<App>>, caller: Caller, Body(body): Input) -> ApiResult<Value> {
+async fn password(Uses(access): Uses<Arc<AccessService>>, caller: Caller, Body(body): Input) -> ApiResult<Value> {
     let principal = caller.signed_in()?.clone();
-    app.access.users.change_own_password(&principal, body.get("current"), body.get("next")).await?;
-    let token = app.access.auth.reissue(&principal.id)?.ok_or_else(|| ApiError::unauthorized("Unauthorized"))?;
+    access.users.change_own_password(&principal, body.get("current"), body.get("next")).await?;
+    let token = access.auth.reissue(&principal.id)?.ok_or_else(|| ApiError::unauthorized("Unauthorized"))?;
     Ok(ok(json!({ "token": token })))
 }
 
 /// «Выйти везде»: all of one's sessions end, this one too.
-async fn logout_everywhere(State(app): State<Arc<App>>, caller: Caller) -> Result<StatusCode, ApiError> {
+async fn logout_everywhere(Uses(access): Uses<Arc<AccessService>>, caller: Caller) -> Result<StatusCode, ApiError> {
     let principal = caller.signed_in()?;
     if principal.kind != PrincipalKind::User {
         return Err(ApiError::forbidden(crate::tr!("Это для людей, не для ключей.")));
     }
-    app.access.users.sign_out_everywhere(&principal.id, caller.actor())?;
+    access.users.sign_out_everywhere(&principal.id, caller.actor())?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -221,75 +230,87 @@ async fn catalog(caller: Caller) -> ApiResult<Catalog> {
     }))
 }
 
-async fn list_people(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<Vec<PersonView>> {
+async fn list_people(Uses(access): Uses<Arc<AccessService>>, caller: Caller) -> ApiResult<Vec<PersonView>> {
     caller.permitted(USERS_MANAGE)?;
-    Ok(ok(app.access.users.list()?))
+    Ok(ok(access.users.list()?))
 }
 
-async fn add_person(State(app): State<Arc<App>>, caller: Caller, Body(body): Input) -> ApiResult<PersonView> {
+async fn add_person(
+    Uses(access): Uses<Arc<AccessService>>,
+    caller: Caller,
+    Body(body): Input,
+) -> ApiResult<PersonView> {
     caller.permitted(USERS_MANAGE)?;
-    Ok(created(app.access.users.create(&body, caller.actor()).await?))
+    Ok(created(access.users.create(&body, caller.actor()).await?))
 }
 
 async fn update_person(
-    State(app): State<Arc<App>>,
+    Uses(access): Uses<Arc<AccessService>>,
     caller: Caller,
     Path(id): Path<String>,
     Body(body): Input,
 ) -> ApiResult<PersonView> {
     caller.permitted(USERS_MANAGE)?;
-    Ok(ok(app.access.users.update(&id, &body, caller.actor()).await?))
+    Ok(ok(access.users.update(&id, &body, caller.actor()).await?))
 }
 
 async fn remove_person(
-    State(app): State<Arc<App>>,
+    Uses(access): Uses<Arc<AccessService>>,
     caller: Caller,
     Path(id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
     caller.permitted(USERS_MANAGE)?;
-    app.access.users.remove(&id, caller.actor())?;
+    access.users.remove(&id, caller.actor())?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 async fn sign_out_person(
-    State(app): State<Arc<App>>,
+    Uses(access): Uses<Arc<AccessService>>,
     caller: Caller,
     Path(id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
     caller.permitted(USERS_MANAGE)?;
-    app.access.users.sign_out_everywhere(&id, caller.actor())?;
+    access.users.sign_out_everywhere(&id, caller.actor())?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 /// The voice of the house while nobody is recognised: its role and restrictions.
-async fn household(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<Household> {
+async fn household(Uses(access): Uses<Arc<AccessService>>, caller: Caller) -> ApiResult<Household> {
     caller.permitted(STATION_VIEW)?;
-    Ok(ok(app.access.household.view()))
+    Ok(ok(access.household.view()))
 }
 
-async fn set_household(State(app): State<Arc<App>>, caller: Caller, Body(body): Input) -> ApiResult<Household> {
+async fn set_household(
+    Uses(access): Uses<Arc<AccessService>>,
+    caller: Caller,
+    Body(body): Input,
+) -> ApiResult<Household> {
     caller.permitted(USERS_MANAGE)?;
-    Ok(ok(app.access.household.set(&body, caller.actor())?))
+    Ok(ok(access.household.set(&body, caller.actor())?))
 }
 
-async fn api_keys(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<Vec<ApiKeyView>> {
+async fn api_keys(Uses(access): Uses<Arc<AccessService>>, caller: Caller) -> ApiResult<Vec<ApiKeyView>> {
     caller.permitted(USERS_MANAGE)?;
-    Ok(ok(app.access.keys.list()?))
+    Ok(ok(access.keys.list()?))
 }
 
 /// A key for a script or an agent; its secret is in this answer only.
-async fn create_key(State(app): State<Arc<App>>, caller: Caller, Body(body): Input) -> ApiResult<CreatedKey> {
+async fn create_key(
+    Uses(access): Uses<Arc<AccessService>>,
+    caller: Caller,
+    Body(body): Input,
+) -> ApiResult<CreatedKey> {
     caller.permitted(USERS_MANAGE)?;
-    Ok(created(app.access.keys.create(&body, caller.actor())?))
+    Ok(created(access.keys.create(&body, caller.actor())?))
 }
 
 async fn revoke_key(
-    State(app): State<Arc<App>>,
+    Uses(access): Uses<Arc<AccessService>>,
     caller: Caller,
     Path(id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
     caller.permitted(USERS_MANAGE)?;
-    app.access.keys.revoke(&id, caller.actor())?;
+    access.keys.revoke(&id, caller.actor())?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -304,6 +325,7 @@ mod tests {
     use tower::ServiceExt;
 
     use super::*;
+    use crate::app::App;
     use crate::config::{Config, Env};
 
     /// A request as it comes over the network from `from`.

@@ -24,9 +24,14 @@ pub use persona_service::PersonaService;
 pub use phrase_splitter::PhraseSplitter;
 pub use system_prompt::Channel;
 
-use crate::app::App;
+crate::route_needs!(
+    Arc<brain::BrainService>,
+    Arc<crate::secrets::SecretsService>,
+    Arc<crate::oauth::OAuthService>,
+    Arc<PersonaService>
+);
 
 /// The panel's routes of the dialog: `/api/v1/brain/…` (the providers and the choice) and `/api/v1/persona`.
-pub fn routes() -> Router<Arc<App>> {
+pub fn routes<S: RouteNeeds>() -> Router<S> {
     Router::new().merge(brain::brain_controller::routes()).merge(persona_controller::routes())
 }

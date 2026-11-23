@@ -15,19 +15,21 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use axum::body::Bytes;
-use axum::extract::State;
 use axum::http::StatusCode;
 use futures::future::BoxFuture;
 use serde_json::{json, Value};
 
-use crate::app::App;
+use crate::config::Config;
 use crate::core::identity::permissions::STATIONS_MANAGE;
 use crate::helpers::contract::Ability;
 use crate::helpers::remote::{Messenger, RemoteHelper};
 use crate::helpers::{Giver, Helpers};
-use crate::platform::http::{created, ApiError, ApiResult, Caller};
+use crate::home_server::HomeServerService;
+use crate::placement::PlacementService;
+use crate::platform::http::{created, ApiError, ApiResult, Caller, Uses};
 use crate::skills::media::sources::match_score;
 use crate::skills::own::calls_skill::{Contact, IncomingMessage, LinkButton, MessengerAccess, NotSent, NO_RECIPIENT};
+use crate::skills::SkillsService;
 
 /// Where the computer hands the station its bot's messages.
 pub const MESSAGE_PATH: &str = "/api/v1/home-server/message";
@@ -186,8 +188,8 @@ impl MessengerAccess for HomeMessenger {
 }
 
 /// Where the voice messages from the computer wait to be played: under the gateway's data folder, not in memory.
-fn waiting_room(app: &App) -> PathBuf {
-    app.config
+fn waiting_room(config: &Arc<Config>) -> PathBuf {
+    config
         .data_dir
         .as_ref()
         .map(|dir| dir.join("tmp").join("messages"))
@@ -217,14 +219,21 @@ fn waiting(dir: &Path) -> usize {
 /// computer's bot, said («Мама пишет: …») or played after «Голосовое сообщение: мама.». Only the computer of the pair
 /// sends it — its own call, or a person at it with the right to manage the stations — and only while the station
 /// takes «Сообщения» from it.
-pub async fn receive(State(app): State<Arc<App>>, caller: Caller, body: Bytes) -> ApiResult<Value> {
-    if !crate::placement::peer::from_peer(&caller, app.placement.peer_key()) {
+pub async fn receive(
+    Uses(placement): Uses<Arc<PlacementService>>,
+    Uses(home_server): Uses<Arc<HomeServerService>>,
+    Uses(config): Uses<Arc<Config>>,
+    Uses(skills): Uses<Arc<SkillsService>>,
+    caller: Caller,
+    body: Bytes,
+) -> ApiResult<Value> {
+    if !crate::placement::peer::from_peer(&caller, placement.peer_key()) {
         return Err(ApiError::forbidden(only_pair()));
     }
     if crate::placement::peer::through_pass(&caller) {
         caller.permitted(STATIONS_MANAGE)?;
     }
-    if app.home_server.configured().is_none() || !app.home_server.serves("messages") {
+    if home_server.configured().is_none() || !home_server.serves("messages") {
         return Err(ApiError::conflict(not_taken()));
     }
     let request: Value = serde_json::from_slice(&body)
@@ -246,7 +255,7 @@ pub async fn receive(State(app): State<Arc<App>>, caller: Caller, body: Bytes) -
                     crate::tr!("Голосовое сообщение больше 2 МБ."),
                 ));
             }
-            let dir = waiting_room(&app);
+            let dir = waiting_room(&config);
             if waiting(&dir) >= WAITING {
                 return Err(ApiError::unavailable(busy()));
             }
@@ -263,7 +272,7 @@ pub async fn receive(State(app): State<Arc<App>>, caller: Caller, body: Bytes) -
         "home server: a {} from «{from}» (at {at}) came from the computer's bot",
         if file.is_some() { "voice message" } else { "message" }
     );
-    app.skills.calls.on_message(IncomingMessage { from, chat_id: String::new(), file, text, discard: true });
+    skills.calls.on_message(IncomingMessage { from, chat_id: String::new(), file, text, discard: true });
     Ok(created(json!({ "accepted": true })))
 }
 
@@ -276,6 +285,7 @@ mod tests {
     use chrono::Utc;
 
     use super::*;
+    use crate::app::App;
     use crate::config::{Config, Env};
     use crate::core::availability::HomeServer;
     use crate::helpers::contract::HelperStatus;

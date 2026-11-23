@@ -31,6 +31,8 @@ use crate::core::events::{EventBus, GatewayEvent};
 use crate::storage::Db;
 use crate::utils::time::now_ms;
 
+crate::route_needs!(Arc<Tasks>);
+
 /// Tasks an app runs at once unless its manifest says otherwise (`budget.tasks`), and the most it may ask for.
 pub const DEFAULT_AT_ONCE: u32 = 1;
 pub const MAX_AT_ONCE: u32 = 4;

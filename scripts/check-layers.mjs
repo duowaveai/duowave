@@ -54,13 +54,15 @@ for (const full of files) {
     }
 }
 
-/** Which lines of a file are test code: a `#[cfg(test)]` item to its closing brace at the item's own indent (the code
- * is rustfmt's), and files a `#[cfg(test)] mod name;` brings in. */
+/** Which lines of a file are test code: a `#[cfg(test)]` or `#[cfg(all(test, …))]` item to its closing brace at the
+ * item's own indent (the code is rustfmt's), and files such a `mod name;` brings in. `any(test, …)` builds without tests
+ * too: code. */
 const testFiles = new Set();
+const TEST_ONLY = /^#\[cfg\((?:test|all\(test\b.*)\)\]$/;
 function testLines(full, lines) {
     const test = new Array(lines.length).fill(false);
     for (let i = 0; i < lines.length; i++) {
-        if (lines[i].trim() !== '#[cfg(test)]') continue;
+        if (!TEST_ONLY.test(lines[i].trim())) continue;
         const indent = lines[i].slice(0, lines[i].length - lines[i].trimStart().length);
         let j = i + 1;
         while (j < lines.length && lines[j].trim().startsWith('#[')) j++;

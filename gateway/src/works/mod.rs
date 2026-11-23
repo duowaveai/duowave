@@ -42,6 +42,13 @@ use harness::Harness;
 use runs::What;
 use workspace::{GitWorkspace, Workspace};
 
+crate::route_needs!(
+    Arc<crate::settings::SettingsService>,
+    Option<Arc<FolderWorks>>,
+    Arc<crate::talk::TalkLayer>,
+    Arc<crate::secrets::SecretsService>
+);
+
 /// A work's record and its journals are kept this long after its end, as the talk's record.
 pub const KEPT_MS: u64 = 30 * 24 * 60 * 60_000;
 /// A work copy is kept this long after the work's last run: «вдогонку» and «продолжай» go on in it; later the copy is
