@@ -1830,14 +1830,9 @@ impl App {
             started: Instant::now(),
             started_at: now_iso(),
         });
-        // The built-in helper's late parts: the bot, the apps, their history, the catalog (stage 6).
-        #[cfg(feature = "pc")]
-        app.builtin.attach(Arc::downgrade(&app));
-        // What needs the whole app joins here (stage 6: the built-in helper; stage 7: the link).
-        #[cfg(feature = "pc")]
-        app.link.attach(Arc::downgrade(&app));
-        // A linked helper's own requests (`up`) go into this gateway's routes (stage 7 of home-setup-flow).
-        app.helpers.attach(Arc::downgrade(&app));
+        // What the helpers take of the gateway once it is built (src/links/helpers.rs): the built-in helper's late
+        // parts (stage 6), the link's door (stage 7), and where a linked helper's own requests (`up`) go.
+        crate::links::helpers::attach(&app);
         // The home this computer is the Turbo of over the link, for /health's `placement.centre`.
         #[cfg(feature = "pc")]
         {
@@ -2002,7 +1997,8 @@ pub fn router(app: Arc<App>) -> Router {
     // The link's door for a proxy on this computer (a plain upgrade to /home/v1/link), outermost: the proxy passes the
     // site's name, which the Host check does not know.
     #[cfg(feature = "pc")]
-    let routes = routes.layer(axum::middleware::from_fn_with_state(app, crate::helpers::link_serve::link_socket));
+    let routes =
+        routes.layer(axum::middleware::from_fn_with_state(app.link.clone(), crate::helpers::link_serve::link_socket));
     routes
 }
 
@@ -2062,7 +2058,7 @@ pub async fn serve(
             drain_began.cancel();
         });
     #[cfg(feature = "pc")]
-    let linked = app.clone();
+    let linked = app.link.clone();
     let serving = async move {
         #[cfg(feature = "pc")]
         let served = match link {

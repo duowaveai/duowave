@@ -27,6 +27,12 @@
 //! the first time its catalog starts (mark `demo-seeded` beside `sources.json`): every new home has the demo
 //! characters without typing a link, and the admin removes it like any own source — it does not come back.
 //!
+//! Mirrors (docs/plans/package-mirror.md, utils/mirrors.rs): the extra feeds and the own sources, their archives and
+//! previews may also come from a mirror when their own host fails or stalls. The address stays the feed's own
+//! everywhere; only the bytes come from elsewhere, and they are checked as if they came from the feed. Only the feed's
+//! own host closes an own source (404, 410): a mirror without the feed (404) is a mirror behind, and its 410 says the
+//! feed was closed where it copies from. The main feed is read from its own host only (owner, 24.11).
+//!
 //! A feed may say a package is `hidden`: it is not listed or installed, and the installed one that came from that very
 //! feed is hidden here (registry `hidden`) — not listed, its code off, its characters not offered — until the feed
 //! stops saying so.
@@ -54,6 +60,7 @@ use crate::platform::http::ApiError;
 use crate::settings::definitions::{PACKAGES_CATALOG, PACKAGES_SHOW_HIDDEN};
 use crate::settings::SettingsService;
 use crate::storage::Db;
+use crate::utils::mirrors::{self, Mirrors};
 use crate::utils::time::now_iso;
 
 /// The feed built into a release; none in a local build.
@@ -846,9 +853,17 @@ enum Answer {
     TooBig,
 }
 
-/// Asks a feed's address for it, with the ETag of the copy here.
-async fn ask(url: &url::Url, etag: Option<&str>) -> Answer {
-    let mut request = crate::utils::http::client().get(url.as_str()).timeout(FEED_TIMEOUT);
+/// Asks a feed's address for it, with the ETag of the copy here. With `stall`, no byte for that long is a failure on
+/// the way (a mirror is asked next, `ask_through`).
+async fn ask(url: &url::Url, etag: Option<&str>, stall: Option<Duration>) -> Answer {
+    let client = match stall {
+        None => crate::utils::http::client(),
+        Some(stall) => match crate::utils::http::client_builder().read_timeout(stall).build() {
+            Ok(client) => client,
+            Err(error) => return Answer::Unreachable(error.to_string()),
+        },
+    };
+    let mut request = client.get(url.as_str()).timeout(FEED_TIMEOUT);
     if let Some(etag) = etag {
         request = request.header(reqwest::header::IF_NONE_MATCH, etag);
     }
@@ -1286,6 +1301,8 @@ pub struct PackageCatalog {
     /// Where our Node lies, and a Node of one's own (DUOWAVE_NODE): whether an app on Node downloads it first.
     node_dir: PathBuf,
     own_node: Option<PathBuf>,
+    /// Where else the extra feeds and the own sources may be asked (utils/mirrors.rs).
+    mirrors: Mirrors,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -1369,6 +1386,7 @@ impl PackageCatalog {
             installing: tokio::sync::Mutex::new(()),
             node_dir: deps.config.node_dir.clone(),
             own_node: deps.config.own_node.clone(),
+            mirrors: Mirrors::new(deps.config.mirrors.as_deref(), Some(deps.config.catalog_dir.join(mirrors::MEMORY))),
         })
     }
 
@@ -1616,7 +1634,7 @@ impl PackageCatalog {
             status.problem = Some(crate::tr!("Каталог недоступен: {error}", error = error));
             Read::Kept
         };
-        let (text, new_etag) = match ask(url, etag.as_deref()).await {
+        let (text, new_etag) = match ask(url, etag.as_deref(), None).await {
             Answer::Text(text, new_etag) => (text, new_etag),
             Answer::Same => {
                 let fetched = Fetched { url: url.to_string(), etag, fetched_at: now_iso(), closed: false };
@@ -1772,7 +1790,7 @@ impl PackageCatalog {
         let dir = self.extra_dir(url);
         let known = fetched_in(&dir).filter(|fetched| fetched.url == url.as_str());
         let etag = known.and_then(|fetched| fetched.etag).filter(|_| dir.join("catalog.json").exists());
-        let mut answer = ask(url, etag.as_deref()).await;
+        let mut answer = self.ask_through(url, etag.as_deref()).await;
         // Closed to this gateway, open to the computer at home (a tester's Station Mini 2, 22.11: DuoWave Store and the
         // demo feed did not answer it, the computer beside it read them): the computer's copy, when it reads that feed.
         // As for the main feed, a server's error too (a proxy in front of the feed answers 5xx when it cannot pass).
@@ -2018,9 +2036,10 @@ impl PackageCatalog {
         true
     }
 
-    /// A file of the feed (an archive, a preview): straight, or through the home server when that fails.
+    /// A file of the feed (an archive, a preview): straight or from its mirror, or through the home server when that
+    /// fails.
     async fn download(&self, url: &url::Url, max: u64, timeout: Duration) -> Result<Vec<u8>, install::Failed> {
-        match install::fetch(url.as_str(), max, timeout).await {
+        match self.fetch_through(url, max, timeout).await {
             Ok(bytes) => Ok(bytes),
             Err(failed) => {
                 let Some((home, key)) = self.home.as_ref().and_then(|home| home.up()) else { return Err(failed) };
@@ -2055,6 +2074,68 @@ impl PackageCatalog {
                 Ok(bytes.to_vec())
             }
         }
+    }
+
+    /// `ask` at the feed's own address, then at its mirror's (utils/mirrors.rs). A failure on the way or a server's
+    /// error moves on to the next source; so does a mirror's 404 (a mirror behind, or one without this feed), while its
+    /// 410 is taken as said: the feed was closed where the mirror copies from. The feed's own answer when none came.
+    async fn ask_through(&self, url: &url::Url, etag: Option<&str>) -> Answer {
+        let sources = self.mirrors.sources(url);
+        let (mut own, mut last) = (None, None);
+        for (n, source) in sources.iter().enumerate() {
+            // The last source is waited for to the end: there is nothing to move on to.
+            let stall = (n + 1 < sources.len()).then_some(mirrors::STALL);
+            let answer = ask(&source.url, etag, stall).await;
+            let next = match &answer {
+                Answer::Unreachable(_) | Answer::Broken(_) => true,
+                Answer::Status(code) => {
+                    code.is_server_error() || (source.mirror && *code == reqwest::StatusCode::NOT_FOUND)
+                }
+                _ => false,
+            };
+            if !next {
+                if sources.len() > 1 {
+                    self.mirrors.answered(source);
+                    if source.mirror {
+                        tracing::info!(target: "plugins", "packages catalog: {url}: from its mirror");
+                    }
+                }
+                return answer;
+            }
+            if source.mirror {
+                last = Some(answer);
+            } else {
+                own = Some(answer);
+            }
+        }
+        own.or(last).unwrap_or_else(|| Answer::Unreachable(String::new()))
+    }
+
+    /// A file at `url`, from the feed's own host or from its mirror (utils/mirrors.rs): a failure on the way, a
+    /// server's error or a stall moves on to the next source. The feed's own host saying the file is not there (404,
+    /// 410), or a file too big, is the answer. The feed's own failure when none came. Without a mirror: `install::fetch`.
+    async fn fetch_through(&self, url: &url::Url, max: u64, timeout: Duration) -> Result<Vec<u8>, install::Failed> {
+        let sources = self.mirrors.sources(url);
+        let (mut own, mut last) = (None, None);
+        for (n, source) in sources.iter().enumerate() {
+            // The last source is waited for to the end: there is nothing to move on to.
+            let stall = (n + 1 < sources.len()).then_some(mirrors::STALL);
+            match install::fetch_within(source.url.as_str(), max, timeout, stall).await {
+                Ok(bytes) => {
+                    if sources.len() > 1 {
+                        self.mirrors.answered(source);
+                        if source.mirror {
+                            tracing::info!(target: "plugins", "packages catalog: {url}: from its mirror");
+                        }
+                    }
+                    return Ok(bytes);
+                }
+                Err(failed) if failed.too_big || (failed.missing && !source.mirror) => return Err(failed),
+                Err(failed) if source.mirror => last = Some(failed),
+                Err(failed) => own = Some(failed),
+            }
+        }
+        Err(own.or(last).unwrap_or_else(|| install::Failed { message: String::new(), missing: false, too_big: false }))
     }
 
     /// Whether `export_for_station` has a copy to give, without reading the copy: the feed's address, its folder's
@@ -2111,7 +2192,9 @@ impl PackageCatalog {
         let extras = self.extras(&base).into_iter().map(|extra| extra.url);
         let url = std::iter::once(base).chain(extras).find_map(|base| same_origin(&base, wanted));
         let url = url.ok_or_else(|| ApiError::forbidden(crate::tr!("Только файлы каталога.")))?;
-        install::download(url.as_str(), MAX_ARCHIVE, ARCHIVE_TIMEOUT).await.map_err(ApiError::bad_gateway)
+        self.fetch_through(&url, MAX_ARCHIVE, ARCHIVE_TIMEOUT)
+            .await
+            .map_err(|failed| ApiError::bad_gateway(failed.message))
     }
 
     /// After a read that found the feed the same (304): the previews its copy here names that did not come before —
@@ -2143,7 +2226,7 @@ impl PackageCatalog {
                 if resting {
                     continue;
                 }
-                let lasting = match install::fetch(url.as_str(), max, FEED_TIMEOUT).await {
+                let lasting = match self.fetch_through(url, max, FEED_TIMEOUT).await {
                     Ok(bytes) => match preview_kind(&bytes) {
                         Some(extension) if (name == "image") == (extension != "ogg") => {
                             match write_whole(&dir.join(format!("{name}.{extension}")), &bytes) {
@@ -2973,7 +3056,7 @@ impl PackageCatalog {
             }
         }
         // It must answer as a feed: a link with a typo is not kept.
-        let problem = match ask(&url, None).await {
+        let problem = match ask(&url, None, None).await {
             Answer::Text(text, _) => parse_feed(&text, &url)
                 .err()
                 .map(|problem| crate::tr!("это не лента пакетов: {problem}", problem = problem)),
@@ -3109,14 +3192,29 @@ pub mod tests {
         pub same: Arc<AtomicUsize>,
         /// Each file's requests, by its path.
         pub asked: Arc<Mutex<BTreeMap<String, usize>>>,
+        /// Every request for the feed, answered or not.
+        pub knocks: Arc<AtomicUsize>,
+        /// Closed where a mirror copies from: the feed answers 410.
+        pub closed: Arc<std::sync::atomic::AtomicBool>,
+        /// Files start and then stall: a kilobyte, and nothing more.
+        pub stall: Arc<std::sync::atomic::AtomicBool>,
+        /// The feed starts and then stalls, as files do with `stall`.
+        pub feed_stall: Arc<std::sync::atomic::AtomicBool>,
     }
 
     async fn feed(State(site): State<Site>, headers: HeaderMap) -> axum::response::Response {
+        site.knocks.fetch_add(1, Ordering::SeqCst);
+        if site.closed.load(Ordering::SeqCst) {
+            return StatusCode::GONE.into_response();
+        }
         if site.down.load(Ordering::SeqCst) {
             return StatusCode::SERVICE_UNAVAILABLE.into_response();
         }
         if site.gone.load(Ordering::SeqCst) {
             return StatusCode::NOT_FOUND.into_response();
+        }
+        if site.feed_stall.load(Ordering::SeqCst) {
+            return stalled();
         }
         site.reads.fetch_add(1, Ordering::SeqCst);
         let text = lock(&site.feed).clone();
@@ -3137,10 +3235,20 @@ pub mod tests {
             site.refuse.fetch_sub(1, Ordering::SeqCst);
             return StatusCode::SERVICE_UNAVAILABLE.into_response();
         }
+        if site.stall.load(Ordering::SeqCst) {
+            return stalled();
+        }
         match lock(&site.files).get(&path) {
             Some(bytes) => bytes.clone().into_response(),
             None => StatusCode::NOT_FOUND.into_response(),
         }
+    }
+
+    /// An answer that starts and stalls: a kilobyte, and nothing more.
+    fn stalled() -> axum::response::Response {
+        use futures::StreamExt;
+        let start = futures::stream::once(async { Ok::<_, std::io::Error>(bytes::Bytes::from(vec![b' '; 1024])) });
+        axum::body::Body::from_stream(start.chain(futures::stream::pending())).into_response()
     }
 
     pub async fn site() -> Site {
@@ -3156,6 +3264,10 @@ pub mod tests {
             gone: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             same: Arc::new(AtomicUsize::new(0)),
             asked: Arc::new(Mutex::new(BTreeMap::new())),
+            knocks: Arc::new(AtomicUsize::new(0)),
+            closed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            stall: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            feed_stall: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         };
         let router =
             Router::new().route("/catalog.json", get(feed)).route("/{*path}", get(file)).with_state(site.clone());
@@ -3272,6 +3384,23 @@ pub mod tests {
         home: Option<Arc<dyn crate::plugins::controller::HomeLink>>,
         memory: Arc<crate::plugins::budget::fake::FixedMemory>,
     ) -> Fixture {
+        fixture_full(source, placement, key, home, memory, None)
+    }
+
+    /// The same with mirrors (MIRRORS, utils/mirrors.rs).
+    pub fn fixture_mirrored(source: FeedSource, placement: Placement, mirrors: &str) -> Fixture {
+        let memory = crate::plugins::budget::fake::plenty();
+        fixture_full(source, placement, None, None, memory, Some(mirrors.to_string()))
+    }
+
+    fn fixture_full(
+        source: FeedSource,
+        placement: Placement,
+        key: Option<String>,
+        home: Option<Arc<dyn crate::plugins::controller::HomeLink>>,
+        memory: Arc<crate::plugins::budget::fake::FixedMemory>,
+        mirrors: Option<String>,
+    ) -> Fixture {
         let dir = tempfile::tempdir().unwrap();
         let db = Arc::new(Db::memory());
         let events = EventBus::new();
@@ -3292,6 +3421,7 @@ pub mod tests {
             node_dir: std::path::PathBuf::from("node"),
             own_node: None,
             node_mirror: None,
+            mirrors,
         };
         let host = PluginHost::new(PluginsDeps {
             config: config.clone(),
@@ -5069,6 +5199,149 @@ pub mod tests {
         catalog.write_sources(&sources).unwrap();
         let full = catalog.add_source("https://feed9.example/catalog.json", None).await.unwrap_err();
         assert!(full.message.contains("не больше 4"), "{}", full.message);
+    }
+
+    /// A mirror of `site`: the same feed and files, on a site of its own.
+    async fn mirror_of(site: &Site) -> Site {
+        let mirror = super::tests::site().await;
+        *lock(&mirror.feed) = lock(&site.feed).clone();
+        *lock(&mirror.files) = lock(&site.files).clone();
+        mirror
+    }
+
+    /// MIRRORS that sends `site`'s files to `mirror`.
+    fn map(site: &Site, mirror: &Site) -> String {
+        format!("{}/catalog.json {}/catalog.json", site.origin(), mirror.origin())
+    }
+
+    #[tokio::test]
+    async fn an_own_source_whose_host_is_down_comes_from_its_mirror_which_is_then_asked_first() {
+        let (main, own) = (site().await, site().await);
+        main.publish(&[character("arthur", "1.0.0")]);
+        own.publish(&[character("jarvis-demo", "1.0.0")]);
+        let mirror = mirror_of(&own).await;
+        let fixture = fixture_mirrored(FeedSource::Url(main.url.clone()), Placement::Pc, &map(&own, &mirror));
+        let catalog = &fixture.catalog;
+        catalog.add_source(&own.url, None).await.unwrap();
+        catalog.view(true).await;
+        assert_eq!(mirror.knocks.load(Ordering::SeqCst), 0, "the feed's own host answered: the mirror is not asked");
+
+        // Its host down, for the feed and its files: both come from the mirror.
+        own.down.store(true, Ordering::SeqCst);
+        own.refuse.store(usize::MAX / 2, Ordering::SeqCst);
+        let view = catalog.view(true).await;
+        assert_eq!(ids(&view), ["arthur", "jarvis-demo"]);
+        let feed = view.feeds.last().unwrap();
+        assert!(feed.own && !feed.offline && !feed.closed && feed.problem.is_none(), "{feed:?}");
+        assert_eq!(mirror.knocks.load(Ordering::SeqCst), 1);
+        catalog.install("jarvis-demo", None, false, None).await.unwrap();
+        assert_eq!(mirror.asked("packages/jarvis-demo-1.0.0.vgp"), 1);
+        assert!(fixture.host.installed("jarvis-demo").is_some());
+        // The address stays the feed's own: what was installed came from it.
+        assert_eq!(catalog.extra_feed_of("jarvis-demo").as_deref(), Some(own.url.as_str()));
+
+        // The mirror answered: it is asked first now, and the feed's own host is not asked at all.
+        let knocks = own.knocks.load(Ordering::SeqCst);
+        catalog.view(true).await;
+        assert_eq!(own.knocks.load(Ordering::SeqCst), knocks, "the mirror first");
+        assert_eq!(mirror.knocks.load(Ordering::SeqCst), 2);
+        assert!(fixture.root.parent().unwrap().join("packages-catalog").join(mirrors::MEMORY).is_file());
+    }
+
+    #[tokio::test]
+    async fn a_stalled_archive_comes_from_the_mirror_and_one_its_host_says_is_gone_does_not() {
+        let (main, own) = (site().await, site().await);
+        main.publish(&[character("arthur", "1.0.0")]);
+        own.publish(&[character("jarvis-demo", "1.0.0"), character("palych", "1.0.0")]);
+        let mirror = mirror_of(&own).await;
+        let fixture = fixture_mirrored(FeedSource::Url(main.url.clone()), Placement::Pc, &map(&own, &mirror));
+        let catalog = &fixture.catalog;
+        catalog.add_source(&own.url, None).await.unwrap();
+        catalog.view(true).await;
+
+        // The feed's own host says the file is not there: that is the answer, the mirror is not asked.
+        lock(&own.files).remove("packages/palych-1.0.0.vgp");
+        catalog.install("palych", None, false, None).await.unwrap_err();
+        assert_eq!(mirror.asked("packages/palych-1.0.0.vgp"), 0);
+
+        // The archive starts and stalls: after the stall, not after the archive's two minutes, the mirror's.
+        own.stall.store(true, Ordering::SeqCst);
+        let started = std::time::Instant::now();
+        catalog.install("jarvis-demo", None, false, None).await.unwrap();
+        assert!(started.elapsed() < Duration::from_secs(20), "{:?}", started.elapsed());
+        assert_eq!(
+            (own.asked("packages/jarvis-demo-1.0.0.vgp"), mirror.asked("packages/jarvis-demo-1.0.0.vgp")),
+            (1, 1)
+        );
+        assert!(fixture.host.installed("jarvis-demo").is_some());
+    }
+
+    #[tokio::test]
+    async fn a_stalled_feed_list_comes_from_the_mirror_after_the_stall_not_after_its_whole_time() {
+        let (main, own) = (site().await, site().await);
+        main.publish(&[character("arthur", "1.0.0")]);
+        own.publish(&[character("jarvis-demo", "1.0.0")]);
+        let mirror = mirror_of(&own).await;
+        let fixture = fixture_mirrored(FeedSource::Url(main.url.clone()), Placement::Pc, &map(&own, &mirror));
+        let catalog = &fixture.catalog;
+        catalog.add_source(&own.url, None).await.unwrap();
+        catalog.view(true).await;
+        assert_eq!(mirror.knocks.load(Ordering::SeqCst), 0);
+
+        // The list starts and stalls, the way a cut connection does past its first kilobytes: the mirror's list after
+        // the stall, not after the list's twenty seconds.
+        own.feed_stall.store(true, Ordering::SeqCst);
+        let started = std::time::Instant::now();
+        let view = catalog.view(true).await;
+        assert!(started.elapsed() < FEED_TIMEOUT / 2, "{:?}", started.elapsed());
+        assert_eq!(ids(&view), ["arthur", "jarvis-demo"]);
+        let feed = view.feeds.last().unwrap();
+        assert!(!feed.offline && !feed.closed && feed.problem.is_none(), "{feed:?}");
+        assert_eq!(mirror.knocks.load(Ordering::SeqCst), 1);
+
+        // The mirror is asked first now: the next read does not wait for the stall, its own host is not asked.
+        let knocks = own.knocks.load(Ordering::SeqCst);
+        catalog.view(true).await;
+        assert_eq!(own.knocks.load(Ordering::SeqCst), knocks);
+        assert_eq!(mirror.knocks.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn only_the_feeds_own_host_or_the_mirrors_410_closes_an_own_source() {
+        let (main, own) = (site().await, site().await);
+        main.publish(&[character("arthur", "1.0.0")]);
+        own.publish(&[character("jarvis-demo", "1.0.0")]);
+        let mirror = mirror_of(&own).await;
+        let fixture = fixture_mirrored(FeedSource::Url(main.url.clone()), Placement::Pc, &map(&own, &mirror));
+        let catalog = &fixture.catalog;
+        catalog.add_source(&own.url, None).await.unwrap();
+        catalog.view(true).await;
+
+        // Its host down and the mirror without the feed (404, a mirror behind): not closed, the copy before stays.
+        own.down.store(true, Ordering::SeqCst);
+        mirror.gone.store(true, Ordering::SeqCst);
+        let view = catalog.view(true).await;
+        let feed = view.feeds.last().unwrap();
+        assert!(!feed.closed && feed.problem.is_some(), "{feed:?}");
+        assert_eq!(ids(&view), ["arthur", "jarvis-demo"]);
+
+        // Its own host's 404 closes it, and the mirror is not asked.
+        own.down.store(false, Ordering::SeqCst);
+        own.gone.store(true, Ordering::SeqCst);
+        let knocks = mirror.knocks.load(Ordering::SeqCst);
+        let view = catalog.view(true).await;
+        assert!(view.feeds.last().unwrap().closed);
+        assert_eq!(mirror.knocks.load(Ordering::SeqCst), knocks);
+
+        // Open again; then its host down and the mirror saying 410: closed where the mirror copies from.
+        own.gone.store(false, Ordering::SeqCst);
+        assert_eq!(ids(&catalog.view(true).await), ["arthur", "jarvis-demo"]);
+        own.down.store(true, Ordering::SeqCst);
+        mirror.gone.store(false, Ordering::SeqCst);
+        mirror.closed.store(true, Ordering::SeqCst);
+        let view = catalog.view(true).await;
+        assert!(view.feeds.last().unwrap().closed);
+        assert_eq!(ids(&view), ["arthur"]);
     }
 
     #[tokio::test]

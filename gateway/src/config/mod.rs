@@ -85,6 +85,9 @@ pub struct PluginsConfig {
     pub node_dir: PathBuf,
     pub own_node: Option<PathBuf>,
     pub node_mirror: Option<String>,
+    /// MIRRORS: where else the extra feeds and the own sources may be asked (utils/mirrors.rs) — pairs «feed's address
+    /// mirror's address», separated by `;`; `off`: none. Unset: the map a release carries (DUOWAVE_MIRRORS), if any.
+    pub mirrors: Option<String>,
 }
 
 /// A MIDI keyboard for apps (docs/plans/midi.md).
@@ -1026,6 +1029,7 @@ fn build(env: &Env) -> Config {
             node_dir: env.get("NODE_DIR").map(PathBuf::from).unwrap_or_else(|| data_path(env, "node", "data/node")),
             own_node: env.optional("DUOWAVE_NODE").filter(|path| !path.trim().is_empty()).map(PathBuf::from),
             node_mirror: env.optional("DUOWAVE_NODE_MIRROR").filter(|url| !url.trim().is_empty()),
+            mirrors: env.optional("MIRRORS").filter(|map| !map.trim().is_empty()),
         },
         midi: MidiConfig { enabled: env.flag("MIDI", true), remote: env.flag("MIDI_REMOTE", false) },
         files: FilesConfig {
@@ -1466,6 +1470,13 @@ fn validate(env: &Env) -> Vec<String> {
         }
     }
 
+    if let Some(map) =
+        env.get("MIRRORS").map(str::trim).filter(|map| !map.is_empty() && !map.eq_ignore_ascii_case("off"))
+    {
+        if let Err(problem) = crate::utils::mirrors::parse(map) {
+            problems.push(format!("MIRRORS: {problem}"));
+        }
+    }
     if let Some(feed) = env.get("PACKAGES_FEED_URL").map(str::trim).filter(|feed| !feed.eq_ignore_ascii_case("off")) {
         if !matches!(url::Url::parse(feed), Ok(url) if url.scheme() == "https" || url.scheme() == "http") {
             problems.push("PACKAGES_FEED_URL must be an https URL or off".into());

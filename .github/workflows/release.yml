@@ -48,6 +48,9 @@ env:
   # The demo feed every new gateway puts among its own sources once (gateway/src/plugins/catalog.rs, owner 22.11): a
   # repository secret, so its address is in no code and no public file. No secret — no demo feed, nothing breaks.
   DUOWAVE_DEMO_FEED: ${{ secrets.DUOWAVE_DEMO_FEED }}
+  # The mirrors of the demo feed and the store (gateway/src/utils/mirrors.rs, docs/plans/package-mirror.md): a secret
+  # too, because a mirror leads to the demo feed. No secret — no mirrors, the feeds' own hosts only.
+  DUOWAVE_MIRRORS: ${{ secrets.DUOWAVE_MIRRORS }}
 
 jobs:
   station-build:

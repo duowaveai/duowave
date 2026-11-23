@@ -1,0 +1,44 @@
+# Checks that the package mirror keeps up (gateway/src/utils/mirrors.rs, docs/plans/package-mirror.md). Every hour each
+# feed's catalog.json on the mirror must be the one at the feed's own host, or become it within 6 minutes: the mirror
+# pulls every 2. The addresses come from the secret DUOWAVE_MIRRORS, the map the release builds in, and never reach
+# the log. A failed run is GitHub's mail to the owner. No secret: nothing to check, the run passes.
+name: Mirror check
+
+on:
+  schedule:
+    - cron: '17 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Each feed's list on the mirror is its own host's
+        env:
+          MIRRORS: ${{ secrets.DUOWAVE_MIRRORS }}
+        run: |
+          set -eu
+          if [ -z "$MIRRORS" ]; then echo "No DUOWAVE_MIRRORS: nothing to check."; exit 0; fi
+          printf '%s\n' "$MIRRORS" | tr ';' '\n' | sed '/^[[:space:]]*$/d' > pairs
+          tr -s ' \t' '\n' < pairs | sed '/^$/d' | while read -r address; do echo "::add-mask::$address"; done
+          list() { case "$1" in */) echo "${1}catalog.json" ;; */catalog.json) echo "$1" ;; *) echo "${1%/*}/catalog.json" ;; esac; }
+          digest() { curl -fs --max-time 60 "$1" | sha256sum | cut -d' ' -f1; }
+          empty=$(printf '' | sha256sum | cut -d' ' -f1)
+          for round in 1 2 3 4; do
+            behind=0; n=0
+            while read -r own mirror; do
+              n=$((n + 1))
+              own_list=$(digest "$(list "$own")" || true)
+              if [ -z "$own_list" ] || [ "$own_list" = "$empty" ]; then echo "feed $n: its own host did not answer, nothing to compare"; continue; fi
+              mirror_list=$(digest "$(list "$mirror")" || true)
+              if [ "$own_list" = "$mirror_list" ]; then echo "feed $n: the mirror has the same list"; else echo "feed $n: the mirror is behind or does not answer"; behind=$((behind + 1)); fi
+            done < pairs
+            [ "$behind" -eq 0 ] && exit 0
+            [ "$round" -lt 4 ] && { echo "waiting 2 minutes for the mirror's next pull"; sleep 120; }
+          done
+          echo "::error::The package mirror has not caught up in 6 minutes: look at duowave-mirror-pull on the mirror server."
+          exit 1

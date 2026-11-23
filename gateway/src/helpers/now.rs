@@ -340,7 +340,6 @@ pub fn cloud_name(url: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::App;
 
     #[test]
     fn a_cloud_is_named_by_its_host() {
@@ -367,6 +366,7 @@ mod tests {
     #[cfg(feature = "pc")]
     #[tokio::test]
     async fn a_stations_voice_server_elsewhere_at_home_is_named_in_where_now() {
+        use crate::app::App;
         use crate::helpers::builtin::tests::computer;
         let voice = |app: &std::sync::Arc<App>| {
             rows(&crate::platform::http::Provides::provide(app))

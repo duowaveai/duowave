@@ -23,8 +23,7 @@ use futures::future::BoxFuture;
 use serde_json::json;
 
 use super::contract::{Ability, AbilityState, Contract, HelperIdentity};
-use super::{Local, OwnModel, OwnParts, Reach, SELF};
-use crate::app::App;
+use super::{Local, OwnModel, OwnParts, SELF};
 use crate::config::Config;
 use crate::core::events::{EventBus, GatewayEvent};
 use crate::core::identity::home::Identity;
@@ -64,6 +63,26 @@ pub struct BuiltinParts {
     pub local: Arc<Local>,
 }
 
+/// What the built-in helper asks of the parts made after it — the Telegram bot, the apps and their history, the
+/// catalog, the devices, the home folder, the regulator —, answered by the gateway once it is built (`attach`,
+/// src/links/helpers.rs). The gateway holds itself weakly there: once it is gone, it answers no.
+pub trait LateParts: Send + Sync {
+    /// The gateway is still there: the late parts are declared only while it is.
+    fn here(&self) -> bool;
+    /// «Что может уходить из дома» lets the clouds out now (`Helpers::lets`).
+    fn clouds_out(&self) -> bool;
+    /// Its Telegram bot is set up.
+    fn messages(&self) -> bool;
+    /// The apps keep their history.
+    fn history(&self) -> bool;
+    /// The catalog keeps a copy of its feed for a station.
+    fn catalog(&self) -> bool;
+    /// The kinds of its devices it shares now, as its contract's `devices` carries them (`kinds`).
+    fn devices(&self) -> serde_json::Value;
+    /// Its home folder is there to give.
+    fn folders(&self) -> bool;
+}
+
 /// The computer's heavy part as a helper.
 pub struct BuiltinHelper {
     config: Arc<Config>,
@@ -81,7 +100,7 @@ pub struct BuiltinHelper {
     /// The voice service, for the voice's name (it holds the helpers, which hold this: no cycle).
     voice: Weak<VoiceService>,
     /// The parts made after it (`attach`): the bot, the apps, their history, the catalog.
-    app: OnceLock<Weak<App>>,
+    late: OnceLock<Arc<dyn LateParts>>,
     /// This computer's addresses in the home networks: an entry or a model server there is this computer.
     addresses: RwLock<Vec<Ipv4Addr>>,
     /// The addresses are a test's, not looked up again.
@@ -154,7 +173,7 @@ impl BuiltinHelper {
             events: parts.events,
             identity: parts.identity,
             local: parts.local,
-            app: OnceLock::new(),
+            late: OnceLock::new(),
             addresses: RwLock::new(Vec::new()),
             fixed: AtomicBool::new(false),
             looks: Mutex::new(BTreeMap::new()),
@@ -169,13 +188,9 @@ impl BuiltinHelper {
 
     /// The parts made after it: the Telegram bot, the plugins, their history, the catalog — and this computer's home
     /// addresses.
-    pub fn attach(&self, app: Weak<App>) {
-        let _ = self.app.set(app);
+    pub fn attach(&self, late: Arc<dyn LateParts>) {
+        let _ = self.late.set(late);
         self.find_addresses();
-    }
-
-    fn app(&self) -> Option<Arc<App>> {
-        self.app.get().and_then(Weak::upgrade)
     }
 
     /// What it declares is followed: a change of the voice, of «Мозг», of a connector (the bot), of a server of this
@@ -258,7 +273,7 @@ impl BuiltinHelper {
     /// all the same (the old `tts` stays), not ready, and `/home/v1/tts` refuses.
     pub fn voice_kept_in(&self) -> bool {
         let Some(speech) = &self.speech else { return false };
-        !is_local_url(Some(&speech.base_url())) && !self.app().is_some_and(|app| app.helpers.lets(Reach::Foreign))
+        !is_local_url(Some(&speech.base_url())) && !self.late.get().is_some_and(|late| late.clouds_out())
     }
 
     /// The voice it speaks with now, as the voice server names it: «model/voice».
@@ -374,11 +389,11 @@ impl BuiltinHelper {
 /// What this computer gives its home of its devices (docs/plans/turbo-devices.md, contract 3): the kinds it shares with
 /// what is plugged in now, and its hardware addresses for a wake over the home network. Whether the home reaches it from
 /// home is said per caller (`home_server::serve::status_of`).
-fn devices_state(app: &App) -> AbilityState {
+fn devices_state(kinds: serde_json::Value) -> AbilityState {
     static MACS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
     let macs = MACS.get_or_init(crate::helpers::wake::hardware_addresses);
     let mut state = AbilityState::new(Ability::Devices, true);
-    state.details.insert("kinds".into(), json!(app.house.given()));
+    state.details.insert("kinds".into(), kinds);
     if !macs.is_empty() {
         state.details.insert("wake".into(), json!({ "macs": macs }));
     }
@@ -430,20 +445,20 @@ impl OwnParts for BuiltinHelper {
             let closed = locked(&self.looks).get(&(id, url)) == Some(&false);
             abilities.push(AbilityState::new(Ability::Model, !closed));
         }
-        if let Some(app) = self.app() {
+        if let Some(late) = self.late.get().filter(|late| late.here()) {
             // The calls are in every computer's build: ready while its Telegram bot is set up.
-            abilities.push(AbilityState::new(Ability::Messages, app.calls.telegram.enabled()));
+            abilities.push(AbilityState::new(Ability::Messages, late.messages()));
             abilities.push(AbilityState::new(Ability::Apps, true));
-            if app.history.is_some() {
+            if late.history() {
                 abilities.push(AbilityState::new(Ability::History, true));
             }
-            if app.catalog.has_copy_for_station() {
+            if late.catalog() {
                 abilities.push(AbilityState::new(Ability::Catalog, true));
             }
-            abilities.push(devices_state(&app));
+            abilities.push(devices_state(late.devices()));
             // Its home folder for its home (docs/plans/turbo-devices.md, «Папки Турбо»), while it gives it.
-            let shares = app.settings.get(&crate::settings::definitions::TURBO_SHARES, None).unwrap_or_default();
-            if app.bus.files().is_some() && shares.gives("folders", false) {
+            let shares = self.settings.get(&crate::settings::definitions::TURBO_SHARES, None).unwrap_or_default();
+            if late.folders() && shares.gives("folders", false) {
                 abilities.push(AbilityState::new(Ability::Files, true));
             }
         }
@@ -458,8 +473,8 @@ impl OwnParts for BuiltinHelper {
             Ability::Hearing => self.recognizer.is_some(),
             Ability::Voice => self.speech.as_ref().is_some_and(|speech| is_local_url(Some(&speech.base_url()))),
             Ability::Model => self.routed.load(Ordering::Relaxed),
-            Ability::Messages => self.app().is_some_and(|app| app.calls.telegram.enabled()),
-            Ability::Apps | Ability::History | Ability::Catalog => self.app.get().is_some(),
+            Ability::Messages => self.late.get().is_some_and(|late| late.messages()),
+            Ability::Apps | Ability::History | Ability::Catalog => self.late.get().is_some(),
             _ => false,
         }
     }
@@ -551,6 +566,7 @@ pub(crate) mod tests {
     use tower::ServiceExt;
 
     use super::*;
+    use crate::app::App;
     use crate::config::{Env, LocalAsrConfig};
     use crate::dialog::brain::ProviderInput;
     use crate::helpers::{key_secret, Change, Giver, HelperKind, HelperSetting, HelperState};

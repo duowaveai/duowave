@@ -3,6 +3,12 @@
 What a gateway user can see, release by release. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versions follow [SemVer](https://semver.org/).
 
+## 0.18.6 — 24.11.2026
+
+- **The store and added sources have a backup host.** When the host of the store or of a source you added does not
+  answer or stalls, the apps and characters come from a copy of the same files elsewhere, checked the same way. The
+  copy that worked is tried first for a week.
+
 ## 0.18.5 — 24.11.2026
 
 - **First steps wait for the hub on the speaker.** When DuoWave moves onto the speaker and this computer becomes its

@@ -55,8 +55,8 @@ for (const full of files) {
 }
 
 /** Which lines of a file are test code: a `#[cfg(test)]` or `#[cfg(all(test, …))]` item to its closing brace at the
- * item's own indent (the code is rustfmt's), and files such a `mod name;` brings in. `any(test, …)` builds without tests
- * too: code. */
+ * item's own indent (the code is rustfmt's), and files such a `mod name;` brings in — by its name, or by its
+ * `#[path = "…"]`. `any(test, …)` builds without tests too: code. */
 const testFiles = new Set();
 const TEST_ONLY = /^#\[cfg\((?:test|all\(test\b.*)\)\]$/;
 function testLines(full, lines) {
@@ -65,11 +65,18 @@ function testLines(full, lines) {
         if (!TEST_ONLY.test(lines[i].trim())) continue;
         const indent = lines[i].slice(0, lines[i].length - lines[i].trimStart().length);
         let j = i + 1;
-        while (j < lines.length && lines[j].trim().startsWith('#[')) j++;
+        let named = null;
+        while (j < lines.length && lines[j].trim().startsWith('#[')) {
+            named = lines[j].trim().match(/^#\[path\s*=\s*"([^"]+)"\]$/)?.[1] ?? named;
+            j++;
+        }
         let end = j;
         if (j < lines.length && lines[j].trimEnd().endsWith(';')) {
             const external = lines[j].match(/^\s*(?:pub(?:\(crate\))? )?mod (\w+);/);
-            if (external) {
+            if (external && named) {
+                // A `mod` outside an inline module: its path from the directory of the file that names it.
+                testFiles.add(path.join(path.dirname(full), named));
+            } else if (external) {
                 const base = ['mod.rs', 'lib.rs'].includes(path.basename(full))
                     ? path.dirname(full)
                     : full.replace(/\.rs$/, '');

@@ -30,7 +30,7 @@ use std::io;
 use std::net::{IpAddr, SocketAddr};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::task::{Context, Poll};
 use std::time::Duration;
 
@@ -55,6 +55,7 @@ use tokio::time::{Instant, Sleep};
 use tokio_rustls::server::TlsStream;
 use tokio_util::sync::CancellationToken;
 
+use super::builtin::BuiltinHelper;
 use super::clients::{kept_name, Clients, LinkClient, Names};
 use super::contract::HelperIdentity;
 use super::link::{
@@ -63,16 +64,16 @@ use super::link::{
     FRAME_MAX, GATEWAY_HEADER, GATEWAY_NAME_HEADER, GOING, HOME_HEADER, LINK_ID_HEADER, PAIR_FRAME_MAX, PAIR_HEADER,
     PATH, PROTOCOL, REFUSED, SILENT, UP_BIT, UP_HEADER, VERSION, VERSION_HEADER,
 };
-use crate::app::App;
 use crate::config::Config;
 use crate::core::events::{Actor, EventBus, GatewayEvent};
-use crate::core::identity::home::HOME_KEY;
+use crate::core::identity::home::{Identity, HOME_KEY};
 use crate::home_server::serve::{status_of, Given};
 use crate::operations::networks::{beyond, in_list, in_networks, invalid_networks, wider_than, LOOPBACK};
 use crate::platform::http::LinkOrigin;
 use crate::secrets::SecretsService;
 use crate::settings::definitions::HELPER_OUTSIDE;
 use crate::settings::SettingsService;
+use crate::speech::VoiceService;
 use crate::utils::time::now_iso;
 
 /// How long a connection key is taken after an admin opened «Подключить шлюз» or changed it (owner, 15.11).
@@ -550,15 +551,15 @@ impl<'a> tower::Service<axum::serve::IncomingStream<'a, LinkListener>> for LinkS
 }
 
 /// The link port's one route; everything else is an empty 404.
-fn link_router(app: Arc<App>) -> Router {
+fn link_router(server: Arc<LinkServer>) -> Router {
     Router::new()
         .route(PATH, axum::routing::get(on_link_port))
         .fallback(|| async { StatusCode::NOT_FOUND })
-        .with_state(app)
+        .with_state(server)
 }
 
-async fn on_link_port(State(app): State<Arc<App>>, request: Request) -> Response {
-    upgrade(app, Transport::Tls, request).await
+async fn on_link_port(State(server): State<Arc<LinkServer>>, request: Request) -> Response {
+    upgrade(server, Transport::Tls, request).await
 }
 
 /// The link port bound beside the main one — on the same address —, on a computer that helps and has its
@@ -595,11 +596,11 @@ pub async fn bind(
 
 /// The link port served until `stop`.
 pub async fn serve(
-    app: Arc<App>,
+    server: Arc<LinkServer>,
     listener: LinkListener,
     stop: impl std::future::Future<Output = ()> + Send + 'static,
 ) -> io::Result<()> {
-    axum::serve(listener, LinkService { router: link_router(app) }).with_graceful_shutdown(stop).await
+    axum::serve(listener, LinkService { router: link_router(server) }).with_graceful_shutdown(stop).await
 }
 
 /// The soft limit of open files raised to 4096 (or the hard one): the desktop app starts with 256 on a Mac, and the
@@ -720,6 +721,17 @@ struct LiveLink {
     up: Option<Arc<Session>>,
 }
 
+/// What the link's door takes of the gateway once it is built (`LinkServer::attach`, src/links/helpers.rs): who this
+/// home is, the built-in helper and the voice — a pairing's answer, the status a home sees —, and `/home/v1`.
+pub struct LinkParts {
+    pub identity: Arc<Identity>,
+    pub builtin: Arc<BuiltinHelper>,
+    pub voice: Arc<VoiceService>,
+    /// `/home/v1` as the gateway serves it, for a link's requests: made for each link and gone with it, so the gateway
+    /// is never held by its own link server. None once the gateway is gone.
+    pub home_v1: Arc<dyn Fn() -> Option<Router> + Send + Sync>,
+}
+
 /// The helper's side of the link on this computer.
 pub struct LinkServer {
     tls: Option<Arc<ServerConfig>>,
@@ -729,7 +741,7 @@ pub struct LinkServer {
     settings: Arc<SettingsService>,
     events: EventBus,
     config: Arc<Config>,
-    app: OnceLock<Weak<App>>,
+    parts: OnceLock<Arc<LinkParts>>,
     helps: bool,
     port: AtomicU16,
     problem: Mutex<Option<String>>,
@@ -806,7 +818,7 @@ impl LinkServer {
             settings,
             events,
             config,
-            app: OnceLock::new(),
+            parts: OnceLock::new(),
             helps,
             port: AtomicU16::new(0),
             problem: Mutex::new(problem),
@@ -833,9 +845,9 @@ impl LinkServer {
         }
     }
 
-    /// The whole app, for the inner requests; and the news that change what a home is given.
-    pub fn attach(self: &Arc<Self>, app: Weak<App>) {
-        let _ = self.app.set(app);
+    /// The gateway's parts, for the pairings and the homes' links; and the news that change what a home is given.
+    pub fn attach(self: &Arc<Self>, parts: LinkParts) {
+        let _ = self.parts.set(Arc::new(parts));
         let me = Arc::downgrade(self);
         self.clients.set_cut(Arc::new(move |client: &str| {
             if let Some(server) = me.upgrade() {
@@ -857,6 +869,11 @@ impl LinkServer {
                 server.tell_status();
             }
         });
+    }
+
+    /// The gateway's parts (`attach`): none before it is built.
+    fn parts(&self) -> Option<Arc<LinkParts>> {
+        self.parts.get().cloned()
     }
 
     /// A computer build that is not in the station role: it helps, so it has the key and «Помогаю».
@@ -1069,11 +1086,11 @@ impl LinkServer {
 
 /// A plain upgrade to `/home/v1/link` on the main port: the link's door for a proxy on this computer. Ahead of every
 /// route and of the Host check (a proxy passes the site's name); anything else goes on.
-pub async fn link_socket(State(app): State<Arc<App>>, request: Request, next: Next) -> Response {
-    if request.uri().path() != PATH || !request.headers().contains_key(header::UPGRADE) || !app.link.helps() {
+pub async fn link_socket(State(server): State<Arc<LinkServer>>, request: Request, next: Next) -> Response {
+    if request.uri().path() != PATH || !request.headers().contains_key(header::UPGRADE) || !server.helps() {
         return next.run(request).await;
     }
-    upgrade(app, Transport::Plain, request).await
+    upgrade(server, Transport::Plain, request).await
 }
 
 fn header_text(headers: &HeaderMap, name: &str) -> String {
@@ -1095,16 +1112,15 @@ fn said(headers: &HeaderMap, name: &str) -> String {
 /// of a proxy's clients as one.
 /// On the link port every answer but the upgrade closes its connection: a connection kept alive after its deadline was
 /// disarmed would hold its place among the connections for good.
-async fn upgrade(app: Arc<App>, transport: Transport, request: Request) -> Response {
-    let mut response = door(app, transport, request).await;
+async fn upgrade(server: Arc<LinkServer>, transport: Transport, request: Request) -> Response {
+    let mut response = door(server, transport, request).await;
     if transport == Transport::Tls && response.status() != StatusCode::SWITCHING_PROTOCOLS {
         response.headers_mut().insert(header::CONNECTION, HeaderValue::from_static("close"));
     }
     response
 }
 
-async fn door(app: Arc<App>, transport: Transport, request: Request) -> Response {
-    let server = app.link.clone();
+async fn door(server: Arc<LinkServer>, transport: Transport, request: Request) -> Response {
     let (mut parts, _) = request.into_parts();
     if parts.headers.contains_key(header::ORIGIN) {
         return StatusCode::FORBIDDEN.into_response();
@@ -1167,7 +1183,7 @@ async fn door(app: Arc<App>, transport: Transport, request: Request) -> Response
             PairTicket { gate: server.shared.clone(), source: source.clone() }
         };
         disarm();
-        return socket.on_upgrade(move |socket| pair_socket(app, socket, binding, ticket));
+        return socket.on_upgrade(move |socket| pair_socket(server, socket, binding, ticket));
     }
     // Where a later link's failures count: on the link port, and from a socket that is no proxy, its own place; behind
     // a proxy the client it wrote — a proxy that writes `X-Forwarded-For` lets nobody choose another's —, except when it
@@ -1241,7 +1257,7 @@ async fn door(app: Arc<App>, transport: Transport, request: Request) -> Response
     };
     socket.max_frame_size(FRAME_MAX).max_message_size(FRAME_MAX).on_upgrade(move |socket| async move {
         let (sink, stream) = axum_wire(socket);
-        link_session(app, sink, stream, knock).await;
+        link_session(server, sink, stream, knock).await;
     })
 }
 
@@ -1279,8 +1295,12 @@ pub(crate) struct Knock {
 /// a poor network); either counted for its source —, then its places, the home's and the port's — none free:
 /// `BUSY`, which the gateway tries again later —, its connection's place given back (LINKS counts it from now on),
 /// and its home served. Until its proof a socket holds nothing but its connection's place.
-pub(crate) async fn link_session(app: Arc<App>, mut sink: WireSink, mut stream: WireStream, mut knock: Knock) {
-    let server = app.link.clone();
+pub(crate) async fn link_session(
+    server: Arc<LinkServer>,
+    mut sink: WireSink,
+    mut stream: WireStream,
+    mut knock: Knock,
+) {
     let proven = tokio::time::timeout(PROOF, prove(&mut sink, &mut stream, &knock)).await.unwrap_or(Proof::Missing);
     knock.unproven.take();
     if proven != Proof::Valid {
@@ -1296,7 +1316,7 @@ pub(crate) async fn link_session(app: Arc<App>, mut sink: WireSink, mut stream: 
     if let Some(deadline) = &knock.deadline {
         deadline.release();
     }
-    serve_home(app, sink, stream, knock.client, knock.named, knock.peer, permit, knock.up).await;
+    serve_home(server, sink, stream, knock.client, knock.named, knock.peer, permit, knock.up).await;
 }
 
 /// How a link's proof came: right, a `proof` whose MAC does not hold, or none (gone, silent, or not a proof).
@@ -1384,30 +1404,35 @@ enum Spoiled {
     Quiet,
 }
 
-async fn pair_socket(app: Arc<App>, socket: WebSocket, binding: Binding, ticket: PairTicket) {
+async fn pair_socket(server: Arc<LinkServer>, socket: WebSocket, binding: Binding, ticket: PairTicket) {
     let (sink, stream) = axum_wire(socket);
-    pair_session(app, sink, stream, binding, &ticket.source).await;
+    pair_session(server, sink, stream, binding, &ticket.source).await;
     drop(ticket);
 }
 
 /// One pairing over a socket: its first frame within 3 s, the exchange within its 10 s, a refusal closed with 4401 and
 /// no reason — whatever it was, the gateway hears the same.
 pub(crate) async fn pair_session(
-    app: Arc<App>,
+    server: Arc<LinkServer>,
     mut sink: WireSink,
     mut stream: WireStream,
     binding: Binding,
     source: &str,
 ) {
-    let mut pending = Pending { clients: app.link.clients.clone(), id: None };
+    // The gateway's parts: none before it is built or once it is gone — no pairing then.
+    let Some(parts) = server.parts() else {
+        let _ = sink.send(Wire::Close(GOING, String::new())).await;
+        return;
+    };
+    let mut pending = Pending { clients: server.clients.clone(), id: None };
     let outcome = tokio::time::timeout(
         PAIR_EXCHANGE,
         exchange(
-            &app.link,
-            &app.secrets,
-            &app.identity,
-            &app.builtin,
-            &app.voice,
+            &server,
+            &server.secrets,
+            &parts.identity,
+            &parts.builtin,
+            &parts.voice,
             &mut sink,
             &mut stream,
             &binding,
@@ -1424,11 +1449,11 @@ pub(crate) async fn pair_session(
             let _ = sink.send(Wire::Close(DONE, String::new())).await;
         }
         Ok(Err(Spoiled::Guess)) => {
-            app.link.pairing_failed(source, true);
+            server.pairing_failed(source, true);
             let _ = sink.send(Wire::Close(REFUSED, String::new())).await;
         }
         Ok(Err(Spoiled::Broken)) | Err(_) => {
-            app.link.pairing_failed(source, false);
+            server.pairing_failed(source, false);
             let _ = sink.send(Wire::Close(REFUSED, String::new())).await;
         }
         Ok(Err(Spoiled::Unconfirmed)) => {
@@ -1584,12 +1609,22 @@ impl Stream for Fed {
 }
 
 /// `/home/v1` for a link's requests, their errors in the envelope, their language: made for each link and gone with it,
-/// so the app is never held by its own link server.
-fn inner_router(app: &Arc<App>) -> Router {
-    crate::home_server::serve::router()
-        .with_state(app.clone())
-        .layer(axum::middleware::from_fn(crate::platform::http::api::error_bodies))
-        .layer(axum::middleware::from_fn(crate::locale::request_language))
+/// so the gateway is never held by its own link server. None once the gateway is gone.
+fn inner_router(parts: &LinkParts) -> Option<Router> {
+    let home_v1 = (parts.home_v1)()?;
+    Some(
+        home_v1
+            .layer(axum::middleware::from_fn(crate::platform::http::api::error_bodies))
+            .layer(axum::middleware::from_fn(crate::locale::request_language)),
+    )
+}
+
+/// A link the gateway is going from before it was served: closed as at the gateway's stop.
+async fn going(out: Out) -> u16 {
+    out.close(GOING);
+    out.closed(Duration::from_secs(1)).await;
+    out.gone.cancel();
+    GOING
 }
 
 /// A home's link at this computer.
@@ -1609,7 +1644,7 @@ pub(crate) struct Home {
 /// takes this computer's own requests over it.
 #[allow(clippy::too_many_arguments)]
 async fn serve_home(
-    app: Arc<App>,
+    server: Arc<LinkServer>,
     mut sink: WireSink,
     stream: WireStream,
     client: LinkClient,
@@ -1618,7 +1653,6 @@ async fn serve_home(
     permit: Permit,
     up: bool,
 ) {
-    let server = app.link.clone();
     let id = server.next_live.fetch_add(1, Ordering::SeqCst);
     let cut = CancellationToken::new();
     locked(&server.live).insert(id, LiveLink { client: client.id.clone(), cut: cut.clone(), up: None });
@@ -1637,7 +1671,7 @@ async fn serve_home(
     }
     locked(&server.centres).insert(client.id.clone(), up);
     server.clients.online(&client.id, &origin.gateway, true);
-    let code = serve_link(app.clone(), out, stream, origin.clone(), peer, cut, calls.clone()).await;
+    let code = serve_link(server.clone(), out, stream, origin.clone(), peer, cut, calls.clone()).await;
     tracing::info!("link: a home's link closed ({code})");
     locked(&server.live).remove(&id);
     if let Some(calls) = calls {
@@ -1668,7 +1702,7 @@ fn status_for(
 /// changes, the client looked at again every `RECHECK` (removed: 4401), silence closed (4408); the answers to this
 /// computer's own requests (`up`, over `calls`) to their callers. The close code.
 pub(crate) async fn serve_link(
-    app: Arc<App>,
+    server: Arc<LinkServer>,
     out: Out,
     mut stream: WireStream,
     origin: LinkOrigin,
@@ -1676,13 +1710,14 @@ pub(crate) async fn serve_link(
     cut: CancellationToken,
     calls: Option<Arc<Session>>,
 ) -> u16 {
-    let server = app.link.clone();
+    // The gateway's parts, and `/home/v1` made for this link: none — the gateway is going.
+    let Some(parts) = server.parts() else { return going(out).await };
+    let Some(router) = inner_router(&parts) else { return going(out).await };
     let gone = out.gone.clone();
     let (done, mut finished) = mpsc::unbounded_channel();
     let client_held = locked(&server.client_bodies).entry(origin.client.clone()).or_default().clone();
-    let router = inner_router(&app);
     let mut home = Home { origin, peer, router, out, running: HashMap::new(), held: 0, client_held, done };
-    let mut told = status_for(&app.builtin, &app.link, &app.voice, &home.origin);
+    let mut told = status_for(&parts.builtin, &server, &parts.voice, &home.origin);
     home.control(Wire::json(&json!({ "t": "welcome", "v": super::link::VERSION, "status": told })));
     let mut told_at = Instant::now();
     // The status to tell once `STATUS_EVERY` has passed since the last: always the latest — none when it came back to
@@ -1753,11 +1788,11 @@ pub(crate) async fn serve_link(
                     break REFUSED;
                 }
                 home.give_up_late_bodies(BODY_SILENCE, BODY_WHOLE);
-                let now = status_for(&app.builtin, &app.link, &app.voice, &home.origin);
+                let now = status_for(&parts.builtin, &server, &parts.voice, &home.origin);
                 waiting = (now != told).then_some(now);
             }
             _ = nudged => {
-                let now = status_for(&app.builtin, &app.link, &app.voice, &home.origin);
+                let now = status_for(&parts.builtin, &server, &parts.voice, &home.origin);
                 waiting = (now != told).then_some(now);
             }
             _ = tokio::time::sleep_until(told_at + STATUS_EVERY), if waiting.is_some() => {

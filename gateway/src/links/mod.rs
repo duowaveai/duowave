@@ -15,6 +15,7 @@ pub mod bus_words;
 pub mod connectors;
 pub mod dialog;
 pub mod health;
+pub mod helpers;
 pub mod http;
 pub mod playback;
 pub mod plugins;

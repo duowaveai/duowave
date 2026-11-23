@@ -3649,6 +3649,7 @@ mod tests {
                 node_dir: std::path::PathBuf::from("node"),
                 own_node: None,
                 node_mirror: None,
+                mirrors: None,
             },
             db,
             settings,

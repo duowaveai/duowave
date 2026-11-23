@@ -1548,6 +1548,7 @@ mod tests {
                 node_dir: std::path::PathBuf::from("node"),
                 own_node: None,
                 node_mirror: None,
+                mirrors: None,
             },
             db: db.clone(),
             settings: Arc::new(SettingsService::new(db.clone(), events.clone())),

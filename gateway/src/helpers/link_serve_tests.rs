@@ -22,6 +22,7 @@ use tokio_util::sync::CancellationToken;
 use tower::ServiceExt;
 
 use super::*;
+use crate::app::App;
 use crate::config::{Config, Env};
 use crate::helpers::contract::Ability;
 use crate::helpers::link::{
@@ -50,7 +51,7 @@ async fn pairing(app: &Arc<App>, key: &ConnectionKey, probe: bool, accept: bool)
     let binding = Binding::Tls(fingerprint(app));
     let served = {
         let (app, binding) = (app.clone(), binding.clone());
-        tokio::spawn(async move { pair_session(app, sink, stream, binding, "127.0.0.1").await })
+        tokio::spawn(async move { pair_session(app.link.clone(), sink, stream, binding, "127.0.0.1").await })
     };
     let check = move |_: &HelperIdentity, _: &crate::settings::definitions::HelperPin| {
         if accept {
@@ -97,7 +98,7 @@ async fn by_hand(app: &Arc<App>, source: &'static str) -> (WebSocketStream<tokio
     let (sink, stream) = tungstenite_wire(helper);
     let binding = Binding::Tls(fingerprint(app));
     let (app, served) = (app.clone(), binding.clone());
-    tokio::spawn(async move { pair_session(app, sink, stream, served, source).await });
+    tokio::spawn(async move { pair_session(app.link.clone(), sink, stream, served, source).await });
     (gateway, binding)
 }
 
@@ -161,7 +162,7 @@ async fn link_port(
         LinkListener::new(listener, app.link.tls().unwrap(), Limits::new(CONNECTIONS, CONNECTIONS_PER_SOURCE))
             .with_times(Duration::from_secs(2), to_upgrade);
     let stop = CancellationToken::new();
-    let served = tokio::spawn(serve(app.clone(), listener, stop.clone().cancelled_owned()));
+    let served = tokio::spawn(serve(app.link.clone(), listener, stop.clone().cancelled_owned()));
     (port, stop, served)
 }
 
@@ -364,7 +365,7 @@ async fn the_connection_key_is_spent_only_by_a_confirmed_pairing() {
     let binding = Binding::Tls(fingerprint(&app));
     let served = {
         let (app, binding) = (app.clone(), binding.clone());
-        tokio::spawn(async move { pair_session(app, sink, stream, binding, "192.0.2.5").await })
+        tokio::spawn(async move { pair_session(app.link.clone(), sink, stream, binding, "192.0.2.5").await })
     };
     use base64::Engine;
     let b64 = base64::engine::general_purpose::STANDARD;
@@ -577,8 +578,8 @@ async fn home_link_taking(
     let named = HelperIdentity { id: "gw-1".into(), name: "Колонка".into() };
     let peer = SocketAddr::new("192.0.2.5".parse().unwrap(), 5000);
     let permit = app.link.links.take("192.0.2.5").unwrap();
-    let app = app.clone();
-    let served = tokio::spawn(async move { serve_home(app, sink, stream, client, named, peer, permit, up).await });
+    let link = app.link.clone();
+    let served = tokio::spawn(async move { serve_home(link, sink, stream, client, named, peer, permit, up).await });
     (served, gateway)
 }
 
@@ -917,8 +918,8 @@ async fn knocking(
         unproven: None,
         up: false,
     };
-    let app = app.clone();
-    (tokio::spawn(async move { link_session(app, sink, stream, knock).await }), gateway)
+    let link = app.link.clone();
+    (tokio::spawn(async move { link_session(link, sink, stream, knock).await }), gateway)
 }
 
 /// Failures counted for a place now.
@@ -1037,7 +1038,7 @@ fn bare_home(app: &Arc<App>) -> Home {
             gateway: identity("gw-1"),
         },
         peer: SocketAddr::new("192.0.2.5".parse().unwrap(), 5000),
-        router: inner_router(app),
+        router: inner_router(&app.link.parts().expect("attached")).expect("the gateway"),
         out: Out::start(sink),
         running: HashMap::new(),
         held: 0,
@@ -1221,7 +1222,7 @@ async fn a_refusal_at_the_door_ends_its_connection_and_gives_its_place_back() {
     let listener = LinkListener::new(listener, app.link.tls().unwrap(), connections.clone())
         .with_times(Duration::from_secs(2), Duration::from_secs(30));
     let stop = CancellationToken::new();
-    tokio::spawn(serve(app.clone(), listener, stop.clone().cancelled_owned()));
+    tokio::spawn(serve(app.link.clone(), listener, stop.clone().cancelled_owned()));
     let mut stream = tls(port).await;
     let request = format!(
         "GET /home/v1/link HTTP/1.1\r\nhost: 127.0.0.1\r\nupgrade: websocket\r\nconnection: upgrade\r\n\

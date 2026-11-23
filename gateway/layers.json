@@ -41,7 +41,6 @@
     "gateway -> mcp",
     "gateway -> placement",
     "gateway -> plugins",
-    "helpers -> app",
     "home_server -> calls",
     "midi -> home",
     "midi -> placement",

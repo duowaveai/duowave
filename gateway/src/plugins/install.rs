@@ -394,11 +394,18 @@ pub async fn download(url: &str, max: u64, timeout: Duration) -> Result<Vec<u8>,
 
 /// The same, telling a file that is not there (404, 410) from a failure on the way.
 pub async fn fetch(url: &str, max: u64, timeout: Duration) -> Result<Vec<u8>, Failed> {
+    fetch_within(url, max, timeout, None).await
+}
+
+/// The same, given up after `stall` without a byte: a connection cut after its first kilobytes hangs rather than
+/// fails (Russia, docs/plans/package-mirror.md), and another source is better asked than waited for to the end.
+pub async fn fetch_within(url: &str, max: u64, timeout: Duration, stall: Option<Duration>) -> Result<Vec<u8>, Failed> {
     let failed = |message: String| Failed { message, missing: false, too_big: false };
-    let client = crate::utils::http::client_builder()
-        .timeout(timeout)
-        .build()
-        .map_err(|error| failed(crate::tr!("загрузка: {error}", error = error)))?;
+    let mut builder = crate::utils::http::client_builder().timeout(timeout);
+    if let Some(stall) = stall {
+        builder = builder.read_timeout(stall);
+    }
+    let client = builder.build().map_err(|error| failed(crate::tr!("загрузка: {error}", error = error)))?;
     let mut response = client
         .get(url)
         .send()

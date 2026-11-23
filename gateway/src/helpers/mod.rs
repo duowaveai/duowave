@@ -466,8 +466,8 @@ pub struct Helpers {
     unread: AtomicBool,
     /// Itself, for the links' news.
     this: OnceLock<Weak<Helpers>>,
-    /// The whole app, once built: a linked helper's own requests (`up`) go into its routes.
-    app: OnceLock<Weak<crate::app::App>>,
+    /// Where a linked helper's own requests (`up`) go, once the gateway is built.
+    up: OnceLock<UpWay>,
     /// The links' times (tests scale them).
     link_timing: Mutex<LinkTiming>,
     /// The looks have started, and the server listens on its port (the bridge's address): links run once both hold.
@@ -511,7 +511,7 @@ impl Helpers {
             followers: Mutex::new(Vec::new()),
             unread: AtomicBool::new(false),
             this: OnceLock::new(),
-            app: OnceLock::new(),
+            up: OnceLock::new(),
             link_timing: Mutex::new(LinkTiming::default()),
             started: AtomicBool::new(false),
             listening: AtomicBool::new(false),
@@ -560,9 +560,9 @@ impl Helpers {
         let _ = self.own.set(own);
     }
 
-    /// The whole app joins once built: the links started from now on take their helper's own requests (`up`).
-    pub fn attach(&self, app: Weak<crate::app::App>) {
-        let _ = self.app.set(app);
+    /// The gateway joins once built: the links started from now on take their helper's own requests (`up`).
+    pub fn attach(&self, up: UpWay) {
+        let _ = self.up.set(up);
     }
 
     /// This gateway's own hearing, when it takes it from itself (stage 6).
@@ -790,9 +790,9 @@ impl Helpers {
                     helpers.on_link(id, news);
                 }
             });
-            let door = self.app.get().map(|app| {
+            let door = self.up.get().map(|up| {
                 let helpers = self.this.get().cloned().unwrap_or_default();
-                Arc::new(EntryDoor { helpers, app: app.clone(), entry: entry.id.clone() }) as Arc<dyn link::UpDoor>
+                Arc::new(EntryDoor { helpers, up: up.clone(), entry: entry.id.clone() }) as Arc<dyn link::UpDoor>
             });
             remote.run_link(self.link_timing(), news, door);
         }
@@ -2047,11 +2047,20 @@ fn fill_status(view: &mut HelperView, status: &HelperStatus) {
     view.abilities = status.contract.abilities.clone();
 }
 
+/// Where a linked helper's own requests (`up`) go, from the gateway once it is built (`Helpers::attach`,
+/// src/links/helpers.rs): its routes, made for each request, and the gate that names the person a request names. Both
+/// hold the gateway weakly: none once it is gone.
+#[derive(Clone)]
+pub struct UpWay {
+    pub router: Arc<dyn Fn() -> Option<axum::Router> + Send + Sync>,
+    pub gate: Weak<dyn crate::platform::http::Gate>,
+}
+
 /// A linked entry's door for its helper's own requests (`link::UpDoor`): open while `Helpers::takes_up` says so; the
-/// app's routes, and the person a request names (`caller::up_origin`), from the app as it is now.
+/// gateway's routes, and the person a request names (`caller::up_origin`), from the gateway as it is now.
 struct EntryDoor {
     helpers: Weak<Helpers>,
-    app: Weak<crate::app::App>,
+    up: UpWay,
     entry: String,
 }
 
@@ -2061,12 +2070,12 @@ impl link::UpDoor for EntryDoor {
     }
 
     fn router(&self) -> Option<axum::Router> {
-        self.app.upgrade().map(crate::app::router)
+        (self.up.router)()
     }
 
     fn origin(&self, person: &Value) -> Option<crate::platform::http::UpOrigin> {
-        let app = self.app.upgrade()?;
-        crate::platform::http::caller::up_origin(&*app, &self.entry, person)
+        let gate = self.up.gate.upgrade()?;
+        crate::platform::http::caller::up_origin(&*gate, &self.entry, person)
     }
 }
 
