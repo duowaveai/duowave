@@ -61,6 +61,13 @@ pub fn shown(code: &str) -> String {
 pub fn tell(app: Arc<App>, id: &str, name: &str, kind: JoinKind, code: &str, expires_ms: u64) -> Told {
     let mut told = Told::default();
     tracing::warn!(target: "home", "join: the code for «{name}» ({}) is {}", kind.as_str(), shown(code));
+    // A pretend station says it in its terminal (docs/plans/pretend-stations.md): it has no speaker of its own.
+    #[cfg(feature = "pc")]
+    if let Some(pretend) = crate::stations::pretend::get().filter(|pretend| pretend.is_station()) {
+        crate::stations::pretend::say(pretend, &words(code, name));
+        told.spoken = true;
+        return told;
+    }
     let relay = if app.placement.role() == crate::placement::service::Role::Station {
         app.sessions.local_relay()
     } else {

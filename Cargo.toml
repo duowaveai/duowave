@@ -9,7 +9,7 @@ members = ["gateway"]
 exclude = ["desktop/src-tauri", "yam", "apps/own-server", "apps/youtube-lite"]
 
 [workspace.package]
-version = "0.18.3"
+version = "0.18.4"
 edition = "2021"
 license = "Apache-2.0"
 publish = false
@@ -56,3 +56,9 @@ opt-level = "s"
 lto = true
 codegen-units = 1
 panic = "abort"
+
+# The apps' JavaScript engine (QuickJS, C) optimised in debug and test builds too, as in the program people run: its
+# stack limit for scripts (src/plugins/quickjs.rs, 256 KB) is in bytes, and unoptimised a JS call takes ~8 KB of stack
+# instead of ~0.35 KB. The built-in «Погода» needed ~165 KB of it on a Mac and ran out on Windows (CI 22.11).
+[profile.dev.package.rquickjs-sys]
+opt-level = 3

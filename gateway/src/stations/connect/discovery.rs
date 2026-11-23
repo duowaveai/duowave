@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use serde::Serialize;
 use tokio::io::AsyncReadExt;
-use tokio::net::{TcpStream, UdpSocket};
+use tokio::net::UdpSocket;
 use tokio::time::{timeout, timeout_at, Instant};
 
 pub const YANDEX_SERVICE: &str = "_yandexio._tcp.local";
@@ -200,6 +200,11 @@ async fn ask(to: &[SocketAddr], shared: bool, window: Duration) -> Vec<FoundStat
     ask_for(YANDEX_SERVICE, to, shared, window).await
 }
 
+/// Stations at these addresses only (a pretend station in tests), unicast.
+pub async fn ask_at(to: &[SocketAddr], window: Duration) -> Vec<FoundStation> {
+    ask(to, false, window).await
+}
+
 /// Whether an mDNS packet is a question about `service` (PTR or ANY): the announcer answers those.
 pub fn asks_for(packet: &[u8], service: &str) -> bool {
     let Some(flags) = u16_at(packet, 2) else { return false };
@@ -279,6 +284,16 @@ pub fn mdns_answer(records: &[DnsRecord], ttl: u32) -> Vec<u8> {
 
 /// The query sent to each of `to` (the mDNS group; a pretend station in tests), and the answers heard for `window`.
 async fn ask_for(service: &'static str, to: &[SocketAddr], shared: bool, window: Duration) -> Vec<FoundStation> {
+    // A pretend gateway asks the pretend stations' addresses only, never the home network (src/stations/pretend.rs).
+    let pretend =
+        super::super::pretend::search_targets().filter(|_| to.iter().any(|target| target.ip().is_multicast()));
+    let (to, shared) = match &pretend {
+        Some(targets) => (targets.as_slice(), false),
+        None => (to, shared),
+    };
+    if to.is_empty() {
+        return Vec::new();
+    }
     let query = mdns_query(service);
     let mut sockets = Vec::new();
     // Unicast answers to a random port.
@@ -431,7 +446,7 @@ impl std::fmt::Display for NoBanner {
 /// The SSH banner's software (`dropbear_2022.83`) at address:port, or why there is none: the connect may take
 /// `connect_ms`, the banner `banner_ms` more — a busy station's dropbear answers after its fork.
 pub async fn probe_ssh(address: &str, port: u16, connect_ms: u64, banner_ms: u64) -> Result<String, NoBanner> {
-    let mut stream = match timeout(Duration::from_millis(connect_ms), TcpStream::connect((address, port))).await {
+    let mut stream = match timeout(Duration::from_millis(connect_ms), crate::utils::net::dial(address, port)).await {
         Err(_) => return Err(NoBanner::Unreached(Unreached::Timeout, format!("no answer in {connect_ms} ms"))),
         Ok(Err(error)) => return Err(NoBanner::Unreached(unreached_of(&error), error.to_string())),
         Ok(Ok(stream)) => stream,

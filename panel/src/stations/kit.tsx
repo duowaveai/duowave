@@ -368,12 +368,14 @@ export function Defs({ id, skin }: { id: (name: string) => string; skin: Skin })
 }
 
 /** Рамка рисунка: коробка 6:5, SVG 240×200. */
-export function Frame({ label, children }: { label: string; children: ComponentChildren }) {
+export function Frame({ label, children, overlay }: { label: string; children: ComponentChildren; overlay?: ComponentChildren }) {
     return (
         <div class="st2-frame">
             <svg role="img" aria-label={label} width="100%" height="100%" viewBox="0 0 240 200">
                 {children}
             </svg>
+            {/* HTML over the drawing, in the frame's box (Deevi's mascot, stations/divi.tsx). */}
+            {overlay}
         </div>
     );
 }

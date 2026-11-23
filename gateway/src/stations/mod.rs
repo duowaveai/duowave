@@ -5,6 +5,8 @@ pub mod connect;
 pub mod firmware;
 pub mod looks;
 pub mod presence;
+#[cfg(feature = "pc")]
+pub mod pretend;
 pub mod routes;
 pub mod service;
 

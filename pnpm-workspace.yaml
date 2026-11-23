@@ -1,7 +1,9 @@
-# The panel (panel/) is the one package; the root holds its wrappers and scripts/release. The gateway is Rust
+# The panel (panel/) and the mascot (mascot/, Deevi in 2D and 3D, used by the panel and copied to the sites); the root
+# holds their wrappers and scripts/release. The gateway is Rust
 # (gateway/, cargo). esbuild (panel/vite) places its platform binary at install: the one install script we allow.
 packages:
   - .
   - panel
+  - mascot
 allowBuilds:
   esbuild: true

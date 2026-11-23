@@ -404,8 +404,11 @@ declare module "@duowave/panel-sdk" {
         melody: Array<[number, number, number]>;
     }
 
-    /** Файл `.mid` (до 256 КБ) — дорожки с мелодиями; читает шлюз, файл нигде не хранится. Ошибка — словами. */
-    export function readMidiFile(file: Blob): Promise<{ tempo: number; meter: [number, number]; tracks: MidiTrack[] }>;
+    /**
+     * Файл `.mid` (до 256 КБ) — дорожки с мелодиями; читает шлюз, файл нигде не хранится. Ошибка — словами. `null`
+     * там, где читать некому: на витрине сайта (веб-хозяин, panel/src/web-host) шлюза нет — спрячьте кнопку файла.
+     */
+    export const readMidiFile: ((file: Blob) => Promise<{ tempo: number; meter: [number, number]; tracks: MidiTrack[] }>) | null;
 
     /**
      * Долгая задача приложения (docs/plugins/AUTHORING.md, «Долгие задачи»): работа дольше, чем ждёт вызов функции, —

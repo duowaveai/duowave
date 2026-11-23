@@ -731,7 +731,7 @@ impl Workshop {
                 "widget" => templates::widget(id, title.unwrap_or(id)),
                 "quiz" => templates::quiz(id, title.unwrap_or(id)),
                 "game" => templates::game(id, title.unwrap_or(id)),
-                "midi" => templates::midi(id, title.unwrap_or("Учитель на MIDI-клавиатуре")),
+                "midi" => templates::midi(id, title.unwrap_or(templates::MIDI_TITLE)),
                 "folders" => templates::folders(id, title.unwrap_or("Фотоальбом")),
                 other => {
                     return Err(ApiError::field(

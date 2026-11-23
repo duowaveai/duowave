@@ -84,6 +84,9 @@ pub struct OwnStation;
 impl StationRescue for OwnStation {
     fn give_back(&self, _address: &str, _actor: Option<Actor>) -> Result<(), String> {
         use crate::placement::station_fs::{RealSystem, StationFs, Target};
+        if crate::placement::station_fs::pretend_station() {
+            return Err("a pretend station: its voice stays".to_string());
+        }
         StationFs::real().point(&Target::Yandex, true, &RealSystem).map(|_| ())
     }
 }

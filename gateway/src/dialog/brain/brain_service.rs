@@ -35,11 +35,12 @@ use crate::dialog::llm::brain::{
     serialize_kind, Backup, BrainModels, BrainNow, BrainOrigin, BrainProfile, BrainProfiles, BrainSource, BrainStatus,
     EnvBrain, ModelSlot, ENV_PROVIDER, WORDS_PROVIDER,
 };
+use crate::dialog::llm::limits::{LimitView, Quota};
 use crate::dialog::llm::openai_chat::{tokens_field_for, OPENAI_BASE_URL};
 use crate::dialog::llm::unreachable::Unreachable;
 use crate::dialog::llm::{
     bearer_of, create_llm, describe_http_error as describe, Access, AccessProblem, ErrorWords, LlmClient, LlmEvent,
-    LlmMessage, LlmRequest, LlmSettings, LlmStream, LlmTool, ProblemCell, SpokenFailure,
+    LlmMessage, LlmRequest, LlmSettings, LlmStream, LlmTool, ProviderCell, SpokenFailure,
 };
 use crate::oauth::{
     client_name, record_id, tokens, AccountView, Credential, Delivered, Extra, Flow, KeyGrant, OAuthService,
@@ -48,7 +49,7 @@ use crate::oauth::{
 use crate::operations::networks::is_local_url;
 use crate::platform::http::ApiError;
 use crate::secrets::{SecretMask, SecretsService};
-use crate::settings::definitions::{BackupBy, Brain, BrainPick, BRAIN, DUOWAVE_INVITE};
+use crate::settings::definitions::{BackupBy, Brain, BrainPick, OnLimit, BRAIN, DUOWAVE_INVITE};
 use crate::settings::SettingsService;
 use crate::storage::Db;
 use crate::utils::http::client;
@@ -200,6 +201,12 @@ pub struct ProviderView {
     /// A provider whose service tells its access (DuoWave): what it said, and what its last refusal asks.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub access: Option<ServiceAccess>,
+    /// Its limit held now (docs/plans/provider-limits.md): why, until when, the station's words.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit: Option<LimitView>,
+    /// What its service says is spent (DuoWave's `x-quota-*`, `GET /v1/quota`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quota: Option<Quota>,
     /// The helper whose model this is: a helper's row, or a model server of this computer (stage 6).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub helper: Option<ProviderHelper>,
@@ -234,6 +241,9 @@ pub struct ChoiceView {
     /// neither: the panel then offers only «не нужна».
     #[serde(rename = "autoBackup")]
     pub auto_backup: bool,
+    /// «Когда кончился лимит, а запасной нет»: ask once, Alice, or the words (docs/plans/provider-limits.md).
+    #[serde(rename = "onLimit")]
+    pub on_limit: OnLimit,
 }
 
 /// `backup: "auto"` in a choice: «пусть выберет шлюз» — no backup of a person's and no «не нужна»: the gateway sets
@@ -322,9 +332,9 @@ pub struct BrainService {
     /// The access of each provider signed in with tokens, by id with its `created_at`: one per provider, so its
     /// clients and checks share one renewal at a time.
     accesses: Mutex<HashMap<String, (String, Arc<TokenAccess>)>>,
-    /// The last refusal of each provider whose service says them in words (DuoWave), by id with its `created_at`: its
-    /// clients set it, its card shows it.
-    problems: Mutex<HashMap<String, (String, ProblemCell)>>,
+    /// The limits of each provider (docs/plans/provider-limits.md), by id with its `created_at`: its clients set them,
+    /// «Мозг» passes a paused one by, its card shows them.
+    limits: Mutex<HashMap<String, (String, ProviderCell)>>,
     /// The helpers that give a model (helper_models.rs). Unset — no helper is known and every road is open: the rows
     /// are asked as they are stored, as before the helpers.
     helpers: OnceLock<Arc<dyn ModelHelpers>>,
@@ -349,6 +359,8 @@ struct Seen {
     helpers: Vec<ModelHelper>,
     /// The regulator: home, mine, foreign.
     lets: [bool; 3],
+    /// The providers paused by a limit now, by id (docs/plans/provider-limits.md).
+    limited: HashSet<String>,
 }
 
 impl Seen {
@@ -474,7 +486,7 @@ impl BrainService {
             mutation: Mutex::new(()),
             clients: Mutex::new(HashMap::new()),
             accesses: Mutex::new(HashMap::new()),
-            problems: Mutex::new(HashMap::new()),
+            limits: Mutex::new(HashMap::new()),
             helpers: OnceLock::new(),
             owner: OnceLock::new(),
             refusals: OnceLock::new(),
@@ -512,9 +524,16 @@ impl BrainService {
 
     /// The helpers now, read before `mutation` is taken.
     fn seen(&self) -> Seen {
-        let Some(helpers) = self.helpers.get() else { return Seen::default() };
+        let limited = self.paused_providers();
+        let Some(helpers) = self.helpers.get() else { return Seen { limited, ..Seen::default() } };
         let lets = [Reach::Home, Reach::Mine, Reach::Foreign].map(|reach| helpers.lets(reach));
-        Seen { known: true, helpers: helpers.model_helpers(), lets }
+        Seen { known: true, helpers: helpers.model_helpers(), lets, limited }
+    }
+
+    /// The providers a limit pauses now: «Мозг» passes them by until their probe is due.
+    fn paused_providers(&self) -> HashSet<String> {
+        let limits = self.limits.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        limits.iter().filter(|(_, (_, cell))| cell.paused()).map(|(id, _)| id.clone()).collect()
     }
 
     // The panel.
@@ -522,6 +541,7 @@ impl BrainService {
     pub fn view(&self) -> BrainView {
         let seen = self.seen();
         let (rows, choice) = self.snapshot();
+        self.refresh_quotas(&rows);
         // A helper's model is the gateway's own row: never offered.
         let mut presets: Vec<&'static ProviderPreset> =
             PROVIDER_PRESETS.iter().filter(|preset| preset.id != HELPER_PRESET).collect();
@@ -537,6 +557,7 @@ impl BrainService {
                 backup: choice.backup.clone(),
                 backup_by: choice.backup_by,
                 auto_backup: true,
+                on_limit: choice.on_limit.unwrap_or_default(),
             },
             note: self.note(&rows, &choice, &seen),
             invite: self.has_invite(),
@@ -848,8 +869,8 @@ impl BrainService {
                 params![row.id, row.created_at, grant.base_url, models, json!(options).to_string()],
             )
         })?;
-        if let Some(cell) = self.problem_cell(row) {
-            cell.set(None);
+        if let Some(cell) = self.limit_cell(row) {
+            cell.reset();
         }
         Ok(())
     }
@@ -927,6 +948,12 @@ impl BrainService {
                     next.backup_by = if pick.is_some() { None } else { Some(BackupBy::Declined) };
                     next.backup = pick;
                 }
+            }
+        }
+        if let Some(on_limit) = input.get("onLimit") {
+            match on_limit.as_str().and_then(OnLimit::parse) {
+                Some(on_limit) => next.on_limit = Some(on_limit),
+                None => return Err(ApiError::bad_request(crate::tr!("Когда кончился лимит: ask, alice или say."))),
             }
         }
         if let Some(effort) = input.get("effort") {
@@ -1260,27 +1287,60 @@ impl BrainService {
             brand: preset.and_then(|preset| preset.brand),
             account: self.access_of(row).map(|access| access.account()),
             access: self.service_access(row),
+            limit: self.limit_cell(row).and_then(|cell| cell.view()),
+            quota: self.limit_cell(row).and_then(|cell| cell.quota()),
             helper,
         }
     }
 
-    /// The refusals' cell of a provider whose service says them in words (DuoWave's): one per provider.
-    fn problem_cell(&self, row: &ProviderRow) -> Option<ProblemCell> {
-        if preset_of(&row.preset)?.errors != ErrorWords::DuoWave {
+    /// The limits of a provider (docs/plans/provider-limits.md): one per provider, made when first needed. A helper's
+    /// row and a model server of this computer have none: no service counts what they spend.
+    fn limit_cell(&self, row: &ProviderRow) -> Option<ProviderCell> {
+        let preset = preset_of(&row.preset);
+        if row.preset == HELPER_PRESET || preset.is_some_and(|preset| preset.local) {
             return None;
         }
-        let mut problems = self.problems.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        if let Some((_, cell)) = problems.get(&row.id).filter(|(created_at, _)| *created_at == row.created_at) {
+        let mut limits = self.limits.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some((_, cell)) = limits.get(&row.id).filter(|(created_at, _)| *created_at == row.created_at) {
             return Some(cell.clone());
         }
-        let cell = ProblemCell::default();
-        problems.insert(row.id.clone(), (row.created_at.clone(), cell.clone()));
+        // The service's own name in the words («Дневной лимит DuoWave»); a custom one's as the person named it.
+        let title = match preset {
+            Some(preset) if !preset.id.starts_with("custom") && !preset.title.is_empty() => preset.title,
+            _ => row.title.as_str(),
+        };
+        let cell = ProviderCell::new(title, preset.map(|preset| preset.errors).unwrap_or_default());
+        limits.insert(row.id.clone(), (row.created_at.clone(), cell.clone()));
         Some(cell)
+    }
+
+    /// What DuoWave's gateway says is spent, asked while the panel looks (`GET /v1/quota`, docs: quota-headers.md):
+    /// not more than once a minute, and not while the answers' headers are fresh. In the background: the card shows
+    /// it on its next read. Without a runtime (a check) nothing is asked.
+    fn refresh_quotas(&self, rows: &[ProviderRow]) {
+        let Ok(handle) = tokio::runtime::Handle::try_current() else { return };
+        let now = chrono::Utc::now();
+        let duowave =
+            |row: &&ProviderRow| preset_of(&row.preset).is_some_and(|preset| preset.errors == ErrorWords::DuoWave);
+        for row in rows.iter().filter(duowave) {
+            let Some(cell) = self.limit_cell(row).filter(|cell| cell.take_quota_turn(now)) else { continue };
+            let Ok((_, settings)) = self.paired(&row.id) else { continue };
+            handle.spawn(async move { read_quota(&settings, &cell).await });
+        }
+    }
+
+    /// A pick's limits: a row's; the .env model has none.
+    fn cell_of_pick(&self, pick: &Pick) -> Option<ProviderCell> {
+        match &pick.at {
+            Where::Row(row) => self.limit_cell(row),
+            Where::Env(_) => None,
+        }
     }
 
     /// The access its service told, with its last refusal; None while it told nothing and refused nothing.
     fn service_access(&self, row: &ProviderRow) -> Option<ServiceAccess> {
-        let problem = self.problem_cell(row).and_then(|cell| cell.get());
+        let problem =
+            self.limit_cell(row).filter(|cell| cell.words() == ErrorWords::DuoWave).and_then(|cell| cell.problem());
         let active = row.options.get(ACCESS_ACTIVE).map(|active| active == "true");
         if active.is_none() && problem.is_none() {
             return None;
@@ -1338,7 +1398,7 @@ impl BrainService {
             headers: headers_for(&row.preset, &row.options),
             access: self.access_of(row).map(|access| Access(access)),
             api: preset.map(|preset| preset.api).unwrap_or_default(),
-            duowave: self.problem_cell(row),
+            limits: self.limit_cell(row),
         }
     }
 
@@ -1658,6 +1718,8 @@ enum Judged {
     Away,
     /// The regulator «Что может уходить из дома» keeps its reach in.
     Shut,
+    /// Its provider's limit ran out: paused until its probe is due (docs/plans/provider-limits.md).
+    Limited,
 }
 
 /// One pick — the profile's chosen model, the backup, the next helper's model — as the resolver judges it.
@@ -1684,6 +1746,8 @@ enum Behind<'a> {
 enum Why {
     Away(Whose),
     Shut,
+    /// Its provider's limit, with the words for it.
+    Limited(ProviderCell),
 }
 
 impl Why {
@@ -1694,6 +1758,7 @@ impl Why {
             Why::Away(whose) if whose.silent => crate::tr!("{name}: модель сейчас не отвечает", name = whose.name),
             Why::Away(whose) => crate::tr!("{name} не на связи", name = whose.name),
             Why::Shut => crate::core::tx(CLOUDS_SHUT),
+            Why::Limited(cell) => cell.phrase().unwrap_or_default(),
         }
     }
 }
@@ -1744,7 +1809,10 @@ fn judge_row<'a>(row: &'a ProviderRow, model: &str, seen: &Seen) -> Pick<'a> {
         model: model.to_string(),
         reach,
         whose,
-        judged: judged(seen, reach, up),
+        judged: match judged(seen, reach, up) {
+            Judged::Open if seen.limited.contains(&row.id) => Judged::Limited,
+            judged => judged,
+        },
     }
 }
 
@@ -1782,6 +1850,45 @@ fn next_helper<'a>(
         let model = row.models.iter().find(|model| **model == chosen.model).or(row.models.first())?;
         Some(judge_row(row, model, seen))
     })
+}
+
+/// `GET /v1/quota` of DuoWave's gateway, kept on the provider's cell. A gateway without it (`404`) or any failure
+/// leaves the last snapshot as it was.
+async fn read_quota(settings: &LlmSettings, cell: &ProviderCell) {
+    let base = settings.base_url.as_deref().unwrap_or_default().trim_end_matches('/');
+    if base.is_empty() {
+        return;
+    }
+    let url = format!("{base}/quota");
+    if crate::dialog::llm::egress_refusal(&url).is_some() {
+        return;
+    }
+    let Ok(Some(key)) = bearer_of(settings).await else { return };
+    let sent = client().get(&url).bearer_auth(key).timeout(Duration::from_secs(10)).send().await;
+    let response = match sent {
+        Ok(response) if response.status().is_success() => response,
+        Ok(response) => {
+            tracing::debug!(target: "brain", "quota of {}: HTTP {}", cell.title(), response.status().as_u16());
+            return;
+        }
+        Err(error) => {
+            tracing::debug!(target: "brain", "quota of {}: {}", cell.title(), describe(&error));
+            return;
+        }
+    };
+    let Ok(body) = response.json::<Value>().await else { return };
+    if let Some(quota) = crate::dialog::llm::limits::quota_of_body(&body, chrono::Utc::now()) {
+        cell.quota_read(quota);
+    }
+}
+
+/// A slot whose model speaks of a limit (limits.rs `Spoken`): the backup taking over from `cell`'s limit says it once;
+/// the chosen model tells the day's 90 %.
+fn speaking(slot: ModelSlot, cell: &ProviderCell, backup: bool) -> ModelSlot {
+    let backup_title = backup.then(|| slot.title.clone());
+    let client: Arc<dyn LlmClient> =
+        Arc::new(crate::dialog::llm::limits::Spoken::new(slot.client.clone(), cell.clone(), backup_title));
+    ModelSlot { client, ..slot }
 }
 
 /// The words as a model: none may be asked, and they say why at once.
@@ -1990,6 +2097,8 @@ impl BrainService {
             let helpers_model = chosen.whose.as_ref().is_some_and(|whose| !whose.builtin);
             let behind = match backup {
                 Some(backup) if backup.judged == Judged::Open => Behind::Model(backup),
+                // A backup out of its own limit stands for nobody: the chosen model's failure says itself.
+                Some(backup) if backup.judged == Judged::Limited => Behind::Nothing,
                 None if helpers_model => match next_helper(rows, seen, &chosen, &refused) {
                     Some(next) => Behind::Model(next),
                     None => Behind::Words(crate::tr!(
@@ -2016,8 +2125,9 @@ impl BrainService {
             };
             return Some(Answer::Chosen(chosen, behind));
         }
-        let why = match (&chosen.judged, &chosen.whose) {
-            (Judged::Away, Some(whose)) => Why::Away(whose.clone()),
+        let why = match (&chosen.judged, &chosen.whose, self.cell_of_pick(&chosen)) {
+            (Judged::Limited, _, Some(cell)) => Why::Limited(cell),
+            (Judged::Away, Some(whose), _) => Why::Away(whose.clone()),
             _ => Why::Shut,
         };
         // A backup on the chosen model's own helper stands in for a model that fails there, never for its helper away:
@@ -2035,6 +2145,8 @@ impl BrainService {
             return Some(Answer::Instead(next, why));
         }
         let words = match (&why, &backup) {
+            // Out of its limit, and nothing stands in for it: when it renews, or what to do.
+            (Why::Limited(cell), _) => cell.phrase().unwrap_or_default(),
             (Why::Shut, _) => crate::tr!("Модель в облаке, а облака сейчас закрыты."),
             (Why::Away(whose), None) => away_without_backup(whose),
             (Why::Away(whose), Some(backup)) if backup.judged == Judged::Shut => away_with_backup_shut(whose),
@@ -2053,19 +2165,34 @@ impl BrainService {
         }
     }
 
-    /// The slot that answers, with what stands behind it; the words — answering, or behind — only with `words`. The
-    /// caller holds `mutation`.
-    fn slot_of_answer(&self, answer: Answer, seen: &Seen, words: bool) -> Option<ModelSlot> {
+    /// The slot that answers, with what stands behind it; the words — answering, or behind — only with `words`; the
+    /// limit's sentences only with `spoken` — an answer a person who has just asked hears. The caller holds `mutation`.
+    fn slot_of_answer(&self, answer: Answer, seen: &Seen, words: bool, spoken: bool) -> Option<ModelSlot> {
         match answer {
             Answer::Chosen(chosen, behind) => {
                 let mut slot = self.slot_of_pick(&chosen, seen);
+                let cell = self.cell_of_pick(&chosen).filter(|_| spoken);
                 slot.backup = match behind {
                     Behind::Nothing => None,
-                    Behind::Model(backup) => Some(self.slot_of_pick(&backup, seen)),
+                    // Spoken: the backup that takes over from a limit says so once (limits.rs `Spoken`).
+                    Behind::Model(backup) => {
+                        let backup = self.slot_of_pick(&backup, seen);
+                        Some(match &cell {
+                            Some(cell) => speaking(backup, cell, true),
+                            None => backup,
+                        })
+                    }
                     Behind::Words(phrase) => words.then(|| words_slot(phrase)),
                 }
                 .map(|backup| Arc::new(Backup::new(backup)));
-                Some(slot)
+                // Spoken: the chosen model's own answer tells the day's 90 % once.
+                Some(match &cell {
+                    Some(cell) => speaking(slot, cell, false),
+                    None => slot,
+                })
+            }
+            Answer::Instead(pick, Why::Limited(cell)) if spoken => {
+                Some(speaking(self.slot_of_pick(&pick, seen), &cell, true))
             }
             Answer::Instead(pick, _) => Some(self.slot_of_pick(&pick, seen)),
             Answer::Words(phrase) => words.then(|| words_slot(phrase)),
@@ -2079,7 +2206,7 @@ impl BrainService {
         let _mutation = self.lock();
         let (rows, choice) = self.snapshot();
         let answer = self.resolve(&rows, &choice, &seen, profile)?;
-        self.slot_of_answer(answer, &seen, false)
+        self.slot_of_answer(answer, &seen, false, false)
     }
 
     /// One model of a row, picked apart from the profiles (the memory's model, the workshop's agent, an app's): its
@@ -2094,6 +2221,7 @@ impl BrainService {
         match (pick.judged, pick.whose) {
             (Judged::Open, _) => Ok(self.slot_of_row(row, model, &seen)),
             (Judged::Away, Some(whose)) => Err(Some(Why::Away(whose).text())),
+            (Judged::Limited, _) => Err(self.limit_cell(row).and_then(|cell| cell.phrase())),
             _ => Err(Some(Why::Shut.text())),
         }
     }
@@ -2130,6 +2258,18 @@ impl BrainService {
             Answer::Instead(pick, why) => of(&pick, Answering::Fallback, Some(why.text())),
             Answer::Words(phrase) => BrainNow { reason: Some(phrase), ..off },
         }
+    }
+
+    /// The limits of the chosen provider of a profile that only the words answer now, because its limit ran out
+    /// (docs/plans/provider-limits.md): the station asks about Alice with them, or says them.
+    pub fn limit(&self, profile: ModelProfile) -> Option<ProviderCell> {
+        let seen = self.seen();
+        let (rows, choice) = self.snapshot();
+        if !matches!(self.resolve(&rows, &choice, &seen, profile)?, Answer::Words(_)) {
+            return None;
+        }
+        let (row, _) = Self::picked(&rows, &choice, profile)?;
+        self.limit_cell(row).filter(|cell| seen.limited.contains(&row.id) && cell.limit().is_some())
     }
 
     // The helpers' rows and the default backup (docs/plans/home-and-helpers.md, stage 4).
@@ -2438,7 +2578,17 @@ impl BrainSource for BrainService {
         let _mutation = self.lock();
         let (rows, choice) = self.snapshot();
         let answer = self.resolve(&rows, &choice, &seen, profile)?;
-        self.slot_of_answer(answer, &seen, true)
+        self.slot_of_answer(answer, &seen, true, false)
+    }
+
+    /// The same for an answer a person who has just asked hears: its backup says the limit once, the chosen model the
+    /// day's 90 % (docs/plans/provider-limits.md).
+    fn spoken_slot(&self, profile: ModelProfile) -> Option<ModelSlot> {
+        let seen = self.seen();
+        let _mutation = self.lock();
+        let (rows, choice) = self.snapshot();
+        let answer = self.resolve(&rows, &choice, &seen, profile)?;
+        self.slot_of_answer(answer, &seen, true, true)
     }
 
     /// None also for a helper's model whose helper is away, and for any the regulator keeps in: the caller's profile
@@ -2453,6 +2603,27 @@ impl BrainSource for BrainService {
 
     fn now(&self, profile: ModelProfile) -> Option<BrainNow> {
         Some(BrainService::now(self, profile))
+    }
+
+    fn limit(&self, profile: ModelProfile) -> Option<ProviderCell> {
+        BrainService::limit(self, profile)
+    }
+
+    fn on_limit(&self) -> OnLimit {
+        self.settings.entry(&BRAIN).and_then(|entry| entry.value.on_limit).unwrap_or_default()
+    }
+
+    fn set_on_limit(&self, on_limit: OnLimit) {
+        let value = match on_limit {
+            OnLimit::Ask => "ask",
+            OnLimit::Alice => "alice",
+            OnLimit::Say => "say",
+        };
+        let mut input = Map::new();
+        input.insert("onLimit".into(), json!(value));
+        if let Err(error) = self.choose(&input, None) {
+            tracing::warn!(target: "brain", "«когда кончился лимит» not kept: {}", error.message);
+        }
     }
 
     /// Every model that may take a round now, of the fast profile and of the smart one (the commands with tools): the
@@ -3224,6 +3395,92 @@ pub(crate) mod tests {
         }]);
         brain.keep_helper_models().unwrap();
         assert!(row_of(&brain, "home-b").is_none(), "not before its first look says it has one");
+    }
+
+    /// A service out of its limit: every chat gets `429` with a long `Retry-After` (until a time). Counts them.
+    async fn out_of_limit() -> (Arc<std::sync::atomic::AtomicUsize>, String) {
+        let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = asked.clone();
+        let app = axum::Router::new().fallback(move || {
+            let counted = counted.clone();
+            async move {
+                counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let error = r#"{"error":{"code":"rate_limit_exceeded","message":"x"}}"#;
+                (axum::http::StatusCode::TOO_MANY_REQUESTS, [("retry-after", "22080")], error).into_response()
+            }
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/v1", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await });
+        (asked, url)
+    }
+
+    /// docs/plans/provider-limits.md: the chosen model's limit runs out — the backup takes over and says so once; from
+    /// then on the backup answers at once, no request goes to the paused provider; without a backup the words say when
+    /// to try again, and the station learns it is a limit.
+    #[tokio::test]
+    async fn a_provider_out_of_its_limit_gives_way_to_the_backup_at_once_said_once() {
+        use std::sync::atomic::Ordering as Atomic;
+        let (asked, limited_url) = out_of_limit().await;
+        let (at_spare, spare_url) = service().await;
+        let (brain, _) = brain();
+        let limited = brain
+            .add(&input(json!({"preset": "custom-openai", "title": "Облако", "baseUrl": limited_url, "key": "sk-test-key-1234"})), None)
+            .unwrap();
+        let spare = brain
+            .add(&input(json!({"preset": "custom-openai", "title": "Запас", "baseUrl": spare_url, "key": "sk-test-key-1234"})), None)
+            .unwrap();
+        choose(
+            &brain,
+            json!({"fast": {"provider": limited.id, "model": "big-model"}, "backup": {"provider": spare.id, "model": "small-model"}}),
+        );
+        // An app's text (not a spoken answer): the chosen model refuses, the backup writes — no word of the limit.
+        let slot = brain.slot(ModelProfile::Fast).unwrap();
+        assert_eq!(slot.provider, limited.id);
+        let refused = said(&slot).await.unwrap_err();
+        assert!(refused.starts_with("Слишком много запросов к Облако. Попробуйте "), "{refused}");
+        assert_eq!(said(&slot.backup.as_ref().unwrap().slot).await.as_deref(), Ok("Да."));
+        assert_eq!(asked.load(Atomic::SeqCst), 1);
+
+        // Paused. The next question a person asked: the backup at once, and it says why first — once.
+        let slot = BrainSource::spoken_slot(&brain, ModelProfile::Fast).unwrap();
+        assert_eq!((slot.provider.as_str(), slot.backup.is_none()), (spare.id.as_str(), true));
+        let first = said(&slot).await.unwrap();
+        assert!(first.starts_with("Слишком много запросов к Облако. "), "{first}");
+        assert!(first.contains("отвечает Запас.") && first.ends_with("Да."), "{first}");
+        let slot = BrainSource::spoken_slot(&brain, ModelProfile::Fast).unwrap();
+        assert_eq!(said(&slot).await.as_deref(), Ok("Да."), "said once a pause");
+        assert_eq!(said(&brain.slot(ModelProfile::Fast).unwrap()).await.as_deref(), Ok("Да."));
+        assert_eq!(
+            (asked.load(Atomic::SeqCst), at_spare.chats.lock().unwrap().len()),
+            (1, 4),
+            "none to the paused one"
+        );
+        let now = brain.now(ModelProfile::Fast);
+        assert_eq!(now.state, Answering::Fallback);
+        assert!(now.reason.as_deref().is_some_and(|reason| reason.starts_with("Слишком много запросов к Облако.")));
+        assert!(
+            BrainService::limit(&brain, ModelProfile::Fast).is_none(),
+            "the backup answers: no limit for the station"
+        );
+        let view = brain.view();
+        let card = view.providers.iter().find(|provider| provider.id == limited.id).unwrap();
+        assert_eq!(card.limit.as_ref().map(|limit| limit.reason), Some(crate::dialog::llm::limits::LimitReason::Later));
+
+        // No backup: the words, at once, and the station knows it is a limit.
+        choose(&brain, json!({"backup": null}));
+        let slot = brain.slot(ModelProfile::Fast).unwrap();
+        assert_eq!(slot.provider, WORDS_PROVIDER);
+        let words = said(&slot).await.unwrap_err();
+        assert!(words.starts_with("Слишком много запросов к Облако. Попробуйте "), "{words}");
+        assert_eq!(asked.load(Atomic::SeqCst), 1);
+        assert!(!BrainSource::reachable(&brain, ModelProfile::Fast));
+        assert!(BrainService::limit(&brain, ModelProfile::Fast).is_some());
+        // The person's answer about Alice is kept with the choice.
+        assert_eq!(BrainSource::on_limit(&brain), OnLimit::Ask);
+        BrainSource::set_on_limit(&brain, OnLimit::Alice);
+        assert_eq!(BrainSource::on_limit(&brain), OnLimit::Alice);
+        assert_eq!(brain.view().choice.on_limit, OnLimit::Alice);
     }
 
     #[tokio::test]

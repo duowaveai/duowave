@@ -13,12 +13,14 @@ pub mod call_sim;
 pub mod journal;
 #[cfg(feature = "pc")]
 pub mod livekit_token;
+#[cfg(feature = "pc")]
+pub mod pretend;
 pub mod replay;
 
 use crate::config::{Config, Env};
 
 /// The commands, as `duowave <command>` takes them.
-pub const COMMANDS: &[&str] = &["replay", "journal", "animations", "call-sim", "livekit-token", "asr-check"];
+pub const COMMANDS: &[&str] = &["replay", "journal", "animations", "call-sim", "livekit-token", "asr-check", "pretend"];
 
 /// A command line that is not one: printed as it is, exit code 2.
 #[derive(Debug, thiserror::Error)]
@@ -63,6 +65,10 @@ fn run(name: &str, args: &[String]) -> anyhow::Result<()> {
         "livekit-token" => livekit_token::main(args),
         #[cfg(feature = "pc")]
         "asr-check" => asr_check::main(args),
+        #[cfg(feature = "pc")]
+        "pretend" => pretend::main(args),
+        #[cfg(not(feature = "pc"))]
+        "pretend" => Err(Usage("duowave pretend: the computer's build's only".into()).into()),
         #[cfg(not(feature = "pc"))]
         "asr-check" => Err(Usage("duowave asr-check: not in the station's build".into()).into()),
         #[cfg(not(feature = "pc"))]

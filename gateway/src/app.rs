@@ -216,8 +216,11 @@ impl App {
         crate::home::copy::watch(self);
         // «Поиск дома» (docs/plans/home-setup-flow.md, stage 6): this computer or server says what it is on the home
         // network — a centre, a Turbo, an ear — so another computer finds its home on any port.
+        // Never by a pretend gateway: the home network does not hear of it (docs/plans/pretend-stations.md).
         #[cfg(feature = "pc")]
-        crate::home::announce::start(self.clone());
+        if self.config.placement.pretend.is_none() {
+            crate::home::announce::start(self.clone());
+        }
         // The apps' faces here, their code on the Турбо (stage 5б).
         crate::home::apps::watch(self);
         // A second station as the centre's ear: its copy of the home (stage 4).
@@ -257,9 +260,12 @@ impl App {
         if let Some(works) = &self.works {
             works.start_cleaning();
         }
-        self.updates.spawn_checks();
-        // On the station: what an update left, and a trial of a new version from memory (src/updates/trial.rs).
-        self.updates.start_on_station();
+        // A pretend station takes no update: the station's build would replace this computer's program.
+        if !self.config.placement.pretend.as_ref().is_some_and(crate::config::PretendConfig::is_station) {
+            self.updates.spawn_checks();
+            // On the station: what an update left, and a trial of a new version from memory (src/updates/trial.rs).
+            self.updates.start_on_station();
+        }
         // The reminders' scheduler and the routes' listener.
         self.skills.start();
         // The plugins' idle unloading and the events they follow; their schedules' tick.
@@ -2008,7 +2014,9 @@ pub async fn serve(
     let stopping = app.clone();
     // Apps reach the Host API at the address the server really listens on.
     if let Ok(address) = listener.local_addr() {
-        app.plugins.set_gateway_url(format!("http://127.0.0.1:{}", address.port()));
+        // On its one address when BIND_ADDRESS names it (a pretend station), else on this machine's loopback.
+        let host = if address.ip().is_unspecified() { "127.0.0.1".to_string() } else { address.ip().to_string() };
+        app.plugins.set_gateway_url(format!("http://{host}:{}", address.port()));
         app.helpers.set_local_port(address.port());
         // imprint.py hears the words of a take through this gateway when recognition is inside it.
         #[cfg(feature = "pc")]
@@ -2080,10 +2088,22 @@ pub async fn serve(
 /// The gateway as the program runs it: build, listen on PORT, serve until Ctrl+C or SIGTERM.
 pub async fn run(config: Config) -> anyhow::Result<()> {
     let port = config.app.port;
+    let bind = config.app.bind_address.unwrap_or(std::net::IpAddr::from([0, 0, 0, 0]));
+    // A pretend station or the Turbo beside them (docs/plans/pretend-stations.md): its search and its connections.
+    #[cfg(feature = "pc")]
+    let pretend = config.placement.pretend.clone();
+    #[cfg(feature = "pc")]
+    if let Some(pretend) = &pretend {
+        crate::stations::pretend::install(pretend);
+    }
     let app = App::build(config)?;
     app.start().await?;
-    let listener = TcpListener::bind(("0.0.0.0", port)).await?;
-    tracing::info!("HTTP server running on port {port}");
+    #[cfg(feature = "pc")]
+    if let Some(pretend) = &pretend {
+        crate::stations::pretend::start(app.clone(), pretend).await;
+    }
+    let listener = TcpListener::bind((bind, port)).await?;
+    tracing::info!("HTTP server running on {bind}:{port}");
     let plugins = app.plugins.clone();
     let stop = async move {
         let again = shutdown_signal().await;

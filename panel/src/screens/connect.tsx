@@ -7,6 +7,7 @@ import { tr } from '../i18n';
 import { drawingOf } from '../stations';
 import { confetti } from '../ui/confetti';
 import { DuoWaveMark } from '../ui/duowave';
+import { Mascot } from '../ui/mascot';
 import { Sheet, SkeletonRows, WinSection } from '../ui/sheet';
 import { CharactersTab } from './characters';
 
@@ -385,7 +386,7 @@ export function ConnectSheet({
         confetti();
     }, [job?.id, job?.status]);
 
-    /** ДиВи ведёт мастер: в шапке каждого шага он живой и оглядывается (ui/divi.ts, 'lively'). */
+    /** ДиВи ведёт мастер: в шапке каждого шага он живой и оглядывается (mascot/src/mark.ts, 'lively'). */
     const guide = <DuoWaveMark size={40} live idle="lively" />;
 
     useEffect(() => {
@@ -777,9 +778,9 @@ export function ConnectSheet({
                     </button>
                 }
             >
-                {/* ДиВи радуется вместе с салютом (эффект выше), потом снова оглядывается. */}
+                {/* The mascot rejoices with the confetti (the effect above): enters `success` with its own move. */}
                 <div class="connect-hero">
-                    <DuoWaveMark size={72} live cheer idle="lively" />
+                    <Mascot mood="success" enter class="connect-mascot" />
                 </div>
                 <p class="win-text m-0">{tr.connect.sayToSpeaker}</p>
                 <p class="connect-say m-0 self-start">{tr.connect.sayExample}</p>
@@ -821,7 +822,11 @@ export function ConnectSheet({
         >
             {!restoring && (
                 <div class="connect-hero">
-                    <DuoWaveMark size={72} live idle="lively" />
+                    {/* The mascot follows the job: thinks while connecting, glad when it came, sad when it did not. */}
+                    <Mascot
+                        mood={job?.status === 'running' ? 'think' : job?.status === 'done' ? 'success' : job?.status === 'timeout' || job?.status === 'failed' ? 'sad' : 'idle'}
+                        class="connect-mascot"
+                    />
                 </div>
             )}
             {job && <Steps job={job} labels={restoring ? restoreLabels() : stepLabels()} />}

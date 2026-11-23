@@ -239,6 +239,10 @@ pub struct DialogContext {
     /// The device that asked: its room's character answers, when its room has one (docs/plans/home-and-devices.md,
     /// «Комнаты»).
     pub device: Option<String>,
+    /// The answer goes to a person who has just asked (a station's question, a talk on the computer): only such an
+    /// answer speaks of a provider's limit — the backup's one sentence, the day's 90 % (docs/plans/provider-limits.md).
+    /// An app's text, a background round or the workshop never get those words, and nothing is said unasked.
+    pub spoken: bool,
 }
 
 /// Who answered an exchange that is remembered without the model's words.
@@ -505,11 +509,14 @@ impl DialogService {
 
     /// The model of one answer: the context's own choice while its provider is there, else its profile's.
     fn slot_for(&self, context: &DialogContext) -> Option<ModelSlot> {
-        context
-            .model
-            .as_ref()
-            .and_then(|pick| self.brain.slot_of(&pick.provider, &pick.model))
-            .or_else(|| self.brain.slot(context.profile.unwrap_or(ModelProfile::Fast)))
+        context.model.as_ref().and_then(|pick| self.brain.slot_of(&pick.provider, &pick.model)).or_else(|| {
+            let profile = context.profile.unwrap_or(ModelProfile::Fast);
+            if context.spoken {
+                self.brain.spoken_slot(profile)
+            } else {
+                self.brain.slot(profile)
+            }
+        })
     }
 
     /// The model a context would get now, for people (the workshop shows which model answers).
@@ -530,6 +537,20 @@ impl DialogService {
     /// Who answers this profile now, when the brain can tell.
     pub fn now(&self, profile: ModelProfile) -> Option<crate::dialog::llm::brain::BrainNow> {
         self.brain.now(profile)
+    }
+
+    /// The limits that leave this profile with only the words now (docs/plans/provider-limits.md).
+    pub fn limit(&self, profile: ModelProfile) -> Option<crate::dialog::llm::limits::ProviderCell> {
+        self.brain.limit(profile)
+    }
+
+    /// «Когда кончился лимит, а запасной нет».
+    pub fn on_limit(&self) -> crate::settings::definitions::OnLimit {
+        self.brain.on_limit()
+    }
+
+    pub fn set_on_limit(&self, on_limit: crate::settings::definitions::OnLimit) {
+        self.brain.set_on_limit(on_limit)
     }
 
     /// Whether what the model reads may leave the house now: a model of either profile that may take a round is out
@@ -1273,6 +1294,8 @@ impl DialogService {
         };
         let tail: Vec<String> =
             [Some(time_context(Utc::now(), context.timezone.as_deref())), now, facts].into_iter().flatten().collect();
+        // The limits' times are said where the station is (docs/plans/provider-limits.md).
+        crate::dialog::llm::limits::set_timezone(context.timezone.as_deref());
         let base = context.system.clone().filter(|system| !system.is_empty()).unwrap_or(prompt.text);
         let system = match offer.and_then(|offer| offer.instructions.as_deref()).filter(|text| !text.is_empty()) {
             Some(instructions) => format!("{base}\n\n{instructions}"),

@@ -40,6 +40,13 @@ pub struct ModelState {
     /// 4 — the helper with the model away, no backup).
     pub unreachable_fast: bool,
     pub unreachable_smart: bool,
+    /// The profile is unreachable because its provider's limit ran out and nothing stands in for it
+    /// (docs/plans/provider-limits.md): Alice takes it only when the owner said so (`limit_to_alice`).
+    pub limited_fast: bool,
+    pub limited_smart: bool,
+    /// «Когда кончился лимит»: give such a question to Alice (in «Вместе»). Off — the station says when it renews, or
+    /// asks first (station_session.rs).
+    pub limit_to_alice: bool,
 }
 
 impl ModelState {
@@ -48,6 +55,19 @@ impl ModelState {
             ModelProfile::Fast => self.unreachable_fast,
             ModelProfile::Smart => self.unreachable_smart,
         }
+    }
+
+    pub fn limited(self, profile: ModelProfile) -> bool {
+        match profile {
+            ModelProfile::Fast => self.limited_fast,
+            ModelProfile::Smart => self.limited_smart,
+        }
+    }
+
+    /// Whether Alice takes a question of this profile nobody may answer now: the helper away — always (the owner,
+    /// 15.11); a limit — only as the owner chose (23.11).
+    pub fn to_alice(self, profile: ModelProfile) -> bool {
+        self.unreachable(profile) && (!self.limited(profile) || self.limit_to_alice)
     }
 }
 
@@ -327,7 +347,7 @@ impl Router {
             let command = input.model.tools && looks_like_command(&input.text);
             let profile = choose_profile(&input.text, command);
             // Judged for the profile the question needs: a smart question with only the smart model away goes too.
-            if input.model.unreachable(profile) && input.yandex_available {
+            if input.model.to_alice(profile) && input.yandex_available {
                 return Decision::ModelAway;
             }
             return Decision::Model { command, profile };
@@ -603,7 +623,13 @@ mod tests {
     #[test]
     fn in_together_a_question_goes_to_alice_while_no_model_of_its_profile_may_be_asked() {
         let away = |fast: bool, smart: bool, yandex: bool, text: &str| RouteInput {
-            model: ModelState { enabled: true, tools: true, unreachable_fast: fast, unreachable_smart: smart },
+            model: ModelState {
+                enabled: true,
+                tools: true,
+                unreachable_fast: fast,
+                unreachable_smart: smart,
+                ..Default::default()
+            },
             yandex_available: yandex,
             ..input(text)
         };
@@ -614,6 +640,29 @@ mod tests {
         assert_eq!(router().decide(&away(false, true, true, "как дела")), chat);
         assert_eq!(router().decide(&away(true, true, false, "как дела")), chat, "no Yandex: the words");
         assert_eq!(router().decide(&away(false, false, true, "как дела")), chat, "reachable: the model");
+    }
+
+    /// The owner, 23.11 (docs/plans/provider-limits.md): a profile out of its limit with nothing in its place goes to
+    /// Alice only when the owner said so; else the model's words say when it renews (or ask first, the station's).
+    #[test]
+    fn a_limit_gives_the_question_to_alice_only_as_the_owner_chose() {
+        let limited = |to_alice: bool, yandex: bool| RouteInput {
+            model: ModelState {
+                enabled: true,
+                tools: true,
+                unreachable_fast: true,
+                unreachable_smart: true,
+                limited_fast: true,
+                limited_smart: true,
+                limit_to_alice: to_alice,
+            },
+            yandex_available: yandex,
+            ..input("как дела")
+        };
+        let chat = Decision::Model { command: false, profile: ModelProfile::Fast };
+        assert_eq!(router().decide(&limited(true, true)), Decision::ModelAway);
+        assert_eq!(router().decide(&limited(false, true)), chat, "the words, or the question first");
+        assert_eq!(router().decide(&limited(true, false)), chat, "no Yandex: the words");
     }
 
     #[test]

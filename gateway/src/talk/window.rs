@@ -149,6 +149,7 @@ fn read(app: &Arc<App>, principal: &Principal, turn: &Turn, acts: &'static [Act]
         let started = Instant::now();
         let since = now_ms();
         let context = DialogContext {
+            spoken: true,
             profile: Some(ModelProfile::Fast),
             channel: crate::dialog::Channel::Computer,
             max_tokens: Some(crate::dialog::SPEECH_MAX_TOKENS),

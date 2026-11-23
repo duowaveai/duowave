@@ -1,6 +1,7 @@
 //! Small helpers every module uses: time stamps, ids, the outgoing HTTP client.
 
 pub mod http;
+pub mod net;
 
 pub mod time {
     use chrono::{SecondsFormat, Utc};

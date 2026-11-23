@@ -1,1794 +1,2016 @@
-# Изменения
+# Changelog
 
-Здесь — то, что видно пользователю шлюза, по выпускам. Формат — [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/),
-версии — [SemVer](https://semver.org/lang/ru/).
+What a gateway user can see, release by release. The format follows
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versions follow [SemVer](https://semver.org/).
+
+## 0.18.4 — 23.11.2026
+
+- **A model's limit is said plainly, with the time it renews.** When DuoWave's daily limit runs out, the speaker says
+  "DuoWave's daily limit is used up. It renews at 7:00", in the speaker's time zone, instead of "Too many requests,
+  try in 368 min". The weekly limit, a ChatGPT plan's limit, money running out on an OpenAI, OpenRouter or Claude
+  account and a service asking to wait long are each said in their own words.
+- **While a limit is out, the backup answers at once.** The speaker no longer asks the model whose limit ran out on
+  every question. The backup model answers straight away, and the first time it says so once: "DuoWave's daily limit
+  is used up. Until 7:00 OpenRouter answers." Every 15 minutes the speaker asks the model once more, and as soon as it
+  answers, it is back.
+- **Without a backup, Alice can take over.** In "Alice + your AI" the speaker asks once: "Hand questions to Alice for
+  now?". "Yes" gives this and the next questions to Alice until the limit renews, "no" keeps saying when it renews.
+  The answer is kept, and it can be changed in Home next to the backup.
+- **DuoWave's card shows what is spent.** "Used today: 81%, renews at 7:00" and "This week: 61%, until 28 November",
+  yellow from 80%, red at 100%. At 90% of the day the speaker says once after an answer that the daily limit is almost
+  used up. The cards of OpenAI, Claude and OpenRouter link to their usage pages.
+
+- **A speaker a Turbo took into the home as an ear stays an ear.** The panel no longer lists the hub and that ear under
+  "Speakers not in the home yet".
+- **An ear's voice reaches the hub at once.** The hub lets in the voice of its own ear without waiting for the admin's
+  approval. A speaker that becomes an ear, or a hub again, reconnects to the hub right away, not at its next restart.
+- **A Turbo joined by the code knows the hub's and the ears' devices.** The panel no longer offers "Join the home" for
+  them.
+- **Deevi, the DuoWave mascot, shows how DuoWave is doing.** On the sign-in screen and in the speaker connection wizard
+  Deevi thinks while you wait, jumps for joy when the speaker is connected and is sad when something fails. In the
+  centre of the orbit, when you talk through the computer's microphone, Deevi shows whether DuoWave is listening,
+  thinking or speaking, and sleeps when there is no network.
+- **Deevi is 3D where there is room and flat where there is not.** The 3D part loads only when it is shown.
+- **The DuoWave mark in the panel's header no longer stretches its eyes into lines when a frame comes late.**
+- **The MIDI keyboard teacher speaks English.** The workshop template (`--midi`) now has two languages: the lesson
+  window, the widget, the tune names ("Ode to Joy", "Für Elise"…), the speaker's answers and English phrases ("let's
+  learn Jingle Bells"). The language is the panel's and the home's, as in the other apps. The "My own tune…" button
+  hides where nothing can read `.mid` files.
+- **Web host: DuoWave apps on a web page.** An app's window and its `backend.js` run in an ordinary page without the
+  gateway: storage is in the browser, settings are the defaults, and the keyboard comes through the browser's Web MIDI.
+  The script `panel/scripts/web-tools.ts` builds the host and copies the packages that do not ask for models, the
+  speaker's voice, gateway services or links to other apps. The others do not go on the site (`docs/plans/web-host.md`).
+- **Pretend stations for checking a home of several speakers on one Mac.** With `DUOWAVE_PRETEND=station` (or `turbo`)
+  the gateway takes the speaker's role on its own address on the Mac, several side by side. `duowave pretend` stands in
+  for the speaker's firmware and Yandex: you type the phrases and read the answers (`scripts/pretend`,
+  `docs/plans/pretend-stations.md`).
+- **`scripts/pretend/check.sh` runs the multi-station home check on pretend stations in one command:** search, the hub
+  password, a Turbo by code, an ear by code, the ear's voice through the hub, the Turbo's records and the home status,
+  with PASS or FAIL for each step.
 
 ## 0.18.3 — 23.11.2026
 
-- **DuoWave ставится одной командой прямо на колонке, без компьютера.** Зайдите на колонку по SSH и введите
-  `wget -qO- http://get.duowave.app/station.sh | sh`. Колонка сама скачает сборку последнего выпуска, сверит
-  контрольную сумму, покажет, что изменит, и после «да» поставит DuoWave. В конце спросит пароль пульта и, направить ли
-  голос колонки в DuoWave. Этот способ есть в «Где работает DuoWave» и в первых шагах рядом с установкой с компьютера.
-- **Код первой настройки пульта показывается в конце установки.** Искать его в журнале колонки больше не нужно.
-  Установка на колонке (`duowave station install`, её вызывают пакет YAM и установка одной командой) печатает код,
-  если у пульта ещё нет пароля. Установка с компьютера (`duowave station setup`) ждёт, пока колонка снова пустит по
-  SSH и запишет код. Если кода так и нет, обе показывают последние строки журнала. Показать код снова можно командой
-  `duowave station code` на колонке.
-- **Устройства компьютера доступны всему дому.** MIDI-клавиатура, экран, флешки и папка DuoWave на компьютере-Турбо
-  теперь видны хабу. Приложения, мастерская и «Мышление» пользуются ими так же, как своими, а «Что у меня
-  подключено?» можно спросить голосом. Если Турбо несколько, смотреть и слушать можно на всех сразу, а действие
-  выполняется на одном, там, где пользовались последним. О выборе колонка говорит при первом разе и при смене, а «у ПК»
-  его меняет.
-- **В «Устройствах» есть раздел «Подключено к компьютерам».** Вещи собраны по видам, у каждой подписан её компьютер:
-  «Keystation 49 · Mac». Спящий компьютер показан серым, рядом кнопка «Разбудить». Здесь же выбирается, где делать.
-- **«Что этот компьютер даёт дому».** На странице «Этот компьютер» у каждого вида устройств своя галочка. Камеру,
-  микрофон и похожие на клавиатуру устройства дом получает, только если их включить. Чужому дому из «Кому помогаю»
-  устройства и папки по умолчанию не даются.
-- **Спящий Турбо можно разбудить.** Если клавиатура у Mac, а он спит, колонка так и скажет и спросит «Разбудить?».
-  Ответ понимается по смыслу. Хаб будит компьютер по домашней сети, а если он не проснулся, просит разбудить его
-  вручную.
-- **Мастерская делает учителя на MIDI-клавиатуре, даже если клавиатуры сейчас нет рядом.** Колонка говорит, где
-  клавиатура и когда учитель заработает.
-- **Турбо не дома: папки видны, устройства нет.** Если компьютер на связи не из домашней сети, его папки доступны, а
-  клавиатура, экран и флешки нет.
-- **Флешки Турбо видны с хаба в папках дома, в «Подключено»,** только для чтения.
-- **Колонка берёт через компьютер ленты, которые ей самой не открыть.** Если колонка не дотягивается до DuoWave Store,
-  демо-ленты или своего источника, а компьютер дома их читает, она берёт у компьютера копию ленты и архивы
-  персонажей. Раньше через компьютер шёл только основной каталог, и у тестера со Станцией Мини 2 демо-персонажи не
-  ставились.
-- **Вместо вечного «готовлю у колонки» пульт говорит, почему персонаж не ставится.** По нажатию на пилюлю видна
-  причина и выбор «Не ставить» или «Ждать». Повтор идёт сам раз в две минуты.
-- **В журнале настоящая причина сетевой ошибки ленты или загрузки:** «не удалось соединиться (Connection reset by
-  peer)», «нет ответа вовремя», а не одно «error sending request».
-- **DuoWave спрашивает код приглашения до входа на сайт.** Так во всех местах, где предлагается DuoWave: «Кто думает»,
-  «Кто отвечает на колонке?», витрина стола, «Мышление» → «Добавить» и карточка DuoWave, в которую ещё не вошли.
-  Подарок по приглашению даётся только при первом входе, поэтому код вводится заранее. Он принимается в любом виде:
-  без `s_`, с `S_` или целой ссылкой.
-- **После входа в DuoWave написано «Пробная неделя», без даты.** Шлюз сохраняет вид доступа, который присылает кабинет.
-- **Первые шаги без «Есть приглашение?»:** демо-персонажи появляются сами, ссылку вставлять не нужно.
-- **Витрина стола всегда в одном виде:** три плитки до подключения ИИ и после, без карточки «Теперь Алиса умнее». Если
-  «Вместе» включился сам, на «Поговорите» видно «DuoWave подключён» и «Отменить».
-- **«Состояние дома» на столе больше не ложится на кольцо колонки.**
-- **«Кто отвечает на колонке?» помещается в окно шириной 1100–1300 точек:** кнопка уходит на свою строку.
-- **Если вход не вернулся в пульт сам, подсказка говорит, что подойдёт и адрес страницы, и код с неё.**
+- **DuoWave installs with one command right on the speaker, with no computer.** Log in to the speaker over SSH and type
+  `wget -qO- http://get.duowave.app/station.sh | sh`. The speaker downloads the latest release build, checks the
+  checksum, shows what it will change and installs DuoWave after your "yes". At the end it asks for the panel password
+  and whether to send the speaker's voice to DuoWave. This way is shown in Where DuoWave runs and in First steps, next
+  to installing from a computer.
+- **The panel's first-setup code shows at the end of the install.** You no longer need to look for it in the speaker's
+  log. Installing on the speaker (`duowave station install`, which the YAM package and the one-command install run)
+  prints the code while the panel has no password. Installing from a computer (`duowave station setup`) waits until
+  the speaker lets it in over SSH again and writes the code. If there is still no code, both show the last lines of
+  the log. `duowave station code` on the speaker shows the code again.
+- **A computer's devices are available to the whole home.** A MIDI keyboard, the screen, flash drives and the DuoWave
+  folder on a Turbo computer are now seen by the hub. Apps, the workshop and Thinking use them like their own, and you
+  can ask "what is plugged in?" by voice. With several Turbos, looking and listening work on all of them at once, and
+  an action runs on one: the one used last. The speaker says which one the first time and when it changes, and saying
+  "at the PC" changes it.
+- **Devices has a "Plugged into computers" section.** Things are grouped by kind, and each one shows its computer:
+  "Keystation 49 · Mac". A sleeping computer is shown in grey, with a "Wake up" button next to it. You also choose here
+  where to run things.
+- **"What this computer gives the home".** On the This computer page, each kind of device has its own checkbox. The
+  home gets a camera, a microphone and keyboard-like devices only if you turn them on. Another home from "Who I help"
+  gets no devices or folders by default.
+- **A sleeping Turbo can be woken up.** If the keyboard is at the Mac and the Mac is asleep, the speaker says so and
+  asks "Wake it up?". The answer is understood by its meaning. The hub wakes the computer over the home network, and if
+  it does not wake up, asks you to wake it by hand.
+- **The workshop makes a MIDI keyboard teacher even when the keyboard is not at hand now.** The speaker says where the
+  keyboard is and when the teacher will work.
+- **A Turbo away from home: folders are visible, devices are not.** If the computer is online from outside the home
+  network, its folders are available, but its keyboard, screen and flash drives are not.
+- **A Turbo's flash drives are visible from the hub in the home's folders, under "Connected",** read-only.
+- **The speaker takes through the computer the feeds it cannot open itself.** If the speaker cannot reach DuoWave
+  Store, the demo feed or your own source, but the computer at home can read them, the speaker takes a copy of the feed
+  and the characters' archives from the computer. Before, only the main catalog came through the computer, and a
+  tester with a Station Mini 2 could not install the demo characters.
+- **Instead of an endless "preparing on the speaker", the panel says why a character does not install.** Tap the pill
+  to see the cause and choose "Don't install" or "Wait". It retries by itself every two minutes.
+- **The journal shows the real cause of a network error in a feed or a download:** "could not connect (Connection
+  reset by peer)", "no answer in time", not just "error sending request".
+- **DuoWave asks for the invitation code before the sign-in on the site.** This is so in every place where DuoWave is
+  offered: "Who thinks", "Who answers on the speaker?", the desk showcase, "Thinking" → "Add" and a DuoWave card you
+  have not signed in to yet. The invitation gift comes only with the first sign-in, so you enter the code before it.
+  The code is accepted in any form: without `s_`, with `S_` or as the whole link.
+- **After signing in to DuoWave, it says "Trial week", with no date.** The gateway keeps the access type that the
+  account page sends.
+- **First steps without "Have an invitation?":** the demo characters appear by themselves, with no link to paste.
+- **The desk showcase always keeps one look:** three tiles before and after the AI is connected, with no "Alice is
+  smarter now" card. If the "Alice + your AI" mode turned on by itself, "Talk" shows "DuoWave connected" and "Undo".
+- **"Home status" on the desk no longer covers the speaker's ring.**
+- **"Who answers on the speaker?" fits a window 1100–1300 points wide:** the button moves to its own line.
+- **If the sign-in does not come back to the panel by itself, the hint says that the page's address and the code from
+  it both work.**
 
 ## 0.18.2 — 22.11.2026
 
-- **Windows: приложение снова запускается после обновления.** В 0.18.1 шлюз на Windows отказывался стартовать с
-  ошибкой «migration 1 (init) was changed after it was applied»: сборки для Windows до 0.18.1 хранили сумму текста
-  миграций с другим переводом строки. Теперь перевод строки не учитывается; база не тронута и открывается как есть.
-- **Шаг «Сделайте Алису умнее» принимает ключ незнакомого сервиса.** Если сервис не узнан по ключу, тут же можно
-  вписать его адрес. Шаг засчитывается любой рабочей моделью, в том числе добавленной в настройках.
-- **Режим меняется прямо из окна «Думает».** В режиме «Алиса» выбор модели одной кнопкой переключает колонку в
-  «Алиса + ваш ИИ».
-- **«Мозг» теперь называется «Мышление»** везде, где его видят и слышат.
-- **Компьютер, вошедший в уже настроенный дом, не проходит первые шаги заново.** Сразу открывается «Ваш дом: что
-  работает».
-- **Первые шаги и стол говорят, что ещё не готово:** что ставится сейчас, что своё слово заработает после шага
-  «Мышление» и что голос персонажа будет на компьютере-Турбо, а пока отвечает Алиса.
-- **Вход по коду объясняет ошибки.** Пустой или короткий код: что ввести и где его взять. Неверный: сколько попыток
-  осталось и что делать после третьей.
-- **«Состояние дома» на столе сворачивается в одну строку.** Строку, где нужен выбор, можно оставить как есть: она
-  станет серой и не будет держать плашку на столе.
-- **Облачный DuoWave виден всем:** первым в первых шагах, на витрине стола и в «Добавить».
-- **Демо-персонажи доступны сразу**, без ручного добавления источника.
-- **Стол без замочка по умолчанию.** Shift + колесо двигает стол вбок, фон перетаскивается и на запертом столе.
-- **Крестики в узком окне.** Карточка Турбо под колонкой и «Поток запросов» сворачиваются крестиком в окне любого
-  размера.
-- **Витрина стола не сжимается** рядом с карточкой «Подключите колонку», а в тесноте сворачивается в полоску.
-- **Мастерская не делает всё неоновым.** Если вид не задан, она выбирает его сама и каждый раз разный. Игра
-  начинается с чистого листа, а примеры даются на выбор, вместо одной заготовки для всех.
-- **Запасной голос персонажа называет, чей он и почему ставится:** «Рик: ставлю запасной голос», с причиной.
-- **Пауза в пульте останавливает звук приложений**, например YouTube, так же, как радио.
-- **Голос Турбо отказал — колонка говорит голосом Алисы, а не молчит.** Если компьютер-Турбо не смог озвучить фразу,
-  колонка говорит её голосом Алисы. Пару минут после отказа она не ждёт Турбо и сразу отвечает голосом Алисы, потом
-  снова пробует голос Турбо. Раньше каждый ответ пропадал молча.
-- **Windows не пускает голос персонажа — так и сказано.** На новой Windows 11 защита Smart App Control не даёт
-  запустить файлы голоса DuoWave. «Состояние дома» говорит это прямо: можно оставить голос Алисы или выключить
-  защиту, и предупреждает, что защита Windows станет слабее. На самом компьютере есть кнопка «Открыть настройки
-  Windows».
-- **В доме может быть несколько Турбо.** Каждый компьютер, вошедший в дом по коду, получает на колонке свою запись.
-  Раньше второй компьютер занимал место первого: оба по очереди записывали колонке свой адрес, и Турбо то появлялся,
-  то пропадал. Каждую работу (слух, голос, модель, сообщения) берёт первый Турбо в списке, который на связи. Уснул
-  первый — работу сразу берёт следующий. Порядок меняется стрелками в списке Турбо.
-- **«Состояние дома» о нескольких Турбо.** Все на связи — одна зелёная строка с их именами. Один не на связи, а
-  другой помогает — предупреждение, в котором сказано, кто помогает. Кнопка «Разрешить в брандмауэре» появляется,
-  только если Турбо сам сообщил, что его закрывает брандмауэр, и только на этом компьютере. Раньше она стояла у
-  любой строки «Турбо не на связи», даже на Mac.
-- **Кнопка «Разрешить в брандмауэре» в окне дома на Windows снова работает.** Её запрос уходил на колонку, а не на
-  сам компьютер, и ничего не происходило.
-- **Понятные слова, когда Турбо не узнал ключ колонки.** Вместо «сделайте новый ключ в «Доступ» → «Ключи»» сказано,
-  где на компьютере снова включить помощь колонке. Запись колонки называется именем того компьютера, который в ней
-  сейчас, а не прежнего.
-- **Колонка без интернета снова говорит «У меня пропал интернет».** Фраза записывается тем голосом, который отвечал,
-  пока сеть была. Когда пропадал Wi-Fi, вместе с ним пропадал и Турбо, и колонка переходила на голос Алисы. Записи этим
-  голосом у неё не было, и она молчала. Теперь она скажет фразу тем голосом, которым та записана.
-- **Колонка замечает, что пропал Wi-Fi.** Лайт 2 держит служебный маршрут Wi-Fi Direct без роутера, и шлюз принимал
-  его за выход в сеть: потери Wi-Fi не попадали в «Состояние дома», а колонка ждала ответа Яндекса. Теперь выходом
-  в сеть считается только маршрут через роутер.
-- **Главное устройство дома теперь называется «хаб»** (по-английски — hub), слово «центр» ушло из пульта и из
-  сообщений шлюза.
-- **Тексты первых шагов проще.** Описания в шагах «Ваш дом», «Кто думает», «Персонаж», «MagicPlace» и в подключении
-  колонки переписаны обычными предложениями. Подсказка про root называла кнопку «Только компьютер», а она
-  называется «Хаб — этот компьютер»; «Нашёл ещё 5 колонок» склоняется по числу.
-- **Карточки моделей распознавания и голоса исправлены.** Модель GigaAM называлась «GigaAM v3 — конец-в-конец», а её
-  настоящее имя — GigaAM v3 e2e RNNT. Автором был записан «Сбережение (Сбер)», теперь просто «Сбер». Описания
-  переписаны простыми словами. В английском пульте карточки раньше оставались русскими, теперь они переведены.
-- **Windows: работа в папке делает свою копию.** Путь папки хранился в виде `\\?\C:\…`, и `git clone` такой
-  путь не принимал: работа сразу кончалась ошибкой git. Теперь путь хранится в обычном виде `C:\…`.
-- **Для разработчиков:** тесты MCP и установки движка голоса сравнивают пути так, как их пишет Windows.
+- **Windows: the app starts again after the update.** In 0.18.1 the gateway on Windows refused to start with the error
+  "migration 1 (init) was changed after it was applied": Windows builds before 0.18.1 kept the checksum of the
+  migrations' text with other line endings. Now line endings do not count; the database is not touched and opens as it
+  is.
+- **The "Make Alice smarter" step takes a key of an unknown service.** If the service is not recognised by its key, you
+  can enter its address right there. Any working model counts for the step, including one added in Settings.
+- **The mode changes right from the "Thinks" window.** In the "Alice" mode, choosing a model switches the speaker to
+  "Alice + your AI" with one button.
+- **"Brain" is now called "Thinking"** everywhere it is seen and heard.
+- **A computer that joins a home already set up does not go through First steps again.** "Your home: what works"
+  opens at once.
+- **First steps and the desk say what is not ready yet:** what is installing now, that your own word will work after
+  the "Thinking" step, and that the character's voice will be on the Turbo computer, while Alice answers for now.
+- **Joining by a code explains errors.** An empty or short code: what to enter and where to get it. A wrong one: how
+  many tries are left and what to do after the third.
+- **"Home status" on the desk folds into one line.** A line that waits for a choice can be left as it is: it turns grey
+  and no longer keeps the card on the desk.
+- **Cloud DuoWave is shown to everyone:** first in First steps, on the desk showcase and in "Add".
+- **The demo characters are available at once,** without adding a source by hand.
+- **The desk has no lock by default.** Shift + wheel moves the desk sideways, and the background drags on a locked desk
+  too.
+- **Close buttons in a narrow window.** The Turbo card under the speaker and "Request flow" fold with a close button in
+  a window of any size.
+- **The desk showcase does not shrink** next to the "Connect your speaker" card, and folds into a strip when space is
+  tight.
+- **The workshop does not make everything neon.** If no look is given, it picks one itself, a different one each time.
+  A game starts from a clean sheet, and examples are offered to choose from instead of one template for everyone.
+- **The character's backup voice says whose it is and why it is installed:** "Rick: installing a backup voice", with
+  the reason.
+- **Pause in the panel stops the apps' sound**, such as YouTube, in the same way as the radio.
+- **The Turbo's voice failed: the speaker speaks in Alice's voice instead of staying silent.** If the Turbo computer
+  could not voice a phrase, the speaker says it in Alice's voice. For a couple of minutes after a failure it does not
+  wait for the Turbo and answers in Alice's voice at once, then tries the Turbo's voice again. Before, every answer was
+  lost in silence.
+- **Windows does not let the character's voice run, and DuoWave says so.** On a new Windows 11, Smart App Control does
+  not let DuoWave's voice files run. "Home status" says this plainly: you can keep Alice's voice or turn the protection
+  off, and it warns that Windows protection will be weaker. The computer itself has an "Open Windows settings" button.
+- **A home can have several Turbos.** Every computer that joins the home by a code gets its own entry on the speaker.
+  Before, a second computer took the first one's place: both wrote their address to the speaker in turn, and the Turbo
+  kept appearing and disappearing. Each job (hearing, voice, model, messages) goes to the first Turbo in the list that
+  is online. When the first one sleeps, the next one takes the job at once. The order changes with the arrows in the
+  list of Turbos.
+- **"Home status" about several Turbos.** All online: one green line with their names. One offline while another
+  helps: a warning that says who helps. The "Allow in the firewall" button appears only when a Turbo itself reported
+  that its firewall closes it, and only on that computer. Before, it stood by any "Turbo offline" line, even on a Mac.
+- **The "Allow in the firewall" button in the home window on Windows works again.** Its request went to the speaker
+  instead of the computer itself, and nothing happened.
+- **Plain words when a Turbo does not recognise the speaker's key.** Instead of "make a new key in "Access" → "Keys"",
+  the message says where on the computer to turn helping the speaker on again. The speaker's entry carries the name of
+  the computer that is in it now, not the previous one.
+- **A speaker without internet says "My internet is gone" again.** The phrase is recorded in the voice that answered
+  while there was a network. When the Wi-Fi went, the Turbo went with it, and the speaker moved to Alice's voice. It had
+  no recording in that voice, so it stayed silent. Now it says the phrase in the voice it was recorded in.
+- **The speaker notices that its Wi-Fi is gone.** A Lite 2 keeps a service Wi-Fi Direct route without a router, and the
+  gateway took it for a way out to the network: lost Wi-Fi did not reach "Home status", and the speaker waited for an
+  answer from Yandex. Now only a route through the router counts as a way out to the network.
+- **The main device of the home is now called the "hub"**; the old word "centre" is gone from the panel and from the
+  gateway's messages.
+- **Simpler First steps texts.** The descriptions in the "Your home", "Who thinks", "Character" and "MagicPlace" steps
+  and in connecting the speaker are rewritten as plain sentences. The root hint called a button "Only the computer",
+  but it is called "Hub: this computer"; "Found 5 more speakers" agrees with the number.
+- **The speech recognition and voice model cards are fixed.** The GigaAM model was called "GigaAM v3, end to end", but
+  its real name is GigaAM v3 e2e RNNT. Its author was listed as "Sberezhenie (Sber)", now just "Sber". The descriptions
+  are rewritten in plain words. In the English panel the cards used to stay in Russian; now they are translated.
+- **Windows: a work in a folder makes its own copy.** The folder's path was kept in the form `\\?\C:\…`, and
+  `git clone` did not accept such a path: the work ended at once with a git error. Now the path is kept in the plain
+  form `C:\…`.
+- **For developers:** the MCP and voice engine install tests compare paths the way Windows writes them.
 
 ## 0.18.1 — 22.11.2026
 
-- **Мастер подключения узнаёт luna и агента AliceBridge.** luna — среда для модов, голос Алисы не забирает: мастер
-  мягко предупреждает, что её моды умеют обрывать ответы, в том числе ответы DuoWave. Агент AliceBridge (root с
-  телефона) тоже только предупреждение; если он застрял на смене Wi-Fi (колонка пропадает из сети каждые
-  40–50 секунд), мастер говорит прямо, что делать. Ещё мастер скажет, если DNS колонки задаёт AliceBridge и если
-  root пускает по SSH с паролем «1» по умолчанию. Имя сети и пароль Wi-Fi из настроек агента колонку не покидают.
-- **Значки и пробники голоса в магазине, которые не загрузились с первого раза, догружаются сами.** Раньше картинка,
-  не скачавшаяся при первом чтении ленты (сбой сети, долгий ответ), не появлялась, пока лента не изменится, — помогало
-  только убрать и снова добавить свой источник. Теперь шлюз дозапрашивает недостающее при следующих проверках ленты,
-  но не чаще раза в 15 минут, а файл, которого на сайте нет или который не подходит, — только после новой версии
-  приложения.
-- **Windows: «вход к компьютеру закрыт» — больше не ложная тревога.** Каждая сеть компьютера проверяется по своему
-  профилю брандмауэра: «Общедоступная» сеть, где брандмауэр для общедоступных сетей выключен или DuoWave в нём
-  разрешён, не считается закрытой, даже если включён профиль домена. Раньше хватало любого включённого профиля и
-  любой «Общедоступной» сети: шлюз советовал «сделайте сеть частной» и показывал кнопку, хотя компьютер был открыт.
-- **Колонка пропала из сети — компьютер не ждёт её на каждом запросе.** После первой неудачи пульт на компьютере
-  помечает колонку «не в сети с 14:05» и сразу показывает её копию, только для чтения; сам компьютер проверяет
-  колонку раз в 5 секунд, и плашка уходит, как только она ответит. В журнале — одна строка, когда связь пропала,
-  с причиной («Connection refused», «Network unreachable», нет ответа), и одна, когда вернулась, со временем
-  простоя. Раньше каждый запрос пульта ждал колонку 3 секунды и писал в журнал «error sending request» без причины.
-- **Колонка без интернета говорит об этом сразу.** Пока сеть есть, колонка записывает голосом, которым отвечает, фразу
-  «У меня пропал интернет — вернусь, как только он появится». Когда интернета нет — пропал Wi-Fi или у роутера пропала
-  связь, и связь с Яндексом не открывается, — а запрос не распознался или не дошёл до Яндекса, колонка говорит эту
-  запись вместо тишины после 5–10 секунд ожидания. «Стоп», пока звенит таймер или будильник, работает как раньше.
-  В режиме «Алиса» отвечает сам Яндекс — там всё как было.
-- **«Состояние дома»: Wi-Fi колонки.** Колонка сама следит за своей сетью, ничего не отправляя, и помнит пропажи за
-  три дня. Если за сутки Wi-Fi пропадал хотя бы трижды или дольше 5 минут, в «Состоянии дома» появляется строка:
-  сколько раз и сколько минут без сети и вероятная причина, если колонка её видит, — застрявший на смене Wi-Fi агент
-  AliceBridge, слабый сигнал или мало свободной ОЗУ.
-- **Первое слово — быстрее: запрос к модели короче.** Описания инструментов модели стали короче и написаны
-  по-английски, а погода и новости шлюза уступают инструментам приложений «Погода» и «Новости», когда те стоят, —
-  запрос меньше примерно на 700–800 токенов из 3600 (колонки ждали первое слово 4–5 секунд).
-- **Ответ — на языке вопроса,** даже если инструменты и данные на другом.
-- **Встроенные приложения с короткими английскими описаниями инструментов:** «Календарь» 2.1.2, «Курсы валют» 2.1.2,
-  «Папки» 1.0.6, «Новости» 2.0.2, «Радио» 2.1.2, «Список покупок» 2.1.2, «Умный дом» 2.0.2, «Погода» 2.1.2. Авторам
-  приложений — то же правило в `docs/plugins/AUTHORING.md` и в мастерской.
-- **Выбранная тема — у всех окон человека.** Тема, выбранная в браузере, теперь сама приходит в приложение и на
-  телефон того же человека; у разных людей — свои темы. Светлая, тёмная или «Авто» остаётся за устройством.
-- **Windows: отключённая папка уходит из «Подключено».** Ссылку на папку Windows делает каталогом, и прежде она не
-  удалялась: папка оставалась в «Подключено», а переставленная ссылка не ставилась заново.
-- **Windows: LM Studio на этом компьютере больше не кажется выключенным.** `localhost` на Windows сначала пробует
-  IPv6, и отказ приходил позже, чем кончалась проверка; теперь все адреса проверяются разом.
-- **Windows: приложения видят ОЗУ компьютера** в `system/device` (приложение, которое её читало, падало), бюджет
-  приложений тоже; и свободную память на диске.
-- **Для разработчиков:** тесты находят заглушку `duowave-test-stub` и с cargo 1.100, который кладёт тесты в другую
-  папку; Windows CI прогоняет тесты, которые раньше на Windows падали.
+- **The connect wizard recognises luna and the AliceBridge agent.** luna is an environment for mods and does not take
+  Alice's voice: the wizard gently warns that its mods can cut answers short, DuoWave's answers too. The AliceBridge
+  agent (root from a phone) is also only a warning; if it is stuck switching Wi-Fi (the speaker drops off the network
+  every 40–50 seconds), the wizard says plainly what to do. The wizard also says if AliceBridge sets the speaker's DNS
+  and if root lets SSH in with the default password "1". The network name and Wi-Fi password from the agent's settings
+  never leave the speaker.
+- **Icons and voice samples in the store that did not load the first time load by themselves.** Before, a picture that
+  was not downloaded on the first read of the feed (a network error, a slow answer) did not appear until the feed
+  changed: only removing and adding your own source again helped. Now the gateway asks again for what is missing on
+  later feed checks, but not more often than every 15 minutes, and for a file the site does not have or that does not
+  fit, only after a new version of the app.
+- **Windows: "the way in to the computer is closed" is no longer a false alarm.** Each of the computer's networks is
+  checked against its own firewall profile: a "Public" network where the firewall for public networks is off or
+  DuoWave is allowed does not count as closed, even if the domain profile is on. Before, any profile that was on and
+  any "Public" network were enough: the gateway advised "make the network private" and showed the button, although the
+  computer was open.
+- **The speaker dropped off the network: the computer does not wait for it on every request.** After the first failure
+  the panel on the computer marks the speaker "offline since 14:05" and shows its copy at once, read-only; the computer
+  itself checks the speaker every 5 seconds, and the note goes as soon as the speaker answers. The log has one line
+  when the link goes, with the reason ("Connection refused", "Network unreachable", no answer), and one when it is
+  back, with how long it was down. Before, every panel request waited 3 seconds for the speaker and wrote "error
+  sending request" to the log with no reason.
+- **A speaker without internet says so at once.** While there is a network, the speaker records, in the voice it
+  answers with, the phrase "My internet is gone. I'll be back as soon as it returns." When there is no internet (the
+  Wi-Fi is gone or the router lost its connection, and the link to Yandex does not open) and a request was not
+  recognised or did not reach Yandex, the speaker plays this recording instead of silence after 5–10 seconds of
+  waiting. "Stop" while a timer or an alarm rings works as before. In the "Alice" mode Yandex itself answers, and
+  everything is as before.
+- **"Home status": the speaker's Wi-Fi.** The speaker watches its own network, sending nothing anywhere, and remembers
+  the drops for three days. If the Wi-Fi went at least three times in a day or for longer than 5 minutes, "Home status"
+  shows a line: how many times and how many minutes without a network, and the likely cause if the speaker can see it:
+  an AliceBridge agent stuck switching Wi-Fi, a weak signal or little free RAM.
+- **A faster first word: a shorter request to the model.** The model's tool descriptions are shorter and written in
+  English, and the gateway's own weather and news give way to the tools of the "Weather" and "News" apps when those are
+  installed: the request is smaller by about 700–800 tokens of 3600 (speakers waited 4–5 seconds for the first word).
+- **The answer is in the language of the question,** even when the tools and the data are in another language.
+- **Built-in apps with short English tool descriptions:** Calendar 2.1.2, Exchange rates 2.1.2, Folders 1.0.6, News
+  2.0.2, Radio 2.1.2, Shopping list 2.1.2, Smart home 2.0.2, Weather 2.1.2. App authors get the same rule in
+  `docs/plugins/AUTHORING.md` and in the workshop.
+- **The chosen theme is in all of a person's windows.** A theme chosen in the browser now reaches the app and the phone
+  of the same person by itself; different people have their own themes. Light, dark or "Auto" stays with each device.
+- **Windows: a disconnected folder leaves "Connected".** Windows makes a link to a folder a directory, and before it was
+  not removed: the folder stayed in "Connected", and a moved link was not set again.
+- **Windows: LM Studio on this computer no longer looks switched off.** `localhost` on Windows tries IPv6 first, and the
+  refusal came later than the check ended; now all addresses are checked at once.
+- **Windows: apps see the computer's RAM** in `system/device` (an app that read it crashed), and so does the apps'
+  budget; and the free disk storage too.
+- **For developers:** the tests find the `duowave-test-stub` stand-in with cargo 1.100 too, which puts the tests in
+  another folder; Windows CI runs the tests that used to fail on Windows.
 
 ## 0.18.0 — 22.11.2026
 
-Отдельно не выпускалась: всё ниже вошло в 0.18.1.
+Not released on its own: everything below went into 0.18.1.
 
-- **Сменилась сеть — Турбо снова находится сам.** Компьютер, чей адрес поменялся (другой Wi-Fi, новый IP), сообщает
-  его колонке, которая называет этот компьютер своим Турбо, — даже если ключ дома ей выдавал не он (раньше колонка
-  так и звонила по старому адресу). Центр на компьютере, потерявший Турбо по связи, раз в 2 минуты ищет его по
-  объявлению в сети (`_duowave._tcp`, по его id) — без перебора подсети — и переносит связь на новый адрес;
-  закреплённый сертификат по-прежнему подтверждает, что это тот же компьютер.
-- **Компьютер находит дом, где центр — другой компьютер или сервер.** DuoWave на компьютере и на сервере объявляет
-  себя в домашней сети (mDNS `_duowave._tcp`: роль, порт, версия, дом), и первые шаги предлагают войти в такой дом по
-  коду, как в дом колонки; центр-компьютер подключает Турбо его ключом подключения сам. Колонку-ухо первые шаги
-  больше не принимают за центр — предлагают её центр. Колонки себя не объявляют: им не хватает ОЗУ, их находят как
-  раньше.
-- **Турбо — помощник дома, а не второй центр.** Компьютер, который помогает чужому дому по ключу связи и своих колонок
-  не ведёт, в строке устройств показан Турбо того дома: «Компьютер · Центр · Турбо» на одном устройстве больше не
-  появляется. Стол самого компьютера у Турбо — в меню учётной записи: «Стол этого компьютера» и обратно «Пульт дома».
-  Окно DuoWave на таком Турбо открывает пульт дома, даже когда центр — другой компьютер или сервер: запросы пульта идут
-  центру по той же связи, от имени того, кто вошёл на Турбо, с его ролью. Центр пускает так только Турбо «дома» из
-  своего списка и только в API пульта; центр со старым DuoWave оставляет Турбо его собственный стол.
-- **Ещё колонки становятся ушами одной кнопкой.** Компьютер-Турбо показывает в «Устройствах» колонки из сети, которых
-  нет в доме. Колонка без DuoWave — «Сделать ухом»: компьютер ставит DuoWave по SSH сразу ухом центра, настройки
-  компьютера туда не едут, код не нужен. Колонка со своим DuoWave — «Подключить к дому»: сначала предупреждение, что её
-  настройки и персонажи заменятся домашними, а память объединится; код говорит сама эта колонка (или «Разрешить» в её
-  пульте). Потом спрашиваем только комнату. В первых шагах лишние колонки помечены «станет ухом потом».
-- **«Ваш дом» — что работает, а что починить, одной сводкой.** Последний шаг первых шагов на любом пути и карточка на
-  столе, пока не всё зелёное: голос колонки идёт через DuoWave, мозг отвечает (или почему нет — например, ключ больше
-  не работает), Турбо на связи, ответы звучат голосом персонажа, кто отвечает. У каждой строки — одна кнопка, которая
-  ведёт в готовый экран. Турбо на Windows сам сообщает центру, что вход к нему закрывает брандмауэр или
-  «Общедоступная» сеть, — строка говорит это, а не просто «не на связи». Колонки в сети, которых нет в доме, — ещё
-  одна строка.
-- **Турбо подключается к дому по коду, без пароля пульта и ключа.** Компьютер, нашедший в сети колонку с DuoWave,
-  просит у неё вход; колонка-центр делает код из 6 цифр (5 минут, один раз, 3 попытки) и говорит его вслух два раза подряд, парами цифр, когда её
-  сессия может говорить; в режиме «Алиса» — тоже: центр просит у Яндекса фразу по тому же соединению колонки и играет её на её динамике (не вышло — код остаётся на экранах). Тот же код с кнопками «Разрешить» и «Это не я»
-  видит администратор в пульте дома на любом экране, на телефоне тоже; на компьютере-центре код приходит
-  уведомлением, на сервере — строкой в терминале. После входа помощь включается сразу, а первые шаги показывают «Что
-  даёт этот компьютер»: слух, голос, модель, сообщения, «Не давать компьютеру спать», связь с колонкой и «Разрешить
-  в брандмауэре» на Windows. Колонка со старым DuoWave кода не знает — тогда, как раньше, пароль её пульта.
-- **Перенос больше не затирает дом на колонке.** Если на колонке свой дом DuoWave с людьми (например, поставленный
-  из терминала), перенос с компьютера останавливается на проверке и ничего не меняет. Заменить такой дом можно только
-  явно: кнопкой «Заменить дом на колонке» с предупреждением, что пропадёт. Дом, который этот компьютер сам перенёс на
-  колонку, и колонку без людей это не касается. В первых шагах «Это новый дом» теперь значит дом на этом компьютере:
-  колонку в другом доме шаги не подключают и не трогают.
-- **Пароль пульта — в конце установки на колонку одной командой.** После «Готово» установщик просит придумать пароль
-  пульта (дважды, символы не видны) и задаёт его на самой колонке: в пульт входят сразу с ним, без кода первой
-  настройки из журнала. Пустой ответ, `--yes` или запуск не из терминала — как раньше: установщик покажет код. В
-  конце — адрес пульта и подсказка: чтобы компьютер помогал колонке, откройте приложение DuoWave.
-- **`duowave panel setup` — первый пароль пульта с самого устройства.** Имя и пароль — двумя строками в stdin (в
-  терминале команда спросит их сама, пароль без эха); шлюз этого устройства принимает их с 127.0.0.1, без кода.
-  Пароль не попадает ни в командную строку, ни в журнал. Если пароль уже задан, команда отказывает.
+- **The network changed: the Turbo is found again by itself.** A computer whose address changed (another Wi-Fi, a new
+  IP) tells it to the speaker that names this computer its Turbo, even if the speaker got its home key from someone
+  else (before, the speaker kept calling the old address). A hub on a computer that lost the link to its Turbo looks
+  for it every 2 minutes by its announcement on the network (`_duowave._tcp`, by its id), without scanning the subnet,
+  and moves the link to the new address; the pinned certificate still proves it is the same computer.
+- **A computer finds a home whose hub is another computer or a server.** DuoWave on a computer and on a server
+  announces itself on the home network (mDNS `_duowave._tcp`: role, port, version, home), and First steps offer to join
+  such a home by a code, as a speaker's home; a computer hub connects the Turbo with its link key by itself. First
+  steps no longer take an ear speaker for the hub and offer its hub instead. Speakers do not announce themselves: they
+  lack the RAM, and they are found as before.
+- **A Turbo is the home's helper, not a second hub.** A computer that helps another home by a link key and leads no
+  speakers of its own is shown in the device row as that home's Turbo: "Computer · Hub · Turbo" on one device no
+  longer appears. On a Turbo, the computer's own desk is in the account menu: "This computer's desk", and back to "The
+  home's panel". The DuoWave window on such a Turbo opens the home's panel, even when the hub is another computer or a
+  server: the panel's requests go to the hub over the same link, on behalf of whoever signed in on the Turbo, with
+  their role. The hub lets in this way only a Turbo of its home from its own list, and only to the panel's API; a hub
+  with an old DuoWave leaves the Turbo its own desk.
+- **More speakers become ears with one button.** A Turbo computer shows in "Devices" the speakers on the network that
+  are not in the home. A speaker without DuoWave: "Make it an ear". The computer installs DuoWave over SSH right as an
+  ear of the hub; the computer's settings do not go there, and no code is needed. A speaker with its own DuoWave: "Join
+  the home". First comes a warning that its settings and characters will be replaced by the home's, and its memory
+  merged; the code is said by that speaker itself (or "Allow" in its panel). Then we ask only for the room. In First
+  steps the extra speakers are marked "will become an ear later".
+- **"Your home": what works and what to fix, in one summary.** The last step of First steps on any path, and a card on
+  the desk until everything is green: the speaker's voice goes through DuoWave, the brain answers (or why not, for
+  example the key no longer works), the Turbo is online, answers sound in the character's voice, who answers. Each line
+  has one button that leads to the screen that fixes it. A Turbo on Windows tells the hub itself when its firewall or a
+  "Public" network closes the way in, and the line says so instead of just "offline". Speakers on the network that are
+  not in the home are one more line.
+- **A Turbo joins the home by a code, with no panel password or key.** A computer that finds a speaker with DuoWave on
+  the network asks it to let it in. The speaker hub makes a 6-digit code (5 minutes, once, 3 tries) and says it aloud
+  twice in a row, in pairs of digits, when its session can speak. In the "Alice" mode too: the hub asks Yandex for the
+  phrase over the speaker's own connection and plays it on the speaker (if that fails, the code stays on the screens).
+  An admin sees the same code with "Allow" and "That's not me" buttons in the home's panel on any screen, the phone
+  too; on a computer hub the code comes as a notification, on a server as a line in the terminal. After joining, the
+  help starts at once, and First steps show "What this computer gives the home": hearing, voice, model, messages, "Keep
+  the computer awake", the link with the speaker and "Allow in the firewall" on Windows. A speaker with an old DuoWave
+  does not know the code; then, as before, its panel password is used.
+- **A move no longer overwrites the home on the speaker.** If the speaker has its own DuoWave home with people (for
+  example, one installed from the terminal), a move from a computer stops at the check and changes nothing. Such a home
+  can be replaced only on purpose: with the "Replace the speaker's home" button and a warning of what will be lost. A
+  home that this computer itself moved to the speaker, and a speaker without people, are not affected. In First steps,
+  "This is a new home" now means a home on this computer: the steps neither connect nor touch a speaker in another
+  home.
+- **The panel password at the end of the one-command install on the speaker.** After "Done" the installer asks you to
+  make up a panel password (twice, the characters are hidden) and sets it on the speaker itself: you sign in to the
+  panel with it at once, without the first-setup code from the log. An empty answer, `--yes` or a run outside a
+  terminal works as before: the installer shows the code. At the end: the panel's address and a hint that to let the
+  computer help the speaker, you open the DuoWave app.
+- **`duowave panel setup`: the first panel password from the device itself.** The name and the password come as two
+  lines on stdin (in a terminal the command asks for them itself, the password without echo); this device's gateway
+  takes them from 127.0.0.1, without a code. The password never goes on the command line or into the log. If a
+  password is already set, the command refuses.
 
 ## 0.17.3 — 21.11.2026
 
-Отдельно не выпускалась: всё ниже вошло в 0.18.1.
+Not released on its own: everything below went into 0.18.1.
 
-- **Строка «Доступна версия» на главном экране — и про этот компьютер.** В доме, где центр — колонка, строка
-  смотрела только на колонку: компьютер, который обновляется первым и потом отдаёт версию колонке, своей строки не
-  получал, а когда колонка не на связи, строки не было вовсе — новую версию было видно только в трее и в
-  «Обновлениях». Теперь пульт спрашивает и сам компьютер (раз в 5 минут, без похода в ленту выпусков) и пишет
-  «для этого компьютера, он обновляется первым»; точка на «Дом» загорается и от него.
-- **Windows: шлюз знает, сколько ОЗУ занимают программы приложений и сколько свободной памяти на диске.** Раньше
-  на Windows этих чисел не было: ограничения ОЗУ приложений не срабатывали, а бюджет приложений и состояние
-  устройства обходились без них.
-- **Windows: «Стоп» у работы в папке гасит Claude Code, агента ACP или команду папки вместе со всем, что они
-  запустили.** Раньше он ничего не посылал, и команды вроде `npm test` продолжали работать и держать файлы копии.
-  Права агента ACP: путь без диска (`/etc/hosts`) больше не считается путём внутри копии.
-- **Windows: русские имена сетей больше не «????»** — в подсказке сделать сеть частной и в поиске колонок.
-- **Шлюз, собранный на Windows, отдаёт колонке её скрипты с правильными концами строк** (LF): с концами строк
-  Windows колонка не выполнила бы ни одного.
-- **Для разработчиков:** Windows CI запускает тесты шлюза, а не только собирает их; заглушки внешних программ в
-  тестах — одна программа на Rust, `duowave-test-stub` (в выпуск не входит).
+- **The "Version available" line on the home screen also covers this computer.** In a home whose hub is a speaker, the
+  line looked only at the speaker: the computer, which updates first and then hands the version to the speaker, had no
+  line of its own, and when the speaker was offline there was no line at all; the new version showed only in the tray
+  and in "Updates". Now the panel also asks the computer itself (every 5 minutes, without going to the release feed)
+  and says "for this computer, it updates first"; the dot on "Home" lights up for it too.
+- **Windows: the gateway knows how much RAM the apps' programs use and how much disk storage is free.** Before, these
+  numbers were missing on Windows: the apps' RAM limits did not work, and the apps' budget and the device state went
+  without them.
+- **Windows: "Stop" on a work in a folder ends Claude Code, the ACP agent or the folder's command together with
+  everything they started.** Before, it sent nothing, and commands such as `npm test` kept running and holding the
+  copy's files. The ACP agent's rights: a path without a drive (`/etc/hosts`) no longer counts as a path inside the
+  copy.
+- **Windows: Russian network names no longer show as "????"**, in the hint to make the network private and in the
+  speaker search.
+- **A gateway built on Windows hands the speaker its scripts with the right line endings** (LF): with Windows line
+  endings the speaker would not run any of them.
+- **For developers:** Windows CI runs the gateway's tests, not only builds them; the stand-ins for outside programs in
+  the tests are one Rust program, `duowave-test-stub` (not part of the release).
 
 ## 0.17.2 — 21.11.2026
 
-- **Приложения видят состояние устройства.** Новая служба `system/device` (право `see:system/device`): температура,
-  свободная ОЗУ и память, загрузка и частота процессора, сигнал Wi-Fi и время работы колонки и компьютера, их имя
-  и роль в доме, и история за несколько часов для графика. «Сделай график температуры колонки» — мастерская
-  собирает виджет, который сам обновляется. Компьютер видит колонку, центр-колонка — свой Турбо (обоим нужна эта
-  версия). На Mac температуры нет — виджет так и говорит.
-- **«Разрешить в брандмауэре» — прямо в мастере колонки на Windows.** Когда колонок в сети не нашлось, до колонки
-  нет пути или она не вышла на связь с центром за 3 минуты, оба мастера («Подключить колонку» и «Первые шаги»)
-  показывают кнопку: одно разрешение DuoWave для частной сети, Windows спросит права. После неё мастер сам ищет или
-  проверяет колонку снова; если сеть в Windows «Общедоступная», говорит, что ещё сделать.
+- **Apps see the device state.** A new service `system/device` (the right `see:system/device`): the temperature, free
+  RAM and storage, processor load and frequency, the Wi-Fi signal and the uptime of the speaker and the computer, their
+  names and roles in the home, and a few hours of history for a chart. "Make a chart of the speaker's temperature": the
+  workshop builds a widget that updates itself. A computer sees the speaker, and a hub speaker sees its Turbo (both
+  need this version). A Mac has no temperature, and the widget says so.
+- **"Allow in the firewall" right in the speaker wizard on Windows.** When no speaker is found on the network, there is
+  no route to the speaker, or it has not reached the hub within 3 minutes, both wizards ("Connect a speaker" and "First
+  steps") show the button: one rule for DuoWave on private networks, and Windows asks for rights. After it the wizard
+  looks for the speaker or checks it again by itself; if the Windows network is "Public", it says what else to do.
 
-- **Свой пароль root колонки — прямо в мастере.** «Колонка не пустила по SSH» показывает поле пароля; DuoWave хранит
-  его зашифрованным и входит с ним дальше (подключение, возврат к Яндексу, удаление). Неверный не сохраняется.
-- **Windows: замена голоса не падает с «os error 32».** Файл, который держит голосовой сервер, уходит, как только
-  сервер его отпустит, — или при следующем старте; поставленным он больше не считается.
-- **Колонка не достучалась до компьютера-Турбо — теперь это видно на обоих пультах.** На компьютере в карточке
-  колонки — что ответила колонка и что сделать; на Windows — кнопка «Разрешить в брандмауэре» (одно разрешение для
-  частной сети, Windows спросит права) и подсказка, если сеть в Windows «Общедоступная». На колонке у компьютера «не
-  на связи» — что проверить.
-- **Поиск колонок на Windows** говорит, почему ничего не нашёл (брандмауэр, общедоступная сеть), а адрес компьютера
-  для колонки выбирается из настоящей домашней сети, а не из адаптера WSL, Hyper-V или VPN.
-- **Голос Яндекса «через раз»:** соединение с Яндексом пробует сначала IPv4 — там, где у колонки нет IPv6, оно
-  больше не падает с «Network unreachable».
-- **Микрофон в доке на телефоне больше не молчит.** Пульт, открытый по сети (`http://колонка`), микрофона от
-  браузера не получит: кнопка приглушена, а нажатие говорит — на телефоне говорите прямо с колонкой, микрофон пульта
-  работает на компьютере с DuoWave.
-- **Отчёт для разработчика:** «Этот компьютер» → «Собрать отчёт» — версия, система и конец журнала без паролей,
-  ключей, домашней папки, имени и почты; копируется одной кнопкой.
-- **Журнал для разбора чужих проблем:** поиск колонок (адаптеры, что нашлось), каждый шаг мастера, связь с Турбо в
-  обе стороны с адресом и ошибкой, падения голосового сервера с кодом выхода, операции с файлами моделей, подключение
-  к Яндексу с адресами IPv4/IPv6 и ошибкой. На колонке `voice.sh` записывает каждое переключение голоса — когда, что
-  и кто его вызвал (`voice.sh history`; в «Что случилось» на компьютере тоже).
-- **Бюджет ОЗУ приложения — по тому, что оно использует.** Манифест может объявить больше памяти за то, что программа
-  называет в ответе `/health` (`budget.memoryMbFor`, программа — `uses`), и надзор держит приложение в бюджете того,
-  что оно использует сейчас. Так приложение, которому обычно хватает меньше, встаёт и на Станцию Мини 2. Если на
-  колонке места на большее нет, бюджет не поднимается, и приложение может сказать, что выбрать вместо.
-- **Виджеты и приложения на колонке занимают в бюджете то, что держат.** Простаивающий загруженный контекст считается
-  по тому, что реально держит его движок, с запасом; в вызове — по объявленному пределу. Раньше каждый держал в счёте
-  весь свой предел, и на Станции Мини 2 виджеты не грузились: «нужно 2 МБ, свободно 0».
-- **Запас ОЗУ для системы и Алисы — по колонке:** шестая часть её памяти, от 24 до 40 МБ (на Lite 2 — прежние 40).
-  `PLUGINS_RESERVE_MB` по-прежнему задаёт его сам.
-- **Отказ загрузить приложение говорит, чего не хватает:** «свободно X из Y МБ для приложений; сейчас заняли: «Радио» 11,
-  «Погода» 2» — или что приложениям вообще мало, остальное занято системой и Алисой.
+- **Your own root password for the speaker, right in the wizard.** "The speaker did not let SSH in" shows a password
+  field; DuoWave keeps the password encrypted and signs in with it later (connecting, returning to Yandex, removing). A
+  wrong one is not saved.
+- **Windows: replacing a voice no longer fails with "os error 32".** A file the voice server holds goes as soon as the
+  server lets it go, or at the next start; it no longer counts as installed.
+- **The speaker could not reach the Turbo computer: now both panels show it.** On the computer, the speaker's card says
+  what the speaker answered and what to do; on Windows there is an "Allow in the firewall" button (one rule for private
+  networks, Windows asks for rights) and a hint if the Windows network is "Public". On the speaker, a computer that is
+  "offline" says what to check.
+- **Speaker search on Windows** says why it found nothing (the firewall, a public network), and the computer's address
+  for the speaker is taken from the real home network, not from a WSL, Hyper-V or VPN adapter.
+- **Yandex's voice "every other time":** the connection to Yandex tries IPv4 first, so where the speaker has no IPv6 it
+  no longer fails with "Network unreachable".
+- **The dock mic on a phone no longer stays silent.** A panel opened over the network (`http://<speaker>`) does not get
+  the microphone from the browser: the button is dimmed, and a press says that on a phone you speak to the speaker
+  directly, and the panel's mic works on a computer with DuoWave.
+- **A report for the developer:** "This computer" → "Collect the report": the version, the system and the end of the
+  log, without passwords, keys, the home folder, the name or the email; one button copies it.
+- **A log for sorting out other people's problems:** the speaker search (adapters, what was found), each wizard step,
+  the link with the Turbo both ways with the address and the error, voice server crashes with the exit code, operations
+  on model files, the connection to Yandex with the IPv4/IPv6 addresses and the error. On the speaker, `voice.sh`
+  records every voice switch: when, what, and who called it (`voice.sh history`; also in "What happened" on the
+  computer).
+- **An app's RAM budget follows what it uses.** A manifest can declare more memory for what its program names in its
+  `/health` answer (`budget.memoryMbFor`, the program's `uses`), and the supervisor keeps the app in the budget of what
+  it uses now. So an app that usually needs less also fits on a Station Mini 2. If the speaker has no room for more,
+  the budget does not grow, and the app can say what to choose instead.
+- **Widgets and apps on the speaker count in the budget what they hold.** An idle loaded context counts what its engine
+  really holds, with a margin; during a call, its declared limit. Before, each one held its whole limit in the count,
+  and on a Station Mini 2 widgets did not load: "needs 2 MB, 0 free".
+- **The RAM reserve for the system and Alice follows the speaker:** a sixth of its memory, from 24 to 40 MB (on a
+  Lite 2, the same 40 as before). `PLUGINS_RESERVE_MB` still sets it directly.
+- **A refusal to load an app says what is missing:** "X of Y MB free for apps; in use now: Radio 11, Weather 2", or
+  that apps have little room at all, and the rest is taken by the system and Alice.
 
 ## 0.17.1 — 21.11.2026
 
-Отдельно не выпускалась: всё ниже вошло в 0.17.2.
+Not released on its own: everything below went into 0.17.2.
 
-- **Мастер подключения колонки говорит, почему нет SSH.** Вместо одного «SSH на колонке не отвечает» — колонка не
-  отвечает (включена? та же сеть?), SSH на ней не запущен (порт закрыт), до колонки нет пути с этого компьютера (VPN,
-  брандмауэр, антивирус), порт открыт, но SSH не ответил или сразу закрыл связь. На ответ SSH — до 5 секунд (было
-  1,5), а если порт открыт, мастер всё равно пробует войти. Причина — и в журнале шлюза. Если колонка не пустила
-  root без пароля, мастер называет, куда положить свой: строка `STATION_SSH_PASSWORD` в `.env` папки данных
-  приложения (для Windows и Mac).
-- **Распознавание на компьютере с Windows и Linux больше не падает на процессорах без AVX-512:** движок собирается
-  под общий уровень (AVX2), а не под процессор сборочной машины. На процессоре без нужных команд пульт так и
-  говорит, чего не хватает. Если исполнитель распознавания всё же упал, в журнале шлюза — его код выхода и что он
-  успел написать.
-- **Нет ложной тревоги «Колонка не подключена к центру 5 мин» на новой установке:** тревога — только о колонке,
-  которая уже была подключена. Вместо скрипта из репозитория совет — «Колонки» → «Вернуть к Яндексу».
-- **Установка одной командой сама спрашивает пароль root колонки,** если вход без пароля не прошёл: ввод не виден,
-  три попытки, пустой ответ — выйти. Читает прямо из терминала, так что работает и в `curl … | sh`.
-  `STATION_SSH_PASSWORD` — как раньше.
-- **«Устройства» у колонки-центра:** центр больше не предлагает подключить к дому сам себя, а его собственный голос
-  — не отдельная «колонка», а пометка на его строке: «голос не на связи».
-- **Код первой настройки подходит и без дефиса:** `79188906` — то же, что `7918-8906`.
-- **«Добавить Турбо»** ведёт туда, где ключ на самом деле: на Турбо «Ключ подключения» → «Подключить дом».
-- **Окно на странице компьютера в окне колонки на Windows** («Нужен файл голоса» и другие) больше не закрывает
-  середину экрана чёрным столбцом: окно встаёт посередине, страница остаётся на месте.
-- **`install.ps1` в Windows PowerShell 5.1 пишет по-русски без кракозябр;** адрес колонки можно дать заранее —
-  `$env:DUOWAVE_STATION`.
-- **«Голос» → «Сейчас говорит» без колонки** больше не пишет «говорит сама колонка»: в доме только с компьютером —
-  его голос или «Голоса пока нет».
-- **Остановка шлюза на колонке больше не зависает:** радио, которое идёт через шлюз, не держит выход; шлюз выходит
-  не дольше чем за 12 с, а `gateway.sh stop` дожидается его и гасит программы приложений. Новый `gateway.sh`
-  приходит на колонку только с установкой (из пульта, `duowave station install` или YAM), не с самообновлением; со
-  старым шлюз всё равно выходит за 12 с.
-- **Загрузку голоса видно.** Обычная загрузка — спокойная пилюля у дока «<Персонаж>: ставлю <модель> · N %»; точка
-  и окно — только когда «ОЗУ впритык» или «не вышло». Карточка на «Голосе» называет модель, а «Сейчас: …» — ту, что
-  на самом деле ставится на Турбо. «Первые шаги» сохраняют выбор модели голоса до установки персонажа (Турбо больше
-  не ставит другую) и показывают ход той модели, что качается. Главный — последний выбор: по пакету и по персонажу
-  они заменяют друг друга, а удалённый пакет уносит свой выбор и в доме, и на Турбо.
-- **MagicPlace: приложение и для колонки, и для компьютера на шлюзе колонки помечено «на колонке»,** а не «нужен
-  компьютер-Турбо».
+- **The speaker connect wizard says why there is no SSH.** Instead of one "SSH on the speaker does not answer": the
+  speaker does not answer (is it on? on the same network?), SSH is not running on it (the port is closed), there is no
+  route to the speaker from this computer (a VPN, a firewall, an antivirus), or the port is open but SSH did not answer
+  or closed the connection at once. It waits up to 5 seconds for SSH to answer (was 1.5), and if the port is open, the
+  wizard still tries to sign in. The reason is in the gateway's log too. If the speaker did not let root in without a
+  password, the wizard says where to put your own: the line `STATION_SSH_PASSWORD` in the `.env` file of the app's
+  data folder (for Windows and Mac).
+- **Speech recognition on a Windows or Linux computer no longer crashes on processors without AVX-512:** the engine is
+  built for a common level (AVX2), not for the build machine's processor. On a processor without the needed
+  instructions, the panel says what is missing. If the recognition worker still crashes, the gateway's log has its exit
+  code and what it managed to write.
+- **No false alarm "The speaker has not been connected to the hub for 5 min" on a new install:** the alarm is only
+  about a speaker that was connected before. Instead of a script from the repository, the advice is "Speakers" →
+  "Return to Yandex".
+- **The one-command install asks for the speaker's root password itself** if signing in without a password failed:
+  what you type is hidden, three tries, an empty answer quits. It reads straight from the terminal, so it also works in
+  `curl … | sh`. `STATION_SSH_PASSWORD` works as before.
+- **"Devices" on a hub speaker:** the hub no longer offers to connect itself to the home, and its own voice is not a
+  separate "speaker" but a note on its row: "voice offline".
+- **The first-setup code also works without the dash:** `79188906` is the same as `7918-8906`.
+- **"Add a Turbo"** leads to where the key really is: on the Turbo, "Connection key" → "Connect a home".
+- **A window on the computer's page inside the speaker's window on Windows** ("Voice file needed" and others) no longer
+  covers the middle of the screen with a black column: the window sits in the middle, and the page stays in place.
+- **`install.ps1` in Windows PowerShell 5.1 prints Russian text without garbled characters;** the speaker's address can
+  be given in advance with `$env:DUOWAVE_STATION`.
+- **"Voice" → "Speaking now" without a speaker** no longer says "the speaker itself speaks": in a home with only a
+  computer it shows the computer's voice or "No voice yet".
+- **Stopping the gateway on the speaker no longer hangs:** a radio stream that goes through the gateway does not hold
+  the exit; the gateway exits within 12 s, and `gateway.sh stop` waits for it and stops the apps' programs. The new
+  `gateway.sh` reaches the speaker only with an install (from the panel, `duowave station install` or YAM), not with a
+  self-update; with the old one the gateway still exits within 12 s.
+- **A voice download is visible.** A normal download is a calm pill by the dock, "<Character>: installing <model> ·
+  N %"; the dot and the window appear only for "Memory is tight" or "failed". The card under "Voice" names the model,
+  and "Now: …" names the one that really installs on the Turbo. "First steps" keep the voice model choice until the
+  character is installed (the Turbo no longer installs another one) and show the progress of the model that really
+  downloads. The last choice wins: a choice per package and a choice per character replace each other, and a removed
+  package takes its choice away both in the home and on the Turbo.
+- **MagicPlace: an app for both the speaker and a computer is marked "on the speaker" on the speaker's gateway,** not
+  "needs a Turbo computer".
 
 ## 0.17.0 — 20.11.2026
 
-- **«Обновить компьютер и колонку» — одной кнопкой.** Вышла версия новее компьютера — колонка обновляется следом за
-  ним: компьютер ставит новую версию себе и сразу после своего запуска отдаёт её колонке. Вместо «У колонки последняя
-  версия» — что мешает обновиться и что сделать. Заработает, когда сам компьютер встанет на 0.17.0: до этого — как
-  раньше, сначала компьютер из трея, потом колонка кнопкой.
-- **Срочные исправления компьютер ставит колонке сам,** без кнопки и даже без «Обновлять автоматически»
-  (`UPDATE_AUTO_CRITICAL=false` это выключает).
-- **«Поставить без компьютера» в пульте колонки** — когда компьютера нет рядом. Самообновление колонки больше не
-  кончается «Обновление уже ставится».
-- **Приложения на Турбо:** обновление не нагружает колонку, Турбо не отстаёт от центра дома и говорит в карточке
-  приложения, если не смог поставить. В «Обновлениях и копиях» окна дома — две карточки: колонка и «Этот компьютер».
-- **Приложения говорят с записью.** Приложение может дать колонке не только слова, но и запись Ogg/Opus из своей
-  папки (до 2 МБ) — она звучит после слов, как голосовое сообщение.
-- **«Не беспокоить» голосом — и приложения молчат.** Пока режим включён голосом, приложения сами ничего не говорят;
-  на вопросы колонка отвечает. Режим, выключенный кнопкой колонки или в приложении Яндекса, шлюзу не виден —
-  запомненное «включено» снимается через 12 часов.
-- **Вход у поставщика модели может сам настроить модели;** понятнее сообщения, когда вход или лимит тарифа не
-  прошли.
-- **У каждого нового пакета — случайный id** вида `p-3f9a01c27b5e`: `duowave plugin new`, черновики мастерской,
-  форма «Новый плагин» (она больше не спрашивает id). Имя пакета — в его названии.
-- **Встроенные приложения — под новыми id, без двойников.** Встроенные прежних сборок шлюз убирает сам при запуске;
-  их настройки и записи (список покупок, календарь, город погоды и другие) начинаются заново. Свои копии («Сделать
-  свою копию») и приложения из MagicPlace не трогаются. Пакеты из MagicPlace, поставленные до 0.17.0, обновлений
-  больше не получат — удалите и поставьте заново.
-- **Установщики — ещё и под постоянными именами.** На странице выпуска рядом с версионными лежат
-  `DuoWave-macos-apple-silicon.dmg`, `DuoWave-macos-intel.dmg`, `DuoWave-windows.exe`,
-  `DuoWave-linux-x86_64.AppImage`, `DuoWave-linux-arm.AppImage`: ссылка `…/releases/latest/download/<имя>` всегда даёт
-  свежий установщик.
+- **"Update the computer and the speaker" with one button.** When a release is newer than the computer, the speaker
+  updates right after it: the computer installs the new version for itself and hands it to the speaker as soon as it
+  starts. Instead of "The speaker has the latest version", the panel says what stands in the way of the update and what
+  to do. This works once the computer itself runs 0.17.0. Until then it is as before: first the computer from the tray,
+  then the speaker with its button.
+- **The computer installs urgent fixes on the speaker by itself,** with no button and even without "Update
+  automatically" (`UPDATE_AUTO_CRITICAL=false` turns this off).
+- **"Install without the computer" in the speaker's panel,** for when no computer is around. The speaker's own update no
+  longer ends with "An update is already being installed".
+- **Apps on a Turbo:** an update does not load the speaker, the Turbo keeps up with the hub, and the app's card says
+  when the Turbo could not install it. In "Updates and backups" of the home window there are two cards: the speaker and
+  "This computer".
+- **Apps speak with a recording.** An app can give the speaker not only words but also an Ogg/Opus recording from its
+  own folder (up to 2 MB). It plays after the words, like a voice message.
+- **"Do not disturb" by voice keeps apps quiet too.** While the mode is on by voice, apps say nothing by themselves; the
+  speaker still answers questions. The gateway cannot see the mode when it is turned off with the speaker's button or in
+  Yandex's app, so the remembered "on" lifts after 12 hours.
+- **Sign-in to a model provider can set up the models by itself;** clearer messages when a sign-in or a plan limit
+  fails.
+- **Every new package gets a random id** such as `p-3f9a01c27b5e`: `duowave plugin new`, the workshop's drafts and the
+  "New plugin" form (it no longer asks for an id). The package's name is in its title.
+- **The built-in apps have new ids, with no twins.** The gateway removes the built-ins of earlier builds by itself at
+  start; their settings and records (the shopping list, the calendar, the weather's city and others) begin anew. Your
+  own copies ("Make your own copy") and apps from MagicPlace are left alone. Packages from MagicPlace installed before
+  0.17.0 get no more updates: remove them and install them again.
+- **Installers also under names that stay.** On the release page, next to the versioned files, there are
+  `DuoWave-macos-apple-silicon.dmg`, `DuoWave-macos-intel.dmg`, `DuoWave-windows.exe`, `DuoWave-linux-x86_64.AppImage`,
+  `DuoWave-linux-arm.AppImage`: the link `…/releases/latest/download/<name>` always gives the newest installer.
 
 ## 0.16.3 — 20.11.2026
 
-- **Микрофон — посередине дока везде.** Зелёная кнопка «Сказать» стоит между «Персонажем» и «Приложениями» и в пульте
-  компьютера-Турбо: его микрофон с 0.16 говорит с центром дома, прятать её там больше незачем.
-- **«Ждёт вас» и ход установки — вверху, у поиска.** Плашки больше не стоят рядом с доком: внизу только разделы и
-  микрофон. На телефоне «Ждёт вас» — зелёный кружок с числом.
-- **«Нет, не надо» не останавливает работу.** После «Делаю: … Что-то ещё добавить?» любое «нет» — «нет», «не
-  надо», «ничего», «так оставь», «продолжай» — значит «продолжай»: колонка отвечает «Хорошо, продолжаю.», окно на
-  компьютере молча закрывается. Останавливают только «останови», «отмени», «не делай». Одно «да» — «Что добавить?»,
-  «И ещё …» — добавка к работе; прочие фразы разбираются как обычно.
-- **«Сказать» — набрать текст и озвучить.** В «Настройки» → «Голос» и в поиске («Сказать текст…»): текст и чей голос —
-  персонажа или Алисы. Звучит на колонке; без неё — на этом компьютере голосом дома (Алиса говорит только через
-  колонку). Выбор голоса помнится на устройстве.
-- **Тема — одна на все ваши окна.** Поставили тему в браузере — она же в приложении и на телефоне. У каждого
-  человека своя тема. Светлая или тёмная — у каждого устройства своя, по умолчанию «Авто», как у системы.
+- **The microphone in the middle of the dock everywhere.** The green "Say" button sits between "Character" and "Apps" in
+  the panel of a computer as Turbo too: since 0.16 its microphone talks to the hub, so there is no reason to hide it
+  there any more.
+- **"Waiting for you" and the install's progress at the top, by the search.** The badges no longer sit next to the dock:
+  at the bottom there are only the sections and the microphone. On a phone, "Waiting for you" is a green circle with a
+  number.
+- **"No, that's fine" does not stop the work.** After "Doing it: … Anything else to add?", any no ("no", "no need",
+  "nothing", "leave it as is", "go on") means "go on": the speaker answers "OK, carrying on.", and the window on the
+  computer closes quietly. Only "stop", "cancel" and "don't do it" stop the work. A lone "yes" asks "What should I
+  add?", and "and also …" adds to the work; other phrases are handled as usual.
+- **"Say": type a text and hear it.** In "Settings" → "Voice" and in search ("Say a text…"): a text and whose voice, the
+  character's or Alice's. It plays on the speaker; without one, on this computer in the home's voice (Alice speaks only
+  through the speaker). The choice of voice is remembered on the device.
+- **One theme for all your windows.** Set a theme in the browser, and it is the same in the app and on the phone. Each
+  person has their own theme. Light or dark stays with each device, "Auto" by default, as the system.
 
 ## 0.16.2 — 19.11.2026
 
-- **Первые шаги без лишней прокрутки.** Середина шага прокручивается, только когда не помещается в окно, и только то,
-  что не влезло; шапка и кнопки шага всегда видны. Сцена «Попробовать» не выше окна, в невысоком окне шаги плотнее.
-- **Где работает приложение — меткой у названия.** «На компьютере» или «на колонке» — в шаге MagicPlace первых шагов
-  и на витрине магазина, по данным каталога.
-- **Установщик колонки говорит, почему не достучался.** `duowave station setup` отличает выключенную колонку или
-  другую сеть, колонку без запущенного SSH и запрет macOS: программе не дали доступ к локальной сети — тогда он
-  называет, где это включить («Конфиденциальность и безопасность» → «Локальная сеть»).
-- **Код первой настройки панели — в конце установки.** Установщик колонки печатает код, который панель колонки
-  спросит вместе с паролем; сама панель колонки подсказывает, что код показал установщик (и как прочитать его по SSH,
-  если он потерян), а не журнал Mac.
+- **First steps without needless scrolling.** The middle of a step scrolls only when it does not fit in the window, and
+  only the part that does not fit; the step's header and buttons always stay in view. The "Try it" scene is never taller
+  than the window, and in a low window the steps are tighter.
+- **Where an app runs, as a label by its name.** "On the computer" or "on the speaker" in the MagicPlace step of first
+  steps and in the store, from the catalog's data.
+- **The speaker's installer says why it could not reach the speaker.** `duowave station setup` tells apart a speaker
+  that is off or on another network, a speaker without SSH running, and a macOS block: the program was not given access
+  to the local network. In that case it says where to turn it on ("Privacy & Security" → "Local Network").
+- **The panel's first-setup code at the end of the install.** The speaker's installer prints the code that the speaker's
+  panel asks for together with the password. The speaker's panel itself says that the installer showed the code (and how
+  to read it over SSH if it is lost), not a Mac's log.
 
 ## 0.16.1 — 19.11.2026
 
-- **Первые шаги продолжаются с места.** Шаг, выбор, пройденные шаги и то, что доделывается в фоне (ссылка из
-  приглашения и доставка набора колонке, начатое подключение колонки), записываются в память пульта — после
-  перезапуска приложения, шлюза или колонки шаги открываются на том же шаге со всем выбранным и доводят начатое сами.
-  «Пройти первые шаги» в «Настройках» идёт поверх настроенного дома: место — каким оно есть, сделанное отмечено ✓,
-  ничего не сбрасывается.
-- **Мастерская не бросает игру молча.** Если ответ модели упёрся в предел длины раньше, чем она записала хоть один
-  файл (долго думала или писала код словами), агент слышит «пиши файлы сразу, частями» и продолжает; не помогло —
-  колонка говорит «не доделано. Продолжить?», а не «ничего не поменялось». «Не получилось» называет простую причину:
-  на ключе «Мозга» кончились деньги, упёрлись в лимит запросов, ключ не подошёл. «Переделать» в пульте несёт агенту
-  и первую просьбу о вещи — он больше не забывает, что делал.
-- **У каждого виджета своё место на столе.** Поставили или убрали виджет, пришли данные, заиграла музыка — соседи
-  больше не перепрыгивают в другой столбец, и новый виджет не ложится под другой: он встаёт на первое свободное место
-  и держит его, а выросший виджет отодвигает вниз только того, на кого лёг. «Новый виджет» стоит там, где встанет
-  следующий. Карточка Турбо висит поверх стола у правого края, закрывается крестиком и возвращается молнией у
-  колонки; подписи под колонкой сворачиваются в «Поток запросов», когда на столе свои виджеты.
-- **Новый виджет сразу с данными и на столе.** Приложение, которое только что поставили, сразу один раз молча
-  заполняет свои данные — не ждёт утра или своего окна 08:00–22:00. Виджет, поставленный голосом («да» или «на стол»
-  в ответ на «Готово. На стол или примерить?»), садится на стол, а не остаётся словами «На столе.».
-- **Шапка и «Работы» говорят правду.** «Ждёт вас» считает только то, что правда ждёт ответа: новая версия, начатая
-  «Доделать», и вещь, поставленная на стол, снимают вопрос и со старых записей. Нажатие всегда что-то открывает:
-  «Готово» — на полосе, остальное — саму работу с кнопками ответа. Работа, чей ход кончился, больше не висит
-  «идёт · начинает»: конец хода доходит до всех записей этой вещи, а «Остановить» у работы, над которой агент уже не
-  работает, её закрывает. Примеренная тема после «Включить» или «Применить» остаётся на пульте, а «Готово · …» справа
-  сверху уходит, как только вещь поставили. Светлая капсула в верхней строке — устройство, чья страница открыта.
-- **«Голос» и «Слух» — свои пункты «Настроек».** Выбор голоса и моделей больше не спрятан в «Устройства» → Mac →
-  «Этот компьютер». «Голос»: голос ждёт (вопрос владельцу), кто говорит сейчас — где и на какой модели, чей голос
-  отвечает, модель голоса персонажа (выбрать другую — «Перевести на …»), а ниже — голоса компьютера, где «Свой голос»
-  стоит первым и крупно. «Слух»: кто слушает сейчас и на какой модели, слово-активатор, модели распознавания
-  компьютера. Страница компьютера говорит о голосе и слухе кратко и ведёт в эти пункты; «Персонаж» → «Голос» — тот же
-  пункт.
-- **«Голос ждёт» не пропустить.** Голос, которому не хватает памяти или не вставший, виден с любого экрана: пилюля у
-  дока «… ждёт вашего решения», точка на «Настройках» и на «Голосе», а окно с вопросом и кнопками «Включить всё равно»
-  / «Отменить» («Попробовать снова») открывается само — один раз на каждое ожидание. Ответить можно с любого пульта:
-  центр передаёт ответ компьютеру, где голос ждёт.
-- **Причина «ОЗУ впритык» — на языке пульта.** Шлюз хранит у ждущего голоса числа (свободно, нужно, сколько держит для
-  колонки) и пишет фразу на языке того, кто читает; «ОЗУ впритык» больше не повторяется дважды.
-- **Свой голос в первых шагах.** На шаге «Персонаж», когда выбрана стандартная Алиса, — «Или — ваш голос» и «Создать
-  свой голос»: тот же мастер записи; снятый голос включается, и колонка переходит на голос компьютера.
-- **Приложения на Турбо.** Код приложения из ленты, которую читает только колонка, ставится на Турбо, если каталог
-  Турбо проверил этот архив; помощник честно говорит, спит ли Турбо или приложения там нет. Помощник читает данные
-  карточки приложения голосом и не говорит «на столе» про виджет, которого не видно.
-- **Первые шаги: «колонка + Турбо» по умолчанию.** На шаге «Ваш дом» выбран и помечен «Советуем» вариант «центр —
-  колонка, компьютер — Турбо», даже если поиск колонку не нашёл: на шаге «Колонка» её адрес можно ввести руками.
-- **Персонажи из приглашения — сразу.** Набор демо-персонажей виден и выбирается сразу с этого компьютера, а колонка
-  догоняет в фоне: выбор доходит до неё сам, без обязательного «Ещё раз». Пока колонка ставится или отвечает
-  медленно, «Набор не загрузился» больше не появляется зря; добавленный свой источник открытые пульты и колонка
-  перечитывают сами.
-- **Витрина «С чего начать»:** на змейке — «создано голосом» и фраза «Алиса, сделай игру».
-- **Ответ снимает вопрос.** Ответ на вопрос агента любым путём — голосом или кнопкой — убирает его с полосы «Готово».
-  «Все работы» открывает список работ; игра, поставленная «на стол» голосом, садится на стол. У темы свой вопрос, и «на
-  стол» её применяет.
-- **Музыка без «Повторите».** Инструмент, что включает трек, отвечает сразу, а трек уходит отдельно — Алиса больше не
-  просит повторить поверх уже играющей музыки.
-- **Назад к голосу персонажа.** «Голос» показывает голоса персонажей и «Вернуть голос персонажа»; свой голос поверх не
-  слетает сам. «Переснять для <модель> из ваших записей» есть всегда, когда на компьютере есть другая модель.
-- **Слова-активаторы в одном месте.** «Слух» — список слов: слушает одно, «Только Алиса», «Убрать все слова». Кнопка
-  слова — у «Слышит» на столе; в «Персонаже» — строка «Слово» с выключателем, а нет слова — «Найти слово»; в
-  MagicPlace — фильтр «Слова».
-- **Окна-листы прокручиваются.** Длинный список (например, «Добавить провайдера») больше не сжимается до высоты окна;
-  описания в окне колонки — на языке пульта.
-- **«Свой ключ» в первых шагах — с полями провайдера.** Для «Свой, OpenAI-совместимый» и «Свой,
-  Anthropic-совместимый» — адрес сервиса и модель (если сервис сам моделей не называет), для YandexGPT — ID каталога,
-  как в «Персонаж» → «Мозг» → «Добавить провайдера»; без них «Сохранить» не нажимается. Свой адрес — свой провайдер,
-  прежний с другим адресом не перезаписывается.
+- **First steps continue from where they stopped.** The step, the choices, the steps done and what finishes in the
+  background (the invitation link and the delivery of the set to the speaker, a speaker connection that was started) are
+  written to the panel's memory. After a restart of the app, the gateway or the speaker, first steps open on the same
+  step with everything chosen and finish what was started by themselves. "Go through first steps" in "Settings" now runs
+  over a home that is already set up: the place stays as it is, what is done is ticked ✓, and nothing is reset.
+- **The workshop does not drop a game silently.** If the model's answer hits its length limit before it writes even one
+  file (it thought for long or wrote code as words), the agent hears "write the files at once, in parts" and goes on. If
+  that does not help, the speaker says "not finished. Continue?" instead of "nothing changed". "It did not work" names a
+  plain reason: the "Brain" key ran out of money, the request limit was hit, the key did not fit. "Redo" in the panel
+  also carries the first request for the thing to the agent, so it no longer forgets what it was doing.
+- **Every widget has its own place on the desk.** When you add or remove a widget, data arrives or music starts, the
+  neighbours no longer jump to another column, and a new widget never lands under another one: it takes the first free
+  place and keeps it, and a widget that grows pushes down only the one it lands on. "New widget" stands where the next
+  one will go. The Turbo card floats over the desk at the right edge, closes with a cross and comes back with the
+  lightning icon by the speaker; the labels under the speaker fold into "Request flow" when the desk has your own
+  widgets.
+- **A new widget comes with data and lands on the desk.** A just-installed app fills its data once, quietly, right away;
+  it does not wait for the morning or for its 08:00–22:00 window. A widget put on the desk by voice ("yes" or "on the
+  desk" in answer to "Done. On the desk or try it on?") lands on the desk instead of staying as the words "On the
+  desk.".
+- **The header and "Works" tell the truth.** "Waiting for you" counts only what really waits for an answer: a new
+  version, a started "Finish" and a thing put on the desk clear the question from old records too. A tap always opens
+  something: "Done" on the bar, everything else the work itself with the answer buttons. A work whose run has ended no
+  longer hangs as "in progress · starting": the end of the run reaches all records of that thing, and "Stop" on a work
+  that the agent no longer works on closes it. A theme you tried on stays on the panel after "Turn on" or "Apply", and
+  "Done · …" at the top right goes away as soon as the thing is installed. The light capsule in the top row is the
+  device whose page is open.
+- **"Voice" and "Hearing" are their own items in "Settings".** The choice of voice and models is no longer hidden in
+  "Devices" → Mac → "This computer". "Voice": a waiting voice (a question to the owner), who speaks now (where and on
+  which model), whose voice answers, the model of the character's voice (to choose another: "Move to …"), and below that
+  the computer's voices, with "Own voice" first and large. "Hearing": who listens now and on which model, the wake word,
+  the computer's speech recognition models. The computer's page says little about voice and hearing and leads to these
+  items; "Character" → "Voice" is the same item.
+- **A waiting voice cannot be missed.** A voice that lacks memory, or one that did not start, shows from any screen: a
+  pill by the dock "… is waiting for your decision", a dot on "Settings" and on "Voice". The window with the question
+  and the buttons "Turn on anyway" / "Cancel" ("Try again") opens by itself, once for each wait. You can answer from any
+  panel: the hub passes the answer to the computer where the voice waits.
+- **The reason "RAM is tight" in the panel's language.** The gateway keeps numbers for a waiting voice (free, needed,
+  how much it holds for the speaker) and writes the sentence in the reader's language; "RAM is tight" is no longer
+  repeated twice.
+- **Your own voice in first steps.** On the "Character" step, when the standard Alice is chosen, there are "Or your
+  voice" and "Create your voice": the same recording wizard. The recorded voice turns on, and the speaker switches to
+  the computer's voice.
+- **Apps on the Turbo.** An app's code from a feed that only the speaker reads installs on the Turbo when the Turbo's
+  catalog has checked that archive. The assistant says plainly whether the Turbo sleeps or the app is not there. The
+  assistant reads the data of the app's card aloud and does not say "on the desk" about a widget that is not visible.
+- **First steps: "speaker + Turbo" by default.** On the "Your home" step, the option "hub on the speaker, computer as
+  Turbo" is chosen and marked "Recommended", even when the search did not find the speaker: on the "Speaker" step you
+  can type its address by hand.
+- **Characters from an invitation, at once.** The set of demo characters shows and can be chosen right away from this
+  computer, while the speaker catches up in the background: the choice reaches it by itself, with no need for "Try
+  again". While the speaker installs or answers slowly, "The set did not load" no longer shows for nothing; open panels
+  and the speaker reread an added source of your own by themselves.
+- **The "Where to start" showcase:** the snake shows "made by voice" and the phrase "Alice, make a game".
+- **An answer clears the question.** Answering an agent's question in any way, by voice or with a button, removes it
+  from the "Done" bar. "All works" opens the list of works; a game put "on the desk" by voice lands on the desk. A theme
+  has its own question, and "on the desk" applies it.
+- **Music without "Please repeat".** The tool that starts a track answers at once, and the track goes separately, so
+  Alice no longer asks to repeat on top of music that is already playing.
+- **Back to the character's voice.** "Voice" shows the characters' voices and "Back to the character's voice"; your own
+  voice on top no longer falls off by itself. "Re-record for <model> from your recordings" is always there when the
+  computer has another model.
+- **Wake words in one place.** "Hearing" has a list of words: one listens, "Only Alice", "Remove all words". The word's
+  button is by "Hears" on the desk; in "Character" there is a "Word" row with a switch, and with no word, "Find a word";
+  in MagicPlace, a "Words" filter.
+- **Sheet windows scroll.** A long list (for example "Add a provider") no longer shrinks to the window's height;
+  descriptions in the speaker's window are in the panel's language.
+- **"Own key" in first steps, with the provider's fields.** For "Own, OpenAI-compatible" and "Own,
+  Anthropic-compatible": the service address and the model (if the service does not name its models itself); for
+  YandexGPT, the catalog ID, as in "Character" → "Brain" → "Add a provider". Without them "Save" cannot be pressed. An
+  address of your own makes its own provider, so an earlier one with another address is not overwritten.
 
 ## 0.16.0 — 18.11.2026
 
-- **Мастер установки.** «Установить» в MagicPlace открывает одно окно: что поставится (сам пакет, его пары — голос
-  персонажа на компьютере и другое, что идёт с ним) и какие права — одна кнопка «Поставить всё». Дальше в том же окне
-  шаги с галочками: пакеты, персонаж — голос дома, голос на компьютере, приложения запускаются; в конце — что сказать
-  персонажу, а у приложения — его фраза или как им пользоваться. Закрыли посреди — карточка приложения предлагает
-  «Продолжить установку»; «Свернуть» прячет мастер, шаги идут дальше, а пилюля у дока их показывает. Шаг голоса ждёт
-  полторы минуты и потом «догонит», а не падает; колонка переходит на голос компьютера, и шаг закрыт, только когда она
-  это подтвердила. Права, одобренные при установке, получает стоящая версия, даже если она ещё выключена.
-- **Голос персонажа на Турбо — с выбором модели.** Модель голоса выбирают в мастере сразу, её скачивание — отдельный
-  шаг. Модель, что уже есть на компьютере, предлагается первой, остальные — за «Выбрать другую»; та, что не влезает на
-  диск, не выбрана и не запускается, а карточка называет её размер. Скачивание не зависает молча, «Отменить» его
-  снимает. Когда голос встал у Турбо, центр сам ставит «Голос компьютера» колонке.
-- **Свой голос, шаг 3.** Главная кнопка снимает отпечаток, показывает ход и включает голос — потом «Готово». Окна
-  компьютера открываются поверх всего пульта (затемнение и окно, страница за ними остаётся на месте), мастер
-  возвращается туда, где был; отпечаток слышит слова дубля через шлюз, когда распознавание работает в нём.
-- **VPN голосом:** «включи VPN», «выключи VPN», «VPN включён?» — переключать может любой в доме. Выключенное
-  приложение VPN говорит «VPN выключен» и включается, а не «Нет подписки».
-- **Первые шаги: приглашение с демо-персонажами.** На шаге «Персонаж» — «Есть приглашение?»: ссылка добавляет демо-
-  персонажей, они ставятся мастером. Выбор держится при «Назад/Дальше», «Дальше» занято, пока набор грузится.
-  «Персонаж» ждёт, пока выбранная колонка станет центром, никогда не пуст и предлагает «Перенести сейчас»; карточка
-  Алисы — с её знаком.
-- **Перенос на колонку доходит до конца** — после перезагрузки пульта, перезапуска шлюза и пропажи задачи — и везёт
-  свои источники компьютера и поставленных персонажей, выбранного первым. Компьютер-помощник после переноса берёт всё
-  у центра; колонка получает язык дома.
-- **Права «да».** Ответ на постоянное опасное право — навсегда и переживает перезапуск; микрофон описан как «слушает
-  или смотрит».
-- **Помощник не говорит «готово» или «включено»,** если в этом ответе не вызвал инструмент.
-- **Слово-активатор:** ослышка убирается из текста, после запроса, ушедшего в Яндекс, второго нажатия нет. В
-  MagicPlace такие слова — пара персонажа, а не отдельные приложения, и без «Рекомендуем».
-- **Стол и окна:** «На стол» голосом кладёт ту плитку, что рисует стол; карточка Турбо без голоса ведёт туда, где
-  голос ставят; окно дома в пульте компьютера знает его как «этот» («Голос — не поставлен · Поставить»); окно
-  «Персонаж» ставит через мастер и прячет персонажей, которых лента держит вне списков; «Скажите: …» в примерах — тем
-  словом, что и правда зовёт.
-- **Стол после первых шагов без наложений.** Закреплённый стол можно листать колесом и тачпадом — замок держит
-  раскладку, а не взгляд; витрина «С чего начать» видна целиком над доком (стол сам чуть уменьшается в невысоком
-  окне); виджеты по сторонам от колонки не ложатся на витрину и сперва встают туда, где их видно, а не за правый
-  край; «+ Новый виджет» и делающийся виджет — тоже над витриной.
-- **Витрина «С чего начать» уходит после первого своего виджета** — сделанного голосом или змейки, оставленной на
-  столе. Вернуть её можно из «+ Новый виджет».
-- **«Установлено»: значки приложений из каталога** видны и в окне колонки, открытом с компьютера (раньше — битая
-  картинка). **«Папки» на колонке-центре** — «на компьютере», а не красная «ошибка»: это приложение компьютера.
-- **MagicPlace: поставленное остаётся в «Рекомендуем» и «Новое»** — с кнопкой «Открыть» на том же месте.
-- **Вопрос «да» на права нового приложения** пульт перечитывает сам в первые секунды после установки или включения —
-  лист виден сразу, даже если живой канал о вопросе не сказал.
-- **Один пульт дома** (docs/plans/home-and-devices.md, этапы 0 и 1). Вверху пульта — «Дом» и его устройства:
-  колонки, компьютер, сервер — с метками «Центр» и «Турбо» и точкой связи. Вкладок устройств и тёмной рамки пульта
-  Турбо больше нет: откуда ни открой, пульт один, а нажатие на устройство открывает его страницу.
-- **«Настройки → Дом → Устройства»** вместо «Колонки» и прежнего «Дома»: все устройства дома и страница каждого —
-  только его вещи. Колонка-центр — «Обзор · Комната · Устройство», колонка, что слышит для центра, — «Обзор ·
-  Комната», компьютер — «Обзор · Этот компьютер · Другие дома · Устройство». «Что уходит из дома» — своей страницей.
-- **Слова.** Людям больше не показывается «шлюз»: роль называется «Центр», программа — DuoWave, устройство — своим
-  именем. «Шлюз» остался в коде, журналах и документах для разработчиков.
-- **На столе — дом целиком:** колонки, что слышат для центра, плашки Алисы и облаков, «Приложения» и легенда цветов
-  (лайм — центр, фиолет — Турбо, янтарь — облака и Яндекс, серый — спит).
-- **Микрофон компьютера-Турбо говорит с центром дома,** и не только у администратора: сказать фразу — не правка
-  настроек.
-- **MagicPlace говорит, где будет работать пакет** («работает: Кухня», «нужен компьютер-Турбо»), а «Приложения →
-  Установлено» показывает и то, что стоит у Турбо дома, по устройствам (этап 5а). Ставят их пока на самих
-  устройствах.
-- **Стол дома — один на всех устройствах** (этап 2). Окно дома на компьютере пишет стол и память пульта центру,
-  под самим человеком, а не в браузер: на компьютере и на телефоне стол одинаковый. Свой стол и память пульта
-  человек правит и через компьютер, не только администратор.
-- **Голос — часть персонажа дома.** Выбрали персонажа в любом пульте — центр называет его Турбо, Турбо сам ставит
-  пакет персонажа из подписанной ленты и говорит его голосом; колонка звучит новым голосом. Чужой дом голос
-  компьютера не меняет.
-- **Telegram — подключение дома.** Токен и контакты хранит центр (и колонка-центр тоже): настраиваются в
-  «Подключениях» из любого пульта, а бот работает на Турбо — центр отдаёт ему настройки, когда они меняются и когда
-  Турбо возвращается.
-- **Комнаты.** На вкладке «Комната» колонки — «Кто отвечает здесь» (в детской — Бублик, на кухне — Артур, память
-  общая) и режим этой комнаты («Алиса» в детской, «Ваш ИИ» на кухне); сменили режим — переподключается только эта
-  колонка. Громкость комнаты шлюз уже хранит, колонка возьмёт её на этапе 4.
-- **Копия дома** (этап 3). Центр — единственный, кто пишет дом; компьютер-Турбо держит его копию: настройки, людей,
-  персонажей, подключения, комнаты и память. Новая правка центра доходит до копии за секунды (компьютер смотрит на
-  центр сразу по его живому каналу) и применяется без перезапуска; колонка больше не перезапускается от каждой
-  правки. Ключи доступа у компьютера свои: по ним центр ходит к нему как к Турбо. Вход на компьютер — учёткой дома.
-  Своё у компьютера копия не трогает: его модели (LM Studio, Ollama — то, что работает на нём самом) и программы
-  MCP остаются, модель Турбо — та же. Бот Telegram, что был у компьютера до дома, становится ботом дома, если у
-  дома своего нет.
-- **Без центра компьютер отвечает сам** — по копии: тот же персонаж и та же память. Что он запомнил вне дома,
-  складывается с памятью дома, когда центр вернётся: у каждой записи есть дата и кто сказал, побеждает более новая
-  правка записи. Правка в пульте дома, пока центр недоступен, сохраняется на компьютере и уходит центру по порядку,
-  когда он вернётся («сохранено — дойдёт до центра»).
-- **Убрано:** «настройки на компьютере» и «Вернуть настройки на колонку», копии настроек колонки на компьютере и
-  их восстановление — их заменила живая копия дома. Новая установка: переходов со старых данных нет.
-- **Приложения дома: лицо у центра, код на месте** (этап 5б). На колонке-центре с Турбо приложение для компьютера
-  ставится лицом — его фразы, инструменты, окно и виджет у колонки, — а его код центр сам ставит на Турбо по связи,
-  из подписанной ленты Турбо, той же версии; Турбо уснул — поставит, когда проснётся. Каждый вызов такого приложения
-  идёт на Турбо, на колонке его код не запускается. Чужой дом ничего на компьютер не ставит.
-- **Приложения «для колонки» снова встают на колонку с Турбо** (AirPlay, VPN): колонка с Турбо — всё ещё колонка.
-  Раньше, как только компьютер начинал помогать колонке, их нельзя было поставить, а уже поставленные переставали
-  работать («не работает здесь»); теперь они ставятся, работают и обновляются, как на колонке без Турбо, а ОЗУ для
-  них по-прежнему проверяется на колонке.
-- **Договор Турбо — версия 2.** Турбо старше центра на странице устройства говорит «обновите оба»: новое — голос
-  персонажа, приложения по связи — ждёт его обновления.
-- Лента каталога несёт `prefer` и `place`: MagicPlace подписывает карточку местом до установки.
-- **Несколько колонок — один дом** (этап 4). Вторая колонка становится ухом центра: её голос идёт в центр (он решает,
-  кто отвечает в этой комнате, и открывает Яндекс с её же учётной записью), у неё копия дома, а без центра она
-  отвечает сама. Правка дома на ухе не принимается — «правьте в пульте центра», иначе она потерялась бы.
-- **«Сделать центром».** На странице колонки-уха у центра: центр переезжает на неё по домашней сети, без SSH, с
-  последним из дома, а прежний центр становится её ухом. Компьютер-Турбо сам переходит к новому центру. Тот же путь —
-  если колонку закрыло обновление прошивки: центром становится другое устройство.
-- **Убрано:** слой совместимости со старым «Домашним сервером» 0.11 (`helpers/legacy.rs`): его настройку больше не
-  читают и не пишут; адрес и ключ компьютера из установки по-прежнему становятся Турбо колонки.
-- **Первые шаги — «Ваш дом»** (этап 6) вместо «Где будет жить DuoWave»: что есть в доме и кем станет — «центр дома
-  уже здесь», «станет центром», «нужен root», «этот компьютер — Турбо, пока включён» или «центр, пока в доме он
-  один». Дом уже есть — компьютер подключается к нему Турбо: своего дома у него нет.
-- **Ещё одна колонка — одной кнопкой.** На «Устройствах» у компьютера — колонки с DuoWave, что ещё не в доме:
-  «Подключить к дому» делает колонку ухом центра с копией дома, дальше спрашиваем только про её комнату.
-- Для разработчиков: `GET /api/v1/home/devices` и событие `home.devices.changed`, `GET /api/v1/home/apps`,
-  `GET|PUT /api/v1/rooms` и `home.room.changed`, `/home/v1/character`, `/home/v1/messenger/bot`, `GET|POST
-  /api/v1/home/memory`, `POST /api/v1/home/held`, событие `home.copied`, миграция 16 (`home_queue`),
-  `GET|PUT|DELETE /api/v1/home/ear`, `POST /api/v1/home/centre`, `POST /api/v1/home/become-centre`,
-  `POST /api/v1/home/join-ear`;
-  `/home/v1/plugins` отдаёт все пакеты Турбо с видом и состоянием.
+- **Install wizard.** "Install" in MagicPlace opens one window: what will be installed (the package itself, its pairs
+  such as the character's voice on the computer, and anything else that comes with it) and which rights, with one
+  button, "Install all". Then the same window shows the steps with checkmarks: packages, the character as the home's
+  voice, the voice on the computer, apps starting; at the end, what to say to the character, and for an app, its phrase
+  or how to use it. Closed halfway, the app's card offers "Continue the install"; "Collapse" hides the wizard while the
+  steps go on, and a pill by the dock shows them. The voice step waits a minute and a half and then "catches up" instead
+  of failing; the speaker switches to the computer's voice, and the step is closed only when the speaker confirms it.
+  Rights approved at install go to the installed version, even while it is still off.
+- **The character's voice on a Turbo, with a choice of model.** The voice model is chosen in the wizard up front, and
+  its download is a separate step. A model that is already on the computer is offered first, the others behind "Choose
+  another"; one that does not fit on the disk is not chosen and does not start, and the card names its size. The
+  download never hangs silently, and "Cancel" stops it. When the voice is up on the Turbo, the hub sets "Computer voice"
+  for the speaker by itself.
+- **Own voice, step 3.** The main button takes the imprint, shows the progress and turns the voice on, then "Done". The
+  computer's windows open over the whole panel (a dimmed background and a window; the page behind stays in place), and
+  the wizard returns to where it was; the imprint hears the words of a take through the gateway when speech recognition
+  runs in it.
+- **VPN by voice:** "turn on VPN", "turn off VPN", "is VPN on?"; anyone at home can switch it. A VPN app that is turned
+  off says "VPN is off" and turns on, instead of "No subscription".
+- **First steps: an invitation with demo characters.** On the "Character" step there is "Have an invitation?": a link
+  adds demo characters, and the wizard installs them. The choice holds through "Back/Next", and "Next" is busy while the
+  set loads. "Character" waits until the chosen speaker becomes the hub, is never empty and offers "Move now"; Alice's
+  card has her sign.
+- **The move to the speaker reaches its end,** after a panel reload, a gateway restart and a lost task, and carries the
+  computer's own sources and the installed characters, with the chosen one first. After the move, the computer as helper
+  takes everything from the hub; the speaker gets the home's language.
+- **"Yes" to rights.** An answer to a standing risky right is for good and survives a restart; the microphone is
+  described as "listens or watches".
+- **The assistant does not say "done" or "on"** unless it called a tool in that answer.
+- **Wake word:** a misheard word is removed from the text, and after a request that went to Yandex there is no second
+  press. In MagicPlace such words are a pair of a character, not separate apps, and have no "Recommended".
+- **Desk and windows:** "On the desk" by voice puts the same tile that the desk draws; a Turbo card without a voice
+  leads to where a voice is installed; the home window in the computer's panel knows the computer as "this one" ("Voice:
+  not installed · Install"); the "Character" window installs through the wizard and hides characters that the feed keeps
+  out of the lists; "Say: …" in the examples uses the word that really calls.
+- **The desk after first steps has no overlaps.** A locked desk scrolls with the wheel and the touchpad: the lock holds
+  the layout, not the view. The "Where to start" showcase is fully visible above the dock (the desk gets a little
+  smaller by itself in a low window). Widgets on the sides of the speaker do not cover the showcase and first go where
+  they can be seen, not past the right edge; "+ New widget" and a widget being made are above the showcase too.
+- **The "Where to start" showcase goes away after your first own widget,** made by voice or a snake left on the desk.
+  You can bring it back from "+ New widget".
+- **"Installed": icons of apps from the catalog** show in the speaker's window opened from the computer too (before, a
+  broken image). **"Folders" on a speaker hub** says "on the computer", not a red "error": it is an app of the computer.
+- **MagicPlace: what is installed stays in "Recommended" and "New",** with the "Open" button in the same place.
+- **The "yes" question on a new app's rights** is reread by the panel itself in the first seconds after install or
+  turning on, so the sheet shows at once, even when the live channel did not tell about the question.
+- **One panel for the home** (docs/plans/home-and-devices.md, stages 0 and 1). At the top of the panel there is the home
+  and its devices: speakers, the computer, a server, with "Hub" and "Turbo" labels and a dot for the link. There are no
+  more device tabs and no dark Turbo panel frame: from wherever you open it, the panel is one, and a tap on a device
+  opens its page.
+- **"Settings → Home → Devices"** instead of "Speakers" and the old "Home": all devices of the home, and each one's page
+  shows only its own things. A speaker hub has "Overview · Room · Device", a speaker that hears for the hub has
+  "Overview · Room", a computer has "Overview · This computer · Other homes · Device". "What leaves the home" is a page
+  of its own.
+- **Words.** People no longer see "gateway": the role is called "Hub", the program is DuoWave, and a device goes by its
+  name. "Gateway" stays in the code, the logs and the documents for developers.
+- **The whole home on the desk:** speakers that hear for the hub, the Alice and cloud badges, "Apps" and a colour legend
+  (lime for the hub, violet for Turbo, amber for the clouds and Yandex, grey for asleep).
+- **The microphone of a computer as Turbo talks to the hub,** and not only for an administrator: saying a phrase is not
+  a change of settings.
+- **MagicPlace says where a package will run** ("runs: Kitchen", "needs a computer as Turbo"), and "Apps → Installed"
+  also shows what is installed on the home's Turbo, by device (stage 5a). For now they are installed on the devices
+  themselves.
+- **One desk for the home on every device** (stage 2). The home window on the computer writes the desk and the panel's
+  memory to the hub, under the person themselves, not into the browser: the desk is the same on the computer and on the
+  phone. A person can edit their own desk and panel memory through the computer too, not only an administrator.
+- **The voice is part of the home's character.** Choose a character in any panel, and the hub names it to the Turbo; the
+  Turbo installs the character's package from the signed feed by itself and speaks in its voice; the speaker sounds in
+  the new voice. Another home does not change the computer's voice.
+- **Telegram is a home connection.** The hub keeps the token and contacts (a speaker hub too): they are set in
+  "Connections" from any panel, and the bot runs on the Turbo. The hub hands it the settings when they change and when
+  the Turbo comes back.
+- **Rooms.** On a speaker's "Room" tab there is "Who answers here" (Bublik in the kids' room, Arthur in the kitchen,
+  with shared memory) and the mode of this room ("Alice" in the kids' room, "Your AI" in the kitchen); when the mode
+  changes, only this speaker reconnects. The gateway already keeps the room's volume; the speaker will take it in stage
+  4.
+- **A copy of the home** (stage 3). The hub is the only one that writes the home; a computer as Turbo keeps a copy of
+  it: settings, people, characters, connections, rooms and memory. A new change on the hub reaches the copy in seconds
+  (the computer looks at the hub right away through its live channel) and applies without a restart; the speaker no
+  longer restarts on every change. The computer has its own access keys: with them the hub reaches it as a Turbo.
+  Sign-in to the computer is with the home's account. The copy does not touch what belongs to the computer: its models
+  (LM Studio, Ollama, what runs on it itself) and MCP programs stay, and the Turbo's model is the same. A Telegram bot
+  that the computer had before the home becomes the home's bot if the home has none of its own.
+- **Without the hub the computer answers by itself,** from the copy: the same character and the same memory. What it
+  remembered outside the home joins the home's memory when the hub comes back: each record has a date and who said it,
+  and the newer change of a record wins. A change in the home's panel while the hub is away is saved on the computer and
+  goes to the hub in order when it comes back ("saved, will reach the hub").
+- **Removed:** "settings on the computer" and "Return the settings to the speaker", copies of a speaker's settings on
+  the computer and their restore. The live copy of the home replaced them. A new install: there is no move from the old
+  data.
+- **The home's apps: the face at the hub, the code in its place** (stage 5b). On a speaker hub with a Turbo, an app for
+  the computer is installed as a face (its phrases, tools, window and widget are at the speaker), and the hub installs
+  its code on the Turbo by itself over the link, from the Turbo's signed feed, in the same version; if the Turbo is
+  asleep, it installs it when it wakes. Every call of such an app goes to the Turbo; its code does not run on the
+  speaker. Another home installs nothing on the computer.
+- **Apps "for the speaker" install on a speaker with a Turbo again** (AirPlay, VPN): a speaker with a Turbo is still a
+  speaker. Before, as soon as a computer started to help the speaker, they could not be installed, and those already
+  installed stopped working ("does not work here"). Now they install, work and update as on a speaker without a Turbo,
+  and RAM for them is still checked on the speaker.
+- **The Turbo contract, version 2.** A Turbo older than the hub says "update both" on the device page: the new things
+  (the character's voice, apps over the link) wait for its update.
+- The catalog feed carries `prefer` and `place`: MagicPlace labels the card with the place before install.
+- **Several speakers, one home** (stage 4). A second speaker becomes an ear of the hub: its voice goes to the hub (the
+  hub decides who answers in that room and opens Yandex with that speaker's own account), it has a copy of the home, and
+  without the hub it answers by itself. A change to the home is not accepted on an ear ("make changes in the hub's
+  panel"), or it would be lost.
+- **"Make the hub".** On the hub, on the page of a speaker that is an ear: the hub moves to it over the home network,
+  without SSH, with the latest of the home, and the old hub becomes its ear. A computer as Turbo moves to the new hub by
+  itself. The same path works when a firmware update closed the speaker: another device becomes the hub.
+- **Removed:** the compatibility layer with the old 0.11 "Home server" (`helpers/legacy.rs`): its setting is no longer
+  read or written; the computer's address and key from the install still make it the speaker's Turbo.
+- **First steps: "Your home"** (stage 6) instead of "Where will DuoWave live": what the home has and what each device
+  becomes: "the hub is already here", "will become the hub", "needs root", "this computer is a Turbo while it is on" or
+  "the hub, while it is alone in the home". If there is a home already, the computer joins it as a Turbo: it has no home
+  of its own.
+- **One more speaker with one button.** On the computer's "Devices" there are speakers with DuoWave that are not in the
+  home yet: "Join the home" makes the speaker an ear of the hub with a copy of the home, and then we ask only about its
+  room.
+- For developers: `GET /api/v1/home/devices` and the `home.devices.changed` event, `GET /api/v1/home/apps`, `GET|PUT
+  /api/v1/rooms` and `home.room.changed`, `/home/v1/character`, `/home/v1/messenger/bot`, `GET|POST
+  /api/v1/home/memory`, `POST /api/v1/home/held`, the `home.copied` event, migration 16 (`home_queue`), `GET|PUT|DELETE
+  /api/v1/home/ear`, `POST /api/v1/home/centre`, `POST /api/v1/home/become-centre`, `POST /api/v1/home/join-ear`;
+  `/home/v1/plugins` returns all of the Turbo's packages with their kind and state.
 
 ## 0.15.1 — 17.11.2026
 
-- **Шлюз на колонке не разрастается, пока на него смотрит пульт.** Пульт на компьютере часто опрашивает колонку, и
-  каждый такой взгляд заново читал все приложения: ОЗУ шлюза дробилась и назад не возвращалась — за час с открытым
-  пультом с 15 до 57 МБ. Теперь шлюз перечитывает только изменившиеся приложения, а освобождённую ОЗУ сразу отдаёт
-  системе: ночь на колонке — 9–13 МБ вместо 70.
-- **Обновления — там, где их делают.** В окне колонки, которую ведёт компьютер, есть «Обновить до …»: колонка
-  просит компьютер, и он её обновляет. На странице Турбо карточка колонки — первой, со строкой, кто её обновляет, а
-  ниже — «Этот компьютер» со своей версией. Новая версия у колонки ставит точку и на «Настройках». Подсказка шлюза
-  называет этот путь.
-- **Меню аватара в пульте Турбо читается:** оно тёмное, как его полоса, — раньше светлый текст лежал на светлом и меню
-  казалось пустым. Колонка из чужого дома, которой помогает компьютер, показана колонкой, а не ноутбуком.
-- **Карточка Турбо — «Думает · Слышит · Говорит»;** фильтр в «Приложениях» — «Вид / Любой вид» вместо «Лицо».
-- **Стол: «+ Ярлык» снова открывает меню** на широком столе — с 16.11 прокрутка плавающего столбика обрезала меню, а
-  прозрачная подложка съедала нажатия, во всех пультах. «Убрать со стола» работает и на закреплённом столе: замок
-  держит только места и ширину.
-- **«YouTube Music» со своим значком.** Приложение YouTube теперь зовётся «YouTube Music» (0.1.1) и получило свой
-  значок — кнопку «играть» со звуковыми волнами; голосовые фразы прежние. Исходник — `apps/youtube-music/`, id
-  `youtube-music`. Карточки агентов Codex CLI, Factory Droid и
-  OpenCode в MagicPlace — со своими значками (1.0.1).
+- **The gateway on the speaker no longer swells while the panel looks at it.** The panel on the computer asks the
+  speaker often, and every such look read all the apps again: the gateway's RAM fragmented and never came back, from 15
+  to 57 MB in an hour with the panel open. Now the gateway rereads only the apps that changed and hands freed RAM back
+  to the system at once: a night on the speaker stays at 9–13 MB instead of 70.
+- **Updates where they are done.** The window of a speaker run by a computer has "Update to …": the speaker asks the
+  computer, and the computer updates it. On the Turbo's page the speaker's card comes first, with a line on who updates
+  it, and below it "This computer" with its own version. A new version for the speaker puts a dot on "Settings" too. The
+  gateway's hint names this path.
+- **The avatar menu in the Turbo's panel is readable:** it is dark like its bar; before, light text sat on a light
+  background and the menu looked empty. A speaker from another home that the computer helps shows as a speaker, not a
+  laptop.
+- **The Turbo card reads "Thinks · Hears · Speaks";** the filter in "Apps" is "Kind / Any kind" instead of "Face".
+- **Desk: "+ Shortcut" opens its menu again** on a wide desk. Since 16.11 the scrolling of the floating column cut the
+  menu off, and the clear backdrop ate the taps, in every panel. "Remove from desk" works on a locked desk too: the lock
+  holds only places and widths.
+- **"YouTube Music" with its own icon.** The YouTube app is now called "YouTube Music" (0.1.1) and has its own icon, a
+  "play" button with sound waves; the voice phrases are the same. The source is `apps/youtube-music/`, id
+  `youtube-music`. The agent cards Codex CLI, Factory Droid and OpenCode in MagicPlace have their own icons (1.0.1).
 
 ## 0.15.0 — 17.11.2026
 
-- **Обновление с 0.14.0.** Первый запуск добавляет в базу таблицы рабочих папок и работ (миграция 15); прежние
-  данные не меняются, а до этого шлюз кладёт копию базы в `backups/`. Назад на 0.14.0 — просто прежней версией: про
-  незнакомую ей миграцию она только предупредит в журнале; копию из `backups/` восстанавливать не нужно, она старше и
-  потеряет то, что поменяли после неё. Модель Турбо без своего адреса (Турбо по ключу или ушедшее, пока его модель
-  выбрана) хранится в «Мозге» с заглушкой — закрытым портом на самом устройстве, — и прежняя версия не примет её за
-  OpenAI и не отправит туда вопрос. Сразу после обновления меняется три вещи. Пульт из интернета через свой прокси
-  на этом компьютере открывается только с `PANEL_REMOTE=true` в `.env`. Если основная модель на компьютере (Ollama
-  или LM Studio здесь, «Модель на компьютере» у колонки), а «Запасной» нет, шлюз сам поставит облачную «Запасную» с
-  вашим ключом: вопросы к ней стоят денег, а папки без галочки «Модель может читать имена и файлы» для модели
-  закроются (ниже — подробнее). «Не нужна», выбранную раньше, шлюз отказом не помнит: не хотите облачную «Запасную» —
-  после обновления выберите «не нужна» ещё раз. Облачная «Запасная», которую поставил шлюз, после отката остаётся
-  там как ваша — уберите её до отката. Адрес и ключ компьютера колонки сами переходят в список помощников («Компьютер
-  дома»); прежняя настройка ведётся вместе со списком ещё одну версию, так что колонка, которую страховка откатила на
-  прежнюю версию, находит тот же компьютер. Колонка прежней версии с новым компьютером и новая колонка с компьютером
-  прежней версии работают; связь из-за роутера — когда новые оба. Компьютер слушает ещё порт связи — следующий за
-  портом пульта, 7781 рядом с 7780 (`LINK_PORT` в `.env`; `off` — без своего порта, тогда связь идёт только через свой
-  прокси). Кто обновляется с 0.13.0 или раньше — сначала «Обновление с 0.13.0» в 0.14.0 ниже.
-- **Видно, где вы и кто что делает (владелец, 16.11).** Тяжёлая часть теперь зовётся «Турбо»: компьютер дома или
-  свой сервер, который берёт модель, слух и голос. Вверху пульта — вкладки устройств дома: «Колонка «Кухня» · шлюз |
-  Этот компьютер · Турбо»; нажатая — чей это пульт, другая открывается одним нажатием, без `?local`. На столе два тела:
-  светлый шлюз и тёмный блок Турбо рядом с его умениями и тем, на связи ли он; узлы сцены — «Слышит · Думает ·
-  Говорит», окрашены тем, кто делает работу (лайм — сам шлюз, фиолет — Турбо, янтарь — облако и Яндекс); под сценой —
-  что будет, если Турбо уснёт. Полосы «Этот компьютер помогает колонке» и виджета «Где сейчас» на столе больше нет.
-  Всё о ролях — на одной странице «Настройки» → «Дом»: шлюз и кто отвечает на колонке, «Отдаю Турбо» с переключателями
-  умений, «Если Турбо уснёт» с «Запасной», регулятор; в «Мозге» остаётся выбор моделей. Режимы колонки называются по
-  тому, кто отвечает: «Алиса · Алиса + ваш ИИ · Ваш ИИ» (было «Яндекс · Вместе · Своё»). Компьютер, который только
-  помогает, показывает свой пульт в тёмной рамке: его силы, кому помогает и «Здесь не разговаривают».
-- **Окна пульта — один порядок (владелец, 17.11).** Окна приложений, подключений, каталога, персонажей, MCP, Турбо и
-  настроек открываются посередине, а окно раздела под ними прячется. В шапке — значок, имя и метки (работает, откуда,
-  версия), редкое — за «⋯»; закрывают крестик, Esc и нажатие мимо, «Готово» внизу больше нет. Главная кнопка одна,
-  лаймовая, справа внизу; «Сохранить» появляется, только когда что-то изменили; выключить, удалить, отвязать — в
-  «Опасном» в конце окна. У приложения — вкладки «Обзор · Доступ · Настройки · Версии»: фразы — метками, адреса и права
-  — кодом. Вопрос «Удалить?» — маленькое окно с кнопками справа. Пока данные идут, на их месте серые полосы — ничего не
-  прыгает; окно подключения больше не открывается дважды. «Слух» и «Голос» на странице компьютера — по разу. Кнопки по
-  всему пульту одного вида, белых нет. Лента ярлыков висит над столом прозрачной и стол не сдвигает.
-- **Помощники.** «Настройки» → «Помощники»: по порядку — кто даёт слух, голос, модель, сообщения, приложения и историю
-  приложений. Стрелки меняют порядок; в меню строки — «Проверить сейчас», «Не брать у него…», «Переименовать»,
-  «Подключить заново», «Открыть его пульт ↗», «Убрать». На каждое умение шлюз берёт первого, кто на связи и умеет; нет
-  никого — облака по ключам, затем Яндекс, если его пускает режим. На компьютере первым стоит «Этот компьютер»: свои
-  слух, голос и модель компьютер берёт тем же выбором. Имя этого шлюза — там же, «Изменить».
-- **«Где сейчас»** — там же и виджетом на столе: кто сейчас даёт слух, мозг и голос (на странице — ещё сообщения,
-  приложения и историю) и почему не первый. Сервер распознавания или голоса этого компьютера не отвечает — «Где сейчас»
-  так и говорит, а колонка и другие шлюзы берут слух и голос у следующего.
-- **«Что может уходить из дома»**: «Только дома» · «Дом и моё облако» · «Любые облака». По умолчанию «Любые облака» —
-  как было. Помощник вне дома (свой сервер, облако), которого регулятор не пускает, не даёт ничего. Регулятор держит и
-  облачные модели «Мозга» вместе с «Запасной», и облачные слух и голос, и облачные голоса приложений; Яндекса он не
-  касается — его пускает режим. Сообщения «передай…» через бота Telegram компьютера регулятор не останавливает. Не
-  держит он и собственные запросы приложений в интернет, программы MCP и загрузку каталога.
-- **«Мозг» не молчит без компьютера.** У каждого помощника с моделью своя строка «Модель: <имя>»; прежняя «Модель на
-  компьютере» стала такой строкой, и выбор не сбился. Помощник не на связи — сразу отвечает «Запасная», без 10 секунд
-  ожидания; нет её — другой помощник с моделью; нет и его — в «Вместе» отвечает Алиса, в «Своё» и в «Спросить мозг» —
-  честные слова меньше чем за секунду. Модель, у которой VPN сейчас не отвечает, вместо компьютера не встаёт: она
-  сказала бы только «VPN не отвечает». В «Расходе» модель помощника дома — «дома», бесплатно; вне дома — «своё
-  облако»: по цене, вписанной в «Расходе», иначе «без цены». Честные слова сделкой не считаются.
-- **«Запасная» по умолчанию может стоить денег.** Если основная модель у помощника (в том числе Ollama или LM Studio
-  на этом компьютере), а «Запасной» нет, шлюз сам ставит быструю облачную модель с вашим ключом — только известную по
-  точному имени, только когда регулятор пускает облака, и не ту, которую сейчас не пускает VPN. Вопросы к ней идут
-  через интернет и тратят ваш ключ; «Мозг» говорит об этом строкой. В «Запасной» вместо одного «не нужна» — два
-  пункта без модели: «пусть выберет шлюз» (так по умолчанию; когда шлюз выбрал, пункт называет модель) и «не нужна» —
-  тогда шлюз её не ставит, пока не вернёте «пусть выберет шлюз». Снова «пусть выберет шлюз» — шлюз выбирает заново;
-  убрали провайдера запасной, которую выбрал шлюз, — она уходит с ним, и шлюз берёт другое облако. С основной моделью
-  в облаке шлюз запасную сам не ставит, и «Мозг» так и пишет. `PUT /api/v1/brain/choice` принимает `backup: "auto"`;
-  в ответе — `choice.autoBackup`.
-- **Облачная «Запасная» за домашней моделью — тоже облако.** Пока за моделью дома стоит облачная «Запасная» (и та, что
-  поставил шлюз) или умная модель в облаке, папки без галочки «Модель может читать имена и файлы» модели закрыты, а
-  вопросы приложений словами идут, только если включено «Вопросы словами через облако»: облачная модель может
-  подхватить ответ вместе с прочитанным.
-- **Подключить шлюз по ключу.** На компьютере — «Подключить шлюз»: одноразовый ключ подключения текстом и QR, он
-  действует 15 минут; на шлюзе — «Добавить помощника»: текст или фото QR (и на iPhone), «Проверить», «Добавить». Связь
-  открывает сам шлюз, она зашифрована и идёт через свой порт 7781: снаружи в роутере открывают только его. В Docker
-  лист «Подключить шлюз» показывает только ключ: из контейнера шлюз не видит ни адреса машины, ни её порта — на шлюзе
-  наберите `https://<адрес машины>:7781` и ключ или впишите этот адрес в «Адрес снаружи». За своим прокси с доменом домен вписывают в «Адрес снаружи»; прокси стоит на этом же
-  компьютере (или на хосте Docker: адрес контейнера прокси или небольшая сеть compose, не шире `/24`, — в
-  `LINK_PROXY_FROM`), у него настоящий сертификат на домен, он пишет `X-Forwarded-For` и передаёт только
-  `/home/v1/link`. Постоянный ключ связи открыто по сети не идёт: при подключении он приходит зашифрованным ключом
-  подключения, а дальше шлюз называет только его номер и отвечает на вызов Турбо, так что подсмотренное на участке
-  за прокси ничего не открывает. Смена «Адреса снаружи» после подключения связь не рвёт. Если версия связи у шлюза и
-  Турбо разная, шлюз так и говорит: «Турбо другой версии DuoWave — обновите оба». По `http` помощник подключается только в домашней сети. Шлюзам своего дома компьютер
-  даёт всё; шлюзам другой семьи — слух, голос (только Silero или Piper этого компьютера), модель и каталог, остальное —
-  «Помогаю» → «Что давать…».
-- **Прокси на этом же компьютере больше не выдаёт запросы из интернета за запросы с самого компьютера.** Запрос с
-  заголовками пересылки (`X-Forwarded-For`, `Forwarded`, `X-Real-IP`, `Via`) шлюз судит по адресу того, для кого прокси
-  спрашивает, — на всех маршрутах. Домашние устройства через домашний прокси остаются дома; пульт из интернета через
-  свой прокси работает, как через туннель, — только с `PANEL_REMOTE=true`. Неверные пароли через туннель или прокси
-  считаются по адресу посетителя и не закрывают вход на самом компьютере. Посетителем туннеля Cloudflare шлюз считает
-  только того, кого называет и `X-Forwarded-For`, и остальные заголовки пересылки: за nginx, который пишет один
-  `X-Real-IP`, чужие заголовки `cf-*` больше не дают подбирать пароль пульта без счёта.
-- **Номер дома не путается после отката.** Колонка, которую вернули на 0.13.0 или 0.14.0, при «Перенести на колонку»
-  брала с компьютера его номер дома, а ключ дома у неё оставался свой — два ключа на один дом. Теперь шлюз помнит,
-  к какому ключу относится его номер, и после обновления сам возвращает свой номер.
-- **«Этот компьютер»** вместо «Компьютер-помощник» (в окне компьютера; у компьютера без колонки — внизу «Помощников»):
-  «Даю», «Помогаю», ключ подключения и, пока компьютер кому-то помогает, «Не давать компьютеру спать». На столе колонки
-  вместо виджета «Компьютер-помощник» — «Где сейчас»; виджет компьютера «Помогать колонке» стал «Этот компьютер —
-  помощник».
-- **Программа колонки легче**, хотя в ней весь новый код: 22,50 МБ вместо 23,12 МБ у 0.13.0 — новый код прибавил
-  0,56 МБ, а сжатый пульт сберёг 1,18 МБ. Пульт хранится в ней сжатым (2,18 МБ его файлов — 0,85 МБ в программе) и так
-  же сжатым уходит браузеру; шрифты пульта — только woff2.
-- **Компьютер узнаёт колонку со своим DuoWave.** Проверка колонки читала ответ её шлюза мимо обёртки и не узнавала
-  ни одну: шаг «Помогать колонке» в «Первых шагах» и карточка на столе не появлялись.
-- **Колонка «не на связи» — по имени.** Окно колонки называло её внутренним номером («Колонка «h:…» не на связи»);
-  теперь — именем из списка колонок, без имени — адресом.
-- **«Спросить мозг» без сырой ошибки на английском.** Нет связи с Anthropic — «Claude сейчас недоступен: нет связи
-  с Anthropic.»; подробности — в журнале шлюза.
-- **Полоса «Этот компьютер помогает колонке» на столе** — только пока компьютер правда помогает (с выключенным
-  «Помогать» её нет), и без имени колонки в ней «Колонка», а не имя персонажа.
-- **«Персонаж» в «Только компьютер»** больше не пишет «Голос/Мозг — Яндекс · Алиса»: строки — как на столе.
-- **«Голоса нет» на свежем «Только компьютер»** — только когда правда нечем говорить: голос Алисы выбран, но шлюз
-  говорит своим — стол показывает его.
-- **«Первые шаги» не возвращаются** после × и сразу перезагрузки пульта: память пульта уходит на шлюз сразу.
-- **«Где будет жить DuoWave?» указывает на настоящее место:** «Настройки» → «Колонка» → «Где работает DuoWave», а
-  для «Только компьютер» — «Настройки» → «Микрофон» → «Как говорить с DuoWave».
-- **«Первые шаги» на компьютере, связанном с колонкой,** заранее выбирают «Колонка + компьютер», даже если поиск в
-  сети её не нашёл: «Дальше» больше не переводит разговор с колонки на микрофон.
-- **Шлюз на колонке больше не разрастается от приложений.** Каждая загрузка и выгрузка приложения дробила его ОЗУ, и
-  то, что освобождалось, назад не возвращалось: к утру шлюз держал до 72 МБ, а приложениям оставалось 0. Теперь у
-  каждого приложения свой кусок ОЗУ, и при выгрузке он целиком уходит системе: на 330 загрузках рост — 12 МБ вместо 49.
-- **Приложение — вместе с тем, что оно запустило.** Надзор считает ОЗУ программы приложения со всеми её процессами:
-  у каждого — своя ОЗУ, общие страницы файлов — один раз; у программы без своих процессов цифра прежняя. У «VPN»
-  теперь видно и его движок; сама программа «VPN» 0.1.1 держит не больше 1 МБ непрочитанного XHTTP, и бюджет «VPN»
-  в каталоге — 18 МБ вместо 32.
-- **Тексты пульта и шлюза:** оперативка называется ОЗУ, место на колонке — память; больше не путаются.
-- **Слово-активатор для приложения на колонке.** Приложение, что само слышит своё слово, будит колонку, как кнопка
-  (письмо `system/activator` → `wake`), а запрос получает звук до слова: фраза идёт одним дыханием, громкость
-  подбирается по слову, из текста команды слово уходит. Слово делает своего персонажа персонажем дома — с этого
-  ответа и дальше, пока не выберут другого (сейчас в доме живёт один персонаж). Где звук микрофона — письмом
-  `system/mic` → `open`: микрофон слушает комнату всё время, поэтому «да» владелец даёт при установке. Будит только
-  шлюз на самой колонке. Приложение со сборками под платформы из своей ленты ставится, когда каталог DuoWave
-  закрепил по хешу архив этой платформы.
-- **Персонаж и его слово — пакеты-пара** (`companions`): поставили один — пульт сразу предлагает другой, со словами
-  зачем, сколько займёт памяти и ОЗУ и какие права; отказались или не влезло — в карточке строка «В паре» с кнопкой
-  «поставить»; удалили один — спрашивает про другой.
-- **Один вопрос при установке.** Приложение, что просит права, пульт ставит после одного вопроса: сколько займёт памяти
-  и ОЗУ и что оно сможет — словами. «Поставить» — это и ваше «да» на эти права: потом приложение не спрашивает.
-  Микрофону колонки, что слышит комнату всё время, такое «да» — «всегда» для этого приложения.
-- **Нехватка ОЗУ на колонке больше не выключает приложение насовсем.** Последнее включённое засыпает — остаётся
-  включённым, в пульте «спит» — и само просыпается, когда ОЗУ освободится с запасом. Процессам приложений шлюз ставит
-  `oom_score_adj`: если ядру придётся убивать, первым уйдёт приложение, а не Алиса и не шлюз.
-- **YouTube на колонке — приложение на компьютере.** «Алиса, включи с ютуба Кино, группа крови» — найденное, а за ним
-  похожее из микса YouTube; «добавь в очередь …» ставит песню после той, что играет; «дальше», «пауза», «продолжи» —
-  как всегда; в «Сейчас играет» — название, канал и обложка. Звук берёт yt-dlp — приложение само скачивает его с
-  GitHub, сверяет SHA-256 и обновляет, когда YouTube меняет шифр; ffmpeg на компьютере делает MP3. Следующая песня
-  готовится, пока играет текущая. Нет VPN там, где YouTube закрыт, или YouTube не пускает с общего адреса
-  провайдера (429) — колонка говорит это простыми словами. В общем каталоге его нет: он в своей ленте, а ставится
-  оттуда, потому что каталог DuoWave закрепил этот самый архив по хешу.
-- **Код из своей ленты — только проверенный нами.** Плагин или приложение одним архивом из своего источника или
-  дополнительной ленты ставится, когда подписанный каталог DuoWave закрепил именно этот архив по хешу (`recommends`);
-  новый архив ждёт нового хеша, остальной код по-прежнему не ставится.
-- **«Что играет» под своей песней** шлюз отвечает сам — названием и исполнителем, не слушая музыку; под радио
-  по-прежнему слушает Яндекс. **«Добавь в очередь»** для плагинов — поле `add` ответа. Поток приложения идёт колонке
-  с длиной и `Range`: «продолжи» после паузы — с места.
-- **Работа в рабочих папках.** На странице «Работы» — «Новая работа»: папка, задание, «Запустить», и вход в «Рабочие
-  папки». Рабочая папка — папка с git на этом компьютере, её добавляют в пульте (папку без git — нет, со словами
-  почему). У каждой работы своя рабочая копия и своя ветка `duowave/…`: ваша ветка и ваши файлы не меняются, ветку
-  работы шлюз сам забирает в папку. Работу делает агент — встроенный запускает Claude Code, который вы поставили сами:
-  «Как в терминале» (тот вход, что вы сделали в нём, подписка тоже; DuoWave его не видит) или «По ключу API». У папки
-  — агент и модель, потолок одного запуска, команды подготовки, проверки после агента и разрешённые команды: что не
-  разрешено, агент сделать не может, `git push` тоже. Во вкладке «Журнал» вживую видно, что агент пишет и думает,
-  какие файлы читает и правит (разницей «было / стало»), какие команды запускает и что они вывели, шаги его
-  помощников, ошибки; «Только ошибки», поиск, «Скачать как есть». «Добавить вдогонку» и «Продолжить» — новый запуск
-  в той же сессии агента; во «Где» — команда, которой эта сессия открывается в терминале. Лимит подписки — вопрос
-  «подождать или остановить?», работа продолжается сама после сброса. Каждый запуск — сделка в «Расходе» на месте
-  «Исполнитель». Одна работа в папках за раз, следующая — в очереди. Только на компьютере, только администратору.
-- **Другие агенты — карточками из MagicPlace.** В MagicPlace — вкладка «Агенты»: карточка говорит, какую программу
-  поставить (её ставите вы сами, установка карточки ничего не скачивает и не запускает), как в неё войти, и ведёт на
-  её условия. Первые карточки — Factory Droid и OpenCode. Поставленный агент появляется в «Рабочих папках» рядом с
-  Claude Code: найден ли, какая версия, вошли ли; его можно выбрать для папки или для одной работы. DuoWave говорит с
-  ним по Agent Client Protocol: журнал, «вдогонку», «Остановить» и сделки — как у Claude Code. О разрешениях агент
-  спрашивает — отвечают правила папки: разрешённые команды, файлы только внутри рабочей копии; «разрешить всегда»
-  DuoWave не даёт никогда. Цену агент сообщает сам («оценка агента»), не сообщил — «цена неизвестна». Агент, который
-  делает всё без вопросов, помечен. Удалили карточку — агент уходит из папок, и пульт говорит, из каких. Карточки
-  ставятся только из подписанного каталога.
-- **«Первые шаги» с колонкой доходят до конца.** В «Колонка + компьютер» и «Только колонка» пульт посреди переноса
-  DuoWave на колонку уходил в окно колонки — «Кто отвечает», персонаж и остальное пропадали. Теперь окно компьютера
-  ждёт, пока шаги закончатся или их закроют. После переноса режим, вход в мозг и ключ сохраняются на колонке, где их
-  берёт DuoWave; модель на компьютере остаётся у компьютера. Персонаж — тоже на колонке, а его голос — на
-  компьютере: колонка говорит голосом компьютера.
-- **Смена языка на первом экране «Первых шагов»** больше не выкидывает на стол.
-- **«Настройки» → «Оформление» снова целиком:** язык, вид пульта, лента ярлыков и «Пройти первые шаги» — со списка
-  страниц там был только вид пульта. В окне колонки «Пройти первые шаги» открывает их в окне компьютера.
-- **«Поставить на стол?»** держит кнопки вместе: не хватает места — переносится текст, а не «Не надо».
-
+- **Updating from 0.14.0.** The first start adds the tables of work folders and works to the database (migration 15);
+  the existing data does not change, and before that the gateway puts a copy of the database into `backups/`. Going back
+  to 0.14.0 is just the old version: it only warns in the log about the migration it does not know; you do not need to
+  restore the copy from `backups/`, it is older and would lose what changed after it. A Turbo model without its own
+  address (a Turbo by key, or one that left while its model was chosen) is stored in "Brain" with a stand-in, a closed
+  port on the device itself, so the old version does not take it for OpenAI and does not send a question there. Three
+  things change right after the update. The panel from the internet through your own proxy on this computer opens only
+  with `PANEL_REMOTE=true` in `.env`. If the main model is on a computer (Ollama or LM Studio here, "Model on the
+  computer" for a speaker) and there is no "Backup", the gateway sets a cloud "Backup" with your key by itself:
+  questions to it cost money, and folders without the "The model can read names and files" checkbox close to the model
+  (more below). The gateway does not remember "not needed" chosen earlier as a refusal: if you do not want a cloud
+  "Backup", choose "not needed" again after the update. A cloud "Backup" set by the gateway stays there as yours after a
+  rollback, so remove it before you roll back. The address and key of the speaker's computer move into the helpers list
+  by themselves ("Home computer"); the old setting is kept along with the list for one more version, so a speaker that
+  its safety net rolled back to the old version finds the same computer. A speaker on the old version with a new
+  computer, and a new speaker with a computer on the old version, both work; a link through a router works when both are
+  new. The computer also listens on a link port, the next one after the panel's port: 7781 next to 7780 (`LINK_PORT` in
+  `.env`; `off` means no port of its own, and then the link goes only through your own proxy). If you update from 0.13.0
+  or older, first read "Updating from 0.13.0" in 0.14.0 below.
+- **You can see where you are and who does what (owner, 16.11).** The heavy part is now called "Turbo": a computer at
+  home or your own server that takes the model, hearing and voice. At the top of the panel there are tabs for the home's
+  devices: `Speaker "Kitchen" · gateway | This computer · Turbo`; the pressed one is whose panel this is, and the other
+  opens with one tap, without `?local`. The desk shows two bodies: the light gateway and the dark Turbo block next to it
+  with its skills and whether it is online. The scene's nodes are "Hears · Thinks · Speaks", coloured by who does the
+  work (lime for the gateway itself, violet for Turbo, amber for the cloud and Yandex); under the scene, what happens if
+  Turbo falls asleep. The bar "This computer helps the speaker" and the "Where now" widget are no longer on the desk.
+  Everything about roles is on one page, "Settings" → "Home": the gateway and who answers on the speaker, "I hand work
+  to Turbo" with switches for skills, "If the Turbo sleeps" with "Backup", and the dial; "Brain" keeps the choice of
+  models. The speaker's modes are named by who answers: "Alice · Alice + your AI · Your AI" (it was "Yandex · Together ·
+  Own"). A computer that only helps shows its panel in a dark frame: its strengths, whom it helps and "No talking here".
+- **Panel windows follow one layout (owner, 17.11).** Windows of apps, connections, the catalog, characters, MCP, Turbo
+  and settings open in the middle, and the section's window under them hides. The header has an icon, a name and chips
+  (running, from where, version); rare things sit behind "⋯". A window closes with the cross, Esc or a tap outside;
+  there is no "Done" at the bottom any more. There is one main button, lime, at the bottom right; "Save" appears only
+  when something changed; turning off, removing and unlinking are under "Danger zone" at the end of the window. An app
+  has the tabs "Overview · Access · Settings · Versions": phrases as chips, addresses and rights as code. The question
+  "Remove?" is a small window with buttons on the right. While data loads, grey bars hold its place, so nothing jumps; a
+  connection's window no longer opens twice. "Hearing" and "Voice" appear on the computer's page once each. Buttons
+  across the panel look the same, with no white ones. The shortcuts bar floats over the desk, transparent, and does not
+  push the desk.
+- **Helpers.** "Settings" → "Helpers": in order, who gives hearing, voice, the model, messages, apps and app history.
+  Arrows change the order; the row's menu has "Check now", "Do not take from it…", "Rename", "Connect again", "Open its
+  panel ↗", "Remove". For each skill the gateway takes the first helper that is online and can do it; with none, the
+  clouds by keys, then Yandex if the mode lets it. On a computer "This computer" comes first: the computer takes its own
+  hearing, voice and model by the same choice. This gateway's name is there too, under "Change".
+- **"Where now"** is there too, and as a widget on the desk: who gives hearing, the brain and voice right now (the page
+  also shows messages, apps and history) and why not the first one. When this computer's recognition or voice server
+  does not answer, "Where now" says so, and the speaker and other gateways take hearing and voice from the next one.
+- **"What may leave home"**: "Home only" · "Home and my cloud" · "Any clouds". The default is "Any clouds", as before. A
+  helper outside the home (your own server, a cloud) that the dial does not let through gives nothing. The dial holds
+  the cloud models of "Brain" together with "Backup", cloud hearing and voice, and apps' cloud voices; it does not touch
+  Yandex, which the mode lets through. It does not stop "pass on…" messages through the computer's Telegram bot. Nor
+  does it hold apps' own requests to the internet, MCP programs and the catalog download.
+- **"Brain" is not silent without the computer.** Every helper with a model has its own row "Model: <name>"; the old
+  "Model on the computer" became such a row, and the choice was kept. When a helper is offline, "Backup" answers at
+  once, without a 10 second wait; with no backup, another helper with a model; with none of them, Alice answers in
+  "Together", and in "Own" and in "Ask the brain" there are honest words in under a second. A model whose VPN is not
+  answering right now does not take the computer's place: it would only say "VPN is not answering". In "Spending" a
+  model of a helper at home is "at home", free; outside the home it is "own cloud": at the price entered in "Spending",
+  otherwise "no price". Honest words do not count as a deal.
+- **"Backup" may cost money by default.** If the main model is on a helper (Ollama or LM Studio on this computer
+  included) and there is no "Backup", the gateway sets a fast cloud model with your key by itself: only one it knows by
+  exact name, only when the dial lets clouds through, and not one that the VPN does not let through right now. Questions
+  to it go over the internet and spend your key; "Brain" says so in a line. In "Backup", instead of a single "not
+  needed" there are two items without a model: "let the gateway choose" (the default; when the gateway has chosen, the
+  item names the model) and "not needed", and then the gateway does not set it until you bring back "let the gateway
+  choose". Choose "let the gateway choose" again, and the gateway chooses anew; remove the provider of a backup the
+  gateway chose, and it goes with it, and the gateway takes another cloud. With the main model in the cloud the gateway
+  does not set a backup by itself, and "Brain" says so. `PUT /api/v1/brain/choice` takes `backup: "auto"`; the answer
+  has `choice.autoBackup`.
+- **A cloud "Backup" behind a home model is cloud too.** While a cloud "Backup" (the one set by the gateway too) or a
+  smart model in the cloud stands behind the home model, folders without the "The model can read names and files"
+  checkbox are closed to the model, and apps' questions in words go only when "Questions in words via the cloud" is on:
+  a cloud model could pick up the answer along with what was read.
+- **Connect a gateway by key.** On the computer, "Connect a gateway": a one-time connection key as text and QR, valid
+  for 15 minutes; on the gateway, "Add a helper": the text or a photo of the QR (on iPhone too), "Check", "Add". The
+  gateway opens the link itself; it is encrypted and goes through its own port 7781, the only one to open in the router.
+  In Docker the "Connect a gateway" sheet shows only the key: from inside the container the gateway sees neither the
+  machine's address nor its port, so on the gateway type `https://<machine address>:7781` and the key, or enter that
+  address in "Outside address". Behind your own proxy with a domain, the domain goes into "Outside address"; the proxy
+  runs on this same computer (or on the Docker host: the proxy container's address or a small compose network, no wider
+  than `/24`, in `LINK_PROXY_FROM`), has a real certificate for the domain, writes `X-Forwarded-For` and passes only
+  `/home/v1/link`. The permanent link key never travels the network in the clear: at connection it arrives encrypted by
+  the connection key, and after that the gateway names only its number and answers the Turbo's challenge, so anything
+  seen on the stretch behind the proxy opens nothing. Changing the "Outside address" after connecting does not break the
+  link. If the gateway and the Turbo have different link versions, the gateway says so: "Turbo runs another version of
+  DuoWave: update both". Over `http` a helper connects only in the home network. The computer gives everything to the
+  gateways of its own home; to the gateways of another family it gives hearing, voice (only this computer's Silero or
+  Piper), the model and the catalog, and the rest is under "I help" → "What to give…".
+- **A proxy on this same computer no longer passes internet requests off as requests from the computer itself.** The
+  gateway judges a request with forwarding headers (`X-Forwarded-For`, `Forwarded`, `X-Real-IP`, `Via`) by the address
+  of the one the proxy asks for, on every route. Home devices through a home proxy stay at home; the panel from the
+  internet through your own proxy works as through a tunnel, only with `PANEL_REMOTE=true`. Wrong passwords through a
+  tunnel or proxy are counted by the visitor's address and do not lock sign-in on the computer itself. The gateway
+  counts as a Cloudflare tunnel visitor only one named both by `X-Forwarded-For` and by the other forwarding headers:
+  behind nginx that writes only `X-Real-IP`, stray `cf-*` headers no longer let anyone guess the panel password without
+  being counted.
+- **The home number does not get mixed up after a rollback.** A speaker taken back to 0.13.0 or 0.14.0 took the
+  computer's home number on "Move to the speaker", while its home key stayed its own: two keys for one home. Now the
+  gateway remembers which key its number belongs to and puts its own number back by itself after the update.
+- **"This computer"** instead of "Helper computer" (in the computer's window; on a computer without a speaker, at the
+  bottom of "Helpers"): "I give", "I help", the connection key and, while the computer helps someone, "Keep the computer
+  awake". On the speaker's desk "Where now" replaces the "Helper computer" widget; the computer's widget "Help the
+  speaker" became "This computer is a helper".
+- **The speaker's program is lighter**, although it has all the new code: 22.50 MB instead of 23.12 MB in 0.13.0. The
+  new code added 0.56 MB, and the compressed panel saved 1.18 MB. The panel is stored in it compressed (2.18 MB of its
+  files take 0.85 MB in the program) and goes to the browser compressed the same way; the panel's fonts are woff2 only.
+- **The computer recognises a speaker with its own DuoWave.** The speaker check read its gateway's answer past the
+  wrapper and recognised none: the "Help the speaker" step in "First steps" and the card on the desk did not appear.
+- **A speaker "offline" by name.** The speaker's window called it by an internal number (`Speaker "h:…" is offline`);
+  now it uses the name from the list of speakers, or the address when there is no name.
+- **"Ask the brain" without a raw error in English.** With no connection to Anthropic it says "Claude is unavailable
+  right now: no connection to Anthropic."; the details are in the gateway's log.
+- **The bar "This computer helps the speaker" on the desk** shows only while the computer really helps (with "Help" off
+  it is not there), and without the speaker's name it says "Speaker", not the character's name.
+- **"Character" in "Computer only"** no longer says "Voice/Brain: Yandex · Alice": the rows are as on the desk.
+- **"No voice" on a fresh "Computer only"** shows only when there is really nothing to speak with: when Alice's voice is
+  chosen but the gateway speaks with its own, the desk shows that.
+- **"First steps" do not come back** after × and a panel reload right after it: the panel's memory goes to the gateway
+  at once.
+- **"Where will DuoWave live?" points to the real place:** "Settings" → "Speaker" → "Where DuoWave runs", and for
+  "Computer only", "Settings" → "Microphone" → "How to talk to DuoWave".
+- **"First steps" on a computer linked to a speaker** choose "Speaker + computer" up front, even when the network search
+  did not find it: "Next" no longer moves the conversation from the speaker to the microphone.
+- **The gateway on the speaker no longer swells from apps.** Every load and unload of an app fragmented its RAM, and
+  what was freed never came back: by morning the gateway held up to 72 MB, and 0 was left for apps. Now every app has
+  its own piece of RAM, and on unload it goes back to the system whole: over 330 loads the growth is 12 MB instead of
+  49.
+- **An app is counted with what it started.** Supervision counts the RAM of an app's program with all its processes:
+  each one's own RAM, and shared file pages once; for a program without its own processes the figure is the same as
+  before. "VPN" now shows its engine too; the "VPN" program 0.1.1 itself holds no more than 1 MB of unread XHTTP, and
+  the "VPN" budget in the catalog is 18 MB instead of 32.
+- **Panel and gateway texts:** in Russian, RAM is now called "ОЗУ" (not "оперативка") and storage on the speaker
+  "память"; the two are no longer mixed up.
+- **A wake word for an app on the speaker.** An app that hears its own word wakes the speaker like the button (message
+  `system/activator` → `wake`), and the request gets the sound before the word: the phrase comes in one breath, the
+  volume is set by the word, and the word leaves the command text. The word makes its character the home's character,
+  from this answer on, until another one is chosen (for now the home has one character). The microphone sound comes by
+  the message `system/mic` → `open`: the microphone listens to the room all the time, so the owner gives the "yes" at
+  install. Only the gateway on the speaker itself wakes it. An app with builds for platforms from its own feed installs
+  when the DuoWave catalog pinned the archive for this platform by hash.
+- **A character and its word are paired packages** (`companions`): install one, and the panel offers the other at once,
+  saying why, how much storage and RAM it takes and which rights it needs. If you declined or it did not fit, the card
+  has a "Goes with" row with an "install" button; remove one, and the panel asks about the other.
+- **One question at install.** An app that asks for rights is installed by the panel after one question: how much
+  storage and RAM it takes and what it will be able to do, in words. "Install" is also your "yes" to these rights: the
+  app does not ask later. For the speaker's microphone, which hears the room all the time, such a "yes" means "always"
+  for this app.
+- **Low RAM on the speaker no longer turns an app off for good.** The last one turned on falls asleep (it stays on,
+  "asleep" in the panel) and wakes by itself when RAM frees up with room to spare. The gateway sets `oom_score_adj` for
+  app processes: if the kernel has to kill something, an app goes first, not Alice and not the gateway.
+- **YouTube on the speaker, an app on the computer.** "Alice, play Kino, Gruppa Krovi from YouTube" gives what was
+  found, and after it similar songs from the YouTube mix; "add … to the queue" puts a song after the one that plays;
+  "next", "pause", "continue" work as always; "Now playing" shows the title, channel and cover. The sound comes through
+  yt-dlp: the app downloads it from GitHub itself, checks its SHA-256 and updates it when YouTube changes its cipher;
+  ffmpeg on the computer makes MP3. The next song gets ready while the current one plays. Without a VPN where YouTube is
+  blocked, or when YouTube refuses a provider's shared address (429), the speaker says so in plain words. It is not in
+  the shared catalog: it is in its own feed and installs from there because the DuoWave catalog pinned this very archive
+  by hash.
+- **Code from your own feed only when we checked it.** A plugin or a one-archive app from your own source or an extra
+  feed installs when the signed DuoWave catalog pinned exactly this archive by hash (`recommends`); a new archive waits
+  for a new hash, and other code still does not install.
+- **"What's playing" under your own song** is answered by the gateway itself, with the title and artist, without
+  listening to the music; under radio Yandex still listens. **"Add to the queue"** for plugins is the `add` field of the
+  answer. An app's stream goes to the speaker with its length and `Range`: "continue" after a pause resumes in place.
+- **Work in work folders.** The "Works" page has "New work": a folder, a task, "Run", and the way into "Work folders". A
+  work folder is a folder with git on this computer, added in the panel (a folder without git is refused, with words
+  why). Every work has its own working copy and its own `duowave/…` branch: your branch and your files do not change,
+  and the gateway brings the work's branch into the folder itself. The work is done by an agent: the built-in one runs
+  Claude Code that you installed yourself, "As in the terminal" (the sign-in you made there, a subscription too; DuoWave
+  does not see it) or "By API key". A folder has an agent and a model, a cap per run, preparation commands, checks after
+  the agent and allowed commands: what is not allowed, the agent cannot do, `git push` included. The "Journal" tab shows
+  live what the agent writes and thinks, which files it reads and edits (as a "before / after" diff), which commands it
+  runs and what they printed, the steps of its helpers, and errors; "Only errors", search, "Download as is". "Add on the
+  way" and "Continue" start a new run in the same agent session; "Where" has the command that opens this session in the
+  terminal. A subscription limit is a question, "wait or stop?", and the work goes on by itself after the reset. Every
+  run is a deal in "Spending" in the "Worker" seat. One work in folders at a time, the next waits in the queue. Computer
+  only, administrator only.
+- **Other agents as cards from MagicPlace.** MagicPlace has an "Agents" tab: a card says which program to install (you
+  install it yourself; installing the card downloads and runs nothing), how to sign in to it, and leads to its terms.
+  The first cards are Factory Droid and OpenCode. An installed agent appears in "Work folders" next to Claude Code:
+  whether it was found, which version, whether you signed in; you can choose it for a folder or for one work. DuoWave
+  talks to it over the Agent Client Protocol: the journal, "on the way", "Stop" and deals work as with Claude Code. When
+  the agent asks for permission, the folder's rules answer: allowed commands, files only inside the working copy;
+  DuoWave never gives "allow always". The agent reports the price itself ("agent's estimate"); if it does not, "price
+  unknown". An agent that does everything without asking is marked. Remove a card, and the agent leaves the folders, and
+  the panel says which ones. Cards install only from the signed catalog.
+- **"First steps" with a speaker reach their end.** In "Speaker + computer" and "Speaker only", in the middle of moving
+  DuoWave to the speaker the panel jumped to the speaker's window, and "Who answers", the character and the rest were
+  lost. Now the computer's window waits until the steps end or are closed. After the move, the mode, the brain sign-in
+  and the key are saved on the speaker, where DuoWave takes them; the model on the computer stays with the computer. The
+  character is on the speaker too, and its voice is on the computer: the speaker speaks in the computer's voice.
+- **Changing the language on the first screen of "First steps"** no longer throws you out to the desk.
+- **"Settings" → "Appearance" is whole again:** language, the panel's look, the shortcuts bar and "Go through first
+  steps"; from the list of pages, only the panel's look was there. In the speaker's window, "Go through first steps"
+  opens them in the computer's window.
+- **"Put on the desk?"** keeps its buttons together: when space runs short, the text wraps, not "No thanks".
 ## 0.14.0 — 16.11.2026
 
-- **Обновление с 0.13.0.** Миграций базы нет. Приложению VPN 0.1.2 из каталога нужен этот шлюз. Первое обновление
-  шлюза на колонке на эту версию идёт ещё по-старому: ему нужно место на две программы (около 30 МБ свободных).
+- **Updating from 0.13.0.** No database migrations. The "VPN" 0.1.2 app from the catalog needs this gateway. The first
+  update of the speaker's gateway to this version still goes the old way: it needs room for two programs (about 30 MB
+  free).
 
-- **«Первые шаги».** После пароля весь пульт занимает один экран первых шагов: где живёт DuoWave (только компьютер,
-  колонка и компьютер или только колонка), подключение колонки прямо в нём — проверка, что изменится, подключение и
-  перенос шлюза, — кто отвечает (режимы колонки и модель, для компьютера — вход в провайдер), персонаж, шесть фраз
-  «Попробуйте сказать» и MagicPlace. Если на колонке уже работает DuoWave, предлагается «Помогать колонке». Пройти
-  заново — «Настройки» → «Оформление» → «Пройти первые шаги».
+- **"First steps".** After the password the whole panel becomes one "First steps" screen: where DuoWave runs (only the
+  computer, the speaker and the computer, or only the speaker), connecting the speaker right there (the check, what
+  will change, the connection and the move of the gateway), who answers (the speaker's modes and the model, or signing
+  in to a provider for a computer), the character, six "Try saying" phrases and MagicPlace. If DuoWave already runs on
+  the speaker, it offers "Help the speaker". To go through it again: Settings → "Appearance" → "Go through first
+  steps".
 
-- **«VPN» — одно место в пульте.** Вкладки «Главная», «Локации», «Настройки», «Подписки»; переключатель «Выкл/Вкл»,
-  локации с полосками сигнала, «Только выбранные» и одна настройка «Если VPN не отвечает» на всё.
-  `PUT /api/v1/egress` принимает `{on, pick, homeDirect, onDownAll}`; прежний `{mode}` работает.
+- **"VPN" is one place in the panel.** Tabs "Home", "Locations", "Settings" and "Subscriptions"; an "Off/On" switch,
+  locations with signal bars, "Only the chosen" and one "If the VPN does not answer" setting for everything.
+  `PUT /api/v1/egress` takes `{on, pick, homeDirect, onDownAll}`; the old `{mode}` still works.
 
-- **Ярлыки на столе выключены по умолчанию.** На свежем столе ярлыков нет, AirPlay сам свой не ставит. Ленту ярлыков
-  включает «Настройки» → «Оформление» → «Стол» → «Лента ярлыков» (или «покажи ярлыки», пока этот переключатель на
-  экране); сохранённые ярлыки при выключенной ленте не пропадают.
+- **Desk shortcuts are off by default.** A fresh desk has no shortcuts, and AirPlay no longer adds its own. Turn the
+  shortcuts bar on in Settings → "Appearance" → "Desk" → "Shortcuts bar" (or say "show shortcuts" while this switch is
+  on the screen). Saved shortcuts are kept while the bar is off.
 
-- **Что мешает на колонке.** Проверка в «Подключить колонку» называет чужие моды (YaJavis, Alisa
-  Voice, Pulsar, Quasar Bridge, Alice LED) и следы неизвестных: не запущенный maind, подменённые файлы Алисы, мало
-  памяти. Строки раскрываются: чем мешает и как выключить; мешающие подсвечены. У модов со своим выключателем есть
-  «Выключить» — после «Да», ничего не удаляет; событие видно в «Кто что менял».
-- **DuoWave на колонку одной командой.** `curl -fsSL https://github.com/duowaveai/duowave/releases/latest/download/install.sh | sh`
-  (Windows: `irm …/install.ps1 | iex`) скачивает шлюз для компьютера, сверяет его с `SHA256SUMS` выпуска и запускает
-  `duowave station setup`: находит колонку, смотрит, что мешает, показывает план и после одного «да» ставит шлюз на
-  колонку и направляет на него голос.
+- **What stands in the way on the speaker.** The check in "Connect a speaker" names other mods (YaJavis, Alisa
+  Voice, Pulsar, Quasar Bridge, Alice LED) and traces of unknown ones: maind not running, Alice's files replaced, little
+  storage. The rows open up: how it gets in the way and how to turn it off; the ones in the way are highlighted. Mods
+  with a switch of their own get "Turn off". It works after a "Yes" and removes nothing; the event shows in "Who changed
+  what".
+- **DuoWave onto the speaker in one command.** `curl -fsSL https://github.com/duowaveai/duowave/releases/latest/download/install.sh | sh`
+  (Windows: `irm …/install.ps1 | iex`) downloads the gateway for the computer, checks it against the release's
+  `SHA256SUMS` and runs `duowave station setup`. It finds the speaker, looks at what stands in the way, shows the plan
+  and, after one "yes", installs the gateway on the speaker and points the voice at it.
 
-- **Свои значки у встроенных приложений.** В «Моих» у Календаря, Курсов валют, Папок, Игр, Утреннего шоу, Своей
-  музыки, Неоновой змейки, Новостей, Радио, Списка покупок, Умного дома, Сказок и Погоды теперь свои цветные логотипы
-  в едином стиле вместо букв и простых линий. Карточка с плитками получила ровные отступы со всех сторон.
+- **Own icons for the built-in apps.** In "My apps", Calendar, Currency rates, Folders, Games, Morning show, Own
+  music, Neon snake, News, Radio, Shopping list, Smart home, Fairy tales and Weather now have their own colored logos in
+  one style instead of letters and plain lines. The card with tiles got even margins on all sides.
 
-- **Стартовый стол: меньше, но живой.** На свежем столе — сцена и витрина из трёх карточек под ней. Сначала честно:
-  пока нет ИИ — «Сделайте Алису умнее» (вход через OpenRouter, подписка ChatGPT, свой ключ или модель на компьютере);
-  ключ подошёл — колонка сама переходит во «Вместе» (с «Отменить») и показывает «Теперь Алиса умнее» с тремя фразами:
-  поговорить, сыграть в змейку, сделать свой виджет. Фразу можно сказать или нажать. Змейка играет кнопкой и до ключа,
-  после игры — «Оставить на столе». Остальное само на стол не встаёт: «Музыка» — пока играет, «Таймеры» — пока идёт
-  таймер, «Пока не умеем» — когда есть вопросы без ответа, «Компьютер-помощник» — когда с ним беда. «Кто отвечает» —
-  нажатием на «Мозг» в сцене; режимы, счётчики, приложения и змейка — в «+ Новый виджет». Стол, который вы уже
-  настраивали, остаётся как был; витрину можно скрыть и вернуть из «+ Новый виджет».
+- **The start desk: less, but alive.** A fresh desk has the scene and a showcase of three cards under it. First, the
+  honest part: while there is no AI, "Make Alice smarter" (sign in through OpenRouter, a ChatGPT plan, your own key or
+  a model on the computer). Once a key works, the speaker turns to "Together" by itself (with "Undo") and shows "Alice
+  is smarter now" with three phrases: talk, play snake, make your own widget. You can say a phrase or tap it. The snake
+  plays from a button even before the key, and after a game it offers "Keep on the desk". Nothing else puts itself on
+  the desk: "Music" shows while something plays, "Timers" while a timer runs, "Not supported yet" when there are
+  unanswered questions, "Helper computer" when something is wrong with it. "Who answers" opens with a tap on "Brain" in
+  the scene; modes, counters, apps and the snake are in "+ New widget". A desk you already arranged stays as it was;
+  you can hide the showcase and bring it back from "+ New widget".
 
-- **«Поставить на стол?»** Спросили второй раз то, на что отвечает приложение с карточкой («какой курс доллара»), — под
-  колонкой появляется «Вы дважды спрашивали про «Курсы валют». Поставить на стол?». «Поставить» ставит карточку с меткой
-  «новый», «Не надо» — больше про это приложение не спросит. Убранную вами карточку не предлагает. Журнал вопросов
-  теперь помнит, какое приложение ответило — и на его фразу, и когда модель позвала его инструмент, — так что в счёт
-  идут и вопросы своими словами.
+- **"Put it on the desk?"** Ask a second time about something an app with a card answers ("what is the dollar rate"),
+  and under the speaker you see "You asked twice about "Currency rates". Put it on the desk?". "Add" puts the card
+  there with a "new" mark; "No thanks" means it never asks about this app again. A card you removed is never offered.
+  The question journal now remembers which app answered, both by its phrase and when the model called its tool, so
+  questions in your own words count too.
 
-- **Тема из трёх цветов и рисованный фон.** Теме хватает трёх цветов на режим — фона, текста и акцента: карточки,
-  линии, подложки, выбор и тени пульт достроит сам, цвета «кто отвечает» остаются прежними. Поэтому тему легко
-  попросить голосом: «Алиса, сделай тему: кремовая, с зелёным». А за столом теперь может жить фон — до трёх живых
-  сцен пульта слоями: звёзды, сияние, снег, волны…; «сделай тему звёздное небо» даст звёзды с сиянием в тёмном режиме.
-  Сцены рисует пульт, тема их только называет. Мастерская не пропустит тему, где текст не читается на фоне.
+- **A theme from three colors, and a drawn backdrop.** A theme needs only three colors per mode: background, text and
+  accent. The panel builds the cards, lines, underlays, selection and shadows itself; the "who answers" colors stay
+  the same. So a theme is easy to ask for by voice: "Alice, make a theme: cream, with green". Behind the desk there can
+  now be a backdrop: up to three of the panel's living scenes in layers: stars, aurora, snow, waves…; "make the theme a
+  starry sky" gives stars with an aurora in dark mode. The panel draws the scenes; the theme only names them. The
+  workshop refuses a theme whose text does not read on its background.
 
-- **Страну дома спрашивает окно «VPN», а не пульт.** «Где ваш дом?» — в окне приложения: угаданная страна (по-русски —
-  Россия), пара других на выбор, «Другая страна…» с поиском и «Не скажу». Ответ хранит сам VPN, другие приложения его
-  не видят; «Выход в интернет» решает по нему. Карточка «Страна дома» в «Настройки» → «Оформление»,
-  `GET|PUT /api/v1/home/country` и письмо `system/home` → `country` убраны; ответ, данный раньше, переходит в VPN сам.
+- **The "VPN" window asks the home country, not the panel.** "Where is your home?" is in the app's window: the
+  guessed country (Russia for Russian), a couple of others to choose from, "Another country…" with search, and "I
+  won't say". The VPN app keeps the answer itself; other apps do not see it. "Internet access" decides by it. The
+  "Home country" card in Settings → "Appearance", `GET|PUT /api/v1/home/country` and the `system/home` → `country`
+  letter are removed; an answer given earlier moves to the VPN app by itself.
 
-- **Шлюз на колонке обновляется без запаса в 30 МБ.** Новая версия сначала 10 минут работает из памяти колонки, а
-  прежняя остаётся на диске и возвращается сама, если новая упала, зависла или колонку перезагрузили. Потом новая
-  встаёт на место прежней, и в тихую минуту шлюз перезапускается на пару секунд. На диске теперь нужно место только на
-  рост программы и 5 МБ запаса; на время пробы — память размером с программу, а не хватает её — приложения колонки на
-  эти минуты выключаются и включаются сами. Остатки прошлых обновлений убираются (после отката страховкой на колонке
-  оставалось 20 МБ). Если свет выключили ровно в секунды записи, колонка станет обычной Алисой, а «Попробовать снова»
-  на компьютере положит шлюз обратно. Первое обновление на эту версию идёт ещё по-старому — ему нужно место на две
-  программы.
-- **Приложения на колонке — одна версия.** Прежняя удаляется, как только новая запустилась; «История» на колонке не
-  хранит больших файлов версий из каталога. Вернуть прежнюю — «История» → «Вернуть»: файлы возьмутся с компьютера или
-  заново из каталога. История удалённого приложения уходит с колонки сразу, а не через 30 дней, когда она есть и в
-  другом месте: приложение из каталога или его история уже на компьютере (своё приложение, которого нигде больше
-  нет, хранится 30 дней, как раньше). Запас места под обновление шлюза для приложений — около 8 МБ вместо 15.
-- Компьютер не ставит сам на колонку версию, которая не прошла там пробу; «Обновить» руками — можно.
+- **The speaker's gateway updates without a 30 MB reserve.** A new version first runs for 10 minutes from the speaker's
+  memory, while the old one stays on disk and comes back by itself if the new one fails, hangs or the speaker restarts.
+  Then the new one takes the old one's place, and in a quiet minute the gateway restarts for a couple of seconds. On
+  disk it now needs room only for the program's growth plus 5 MB spare. During the trial it needs RAM the size of the
+  program; if there is not enough, the speaker's apps turn off for those minutes and turn back on by themselves.
+  Leftovers of past updates are cleaned up (after a rollback, 20 MB used to stay on the speaker as a safety copy). If
+  the power goes off in exactly the seconds of writing, the speaker becomes plain Alice, and "Try again" on the
+  computer puts the gateway back. The first update to this version still goes the old way: it needs room for two
+  programs.
+- **Apps on the speaker keep one version.** The old one is deleted as soon as the new one starts; "History" on the
+  speaker does not keep large version files from the catalog. To bring the old one back: "History" → "Restore"; the
+  files come from the computer or again from the catalog. The history of a removed app leaves the speaker at once, not
+  after 30 days, when it also exists elsewhere: the app is from the catalog, or its history is already on the computer
+  (your own app that exists nowhere else is kept for 30 days, as before). The room apps leave for a gateway update is
+  about 8 MB instead of 15.
+- The computer does not put on the speaker by itself a version that failed its trial there; "Update" by hand still
+  works.
 
-- **CosyVoice не меняет голос на коротких фразах.** Очень короткое предложение («Да, сэр.», «Конечно.») CosyVoice
-  произносит вместе со следующим, а не отдельным куском — иначе оно звучало чужим тембром.
+- **CosyVoice no longer changes the voice on short phrases.** CosyVoice says a very short sentence ("Yes, sir.", "Of
+  course.") together with the next one, not as a separate piece. Before, it sounded in someone else's timbre.
 
-- **Коронные фразы персонажей.** Персонаж изредка говорит свою узнаваемую фразу — «Как пожелаете, сэр.» после
-  ответа или «Слушай сюда.» перед ним: в среднем раз в несколько ответов, не два ответа подряд и не ту же фразу снова.
-  Фразы даёт лента, из которой персонаж поставлен (`phrases` в её `catalog.json`), — она меняет и убирает их без новой
-  версии пакета. Фраза говорится слово в слово; модель её не получает, при ошибке ответа она не звучит.
+- **Characters' catchphrases.** Now and then a character says its well-known phrase: "As you wish, sir." after an
+  answer or "Listen up." before it. On average once in several answers, never in two answers in a row and never the
+  same phrase again. The phrases come from the feed the character was installed from (`phrases` in its
+  `catalog.json`); the feed changes and removes them without a new package version. A phrase is said word for word; the
+  model does not get it, and it does not play when the answer fails.
 
-- **Колонка сама, без компьютера и без Яндекса.** Облачный слух и голос настраиваются в пульте колонки: «Настройки» →
-  «Колонка» → «Слух» (OpenAI, Groq или свой адрес) и «Персонаж» → «Голос» (OpenAI или свой адрес). Ключа OpenAI из
-  «Мозга» хватает на всё; ключ хранится на колонке. С облачным слухом и голосом на колонке включается «Своё». Компьютер
-  уснул — «Своё» держится на облаке; облако выключили — колонка сама переходит во «Вместе». В облаке фраза
-  распознаётся одним запросом после конца речи, а не каждые полсекунды. Облачный голос сам читает числа и латиницу.
-  «Чей голос отвечает» на колонке без компьютера: «Облачный голос» или «Алиса».
-- **«Музыка» на столе — живая.** Что играет у Яндекса, видно и между фразами: смена трека, пауза, название,
-  исполнитель и обложка из ответов Яндекса. Кнопки виджета под музыкой Яндекса работают: пульт говорит Алисе те же слова
-  («пауза», «дальше», «мне нравится»), под виджетом видно, что сказано. Песня без длины — песня, не радио: с сердечком и
-  «играет 1:23». Приложения, что играют сами (AirPlay), могут сказать название, исполнителя и обложку.
-- **Пустая «Своя музыка» не мешает Яндексу.** «Включи музыку» при пустой папке играет Яндекс Музыку, а не «Музыки пока
-  нет».
-- **Перенос на колонку поверх прежнего шлюза.** Место под заменяемую программу считается свободным; прежний шлюз
-  останавливается до записи новой программы; установка больше не копирует программу саму на себя (на колонке `/data` —
-  ссылка на `/bkupgrade/data`).
+- **The speaker on its own, without a computer and without Yandex.** Cloud hearing and voice are set in the speaker's
+  panel: Settings → "Speaker" → "Hearing" (OpenAI, Groq or your own address) and "Character" → "Voice" (OpenAI or your
+  own address). The OpenAI key from "Brain" is enough for everything; the key is kept on the speaker. With cloud
+  hearing and voice, "Own" turns on on the speaker. When the computer sleeps, "Own" keeps going on the cloud; when the
+  cloud is off, the speaker turns to "Together" by itself. In the cloud, a phrase is recognized with one request after
+  the speech ends, not every half second. The cloud voice reads numbers and Latin letters by itself. "Whose voice
+  answers" on a speaker without a computer: "Cloud voice" or "Alice".
+- **The "Music" widget on the desk is alive.** What Yandex plays shows between phrases too: a track change, pause,
+  title, artist and cover, from Yandex's answers. The widget's buttons work for Yandex music: the panel tells Alice the
+  same words ("pause", "next", "I like it"), and under the widget you see what was said. A song without a length is a
+  song, not radio: it gets the heart and "playing 1:23". Apps that play by themselves (AirPlay) can give the title,
+  artist and cover.
+- **An empty "Own music" no longer blocks Yandex.** "Play music" with an empty folder plays Yandex Music, not "No music
+  yet".
+- **Moving onto the speaker over an earlier gateway.** The room of the program being replaced counts as free; the old
+  gateway stops before the new program is written; the install no longer copies the program onto itself (on the
+  speaker `/data` is a link to `/bkupgrade/data`).
 
 ## 0.13.0 — 16.11.2026
 
-- **Выход в интернет.** Шлюз решает, что из DuoWave идёт в интернет напрямую, а что — через ваш сервер из
-  приложения «VPN» (MagicPlace). «Настройки» → «Выход в интернет»: три кнопки —
-  «Выключено», «Где не работает» (по умолчанию: через сервер только то, что не работает из страны дома, по данным
-  каталога), «Всё через сервер» (и Алиса); сервер по умолчанию; строка итога; ниже — точная настройка по каждому, кто
-  ходит в интернет: Алиса, модели «Мозга», облачные слух и голос, инструменты MCP, приложения, свои адреса. Таблица
-  собирается сама: поставили приложение — строка появилась. Сервер не отвечает — модели, слух и голос напрямую не идут
-  (ключ из страны, откуда сервис не пускает, рискует аккаунтом): «VPN не отвечает» сразу; Алиса идёт напрямую. Без
-  приложения «VPN» и без «да» на «VPN → Сеть шлюза» всё как раньше. Программам приложений — `HTTPS_PROXY` на вход шлюза.
-- **Общие настройки приложений.** У любой настройки шлюза теперь может быть своё значение для отдельного приложения
-  (таблица `app_settings`, миграция 14) — так «Выход в интернет» хранит правило каждой строки. Правила переживают
-  удаление приложения (поставили снова — правило вернулось) и уходят вместе с его историей; переезжают с пакетом
-  настроек, кроме того, что дом узнал о своей сети. До миграции шлюз кладёт копию базы в `backups/`.
-- **Страна дома.** Пульт спрашивает один раз, где дом, — догадка по часовому поясу и языку компьютера, по адресу не
-  смотрим; «Не скажу» — тоже ответ. Поменять — «Настройки» → «Оформление», рядом с языком. Страна хранится только на
-  шлюзе (`GET|PUT /api/v1/home/country`), приложения узнают её письмом `system/home` → `country`. По ней будет решать
-  «Выход в интернет».
-- **Два пути назад с колонки.** `restore.sh` по-прежнему только возвращает голос Яндексу — DuoWave остаётся на
-  колонке, и пульт подключает её снова; теперь он прямо об этом пишет. Новый `uninstall.sh` убирает DuoWave совсем:
-  голос к Яндексу, шлюз на колонке и клиент звонков остановлены, их скрипты ушли из `/etc/init.d`, папка
-  `/data/opt/duowave` удалена, перезагрузка (`--keep-data` — данные шлюза на колонке остаются). Кладётся на колонку
-  вместе с `restore.sh`; колонкам, подключённым раньше, шлюз отдаёт его по `/station/uninstall.sh`. В пакете YAM —
-  `duowave uninstall`.
-- **Кнопка «Удалить DuoWave с колонки»** в окне колонки, под «Вернуть к Яндексу». Шлюз заходит на колонку по SSH,
-  запускает `uninstall.sh`, проверяет, что от DuoWave ничего не осталось, и перезагружает её; ключ SSH колонки
-  остаётся, и «Подключить колонку» находит её снова. В облике «Минимальный» красная кнопка под курсором больше не
-  становится белой без надписи.
-- **Меню пульта: пять кнопок, у каждого места один дом.** В доке всегда «Главная · Персонаж · Сказать · Приложения ·
-  Настройки» — микрофон посередине, подписи целиком, на телефоне ничего не уезжает за край, слой разработчика кнопок
-  не добавляет. MagicPlace — вкладка «Приложений» с розовым знаком; число его обновлений — на кнопке «Приложения».
-  «Мастерская» — кнопка «Сделать своё» там же. «Папки» — обычное приложение. Прежние адреса работают.
-- **«Приложения» вкладками.** «Мои» — установленные плитками (значок, имя, одна строка состояния), без персонажей и
-  тем: они в «Персонаже» и в «Оформлении». На странице приложения — «Открыть», «Обновить» и «Ярлык на столе».
-  «Подключения» — внешние сервисы и программы (MCP); модель, слух и голос — у себя, в «Мозге», «Слухе» и «Голосе».
-- **Память — в «Персонаже»**: что персонаж помнит о доме, люди и вещи, пауза. «Свой голос» — внутри «Голоса».
-- **Настройки группами**: «Устройство», «Доступ и вид», «Система»; на широком экране — без обрезанных подписей.
-  «Для разработчиков» — переключатель слоя и скрытые возможности, без списка ярлыков.
-- **Ярлыки на столе.** MagicPlace и «Папки» в одно нажатие; ещё — «+ Ярлык», «Ярлык на столе» на странице приложения
-  или голосом: «добавь ярлык календаря», «убери ярлык радио». Виджет MagicPlace (обновления, новое) сам на стол
-  больше не встаёт: кому он нужен — «+ Новый виджет» → MagicPlace.
-- **Пульт помнит человека, а не браузер.** Ярлыки, папка, открытая в «Папках», и слой разработчика хранятся на
-  шлюзе (новый `/api/v1/panel/state`, таблица `state`, миграции нет): на телефоне — как на компьютере. Тема и язык
-  остаются у устройства.
-- **Обновление с 0.12.0.** Первый запуск добавляет в базу три таблицы счёта расхода моделей (миграция 13) и таблицу
-  настроек приложений `app_settings` (миграция 14); прежние данные не меняются. До этого шлюз кладёт копию базы в
+- **Internet access.** The gateway decides what from DuoWave goes online directly and what goes through your own
+  server from the "VPN" app (MagicPlace). Settings → "Internet access": three buttons:
+  "Off", "Where blocked" (the default: through the server only what does not work from the home country, by the
+  catalog's data) and "Everything via server" (Alice too); a default server; a summary line; below, fine settings for
+  each one who goes online: Alice, the "Brain" models, cloud hearing and voice, MCP tools, apps, your own addresses.
+  The table builds itself: install an app and its row appears. If the server does not answer, models, hearing and
+  voice do not go directly (a key from a country a service does not serve puts the account at risk): they say "VPN
+  does not answer" at once; Alice goes directly. Without the "VPN" app and without a "yes" to "VPN → Gateway network"
+  everything works as before. Programs of apps get `HTTPS_PROXY` pointing at the gateway's entry.
+- **Shared app settings.** Any gateway setting can now have its own value for a single app (the `app_settings` table,
+  migration 14); this is how "Internet access" keeps the rule of each row. The rules survive removing the app (install
+  it again and the rule comes back) and leave together with its history. They move with a settings package, except
+  what the home learned about its own network. Before the migration the gateway puts a copy of the database into
   `backups/`.
-- **Счёт расхода моделей.** Каждый ответ модели записывается сделкой: место, модель, почему она выбрана, токены и
-  доллары по цене дня. Цены — вписанные руками, из списка моделей провайдера или из вшитого снимка models.dev.
-  Выбор модели не менялся.
-- **«Расход» в «Мозге»** (Персонаж → Мозг → «Расход»). За сегодня, неделю или месяц: доллары и токены рядом, по
-  дням, местам и моделям, сколько ушло дома (бесплатно) и по подписке (как стоило бы по ключу); ниже — сделки с
-  причиной, можно оставить одно место. Нажатие на модель — её цена: вписать свою или вернуть цену из снимка (новый
-  `GET /api/v1/router/prices/{провайдер}/{модель}`). В журнале запросов у запроса — место, модель и доллары.
-  Доллары — оценка, не счёт. Только администратору.
-- **Долгие дела в фоне.** Инструменты MCP с пометкой «В фоне» (роботы Apify) не держат разговор: вызов становится
-  фоновым делом; платный сначала спрашивает «Запускать?», работают «как там?» и «отмени», а «Готово» приходит с
-  коротким пересказом и «Рассказать подробнее?»; результат — кнопкой на полосе пульта. Долгая задача приложения,
-  начатая в разговоре, сообщает о себе так же. У простых JS-приложений появился `host.tasks`.
-- **Страница «Работы».** Что идёт, что ждёт и почему, что спрашивает — с кнопками ответа, и недавние; внутри работы —
-  её ход, сделки и где она. Виджет «Работы» на столе ведёт туда же. Только администратору.
-- **AirPlay на колонке** — приложение основного каталога MagicPlace, ставится только на колонку: iPhone видит её как
-  приёмник AirPlay с именем колонки в DuoWave. Заиграл телефон — Алиса встаёт на паузу; «Алиса, пауза / стоп /
-  продолжай / дальше / назад» управляют телефоном, пока играет AirPlay; попросили Алису включить музыку — телефон
-  встаёт на паузу. DuoWave один раз спросит «AirPlay → Плеер колонки». Ставится только из MagicPlace, сам — никогда;
-  поставили — на столе сам появляется его ярлык (один раз, убранный не возвращается).
-- **«На колонке» вместо «на компьютере».** Приложение, которое работает только на колонке (AirPlay), так и подписано
-  в MagicPlace и «Приложениях», а в фильтре «Где работает» у MagicPlace — новое «На колонке». Строки «Собирает
-  компьютер» у него нет.
-- **Приложения, которые работают всё время** (`"resident": true` в манифесте): запускаются при включении и при старте
-  шлюза, не выгружаются за простой. Для приёмников, которые телефон находит сам.
-- **Новое на шине — «Плеер колонки»** (`system/player`): приложение говорит `playing` (играю / пауза / перестал) и
-  слышит команды плеера новостью `control`.
-- **Надзор приложений**: программа на Go стартует под пределом памяти (`RLIMIT_AS` не ниже 4 ГБ, `GOMEMLIMIT` —
-  бюджет); остановка — сначала SIGTERM и 3 с на выход; на колонке программа знает имя колонки
+- **Home country.** The panel asks once where home is, guessing by the computer's time zone and language; it never
+  looks at the address. "I won't say" is an answer too. To change it: Settings → "Appearance", next to the language.
+  The country is kept only on the gateway (`GET|PUT /api/v1/home/country`); apps learn it from the `system/home` →
+  `country` letter. "Internet access" will decide by it.
+- **Two ways back from the speaker.** `restore.sh` still only gives the voice back to Yandex: DuoWave stays on the
+  speaker, and the panel connects it again; now it says so plainly. The new `uninstall.sh` removes DuoWave completely:
+  the voice goes back to Yandex, the speaker's gateway and call client stop, their scripts leave `/etc/init.d`, the
+  `/data/opt/duowave` folder is deleted, and the speaker restarts (`--keep-data` keeps the gateway's data on the
+  speaker). It goes onto the speaker together with `restore.sh`; speakers connected earlier get it from the gateway at
+  `/station/uninstall.sh`. The YAM package has
+  `duowave uninstall`.
+- **The "Remove DuoWave from the speaker" button** in the speaker's window, under "Return to Yandex". The gateway goes
+  into the speaker over SSH, runs `uninstall.sh`, checks that nothing of DuoWave is left and restarts it. The speaker's
+  SSH key stays, so "Connect a speaker" finds it again. In the "Minimal" look, the red button under the cursor no
+  longer turns white without its caption.
+- **The panel menu: five buttons, one home for each place.** The dock is always "Home · Character · Say · Apps ·
+  Settings": the microphone in the middle, full captions, nothing slides off the edge on a phone, and the developer
+  layer adds no buttons. MagicPlace is a tab of "Apps" with a pink mark; its update count is on the "Apps" button.
+  "Workshop" is the "Make your own" button there. "Folders" is an ordinary app. Old addresses still work.
+- **"Apps" in tabs.** "My apps" shows installed apps as tiles (icon, name, one status line), without characters and
+  themes: those are in "Character" and "Appearance". An app's page has "Open", "Update" and "Shortcut on the desk".
+  "Connections" holds outside services and programs (MCP); the model, hearing and voice have their own places in
+  "Brain", "Hearing" and "Voice".
+- **Memory is in "Character"**: what the character remembers about the home, people and things, pause. "Own voice" is
+  inside "Voice".
+- **Settings in groups**: "Device", "Access and look" and "System"; on a wide screen, no cut captions.
+  "For developers" has the layer switch and the hidden options, without a list of shortcuts.
+- **Shortcuts on the desk.** MagicPlace and "Folders" in one tap; more with "+ Shortcut", "Shortcut on the desk" on an
+  app's page, or by voice: "add the calendar shortcut", "remove the radio shortcut". The MagicPlace widget (updates,
+  new) no longer puts itself on the desk; whoever wants it: "+ New widget" → MagicPlace.
+- **The panel remembers the person, not the browser.** Shortcuts, the folder open in "Folders" and the developer layer
+  are kept on the gateway (the new `/api/v1/panel/state`, the `state` table, no migration): a phone shows the same as
+  a computer. Theme and language stay with the device.
+- **Updating from 0.12.0.** The first start adds three tables for counting model spending (migration 13) and the
+  `app_settings` table for app settings (migration 14) to the database; existing data does not change. Before that the
+  gateway puts a copy of the database into `backups/`.
+- **Counting model spending.** Every model answer is written down as a deal: the seat, the model, why it was chosen,
+  tokens and dollars at the day's price. Prices come from your own entry, the provider's list of models or the
+  built-in models.dev snapshot. How the model is chosen did not change.
+- **"Spending" in "Brain"** (Character → Brain → "Spending"). For today, the week or the month: dollars and tokens side
+  by side, by day, seat and model, how much went at home (free) and by subscription (what it would cost by key);
+  below, the deals with their reason, and you can keep just one seat. Tap a model to see its price: enter your own or
+  bring back the snapshot's price (the new `GET /api/v1/router/prices/{provider}/{model}`). In the request journal, a
+  request shows its seat, model and dollars. Dollars are an estimate, not a bill. Administrators only.
+- **Long tasks in the background.** MCP tools marked "In the background" (Apify robots) no longer hold the
+  conversation: the call becomes a background task. A paid one first asks "Run it?"; "how is it going?" and "cancel"
+  work, and "Done" comes with a short retelling and "Tell you more?"; the result is a button on the panel's strip. A
+  long app task started in a conversation reports itself the same way. Simple JS apps get `host.tasks`.
+- **The "Works" page.** What is running, what waits and why, what asks a question (with answer buttons), and what
+  finished lately; inside a work, its steps, deals and where it runs. The "Works" widget on the desk leads there too.
+  Administrators only.
+- **AirPlay on the speaker** is an app of the main MagicPlace catalog and installs only on the speaker: an iPhone sees
+  it as an AirPlay receiver with the speaker's DuoWave name. When the phone plays, Alice pauses; "Alice, pause / stop
+  / resume / next / previous" control the phone while AirPlay plays; ask Alice to play music and the phone pauses.
+  DuoWave asks once for "AirPlay → Speaker player". It installs only from MagicPlace, never by itself; once installed,
+  its shortcut appears on the desk by itself (once; a removed one does not come back).
+- **"On the speaker" instead of "on the computer".** An app that works only on the speaker (AirPlay) is labelled so in
+  MagicPlace and "Apps", and the MagicPlace "Where it runs" filter has a new "On the speaker". It has no "Built by the
+  computer" line.
+- **Apps that run all the time** (`"resident": true` in the manifest): they start at power-on and when the gateway
+  starts, and are not unloaded when idle. For receivers a phone finds by itself.
+- **New on the bus: "Speaker player"** (`system/player`): an app says `playing` (playing / paused / stopped) and hears
+  player commands as the `control` news.
+- **App supervision**: a Go program starts under a memory limit (`RLIMIT_AS` at least 4 GB, `GOMEMLIMIT` is the
+  budget); a stop sends SIGTERM first and gives 3 s to exit; on the speaker the program knows the speaker's name
   (`DUOWAVE_STATION_NAME`).
 
 ## 0.12.0 — 15.11.2026
 
-- **Обновление с 0.11.1.** Миграций нет, база не меняется. Кто обновляется с 0.11.0 или раньше — сначала «Обновление с
-  0.11.0» в 0.11.1 ниже.
-- **MCP: готовые «Поиск Exa» и «Apify».** Поиск в интернете и чтение страниц: у Exa — по ключу Exa, у Apify — по его
-  токену; роботов из магазина Apify можно включить (их запуск платный).
-- **Скрытые возможности для разработчиков.** Восемь нажатий подряд на «Для разработчиков» в «Настройках» (строку
-  списка или заголовок страницы) открывают раздел «Скрытые возможности»; с четвёртого с конца пульт говорит, сколько
-  ещё. Первая возможность — «Показывать скрытые пакеты»: пакеты, которые ленты держат скрытыми (новое поле ленты
-  `unlisted`), видны в MagicPlace с меткой «скрытый», в каталоге персонажей и голосом — из главного каталога, магазинов
-  и своих источников. Меняет администратор; раздел прячется кнопкой. Поставленный скрытый пакет остаётся на виду.
-- **«Лента» и «Мистер Фримен (демо)» скрыты** из MagicPlace и каталога: их видно с «Показывать скрытые пакеты».
-  «Лента» больше не в «Рекомендуем». Шлюзы до этого выпуска поле пропускают и показывают их как раньше.
-- **Выход из приложения выключает и «Мой голос».** Сервер своего голоса (OmniVoice и другие) больше не остаётся
-  работать и держать память после «Выход», Cmd+Q или выхода из системы. Перезапуск шлюза и обновление приложения его,
-  как и раньше, не трогают; следующий запуск приложения поднимает его снова.
+- **Updating from 0.11.1.** No migrations; the database does not change. If you update from 0.11.0 or older, first
+  read "Updating from 0.11.0" in 0.11.1 below.
+- **MCP: ready-made "Exa search" and "Apify".** Web search and page reading: Exa by an Exa key, Apify by its token;
+  robots from the Apify store can be switched on (a run of one is paid).
+- **Hidden options for developers.** Eight taps in a row on "For developers" in Settings (the list row or the page's
+  title) open the "Hidden options" section; from the fourth tap before the end the panel says how many are left. The
+  first option is "Show hidden packages": packages that feeds keep hidden (the new feed field `unlisted`) show in
+  MagicPlace with a "hidden" mark, in the characters catalog and by voice, from the main catalog, stores and your own
+  sources. An administrator changes it; a button hides the section. An installed hidden package stays in sight.
+- **Feed and "Mr. Freeman (demo)" are hidden** from MagicPlace and the catalog: "Show hidden packages" shows them.
+  Feed is no longer under "Recommended". Gateways before this release skip the field and show them as before.
+- **Quitting the app turns off "My voice" too.** The server of your own voice (OmniVoice and others) no longer keeps
+  running and holding memory after "Quit", Cmd+Q or logging out. A gateway restart and an app update still leave it
+  alone, as before; the next start of the app brings it up again.
 
 ## 0.11.1 — 15.11.2026
 
-- **Обновление с 0.11.0.** Миграций нет, база не меняется. Кто обновляется с 0.10.0 или раньше — сначала «Обновление с
-  0.10.0» в 0.11.0 ниже.
-- **Поставить — значит включить.** «Установить» в MagicPlace, первый запуск и «поставь …» голосом ставят приложение
-  и сразу включают: его виджет, окно и фразы работают без отдельного «Включить». Не запустилось — остаётся
-  поставленным, и сказано почему.
-  У поставленного, но выключенного в MagicPlace вместо «Открыть» — «Включить»; в «Приложениях» у выключенного
-  «Включить» стоит первым, над настройками.
-- **Каталог обновился, пока копия была свежей.** Архива, который называет копия каталога, на сайте нет (404) —
-  шлюз сразу перечитывает каталог и ставит то, что он называет теперь; не вышло и так — говорит это словами.
-- **«Можно не заполнять».** Настройка приложения с `"optional": true` помечена в форме, и такой ключ шлюз не ждёт
-  (карточка не пишет «ждёт ключ»).
-- **«Рекомендуем» для пакета ленты, адрес которой не раскрывается.** Каталог может рекомендовать пакет своего источника
-  по одному хешу архива, не называя адрес ленты (строка `recommends` без `feed`): где такой источник добавлен, пакет —
-  в «Рекомендуем» и считается проверенным, пока архив тот же.
+- **Updating from 0.11.0.** No migrations; the database does not change. If you update from 0.10.0 or older, first
+  read "Updating from 0.10.0" in 0.11.0 below.
+- **Installing means turning on.** "Install" in MagicPlace, the first start and "install …" by voice install an app
+  and turn it on at once: its widget, window and phrases work without a separate "Turn on". If it does not start, it
+  stays installed, and you are told why.
+  An app that is installed but turned off shows "Turn on" instead of "Open" in MagicPlace; in "Apps", "Turn on" comes
+  first for a turned-off app, above the settings.
+- **The catalog changed while the copy was fresh.** If the archive the catalog copy names is not on the site (404),
+  the gateway reads the catalog again at once and installs what it names now; if that fails too, it says so in words.
+- **"May stay empty".** An app setting with `"optional": true` is marked in the form, and the gateway does not wait
+  for such a key (the card does not say "waits for a key").
+- **"Recommended" for a package of a feed whose address stays private.** The catalog can recommend a package of your
+  own source by the hash of its archive alone, without naming the feed's address (a `recommends` line without `feed`):
+  where that source is added, the package is under "Recommended" and counts as checked, as long as the archive is the
+  same.
 
 ## 0.11.0 — 15.11.2026
 
-- **Обновление с 0.10.0.** Миграций нет, база не меняется. С колонкой строка «Делаю: …» теперь кончается вопросом «Что-то
-  ещё добавить?», и колонка после неё слушает ответ. Кто обновляется с 0.9.0 или раньше — сначала
-  «Обновление с 0.9.0» в 0.10.0 ниже.
-- **Можно договорить** (режим «Микрофон»). Фраза, оборванная на «и…», «чтобы…», «который…», ждёт продолжения 3,5 с;
-  после «подожди» — до 20 с, само «подожди» в просьбу не идёт; «да», «стоп» срабатывают сразу. Длинное желание до
-  минуты не обрывается: пульт распознаёт его кусками и склеивает. Недосказанное после тишины не уходит обрывком:
-  «Жду.» — и две минуты следующая «Сказать» его продолжает. Слова — по языку дома, в файлах
-  `gateway/locales/talk/<язык>.json`: русский и английский, другие добавляются файлом.
-- **Можно добавить без кнопки.** После «Делаю…», «Добавлю…» и после вопроса микрофон сам слушает 6 с: «и ещё…», ответ,
-  «хватит». Остальное, сказанное без «Сказать» (разговор в комнате, новая просьба), никуда не уходит и не пишется в
-  журнал — на полосе подсказка. Раньше любая такая фраза шла «Мозгу».
-- **Вопрос не теряется.** Не ответили на «На стол или примерить?» — ничего не делается, вещь ждёт в «Ждёт вас» рядом
-  со «Сказать», а после следующего разговора компьютер один раз спросит ещё раз.
-- **Два звука микрофона**: «слушаю» и «услышала». Выключатель — «Настройки» → «Микрофон».
-- **«Делаю: … Что-то ещё добавить?»** — после этого вопроса микрофон слушает сам; «нет» закрывает его молча.
-- **Выбор микрофона и звука**: «Настройки» → «Микрофон» — откуда слушать и куда говорить; по умолчанию —
-  автоматически, как в системе.
-- **«Готово» не перебивает**: ждёт, пока пульт договорит ответ или дослушает фразу.
+- **Updating from 0.10.0.** No migrations; the database does not change. With a speaker, the "On it: …" line now
+  ends with the question "Anything else to add?", and the speaker listens for the answer after it. If you update from
+  0.9.0 or older, first read "Updating from 0.9.0" in 0.10.0 below.
+- **You can finish your thought** ("Microphone" mode). A phrase cut off on "and…", "so that…", "which…" waits 3.5 s
+  for the rest; after "wait", up to 20 s, and the word "wait" itself does not go into the request; "yes" and "stop"
+  work at once. A long wish of up to a minute is not cut off: the panel recognizes it in pieces and joins them. An
+  unfinished thought does not leave as a scrap after silence: the panel says "Waiting.", and for two minutes the next
+  "Say" continues it. The words follow the home's language, in the `gateway/locales/talk/<language>.json` files:
+  Russian and English; other languages are added as a file.
+- **You can add without the button.** After "On it…", "I'll add…" and after a question, the microphone listens by
+  itself for 6 s: "and also…", an answer, "enough". Anything else said without "Say" (talk in the room, a new request)
+  goes nowhere and is not written to the journal; the strip shows a hint. Before, any such phrase went to "Brain".
+- **A question is not lost.** If you did not answer "To the desk or try it on?", nothing is done: the thing waits in
+  "Waiting for you" next to "Say", and after the next conversation the computer asks once more.
+- **Two microphone sounds**: "listening" and "heard". The switch is in Settings → "Microphone".
+- **"On it: … Anything else to add?"** After this question the microphone listens by itself; "no" closes it silently.
+- **Choosing the microphone and the sound output**: Settings → "Microphone": where to listen from and where to speak
+  to; by default, automatic, as in the system.
+- **"Done" does not interrupt**: it waits until the panel finishes saying an answer or hearing a phrase.
 
 ## 0.10.0 — 15.11.2026
 
-- **Обновление с 0.9.0.** Миграций нет, база не меняется. Вкладки «Каталог» у «Приложений» больше нет: каталог теперь
-  в MagicPlace, старые адреса ведут туда. Кто обновляется с 0.8.x — сначала «Обновление с 0.8.1» в 0.9.0 ниже.
-- **MagicPlace — магазин приложений.** Свой значок в доке (с числом обновлений) и маленький виджет на столе, своё окно:
-  поиск по названию и описанию на всех языках приложения, витрина «Обновления», «Рекомендуем», «Новое», фильтры по
-  виду, лицу приложения (виджет, навык, окно), месту работы и состоянию; «Установить», «Обновить» и «Открыть» — прямо
-  там. Свои источники и «Не загружать каталог» — в его настройках. «Приложения» → «Каталог», «Каталог» у персонажей и
-  «Новый виджет» ведут сюда. Первый запуск предлагает рекомендованные приложения одним нажатием и называет, сколько
-  они скачают.
-- **MagicPlace голосом.** «Открой магазин» — или любое привычное название магазина на телефоне — открывает MagicPlace в
-  пульте; «поставь Ленту», «поставь персонажа Артур» — вопрос и «да»; «что обновилось» и «обнови всё»; «что нового в
-  магазине». С колонкой и с микрофоном компьютера, по-русски и по-английски. Выключатель «На стол голосом» стал
-  «Ставить голосом» и решает и это.
-- **«Рекомендуем» для пакета из чужой ленты.** Наш каталог может рекомендовать пакет своего источника или ленты
-  партнёра — по хешу архива, который мы посмотрели (поле главной ленты `recommends`): там, где этот источник добавлен,
-  пакет встаёт в «Рекомендуем» и считается проверенным, пока архив тот же.
-- Превью каталога обновляются сразу с новой версией пакета: пульт больше не показывает до часа старую картинку и фразы.
+- **Updating from 0.9.0.** No migrations; the database does not change. The "Catalog" tab under "Apps" is gone: the
+  catalog now lives in MagicPlace, and the old addresses lead there. If you update from 0.8.x, first read "Updating
+  from 0.8.1" in 0.9.0 below.
+- **MagicPlace, the app store.** Its own icon in the dock (with the number of updates), a small widget on the desk and
+  its own window: search by name and description in every language of an app; the "Updates", "Recommended" and "New"
+  shelves; filters by kind, by the face of an app (widget, skill, window), by where it runs and by its state;
+  "Install", "Update" and "Open" right there. Your own sources and "Do not load the catalog" are in its settings.
+  "Apps" → "Catalog", the characters' "Catalog" and "New widget" lead here. The first start offers the recommended
+  apps in one tap and says how much they will download.
+- **MagicPlace by voice.** "Open the store", or any store name you know from a phone, opens MagicPlace in the panel;
+  "install Feed", "install the character Arthur" get a question and a "yes"; "what was updated" and "update
+  everything"; "what's new in the store". With the speaker and with the computer's microphone, in Russian and in
+  English. The "To the desk by voice" switch became "Install by voice" and decides this too.
+- **"Recommended" for a package from another feed.** Our catalog can recommend a package of your own source or of a
+  partner's feed by the hash of the archive we looked at (the main feed's `recommends` field): where that source is
+  added, the package goes under "Recommended" and counts as checked, as long as the archive is the same.
+- Catalog previews update at once with a new package version: the panel no longer shows the old picture and phrases
+  for up to an hour.
 
 ## 0.9.0 — 15.11.2026
 
-- **Обновление с 0.8.1.** Первый запуск добавляет в базу таблицу работ разговора и два поля журнала запросов (миграция
-  12); до этого шлюз кладёт копию базы в `backups/`. Приложения на Node («Лента») при первой установке скачивают свой
-  Node шлюза, около 50 МБ, один раз. «Да» голосом теперь ставит готовую вещь на стол; не нужно — выключатель
-  `talk.desk_by_voice`. Кто обновляется с 0.8.0 — сначала «Обновление с 0.8» ниже: папки дома стали английскими.
-- **Создание своими словами.** «Я учу испанский, дай мне виджет со словами дня» — «Мозг» сам зовёт мастерскую и
-  передаёт всё желание; шаблон «сделай виджет…» не нужен (но работает и без модели). Модель больше не диктует фразу,
-  которую надо повторить; вместо «пока так не умею» — предложить сделать. Ответы — на языке собеседника.
-- **«Мозг» знает, что делается.** В каждый запрос идёт короткий блок «Сейчас»: что в работе, что ждёт ответа, что
-  недавно, что на столе. Его видно в «Мозг» → «Что сейчас знает Мозг».
-- **Вдогонку вместо отмены.** «И ещё кнопку…» во время сборки — заметка той же работе: агент читает её между шагами,
-  на плитке — галочка. Новая просьба к тому же черновику больше не отменяет идущую работу.
-- **Правка готовой вещи** — её новая версия, а не второй черновик; вещь, что уже на столе, без новых прав обновляется
-  сразу, «верни как было» в 15 минут откатывает.
-- **Честное «Готово».** Шлюз сам проверяет черновик: «…: готово. На стол или примерить?» или «не доделано.
-  Продолжить?». Строка короткая, слова агента — по «подробнее» и на плитке. Оборванное «Готово» прозвучит ещё раз после
-  следующего разговора.
-- **«Да» голосом ставит на стол** (выключатель `talk.desk_by_voice`): права и хосты названы в вопросе; опасные права
-  одобряют только в пульте; без ключа приложение встаёт с пометкой «ждёт ключ» и открывает окно с полями.
-- **Без модели:** «как там виджет?», «и ещё…», «примерить», «на стол», «подробнее», «отмени виджет», дверь
-  «мастерская» — каждая фраза заявка или дополнение, пока не скажут «выйти из мастерской».
-- **Пульт:** неузнанная фраза уходит в разговор и в режиме «Колонка» (ответ — текстом на полосе); в режиме «Микрофон»
-  «Готово» своей работы пульт говорит голосом и слушает ответ. В «Журнале» — чем открыта фраза, время до первого
-  слова и токены модели.
-- **Быстрее и дешевле:** речевой ответ не длиннее 600 токенов, агент мастерской кэширует историю (Claude), готовые
-  фразы своим голосом лежат запасом — «Делаю.» звучит сразу. Разговор помнится, пока идёт работа, и ещё 30 минут.
-- **Дело — только делом.** Фразу о вещах — «сделай в испанском слова покрупнее», «и ещё кнопку», «выйди из режима
-  мастерской» — сначала читает модель в действие, а делает и говорит его шлюз. «Мозг» больше не может сказать «Готово»
-  или «Делаю» без дела: итоги и отказы — фразы шлюза, а в истории разговора — состояние работы, не наша фраза.
-- **Мастерская не делает вещи из обрывков:** «Ос», «делаешь?» — «Не разобрать. Что сделать?»; выход из мастерской
-  понимается любыми словами. Название вещи — по смыслу («Курс доллара»), после сборки — из манифеста.
-- **«Поправить … или новую?» спрашивает шлюз** и сам понимает ответ: «новую», «поправь», «да», «нет». Так же —
-  «Сделать свою копию?» для встроенного приложения.
-- **«Готово» — только если агент что-то поменял:** иначе «…: ничего не поменялось. Что сделать?», и на плитке так же.
-  «На стол», пока вещь делается, ставит её на стол, когда она будет готова.
-- **Лимит — очередь, а не отказ:** «Сейчас делается другое — начну следом: погода», «Начну через минуту: курс
-  доллара» — работа начнётся сама; «как там…» о ней — «в очереди».
-- **Видно правку:** «Поправляю «Часы»: версия 2. Скажу, когда будет готово.»; на плитке вещи со стола — «Правка: …».
-  «Можно добавлять детали по ходу: просто скажите, что ещё улучшить или добавить» — в первый раз за день.
-- **Слова приложений — их собственные.** «Останови музыку», «поставь радио», «покажи новости» снова идут к самим
-  приложениям: слой берёт себе только вещи, сделанные голосом и сейчас «в деле» — делается, ждёт ответа, о ней
-  говорили последние полчаса.
-- **Удалённая вещь удалена и для разговора.** Сняли приложение со стола — его работа «в черновиках»; удалили и
-  черновик — «убрано»: «Мозг» это знает, по имени её больше не найти, а «как там…» о ней — «…больше нет — его убрали.
-  Сделать заново?». Всё по ID вещи; что удалили, пока шлюз был выключен, он сверит при запуске. Приложения на столе
-  «Мозг» видит с их ID. Из двух вещей с одним именем речь о той, что делается, или о той, о которой говорили
-  последней; «Какую: … или …?» понимает «первая», «вторая», «последняя».
-- **Приложение на главном экране — сразу под колонкой.** Виджет приложения может стоять прямо под колонкой (или под
-  ДиВи), во всю её ширину, пока вы его не передвинете; на телефоне — первым после колонки, а без колонки — под первыми
-  шагами. Так стоит «Лента». Всё, что приложению нужно разрешить (модель, голос, сообщения, память), оно спрашивает
-  одним листом «Разрешить всё», а не по одному письму. Приложение может писать своей моделью — любой из подключённых
-  в «Мозге», не только «Быстрой» или «Умной», — и сохранять свои настройки (ключ сервиса) прямо из своего окна.
-  Авторам — `under`, `rights()`, `askRights()`, `saveSettings()` и письмо `system/brain` → `models` в
+- **Updating from 0.8.1.** The first start adds a table of conversation works and two fields of the request journal to
+  the database (migration 12); before that the gateway puts a copy of the database into `backups/`. Node apps (Feed)
+  download the gateway's own Node on the first install, about 50 MB, once. A spoken "yes" now puts a finished thing on
+  the desk; if you don't want that, use the `talk.desk_by_voice` switch. If you update from 0.8.0, first read "Updating
+  from 0.8" below: the home folders got English names.
+- **Making things in your own words.** "I'm learning Spanish, give me a widget with words of the day": "Brain" calls
+  the workshop itself and passes on the whole wish; the "make a widget…" template is not needed (but it still works
+  without a model). The model no longer dictates a phrase you have to repeat; instead of "I can't do that yet" it
+  offers to make it. Answers come in the language of the person talking.
+- **"Brain" knows what is being made.** Every request carries a short "Now" block: what is in the works, what waits
+  for an answer, what was done lately, what is on the desk. You can see it in "Brain" → "What Brain knows now".
+- **Add-ons instead of cancelling.** "And a button too…" during a build is a note to the same work: the agent reads it
+  between steps, and the tile shows a check mark. A new request about the same draft no longer cancels the running
+  work.
+- **Editing a finished thing** makes its new version, not a second draft. A thing already on the desk updates at once
+  if it needs no new rights; "put it back as it was" within 15 minutes rolls it back.
+- **An honest "Done".** The gateway checks the draft itself: "…: done. To the desk or try it on?" or "not finished.
+  Go on?". The line is short; the agent's words come with "tell me more" and on the tile. A "Done" that was cut off
+  plays once more after the next conversation.
+- **A spoken "yes" puts it on the desk** (the `talk.desk_by_voice` switch): the rights and hosts are named in the
+  question; dangerous rights are approved only in the panel; without a key, the app goes on the desk marked "waits for
+  a key" and opens a window with the fields.
+- **Without a model:** "how is the widget?", "and also…", "try it on", "to the desk", "tell me more", "cancel the
+  widget", and the "workshop" door, where every phrase is a request or an addition until you say "leave the workshop".
+- **Panel:** an unrecognized phrase goes into the conversation in "Speaker" mode too (the answer is text on the strip);
+  in "Microphone" mode the panel says the "Done" of its own work aloud and listens for the answer. The "Journal" shows
+  what opened a phrase, the time to the first word and the model's tokens.
+- **Faster and cheaper:** a spoken answer is at most 600 tokens, the workshop agent caches its history (Claude), and
+  ready phrases in your own voice are stored in advance, so "On it." sounds at once. The conversation is remembered
+  while the work runs and for 30 minutes more.
+- **Things are done only by deeds.** A phrase about things ("make the words bigger in Spanish", "and a button too",
+  "leave workshop mode") is first read by the model into an action, and the gateway does it and says it. "Brain" can
+  no longer say "Done" or "On it" without a deed: results and refusals are the gateway's phrases, and the conversation
+  history holds the state of the work, not our phrase.
+- **The workshop does not make things from scraps:** for "Wo", "making it?" it says "Couldn't make that out. What
+  should I make?"; leaving the workshop is understood in any words. A thing's name follows its meaning ("Dollar
+  rate"); after the build it comes from the manifest.
+- **The gateway asks "Fix … or a new one?"** and understands the answer itself: "a new one", "fix it", "yes", "no".
+  The same for "Make your own copy?" for a built-in app.
+- **"Done" only if the agent changed something:** otherwise "…: nothing changed. What should I do?", and the same on
+  the tile. "To the desk" while a thing is being made puts it on the desk when it is ready.
+- **A limit is a queue, not a refusal:** "Something else is being made, I'll start right after: weather", "I'll start
+  in a minute: dollar rate"; the work starts by itself, and "how is…" about it gets "in the queue".
+- **An edit shows:** "Fixing "Clock": version 2. I'll tell you when it's ready."; the tile of a thing from the desk
+  says "Edit: …". "You can add details as it goes: just say what else to improve or add" comes the first time in a
+  day.
+- **Apps keep their own words.** "Stop the music", "play the radio", "show the news" go to the apps themselves again:
+  the layer takes for itself only things made by voice and "in the works" right now: being made, waiting for an
+  answer, or talked about in the last half hour.
+- **A removed thing is removed for the conversation too.** Take an app off the desk and its work is "in drafts";
+  delete the draft too and it is "removed": "Brain" knows it, it can no longer be found by name, and "how is…" about
+  it gets "…is gone, it was removed. Make it again?". Everything goes by the thing's ID; what was deleted while the
+  gateway was off it checks at start. "Brain" sees the apps on the desk with their IDs. Of two things with one name,
+  the talk is about the one being made or the one talked about last; "Which one: … or …?" understands "the first",
+  "the second", "the last".
+- **An app on the home screen right under the speaker.** An app's widget can stand right under the speaker (or under
+  Deevi), across its full width, until you move it; on a phone it comes first after the speaker, and without a speaker
+  under the first steps. Feed stands like this. Everything an app needs to be allowed (model, voice, messages, memory)
+  it asks for in one "Allow all" sheet, not letter by letter. An app can write with its own model, any of those
+  connected in "Brain", not only "Fast" or "Smart", and save its settings (a service key) right from its window.
+  For authors: `under`, `rights()`, `askRights()`, `saveSettings()` and the `system/brain` → `models` letter in
   `docs/plugins/AUTHORING.md`.
-- **Приложения на Node.** Приложение может быть скриптом на Node (`"runtime": "node"`), а не сборкой под каждую
-  систему. Шлюз держит свой Node — одну закреплённую версию Node 24, скачивает её при первом запуске такого
-  приложения (около 50 МБ, один раз) и сверяет по SHA-256; Node, который уже стоит на компьютере, не трогает.
-  Зависимости приложения шлюз ставит по его `package-lock.json` без сценариев установки. Только на компьютере; такие
-  приложения ставятся из подписанного каталога или из терминала, не из мастерской. Авторам — «Приложение на Node» в
-  `docs/plugins/AUTHORING.md`, пример — `docs/plugins/apps/hello-node/`.
-- **Видео и звук в окне приложения.** Окно приложения играет ролики и звук из папки приложения с перемоткой — серия
-  на 70 МБ не грузится в память целиком (`useMedia` в SDK окна). Программа приложения знает свою папку
-  (`DUOWAVE_APP_FILES`); окно получает адрес движка показа — ключ на один файл, на шесть часов (ниже, «Один движок
-  показа»).
-- **Модель, голос и слух для приложений.** Приложение может написать текст моделью «Мозга» (`system/brain` →
-  `write`, «Быстрая» или «Умная», ответ текстом или JSON), запустить агента с файлами своей папки и своими
-  инструментами (`agent`, с потолком шагов и минут), озвучить строку в файл своей папки (`system/voice` → `synth`) и
-  распознать речь в своём файле — текст, язык и время каждого слова (`system/hearing` → `recognize`). Ключи моделей
-  и голосов приложение не видит; в журнале приложения — какая модель писала и сколько токенов, облачная — янтарём.
-  У каждого голоса — лицензия и можно ли публиковать ролик с ним.
-- **Облачные голоса: ElevenLabs по вашему ключу.** «Голос» → «Облачные голоса»: ключ ElevenLabs вставляется в
-  пульте и хранится в сейфе шлюза, «проверить» показывает, сколько голосов и знаков тарифа осталось. Тогда
-  приложения могут говорить и голосами ElevenLabs — с временем каждого слова; кто озвучит строку, шлюз решает по
-  голосу. Текст уходит в ElevenLabs и тратит тариф, поэтому приложение сначала спрашивает ваше «да» — в листе
-  «Разрешить всё» эта строка янтарная. Авторам — «Слой возможностей шлюза» в `docs/plugins/AUTHORING.md`.
-- **Каталог: что делает приложение — до установки.** У приложения с кодом из подписанной ленты — метка «Подписано
-  DuoWave», его права словами («модель «Мозга»: пишет тексты», «сеть: api.example.com») и строка «Собирает
-  компьютер», если его программа работает на компьютере.
-- **Публикация из приложения, не выходя из DuoWave.** Письмо `system/publish`: `telegram` — ролик из папки
-  приложения ботом Telegram шлюза в канал, контакту или чат «Оповещения»; `watch` — страница «смотри и выбирай» на
-  шлюзе (`/watch/<ключ>`): ролик с перемоткой и выбор ①/②, один голос с браузера, голоса возвращаются приложению.
-  Страница ничего не запускает и живёт 30 дней.
-- **Интересы дома — приложению, по «да».** Письмо `system/memory` → `interests` отдаёт приложению только то, что
-  память знает об интересах дома (что любят смотреть и читать), и только когда память включена; первый раз
-  владелец отвечает «да» в пульте. Чтение — строкой в журнале приложения.
-- **Приложение — сервер MCP для своего Claude Code.** `/mcp/apps/<id>` отдаёт инструменты приложения и файлы его
-  папки (ключ администратора): так приложение может работать с подпиской Claude человека через его Claude Code.
-- **«Поделиться» и запись своим голосом — с любого экрана.** Окно приложения или экран пульта («Папки») открывает
-  одно окно «Поделиться»: системное меню телефона, «Сохранить в «Видео»», «Скачать», «Скопировать текст»;
-  отправители шлюза — «В Telegram ботом шлюза», «Ссылка «смотри и выбирай»» — и страницы загрузки ТикТока, Reels,
-  Shorts, Telegram и ВКонтакте. Список — из шлюза, приложение свою ссылку не подсунет. Журнал помнит, что и куда
-  ушло: приложению — в его журнале, человеку — в журнале «Связей» под его именем. Запись своим голосом — окно записи
-  пульта: в папку приложения или в папку дома, куда вы можете класть файлы; окно приложения микрофона не получает.
-- **Приложения на Node говорят на языке дома.** Программа приложения узнаёт язык дома у шлюза
-  (`GET /api/v1/apps/host/locale`), как бэкенд — `host.i18n`.
-- **Один движок показа: фото, видео и звук.** «Папки» открывают фото, видео и звук в просмотрщике пульта: фото во
-  весь экран и листать (стрелки, свайп), видео с перемоткой и во весь экран, звук; у фото и видео в списке — миниатюра
-  и кадр-обложка, у видео и звука — длительность. Тот же движок показывает окна приложений (`useMedia`, и новое
-  `openMedia` — свой файл в просмотрщике пульта: «Лента» так открывает серию во весь экран с той же секунды), картинки
-  карточек, окна экрана компьютера и то, что играет колонка. Адрес файла — короткий, с ключом на один файл и шесть
-  часов, права проверяет шина; тип — по содержимому, ничего, что браузер запустит. Кадр-обложку делает `ffmpeg`
-  компьютера, на Mac без него — Quick Look. В пульте колонки в окне помощника видео и звук теперь перематываются.
-  Авторам — «Фото, видео и звук — один движок показа» в `docs/plugins/AUTHORING.md`.
-
+- **Apps on Node.** An app can be a Node script (`"runtime": "node"`) instead of a build for every system. The gateway
+  keeps its own Node, one pinned version of Node 24: it downloads it the first time such an app runs (about 50 MB,
+  once) and checks it by SHA-256; a Node already on the computer is left alone. The gateway installs the app's
+  dependencies from its `package-lock.json` without install scripts. Computer only; such apps install from the signed
+  catalog or from the terminal, not from the workshop. For authors: "An app on Node" in
+  `docs/plugins/AUTHORING.md`, example: `docs/plugins/apps/hello-node/`.
+- **Video and sound in an app's window.** An app's window plays clips and sound from the app's folder with seeking; a
+  70 MB episode is not loaded into memory whole (`useMedia` in the window SDK). The app's program knows its folder
+  (`DUOWAVE_APP_FILES`); the window gets an address from the viewer engine, with a key for one file and six hours
+  (below, "One viewer engine").
+- **A model, a voice and hearing for apps.** An app can write text with a "Brain" model (`system/brain` → `write`,
+  "Fast" or "Smart", the answer as text or JSON), run an agent with the files of its folder and its own tools
+  (`agent`, with a cap on steps and minutes), voice a line into a file in its folder (`system/voice` → `synth`) and
+  recognize speech in its file: the text, the language and the time of every word (`system/hearing` → `recognize`).
+  The app does not see the keys of models and voices; the app's journal shows which model wrote and how many tokens,
+  with a cloud model in amber. Every voice has a license and says whether a clip with it can be published.
+- **Cloud voices: ElevenLabs with your own key.** "Voice" → "Cloud voices": you paste the ElevenLabs key in the panel
+  and it is kept in the gateway's safe; "check" shows how many voices and plan characters are left. Then apps can
+  speak with ElevenLabs voices too, with the time of every word; the gateway decides by the voice who voices a line.
+  The text goes to ElevenLabs and spends the plan, so the app first asks for your "yes"; in the "Allow all" sheet this
+  row is amber. For authors: "The gateway's capabilities layer" in `docs/plugins/AUTHORING.md`.
+- **The catalog: what an app does, before you install it.** An app with code from a signed feed gets a "Signed by
+  DuoWave" mark, its rights in words ("Brain model: writes texts", "network: api.example.com") and a "Built by the
+  computer" line if its program runs on the computer.
+- **Publishing from an app without leaving DuoWave.** The `system/publish` letter: `telegram` sends a clip from the
+  app's folder with the gateway's Telegram bot to a channel, a contact or the "Notifications" chat; `watch` makes a
+  "watch and choose" page on the gateway (`/watch/<key>`): a clip with seeking and a choice of ①/②, one vote per
+  browser, and the votes go back to the app. The page runs nothing and lives 30 days.
+- **The home's interests for an app, after a "yes".** The `system/memory` → `interests` letter gives an app only what
+  memory knows about the home's interests (what people like to watch and read), and only when memory is on; the first
+  time, the owner answers "yes" in the panel. Each read is a line in the app's journal.
+- **An app as an MCP server for your own Claude Code.** `/mcp/apps/<id>` serves the app's tools and the files of its
+  folder (with the administrator key): this way an app can work with a person's Claude plan through their Claude Code.
+- **"Share" and recording in your own voice, from any screen.** An app's window or a panel screen ("Folders") opens one
+  "Share" window: the phone's system menu, "Save to 'Videos'", "Download", "Copy text"; the gateway's senders, "To
+  Telegram with the gateway's bot" and "A 'watch and choose' link"; and the upload pages of TikTok, Reels, Shorts,
+  Telegram and VK. The list comes from the gateway; an app cannot slip in its own link. The journal remembers what went
+  where: for the app, in its journal; for the person, in the "Links" journal under their name. Recording in your own
+  voice uses the panel's recording window: into the app's folder or into a home folder you can put files in; the app's
+  window never gets the microphone.
+- **Node apps speak the home's language.** An app's program learns the home's language from the gateway
+  (`GET /api/v1/apps/host/locale`), the way a backend uses `host.i18n`.
+- **One viewer engine: photos, video and sound.** "Folders" open photos, video and sound in the panel's viewer: photos
+  full screen with paging (arrows, swipe), video with seeking and full screen, sound; photos and videos in the list
+  have a thumbnail and a cover frame, video and sound a duration. The same engine shows app windows (`useMedia`, and
+  the new `openMedia`, which opens the app's file in the panel's viewer: Feed opens an episode full screen from the
+  same second this way), card pictures, the computer's screen windows and what the speaker plays. A file's address is
+  short, with a key for one file and six hours, and the bus checks the rights; the type is judged by the content, and
+  nothing the browser would run is served. The cover frame is made by the computer's `ffmpeg`, or by Quick Look on a
+  Mac without it. In the speaker's panel, video and sound in the helper window can now be seeked.
+  For authors: "Photos, video and sound: one viewer engine" in `docs/plugins/AUTHORING.md`.
 ## 0.8.1 — 14.11.2026
 
-- **Обновление с 0.8.** Базу шлюз не меняет. Папки дома теперь английские, а русские папки 0.8.0 остаются рядом и
-  не переносятся — что это значит, сказано ниже, в «Папки дома называются по-английски». Строка `ASR_LANGUAGE=ru` в
-  `.env` не даст «Слуху» английский — уберите её. Колонка из YAM обновляется командой `yam install
-  duowave/gateway@0.8.1`.
-- **«Слух» распознаёт на языке дома: русский и английский.** Язык распознавания идёт за языком дома («Настройки» →
-  «Оформление» → «Язык»); раньше подсказка модели всегда была `ru`. GigaAM v3 знает только русский, Parakeet TDT v3 —
-  25 европейских языков, Whisper — 99. Если дом английский, а выбрана GigaAM, слушает уже скачанная модель, которая
-  знает английский; такой нет — «Слух» и готовность «Микрофона» говорят, какая нужна, и скачивают её одной кнопкой
-  (Parakeet — 740 МБ). Сервер распознавания и облако получают язык дома как подсказку. Колонка, распознавание
-  которой идёт через компьютер, тоже слышит язык дома. У русского дома всё как раньше. Строка `ASR_LANGUAGE` в
-  `.env` главнее языка дома: стоит там `ru` (так было в `.env.example`) — английский не включится, уберите её.
-- **Клавиша «Сказать» — на выбор.** В режиме «Микрофон» ⌥Пробел часто занят другой программой. Теперь в «Настройки»
-  → «Микрофон» есть карточка «Клавиша «Сказать»»: «Изменить» — и нажмите своё сочетание (с ⌥, ⌃ или ⌘ — или одну из
-  F1…F24). Сочетание помнит этот компьютер; «Вернуть ⌥Пробел» — назад.
-- **В режиме «Микрофон» виджеты обращаются к ДиВи.** Подсказки приложений написаны для колонки: «Скажите: «Алиса,
-  включи радио»». Без колонки пульт пишет «ДиВи, включи радио» (по-английски — Deevi); песня или папка с именем
-  «Алиса» остаются как есть.
-- **Без колонки шлюз не напоминает о ней.** В режиме «Микрофон» каждые 5 минут приходило «Колонка не подключена к
-  шлюзу… вернуть к Яндексу» — в уведомления Mac, Telegram и на вебхук. Теперь, пока выбран микрофон компьютера,
-  колонку не ждут.
-- **Папки дома называются по-английски.** При первом запуске DuoWave делает в домашней папке `Photos`, `Documents`,
-  `Videos`, `Downloads`, `Pictures`, `Projects`, `Connected` и ссылки `Music` и `Stories` — на любом языке, как
-  принято в системах. В пульте, в вопросах «да/нет» и голосом «Папок» они по-прежнему «Фото», «Документы»,
-  «Подключено»… — это подписи интерфейса, по-английски — те же слова. Адреса для приложений тоже английские:
-  `files/home/Photos`, `files/home/Connected/<имя>`; заготовка «Фотоальбом» и «Папки» (1.0.5) — уже с ними.
-  **Если стояла 0.8.0:** русские папки шлюз не переносит и не переименовывает — английские появляются рядом, и что
-  где лежит, решаете вы: файлы можно перенести самим в Finder. До того:
-  - «Фото», «Документы», «Видео», «Загрузки», «Картинки» — обычные папки дома, видны и работают как раньше, рядом с
-    пустыми английскими; в пульте и голосом будут, например, две «Фото».
-  - Ссылки «Музыка» и «Сказки» приложения не видят: музыка и сказки — в `Music` и `Stories`. Старые ссылки можно
-    удалить, музыка от этого не пропадёт.
-  - Проекты в «Проекты» больше не проекты: шлюз ищет их в `Projects`, а «Проекты» стала обычной папкой дома.
-  - Подключённые флешки и папки работают и появляются в `Connected`, но их галочки в разделе «Папки» (кто видит,
-    модель, голос) возвращаются к умолчаниям — проставьте заново; старые ссылки в «Подключено» можно удалить.
-  - Связи приложений на старые адреса (`files/home/Фото/*`) ведут в старые папки.
-  - На колонке то же — внутри её данных.
-- **Меню «…» цветной карточки — поверх неё.** На виджете с видом (градиент, сцена, фото) меню «Шире», «Уже», «Убрать
-  со стола» уходило под содержимое карточки: цифры и плашки курсов рисовались поверх пунктов. Теперь меню всегда
-  сверху, и если оно длиннее виджета, то и над соседним виджетом, как у простых.
-- **Мастерская переживает обрыв связи.** Если связь с моделью рвётся посреди шага агента («Anthropic stream broke …
-  Operation timed out»), сервис перегружен или до него не достучаться, шаг повторяется сам через 3, 10 и 30 секунд,
-  а не обрывает всю работу с «Не вышло». Обрыв случается до того, как агент что-то сделал: его вызовы выполняются,
-  только когда шаг пришёл целиком, поэтому ничего не делается дважды. Сказанное в оборванном шаге остаётся в ходе
-  работы. Обычные голосовые ответы по-прежнему не повторяются.
-- **Цветные карточки читаются в любой теме.** На карточке с видом кнопки, текст на них, поля и переключатели теперь свои
-  и не берут цвета темы пульта: раньше в светлой теме на такой карточке кнопка была белой с белым текстом. Цвет
-  текста пульт сам подбирает по яркости фона, а если в градиенте светлый край, притушивает его, чтобы текст не
-  пропадал. «Проверить» в мастерской называет вид, на котором текст где-то не прочтётся.
-- **Красивая карточка — когда попросили.** Агент мастерской одевает карточку (живая сцена, цвета, фото) по словам
-  человека: «сделай красиво», «ярко», «с анимацией». Без такой просьбы или со словами «просто», «строго» он делает
-  простую карточку, и она следует теме пульта: светлой, тёмной, «авто». Своё оформление окошка — либо целиком из
-  цветов темы, либо целиком своё, не вперемешку. Встроенные приложения остаются одетыми.
-- **Мастерская: медленная сеть — в фоне.** У функций приложения для карточки, фразы и инструмента 2 секунды вместе с
-  сетью; приложение, которое ждало медленный сервис дольше, падало с «не уложился в 2000 мс» при каждом вызове.
-  «Проверить» теперь предупреждает, если карточка или фраза ждёт сеть дольше 2 секунд, а фонового расписания нет, и
-  агент выносит медленные сервисы в расписание с запасом в kv.
-- **Пульт колонки не ведёт на выключенный компьютер.** В виджете «Помощник» кнопка «Открыть пульт компьютера» видна,
-  только пока компьютер на связи. Когда его нет, вместо неё строка: пульт компьютера откроется, когда на нём запущен
-  DuoWave, — и его адрес.
-- **`duowave station status` начинается с пульта самой колонки:** `panel: http://<колонка>:<порт> (this station)`.
-  Строка про компьютер теперь `computer (helper): <адрес>` и сразу говорит, отвечает ли он (`answers` / `not answering:
-  start DuoWave on that computer`).
-- **Пакет YAM ставится из реестра:** `yam install duowave/gateway`, обновление — `yam install
-  duowave/gateway@<версия>` (команды `upgrade` у YAM 0.2 нет; так теперь пишут README, пульт и шлюз). Установка
-  пишет адрес пульта один раз, настоящий, и куда сейчас идёт голос колонки — раньше всегда «у Яндекса».
-- **`duowave station remove` убирает всё:** и отметки службы (`gateway.started`, pid-файлы), и пустую папку
-  `/data/opt/duowave`.
-- **Слух Яндекса: Яндекс слышит, отвечает ваш мозг.** Во «Вместе» без своего слуха (ни распознавания на компьютере,
-  ни облачного) голос колонки по-прежнему уходит Яндексу, но теперь Яндекс только распознаёт вопрос и ждёт. Решает
-  маршрутизатор: разговор, свои навыки и «не умею» — наши, ответ звучит выбранным голосом (по умолчанию голосом
-  Алисы); то, что маршруты отдают Яндексу, Яндекс делает сам, как раньше. Выключатель «Слух Яндекса» — в карточке
-  режима, по умолчанию включён; выключен — Яндекс и слышит, и отвечает. Если прошивка не ждёт и Яндекс всё же
-  отвечает, его ответ до колонки не доходит, а в журнале шлюза — заметка `yandexEarIgnored`
-  (`docs/plans/yandex-ear.md`). На Станции Лайт 2 ещё не проверено.
+- **Updating from 0.8.** The gateway does not change the database. Home folders now have English names, and the Russian
+  folders of 0.8.0 stay beside them and are not moved. What this means is below, in "Home folders get English names".
+  The line `ASR_LANGUAGE=ru` in `.env` keeps English away from "Hearing": remove it. A speaker installed from YAM
+  updates with `yam install duowave/gateway@0.8.1`.
+- **"Hearing" recognizes speech in the home's language: Russian and English.** The recognition language follows the
+  home's language ("Settings" → "Appearance" → "Language"). Before, the hint to the model was always `ru`. GigaAM v3
+  knows only Russian, Parakeet TDT v3 knows 25 European languages, Whisper knows 99. If the home is English and GigaAM
+  is chosen, an already downloaded model that knows English listens. If there is no such model, "Hearing" and the
+  "Microphone" readiness say which one is needed and download it with one button (Parakeet, 740 MB). The recognition
+  server and the cloud get the home's language as a hint. A speaker that recognizes speech through the computer also
+  hears the home's language. A Russian home works as before. The line `ASR_LANGUAGE` in `.env` wins over the home's
+  language: if it says `ru` (as in `.env.example`), English does not switch on, so remove it.
+- **The "Say" key is yours to choose.** In "Microphone" mode another program often uses ⌥Space. Now "Settings" →
+  "Microphone" has the card "The Say key". Press "Change" and then your own combination (with ⌥, ⌃ or ⌘, or one of
+  F1…F24). This computer remembers the combination; "Back to ⌥Space" restores the old one.
+- **In "Microphone" mode, widgets address Deevi.** App hints are written for the speaker: 'Say: "Alice, turn on the
+  radio"'. Without a speaker the panel writes "Deevi, turn on the radio" (Deevi is the English spelling of the name). A
+  song or a folder named "Alice" stays as it is.
+- **Without a speaker, the gateway does not remind you about it.** In "Microphone" mode, every 5 minutes a message came:
+  "The speaker is not connected to the gateway… return to Yandex". It went to Mac notifications, to Telegram and to the
+  webhook. Now, while the computer's microphone is chosen, the gateway does not wait for a speaker.
+- **Home folders get English names.** At the first start DuoWave makes `Photos`, `Documents`, `Videos`, `Downloads`,
+  `Pictures`, `Projects`, `Connected` and the links `Music` and `Stories` in the home folder. It does this in any
+  language, as operating systems do. In the panel, in yes/no questions and in the voice of "Folders" they still have
+  their interface labels ("Фото", "Документы", "Подключено"… in Russian); in English the labels are the same words. App
+  addresses are English too: `files/home/Photos`, `files/home/Connected/<name>`. The "Photo album" starting point and
+  "Folders" (1.0.5) already use them. **If you had 0.8.0:** the gateway does not move or rename the Russian folders. The
+  English ones appear beside them, and you decide what goes where: you can move the files yourself in Finder. Until
+  then:
+  - "Фото" (Photos), "Документы" (Documents), "Видео" (Videos), "Загрузки" (Downloads) and "Картинки" (Pictures) are
+    plain home folders. They are visible and work as before, beside the empty English ones. The panel and the voice will
+    show, for example, two photo folders.
+  - Apps do not see the "Музыка" (Music) and "Сказки" (Stories) links: music and stories are in `Music` and `Stories`.
+    You can delete the old links; the music does not go away.
+  - Projects in "Проекты" (Projects) are no longer projects: the gateway looks for them in `Projects`, and "Проекты" is
+    now a plain home folder.
+  - Connected USB drives and folders work and appear in `Connected`. But their ticks in the "Folders" section (who sees
+    it, the model, the voice) go back to the defaults: set them again. You can delete the old links in "Подключено"
+    (Connected).
+  - App links to the old addresses (`files/home/Фото/*`) lead to the old folders.
+  - The same happens on the speaker, inside its data.
+- **The "…" menu of a painted card opens above it.** On a widget with a look (a gradient, a scene, a photo), the menu
+  with "Wider", "Narrower" and "Remove from desk" went under the card's content: numbers and rate badges were drawn over
+  the menu items. Now the menu is always on top. If it is longer than the widget, it also goes over the next widget, as
+  on plain widgets.
+- **The workshop survives a dropped connection.** The connection to the model can drop in the middle of an agent step
+  ("Anthropic stream broke … Operation timed out"), or the service can be overloaded or out of reach. Then the step
+  repeats by itself after 3, 10 and 30 seconds, instead of ending the whole run with "Failed". The drop happens before
+  the agent does anything: its calls run only when the step has arrived whole, so nothing is done twice. What was said
+  in the dropped step stays in the run's progress. Normal voice answers are still not repeated.
+- **Painted cards read in any theme.** On a card with a look, buttons, their text, fields and switches now have their
+  own colors and do not take the colors of the panel theme. Before, in the light theme such a card had a white button
+  with white text. The panel picks the text color by the brightness of the background. If the gradient has a light edge,
+  the panel dims that edge so the text stays visible. "Check" in the workshop names a look on which some text will not
+  read.
+- **A beautiful card only when asked.** The workshop agent dresses a card (a live scene, colors, a photo) when the
+  person asks for it: "make it beautiful", "bright", "with animation". Without such a request, or with words like
+  "simple" or "strict", it makes a plain card. A plain card follows the panel theme: light, dark or "Auto". A window's
+  own styling is either all from the theme's colors or all its own, never mixed. The built-in apps stay dressed.
+- **Workshop: slow network goes to the background.** An app's functions for a card, a phrase and a tool have 2 seconds,
+  network included. An app that waited longer for a slow service failed with "did not finish in 2000 ms" on every call.
+  "Check" now warns when a card or a phrase waits for the network longer than 2 seconds and there is no background
+  schedule. The agent moves slow services to a schedule and keeps a stock of data in kv.
+- **The speaker's panel does not lead to a computer that is off.** In the "Helper" widget, the "Open the computer's
+  panel" button shows only while the computer is online. When it is not, a line shows instead: the computer's panel
+  opens when DuoWave runs on it, and its address.
+- **`duowave station status` starts with the speaker's own panel:** `panel: http://<speaker>:<port> (this station)`. The
+  line about the computer is now `computer (helper): <address>`, and it says at once whether the computer answers
+  (`answers` / `not answering: start DuoWave on that computer`).
+- **The YAM package installs from the registry:** `yam install duowave/gateway`, and to update, `yam install
+  duowave/gateway@<version>` (YAM 0.2 has no `upgrade` command; the README, the panel and the gateway now say so). The
+  install prints the panel's address once, the real one, and where the speaker's voice goes now. Before, it always said
+  "at Yandex".
+- **`duowave station remove` removes everything:** the service marks (`gateway.started`, pid files) and the empty folder
+  `/data/opt/duowave` too.
+- **Yandex's ear: Yandex hears, your brain answers.** In "Together" mode without hearing of your own (no recognition on
+  the computer and none in the cloud), the speaker's voice still goes to Yandex. But now Yandex only recognizes the
+  question and waits. The router decides. Talk, your own skills and "can't do that" are ours, and the answer sounds in
+  the chosen voice (Alice's voice by default). What the routes give to Yandex, Yandex does itself, as before. The
+  "Yandex hearing" switch is on the mode's card and is on by default. When it is off, Yandex both hears and answers. If
+  the firmware does not wait and Yandex answers anyway, its answer does not reach the speaker, and the gateway's log
+  gets a `yandexEarIgnored` note (`docs/plans/yandex-ear.md`). Not checked on a Station Lite 2 yet.
 
 ## 0.8.0 — 14.11.2026
 
-- **Обновление с 0.7.** Первый запуск добавляет в базу таблицу долгих задач приложений и таблицу папок домашней папки
-  (миграции 10 и 11); до этого шлюз кладёт копию базы в `backups/`.
-- **Языки: русский и английский.** Пульт говорит на языке, который выбрали: при первом запуске он определяется по
-  системе, переключатель — прямо на экране первой настройки и входа, потом — «Настройки» → «Оформление» → «Язык».
-  Язык меняется сразу, без перезагрузки. Язык этого устройства и язык дома — разные вещи: язык дома (на нём говорят
-  приложения, расписания и уведомления) задаётся при первой настройке и меняется в той же карточке. Новые языки
-  добавляются папкой словаря (`docs/plans/i18n.md`, «Как добавить язык»). Голос колонки пока русский; тексты самого
-  шлюза — тоже на двух языках (ниже). Нет языка или перевода — английский.
-- **Шлюз отвечает на языке человека.** Ошибки и сообщения шлюза в пульте — около 1800 текстов — по-русски или
-  по-английски, по языку пульта. Шлюзу, поставленному до языков, пульт администратора сам задаёт язык дома.
-- **Приложение для Mac на двух языках.** Меню у часов, статусы, советы при сбоях и заставка — по языку дома, а пока
-  шлюз не запущен — по языку системы.
-- **Каталог на языке человека.** Лента каталога несёт названия и описания пакетов на их языках.
-- Голос колонки остаётся русским: колонка и распознавание понимают только русский (`docs/plans/i18n.md`, «Отложено»).
-- **Приложения на нескольких языках.** Манифест говорит, на каких языках приложение (`languages`), и несёт переводы
-  (`locales`): название, описание, подписи настроек, карточек и расписаний, голосовые фразы. Пульт показывает
-  приложение на языке человека. Код приложения знает язык дома (`host.i18n`), окошко — язык пульта (`useT`,
-  `useLocale`). Агент мастерской делает приложения сразу на русском и английском, «Проверить» подсказывает, чего не
-  хватает в переводах. Встроенные приложения — с английскими названиями и настройками.
-- **Сочные виджеты.** У карточки теперь есть вид — `look`: градиент из своих цветов, своё фото фоном и живая сцена
-  пульта за содержимым — солнце с лучами, облака, дождь, гроза с молниями, снег, туман, звёзды с падающей, северное
-  сияние, волны, пузырьки, искры, неоновая сетка. Вид красит весь виджет вместе с шапкой; сцена стоит, когда виджет
-  вне экрана и при «меньше движения». Встроенные приложения 2.1.0 одеты: погода показывает небо за окном (днём и
-  ночью, в жару и мороз) и значки дней, курсы — доллар крупно на изумрудном с искрами, радио — волны, пока играет,
-  покупки — пузырьки, календарь — по времени суток.
-- **«Неоновая змейка» — встроенная мини-игра в 3D.** Плитка на столе: доска кружится, змейка играет сама; «Играть»
-  открывает игру — стрелки, свайпы или кнопки на экране, искры, золотые звёзды, звук, рекорд.
-- **Агент мастерской делает красиво.** Каждой карточке он даёт вид по смыслу, а «Проверить» напоминает о карточке без
-  вида; заготовка виджета сразу одета. Игры и живую графику он делает окошком по образцу «Неоновой змейки» — её код
-  целиком у него в справке (`docs`, тема `game`).
-- **Приложение дожидается шлюза.** Вызовы шлюза из кода приложения — `host.files.*`, `host.bus.*`, `host.http.fetch` —
-  отвечают обещанием. Без `await` функция отвечала раньше, чем вызов кончался: картинка так и не скачивалась, и
-  карточка оставалась пустой. Теперь «Проверить» в мастерской предупреждает о таком вызове с номером строки, шлюз пишет
-  в журнал приложения, если функция ответила, не дождавшись его, а справка агента везде пишет `await`. Карточка без
-  своей картинки пишет «Картинка не найдена» вместо пустого места.
-- **Агент мастерской дописывает большие приложения.** У него свой предел длины ответа, отдельно от голосовых ответов:
-  `WORKSHOP_MAX_TOKENS`, 16 000 по умолчанию (было 4096, общий с голосом `LLM_MAX_TOKENS`). Большой файл — окошко
-  `panel.js`, длинный `backend.js` — он пишет частями: первый кусок, потом дописывает следующие (`append_file`). Если
-  ответ всё же оборвался на длинном файле, работа не падает: агент слышит, что файл не влез, и продолжает частями.
-  Модель, которой такой предел велик, отвечает с обычным. Времени и шагов на одну просьбу больше: 30 минут и 40 шагов
-  вместо 5 минут и 16.
-- **Долгие задачи приложений.** Приложение (`kind: app`) может вести работу на минуты — снять ролик, разобрать
-  архив — и не упираться в 2 секунды вызова: оно начинает задачу, сообщает ход в процентах и словах и заканчивает
-  результатом или ошибкой. Окно приложения показывает ход и кнопку «Отменить» (`useTask` в SDK окна). Сразу — одна
-  задача на приложение (`budget.tasks`, до 4); результат хранится сутки. Если шлюз перезапустился или приложение
-  упало, задача честно помечается «прервалась» — сама она не продолжается; при переезде на другой компьютер задачи
-  не едут. Авторам — «Долгие задачи» в `docs/plugins/AUTHORING.md`; пример — «Долгий счёт» в эталонном приложении.
-- **Домашняя папка DuoWave.** В приложении DuoWave это обычная папка `~/DuoWave` — её видно в Finder, в меню у часов —
-  «Папка DuoWave». В ней Фото, Документы, Видео, Загрузки, Картинки, ваши папки, Проекты; музыка и сказки дома
-  видны там ссылками. Голос, агент и приложения работают только в ней — остального диска для них нет. Что лежало в
-  прежней папке шлюза, переносится туда при первом запуске. Другое место — `HOME_FILES` в `.env`.
-- **«Подключено»: флешка и папка с диска — по желанию.** Флешку воткнули — плитка на столе «Посмотреть, что на ней?»,
-  а колонка спрашивает голосом, если свободна; «да» — и флешка в «Подключено» домашней папки, ссылкой, только чтение.
-  Вынули — пропала; воткнули снова — узнаётся сама. Папку с диска подключают перетаскиванием на окно DuoWave или
-  «Подключить папку…» в разделе «Папки». Всё остаётся на своём месте; что создано или скачано, ложится в домашнюю
-  папку настоящим файлом.
-- **Раздел «Папки» в пульте.** Что в каждой папке, с уменьшенными фото; кто её видит (вы, семья, гости); может ли
-  облачная модель читать её и голос Алисы называть файлы — янтарём, если это уходит из дома; открыта ли она вне дома.
-  Без галочек облачная модель не получает из папки ни имён, ни текста, а колонка с голосом Алисы говорит только числа.
-- **Приложение «Папки» — по домашней папке голосом:** «что в папке Фото», «открой папку Рецепты», «покажи фото из
-  Отпуска», «прочитай файл борщ», «найди рецепт борща», «запиши в папку Рецепты блины…», «что на флешке»; дальше без
-  «Алиса» — «дальше», «предыдущая», «назад», «номер три», «хватит». Большая карточка на столе показывает то же место.
-- **Для приложений:** `host.files` ищет по именам, читает текст документов (txt, md, rtf, docx, pdf), показывает
-  картинку уменьшенной, играет звук из папки на колонке, копирует; список — страницами; карточка показывает фото из
-  папки дома (`picture: {address}`), окошко — `useFolderFile`. Заменённый файл, как и удалённый, неделю лежит в
-  корзине. Каждая папка — своя ограда: ссылка из неё наружу для приложений не файл. Заготовка мастерской
-  «Фотоальбом» — фото дня и окошко со всеми фото.
-- **Окна на экране компьютера.** Фото, видео и звук из домашней папки, открытые голосом или агентом, появляются
-  отдельным окном поверх всех — даже когда DuoWave свёрнут в меню у часов. Окно временное: следующая просьба встаёт на
-  его место, видео закрывается, доиграв; «оставь» держит его, пока не закроете крестиком или словом. Можно открыть
-  несколько сразу — «открой эти две фотки и видео», — а потом «вот это оставь, это закрой». В окне — «Оставить»,
-  пауза, крестик. Агент включает видео и звук по адресу, ставит на паузу и останавливает; приложениям экран доступен
-  как `device/screen`. В разговоре «Папок» теперь понятны и их обычные фразы («что в папке Фото», «открой фото»).
-- **«Связи» понятнее:** образцы адресов — словами («все папки дома»), права встроенного приложения из установки видны и
-  закрываются.
-- **Исправлено в руководстве:** голос по умолчанию — Алисы (`TTS_PROVIDER=yandex`), пока в пульте не выбран свой.
-- **Режим «Микрофон»: DuoWave без колонки.** С DuoWave можно говорить микрофоном компьютера — колонка не нужна.
-  Выбор «Как говорить с DuoWave» — «Микрофоном этого компьютера» или «Через колонку с Алисой» — спрашивается при
-  первом запуске после пароля и меняется в «Настройки» → «Колонка» (в режиме «Микрофон» страница называется
-  «Микрофон»). Нажали «Сказать» или ⌥Пробел, спросили — ответ встаёт на полосу и звучит из динамиков компьютера
-  своим голосом, по фразам; если ответ кончился вопросом, микрофон шесть секунд слушает сам. Новое «Сказать» или «×»
-  на полосе обрывают ответ. Отвечает тот же «Мозг» с характером, памятью, погодой, новостями, приложениями и
-  MCP-серверами, открытыми голосу; разговор — общий с чатом «Спросить мозг». Музыки, радио, сказок, таймеров,
-  будильников, громкости, света и звонков на компьютере пока нет.
-- **В режиме «Микрофон» в пульте нет Алисы, Яндекса и колонки.** В центре главной — ДиВи; встроенный помощник тоже
-  зовётся ДиВи. Режим — «Своё» под замком: в «Яндекс» и «Вместе» шлюз не переходит, пока не выбрать «Через колонку с
-  Алисой», — тогда возвращается прежний режим и всё, что было. У тех, кто уже пользуется колонкой, ничего не меняется.
-- **Режиму «Микрофон» нужен свой голос.** Голос Алисы идёт через колонку и без неё молчит: список готовности
-  (слух, голос, мозг) показывает, чего не хватает, и ведёт туда, где это выбирают. Без голоса ответ остаётся текстом
-  на полосе.
-- Право «Менять характер Алисы» называется «Менять характер».
+- **Updating from 0.7.** The first start adds two tables to the database: the apps' long tasks and the folders of the
+  home folder (migrations 10 and 11). Before that the gateway puts a copy of the database into `backups/`.
+- **Languages: Russian and English.** The panel speaks the language you choose. At the first start it follows the
+  system. The switch is right on the first setup and sign-in screen, and later in "Settings" → "Appearance" →
+  "Language". The language changes at once, without a reload. This device's language and the home's language are
+  different things. The home's language (apps, schedules and notifications speak it) is set at the first setup and
+  changed on the same card. A new language is added as a dictionary folder (`docs/plans/i18n.md`, "How to add a
+  language"). The speaker's voice is Russian for now. The gateway's own texts are in two languages too (below). If a
+  language or a translation is missing, English is used.
+- **The gateway answers in your language.** The gateway's errors and messages in the panel, about 1,800 texts, are in
+  Russian or English, following the panel's language. For a gateway installed before languages, the admin's panel sets
+  the home's language itself.
+- **The Mac app in two languages.** The menu by the clock, statuses, tips on failures and the splash screen follow the
+  home's language. While the gateway is not running, they follow the system's language.
+- **The catalog in your language.** The catalog feed carries the names and descriptions of packages in their languages.
+- The speaker's voice stays Russian: the speaker and speech recognition understand only Russian (`docs/plans/i18n.md`,
+  "Deferred").
+- **Apps in several languages.** The manifest says which languages the app speaks (`languages`) and carries translations
+  (`locales`): the name, the description, the labels of settings, cards and schedules, and voice phrases. The panel
+  shows the app in your language. The app's code knows the home's language (`host.i18n`), and its window knows the
+  panel's language (`useT`, `useLocale`). The workshop agent makes apps in Russian and English at once, and "Check" says
+  what is missing in the translations. The built-in apps have English names and settings.
+- **Juicy widgets.** A card now has a look, `look`: a gradient of its own colors, its own photo as the background, or a
+  live panel scene behind the content. The scenes are sun with rays, clouds, rain, a thunderstorm with lightning, snow,
+  fog, stars with a falling one, northern lights, waves, bubbles, sparks and a neon grid. The look paints the whole
+  widget together with its header. The scene stands still when the widget is off screen and with reduced motion. The
+  built-in apps 2.1.0 are dressed. The weather shows the sky outside (by day and by night, in heat and in frost) and
+  icons for the days. Currency rates show the dollar large on emerald with sparks. The radio shows waves while it plays,
+  shopping shows bubbles, and the calendar follows the time of day.
+- **"Neon snake", a built-in 3D mini-game.** A tile on the desk: the board spins and the snake plays by itself. "Play"
+  opens the game: arrows, swipes or buttons on the screen, sparks, gold stars, sound and a high score.
+- **The workshop agent makes things beautiful.** It gives every card a look that fits its meaning, and "Check" reminds
+  you about a card without a look. The widget starting point is dressed already. The agent makes games and live graphics
+  as a window, after the model of "Neon snake": the snake's whole code is in its reference (`docs`, topic `game`).
+- **The app waits for the gateway.** Gateway calls from an app's code (`host.files.*`, `host.bus.*`, `host.http.fetch`)
+  answer with a promise. Without `await`, the function answered before the call ended: a picture was never downloaded,
+  and the card stayed empty. Now "Check" in the workshop warns about such a call and gives its line number. The gateway
+  writes to the app's log when a function answered without waiting for a call, and the agent's reference writes `await`
+  everywhere. A card without its picture says "Picture not found" instead of showing an empty space.
+- **The workshop agent finishes big apps.** It has its own limit on answer length, apart from voice answers:
+  `WORKSHOP_MAX_TOKENS`, 16,000 by default (it was 4096, shared with the voice's `LLM_MAX_TOKENS`). It writes a big
+  file, such as a window's `panel.js` or a long `backend.js`, in parts: the first piece, then the next ones
+  (`append_file`). If an answer is still cut off on a long file, the work does not fail: the agent hears that the file
+  did not fit and goes on in parts. A model for which this limit is too big answers with the usual one. One request gets
+  more time and steps: 30 minutes and 40 steps instead of 5 minutes and 16.
+- **Long tasks for apps.** An app (`kind: app`) can run work that takes minutes, such as making a clip or unpacking an
+  archive, without hitting the 2-second limit of a call. It starts a task, reports progress in percent and words, and
+  ends with a result or an error. The app's window shows the progress and a "Cancel" button (`useTask` in the window
+  SDK). One task per app at a time (`budget.tasks`, up to 4); a result is kept for a day. If the gateway restarted or
+  the app crashed, the task is honestly marked "interrupted" and does not go on by itself. Tasks do not move to another
+  computer in a move. For authors: "Long tasks" in `docs/plugins/AUTHORING.md`; the example is "Long count" in the
+  reference app.
+- **The DuoWave home folder.** In the DuoWave app it is a plain folder, `~/DuoWave`. You see it in Finder, and in the
+  menu by the clock as "DuoWave folder". It holds Photos, Documents, Videos, Downloads, Pictures, your own folders and
+  Projects; the home's music and stories show there as links. The voice, the agent and apps work only in it: the rest of
+  the disk does not exist for them. What lay in the gateway's old folder moves there at the first start. To use another
+  place, set `HOME_FILES` in `.env`.
+- **"Connected": a USB drive or a folder from the disk, if you want.** Plug in a USB drive, and a tile on the desk asks
+  "Look at what is on it?"; the speaker asks aloud if it is free. Say "yes", and the drive goes into "Connected" in the
+  home folder as a read-only link. Unplug it, and it is gone; plug it in again, and it is recognized by itself. A folder
+  from the disk is connected by dragging it onto the DuoWave window or with "Connect folder…" in the "Folders" section.
+  Everything stays in its place. What is created or downloaded goes into the home folder as a real file.
+- **The "Folders" section in the panel.** It shows what is in each folder, with thumbnails of photos, and who sees it
+  (you, family, guests). It also shows whether a cloud model may read the folder and Alice's voice may name its files
+  (in amber if this leaves the home), and whether the folder is open outside the home. Without the ticks, a cloud model
+  gets neither names nor text from the folder, and a speaker with Alice's voice says only numbers.
+- **The "Folders" app goes through the home folder by voice:** "what's in the Photos folder", "open the Recipes folder",
+  "show photos from Holiday", "read the borscht file", "find a borscht recipe", "write pancakes… into the Recipes
+  folder", "what's on the USB drive". Then, without "Alice": "next", "previous", "back", "number three", "enough". A big
+  card on the desk shows the same place.
+- **For apps:** `host.files` searches by name, reads the text of documents (txt, md, rtf, docx, pdf), shows a picture
+  shrunk, plays a sound from a folder on the speaker and copies. Lists come in pages. A card shows a photo from the home
+  folder (`picture: {address}`), and a window uses `useFolderFile`. A replaced file, like a deleted one, stays in the
+  bin for a week. Each folder has its own fence: for apps, a link from it to the outside is not a file. The workshop
+  starting point "Photo album" shows the photo of the day and a window with all photos.
+- **Windows on the computer's screen.** Photos, videos and sound from the home folder, opened by voice or by the agent,
+  appear in a separate window on top of all others. This happens even when DuoWave is minimized to the menu by the
+  clock. The window is temporary: the next request takes its place, and a video closes when it ends. "Keep it" keeps the
+  window until you close it with the cross or by voice. You can open several at once ("open these two photos and the
+  video") and then say "keep this one, close that one". The window has "Keep", pause and a cross. The agent plays video
+  and sound by address, pauses and stops them; apps reach the screen as `device/screen`. In conversation, "Folders" now
+  also understands its usual phrases ("what's in the Photos folder", "open the photo").
+- **"Links" are clearer:** address patterns are in words ("all home folders"), and the rights a built-in app got at
+  installation are visible and can be closed.
+- **Fixed in the guide:** the default voice is Alice's (`TTS_PROVIDER=yandex`) until you choose your own in the panel.
+- **"Microphone" mode: DuoWave without a speaker.** You can talk to DuoWave with the computer's microphone; no speaker
+  is needed. The choice "How to talk to DuoWave" ("With this computer's microphone" or "Through the speaker with Alice")
+  is asked at the first start, after the password. It is changed in "Settings" → "Speaker" (in "Microphone" mode the
+  page is called "Microphone"). Press "Say" or ⌥Space and ask: the answer appears on the bar and plays from the
+  computer's speakers in your own voice, phrase by phrase. If the answer ends with a question, the microphone listens by
+  itself for six seconds. A new "Say" or "×" on the bar cuts the answer off. The same "Brain" answers, with its
+  personality, memory, weather, news, apps and the MCP servers open to voice. The conversation is shared with the "Ask
+  the brain" chat. Music, radio, stories, timers, alarms, volume, lights and calls are not on the computer yet.
+- **In "Microphone" mode the panel has no Alice, Yandex or speaker.** Deevi is in the middle of the home screen, and the
+  built-in helper is called Deevi too. The mode is "Own" and is locked: the gateway does not switch to "Yandex" or
+  "Together" until you choose "Through the speaker with Alice". Then the previous mode and everything else come back.
+  For people who already use a speaker, nothing changes.
+- **"Microphone" mode needs a voice of your own.** Alice's voice goes through the speaker and is silent without it. The
+  readiness list (hearing, voice, brain) shows what is missing and leads to the place where you choose it. Without a
+  voice, the answer stays as text on the bar.
+- The right "Change Alice's personality" is now called "Change personality".
 
 ## 0.7.1 — 14.11.2026
 
-- **Подпись каталога — двумя ключами, как у обновлений.** Ключи каталога пакетов встроены в шлюз
-  (`gateway/packages.pub`): основной и запасной, который хранится офлайн. Плагины и приложения из каталога ставятся,
-  если ленту подписал любой из них: потеряется основной ключ — каталог перейдёт на запасной без нового выпуска шлюза,
-  а утёкший уберёт из списка ближайший выпуск. `PACKAGES_PUBKEY` по-прежнему заменяет встроенные ключи и теперь может
-  быть списком (ключ в строке); переменная сборки `DUOWAVE_PACKAGES_PUBKEY` больше не читается.
-- **Исправлено: колонка проглатывала начало ответа**, когда он готовился дольше трёх секунд — от «Отлично, всё в
-  порядке. А у вас как?» было слышно одно «как». Пока ответ готовится, шлюз держит колонку тишиной, а колонка играет
-  поток по своим часам и пропускает звук, который пришёл позже своего места. Теперь шлюз перед каждой фразой
-  догоняет часы колонки тишиной, и фраза звучит целиком — и первая после ожидания, и следующая, если она готовилась
-  дольше, чем звучала предыдущая. В журнале ответа видно, сколько тишины для этого понадобилось.
-- **Исправлено: на macOS 15 свой голос (OmniVoice и другие модели лаборатории) не запускался** — «сервер голоса не
-  запустился: taskpolicy …». Шлюз ставил серверу голоса предел памяти флагами `taskpolicy`, которых в macOS 15 нет.
-  Теперь он сам проверяет, что `taskpolicy` понимает: на macOS 15 сервер запускается с пониженным приоритетом, но без
-  предела от ядра — память сервер всё так же стережёт сам. И на любой системе: если сервер голоса или снятие голоса
-  под таким ограничителем (`taskpolicy` на Маке, `systemd-run` на Linux) заканчивается сразу, в первые секунды, шлюз
-  один раз запускает его без ограничителя и пишет об этом в журнал.
-- **Тема «Авто».** С первого запуска пульт берёт тему системы: днём светлый, вечером и в темноте — тёмный, и
-  меняется вместе с системой без перезагрузки. «Светлая», «Тёмная» или «Авто» — в меню аватара и в «Настройки» →
-  «Оформление»; выбор запоминается.
-- **Исправлено: адрес пульта для телефона с портом дважды** («…:7780:7780/panel/») в последнем шаге подключения.
-- **Исправлено: окно черновика в «Мастерской» не показывало приложение** — вместо него было «Cross-origin script
-  load denied…». Окно приложения живёт без своего адреса, и его часть пульта у черновика грузилась как чужая, а
-  шлюз не разрешал это так, как уже разрешал установленным приложениям. Теперь черновик открывается и на компьютере,
-  и через помощника на колонке.
+- **The catalog is signed with two keys, like updates.** The package catalog keys are built into the gateway
+  (`gateway/packages.pub`): the main key and a reserve key kept offline. Plugins and apps from the catalog install if
+  either of them signed the feed. If the main key is lost, the catalog moves to the reserve key without a new gateway
+  release, and the next release removes a leaked key from the list. `PACKAGES_PUBKEY` still replaces the built-in keys
+  and can now be a list (one key per line). The build variable `DUOWAVE_PACKAGES_PUBKEY` is no longer read.
+- **Fixed: the speaker swallowed the start of an answer** when the answer took longer than three seconds to prepare. Of
+  "Great, everything's fine. And how are you?" only "you" was heard. While an answer is being prepared, the gateway
+  keeps the speaker busy with silence. The speaker plays the stream by its own clock and skips sound that arrives later
+  than its place. Now the gateway catches up with the speaker's clock with silence before each phrase, and the phrase
+  plays whole. This works for the first phrase after a wait, and for the next one too if it took longer to prepare than
+  the previous one took to play. The answer's log shows how much silence this needed.
+- **Fixed: on macOS 15 your own voice (OmniVoice and the other voice lab models) did not start**, with "the voice server
+  did not start: taskpolicy …". The gateway set a memory limit for the voice server with `taskpolicy` flags that macOS
+  15 does not have. Now the gateway checks what `taskpolicy` understands. On macOS 15 the server starts with a lower
+  priority but without a limit from the kernel; the server still watches its own memory. And on any system: if the voice
+  server or a voice imprint under such a limiter (`taskpolicy` on a Mac, `systemd-run` on Linux) ends at once, in the
+  first seconds, the gateway starts it once more without the limiter and writes this in the log.
+- **The "Auto" theme.** From the first start the panel takes the system theme: light by day, dark in the evening and in
+  the dark. It changes with the system without a reload. "Light", "Dark" or "Auto" is in the avatar menu and in
+  "Settings" → "Appearance"; the choice is remembered.
+- **Fixed: the panel address for a phone had the port twice** ("…:7780:7780/panel/") in the last step of connecting.
+- **Fixed: the draft window in "Workshop" did not show the app.** It showed "Cross-origin script load denied…" instead.
+  The app's window lives without an address of its own, so for a draft its panel part loaded as foreign content. The
+  gateway did not allow this, as it already did for installed apps. Now a draft opens on the computer and through the
+  helper on the speaker.
 
 ## 0.7.0 — 13.11.2026
 
-- **Обновление с 0.6.** Первый запуск добавляет в базу таблицу журнала связей (миграция 9); до этого шлюз кладёт
-  копию базы в `backups/`. Люди, настройки, колонки, журнал, персонажи и темы остаются как были. Приложения с кодом и
-  черновики для Host API 1 не включаются: их переделывают в мастерской или удаляют. Колонку после обновления
-  настройте заново — встроенные приложения на ней обновятся вместе со шлюзом.
-- **«Связи»: приложения общаются друг с другом по вашим правилам.** Приложение, папка, устройство, служба шлюза —
-  участники с адресом; одно приложение может позвать другое, рассказать новость, спросить словами — только если вы
-  разрешили. Чего приложение не просило, того для него нет. Что попросило в манифесте — при первом обращении
-  спросит «да», как в телефоне: «Разрешить» и «Не разрешать» запоминаются, поменять — в окне приложения, «Связи».
-  Опасное (деньги, удаление, наружу, замки, камера, доступ), которое начал не человек, спрашивает каждый раз.
-  Цепочка не больше того, кто начал: гость через приложение не включит то, что ему нельзя.
-- **«Связи» в окне приложения и в настройках.** С кем приложение общается и на какой ступени («видит», «слышит»,
-  «зовёт», «правит»), «Общается с другими», режим «По правилам», «Свободно» или «Отдельно» — для дома и для
-  каждого; журнал: кто кому писал и чем кончилось, без содержимого.
-- **Вопросы словами через облако — по вашему слову.** Приложение без своего ответа отвечает моделью «Мозга» со
-  своими инструментами; если модель облачная, это работает, только когда включено «Настройки» → «Связи приложений»
-  → «Вопросы словами через облако».
-- **Папки для приложений.** У каждого приложения своя папка (с `tmp/`, что чистится сама), общие папки дома —
-  «Картинки», «Фото», «Видео», «Документы», «Загрузки» — по разрешению; «Музыка» и «Сказки» — только читать. Чужое
-  удаляется в корзину на 7 дней. На колонке — до 1 МБ на файл и 5 МБ на всё.
-- **Карточки.** Виджет стола теперь по умолчанию — карточка: приложение отдаёт данные (число с изменением, линия,
-  столбики, плитки, часы, кольца с отсчётом, доли, строки, кнопки, поле, переключатель), пульт рисует их сам. Кода
-  приложения в пульте нет; мастерская делает виджеты карточками.
-- **Окошки.** Своя часть пульта у любого приложения работает в отдельном окошке: без вашего входа, без хранилища
-  пульта и без сети — только через пульт. Поэтому показ черновика больше не спрашивает «да» — даже попрошенного у
-  колонки.
-- **Один способ — Host API 2.** Права приложения теперь двух видов: куда оно ходит в интернет и до чего в доме
-  дотягивается по шине. Что оно даёт — фразы, инструменты, источники — правами больше не считается; своё хранилище и
-  своя папка — без прав. Встроенные приложения переписаны: их виджеты (погода, курсы, радио, покупки, календарь) —
-  карточки, своего кода в пульте у них нет.
-- **Окно приложения запоминает размер и место.** Первый запуск открывает его на 80 % ширины экрана посередине и на всю
-  высоту, что экран даёт окнам; дальше оно открывается там и таким, каким его оставили, — и после обновления.
-  Место на экране, которого больше нет, — снова как при первом запуске. В браузере пульт как был.
-- **Без мини-карты замок и масштаб стоят внизу.** В окне уже 1280 точек мини-карты стола нет, и ряд замка и масштаба
-  теперь опускается на линию дока, а не висит над ним; над доком он встаёт, только где налез бы на него.
-- **Новый значок ДиВи.** В покое у ДиВи открыты оба глаза, «Привет» — в движении; новые значки приложения и меню.
-- **Свой голос на macOS 15.** Шлюз не видел память Мака на macOS 15 (у неё нет одного счётчика подкачки) и считал
-  свободными только пустые страницы — на 48 ГБ с 90 % свободной писал «Системе уже не хватает памяти» и не снимал
-  отпечаток. Теперь счётчики читаются по одному, подкачка — из `vm_stat`.
-- **Память — только предупреждение.** Нехватка памяти (давление, подкачка, видеопамять) больше не запрещает снять
-  отпечаток или включить голос: пульт показывает одно предупреждение и кнопку «всё равно». Запущенный «всё равно»
-  отпечаток останавливается только при критическом давлении или подкачке.
+- **Updating from 0.6.** The first start adds the links journal table to the database (migration 9). Before that the
+  gateway puts a copy of the database into `backups/`. People, settings, speakers, the journal, characters and themes
+  stay as they were. Apps with code and drafts for Host API 1 do not switch on: remake them in the workshop or delete
+  them. Set up the speaker again after the update: the built-in apps on it update together with the gateway.
+- **"Links": apps talk to each other by your rules.** An app, a folder, a device and a gateway service are participants
+  with an address. One app can call another, tell it news or ask it in words, but only if you allowed it. What an app
+  did not ask for does not exist for it. What it asked for in its manifest asks for "yes" at the first use, as on a
+  phone: "Allow" and "Don't allow" are remembered, and you change them in the app's window, in "Links". Risky things
+  (money, deleting, sending out, locks, cameras, access) that a person did not start are asked every time. A chain is
+  never more than the one who started it: a guest cannot use an app to switch on what a guest may not.
+- **"Links" in the app's window and in Settings.** They show whom the app talks to and at what level ("sees", "hears",
+  "calls", "edits"), "Talks to others", and the mode "By rules", "Free" or "Isolated", for the home and for each app.
+  There is a journal of who wrote to whom and how it ended, without the content.
+- **Questions in words through the cloud, only on your word.** An app without an answer of its own answers with the
+  "Brain" model and its own tools. If the model is in the cloud, this works only when "Settings" → "App links" →
+  "Questions in words via the cloud" is on.
+- **Folders for apps.** Each app has its own folder (with a `tmp/` that cleans itself). The shared home folders
+  "Pictures", "Photos", "Videos", "Documents" and "Downloads" are available by permission; "Music" and "Stories" are
+  read-only. What an app deletes from others goes to the bin for 7 days. On the speaker: up to 1 MB a file and 5 MB in
+  all.
+- **Cards.** A desk widget is now a card by default. The app gives data (a number with its change, a line, bars, tiles,
+  a clock, rings with a countdown, shares, rows, buttons, a field, a switch), and the panel draws it itself. There is no
+  app code in the panel; the workshop makes widgets as cards.
+- **Windows.** Any app's own part of the panel runs in a separate window: without your sign-in, without the panel's
+  storage and without the network, only through the panel. So showing a draft no longer asks for "yes", even a draft
+  asked for from the speaker.
+- **One way: Host API 2.** An app's rights are now of two kinds: where it goes on the internet, and what in the home it
+  reaches over the bus. What it gives (phrases, tools, sources) no longer counts as rights. Its own storage and its own
+  folder need no rights. The built-in apps are rewritten: their widgets (weather, rates, radio, shopping, calendar) are
+  cards and have no code of their own in the panel.
+- **The app's window remembers its size and place.** The first start opens it at 80 % of the screen width, in the
+  middle, at the full height the screen gives windows. After that it opens where and as you left it, after an update
+  too. If that place on the screen no longer exists, the window opens as at the first start. In a browser the panel
+  works as before.
+- **Without the mini-map, the lock and zoom sit at the bottom.** In a window 1280 points wide or narrower the desk has
+  no mini-map. The lock and zoom row now goes down to the dock's line instead of hanging above it. It rises above the
+  dock only where it would overlap it.
+- **A new Deevi icon.** At rest Deevi has both eyes open; "Hi" is in motion. New app and menu icons.
+- **Your own voice on macOS 15.** The gateway did not see the Mac's RAM on macOS 15 (it has no single swap counter) and
+  counted only empty pages as free. On 48 GB with 90 % free, it said "The system is already short of memory" and did not
+  take a voice imprint. Now the counters are read one by one, and swap is read from `vm_stat`.
+- **Low RAM is only a warning.** A shortage of RAM (pressure, swap, video memory) no longer forbids taking an imprint or
+  switching on a voice. The panel shows one warning and an "anyway" button. An imprint started "anyway" stops only at
+  critical pressure or swap.
 
 ## 0.6.0 — 12.11.2026
 
-- **Обновление с 0.5.** Первый запуск добавляет в базу шлюза таблицы памяти и сна и два поля пакетов — из какой ленты
-  пакет и скрыт ли он (миграции 6–8); до этого шлюз кладёт копию базы в `backups/`. Всё прежнее — люди, настройки,
-  приложения, колонки, журнал — остаётся как было.
-  Ключи приложений переезжают из настроек в сейф; колонке, которая ещё на 0.5, компьютер передаёт их по-старому, пока
-  её не обновят. Память персонажей включена сразу, рефлексия — нет; выключаются в «Приложения» → «Память» →
-  «Настройки».
-- **Свои источники пакетов.** «Каталог» → «Свои источники»: администратор добавляет ленту пакетов по ссылке, которую
-  ему дали лично, — после предупреждения, что её пакеты никто не проверял. Её пакеты в каталоге с меткой «свой источник
-  · <сайт>» и «не проверен»; ставятся только персонажи и темы, без кода. Источников — до четырёх, убрать — там же.
-  - Персонаж с голосом неизвестного происхождения (`voiceOrigin: unknown`) ставится только из своего источника и
-    помечен «голос не проверен». Из каталога и магазина такой не встанет.
-  - Лента может скрыть пакет (`"hidden": true`): его нет в каталоге, а поставленный из этой же ленты пропадает из
-    «Установлено» и персонажей, его код не работает; если персонаж был выбран — говорит Алиса, его голос сменяется
-    запасным. Файлы остаются: лента сняла флаг — пакет вернулся. Чужие пакеты лента скрыть не может.
-  - Свой источник, ответивший 404 или 410, закрыт: его пакеты уходят из каталога, поставленные из него скрываются.
-- **Память персонажей.** Колонка помнит о доме то, что ей рассказали: «Запомни: у Маши аллергия на орехи», «Забудь
-  про орехи», «Что ты помнишь про Машу?» — сразу, без модели. В разговоре персонаж запоминает и сам, мимоходом
-  (выключается). Главное из памяти всегда у персонажа в подсказке, остальное он находит по вопросу. «Не запоминай
-  ничего до утра» ставит паузу; выключить память или стереть её голосом нельзя — только в пульте.
-  - «Приложения» → «Память». «Обзор»: что запомнено, кем, где и когда, у каждой записи — «Отменить», и «Глазами
-    персонажа» — что он знает наверняка. «Дом»: люди, питомцы, комнаты и места, их другие имена, связи «кто с кем» и
-    история того, что было раньше. «Настройки»: «Память», «Запоминать мимоходом», «Сон и рефлексия».
-  - **Сон и рефлексия** (рефлексия выключена, пока её не включат). Ночью, в 4:00 по часам колонки, память обдумывает
-    разговоры дня: склеивает повторы, закрывает устаревшее, связывает другие имена, ставит даты вместо «завтра»,
-    убирает прошедшее в историю — и пишет итог дня для дома и дневник персонажа его голосом. Итог и дневник персонаж
-    помнит следующие дни. Утром — вкладка «За ночь»: у каждой перемены «Отменить», у ночи — «Откатить ночь».
-    «Запустить сон сейчас» — там же и в «Настройках» памяти; когда запускать нечего, кнопка говорит почему.
-  - **Модель памяти** — отдельно от «Мозга»: своя дома (по умолчанию), как у «Мозга» или любая модель из «Мозга»,
-    домашняя или облачная. Перед облачной пульт переспрашивает.
-  - Под ответом колонки — «Запомнено: … · Отменить». Виджет «Память» можно поставить на стол через «Новый виджет».
-  - Смотреть память — право «Смотреть память», менять — «Менять память»; оба у администратора, остальным их даёт он.
-  - Разговоры хранятся дословно 7 дней. Каждая запись помнит, кто её сказал и кто мог слышать: потом память
-    разделится по людям дома.
-  - Карточка «Память колонки» (оперативная память и место приложений) теперь называется «Ресурсы колонки».
-- **MIDI-клавиатура для приложений.** Клавиатуру, подключённую к компьютеру с DuoWave (USB или Bluetooth на Mac),
-  слышит шлюз — в приложении DuoWave, в любом браузере и с планшета дома. Приложению нужно право «слышать и играть
-  MIDI-клавиатуру — дома, на этом компьютере»; клавиатура открыта, только пока открыто его окно, ноты идут только этой
-  странице — не в журнал, не агенту, не из дома. Воткнули клавиатуру на ходу — видно сразу. В карточке приложения —
-  «Сейчас слушает клавиатуру». Закрыли окно посреди ноты — шлюз её отпустит, ничего не звенит бесконечно. Шлюз без
-  клавиатуры, а пульт открыт в Chrome на `localhost` или по https, — «Подключить через браузер».
-- **«Учитель на MIDI-клавиатуре».** «Сделай приложение: учитель для моей MIDI-клавиатуры» — плитка, «Примерка» с
-  клавиатурой на экране («Развернуть» — окно урока), «На стол». Выберите мелодию — следующая нота светится; нажали —
-  звучит, загорается следующая; не ту — коротко вспыхнет. Восемь мелодий: народные и старая классика; свою —
-  файлом `.mid` (выберете дорожку). В первый раз урок спросит, сколько клавиш (25, 32, 37, 49, 61, 76, 88; число из
-  названия, «KeyStep 37», подсказано), самую левую клавишу и звучит ли клавиатура сама; ответили не так — «Клавиатура
-  заново». «Послушать» — пульт сыграет мелодию, или сама клавиатура, если у неё свой звук. У колонки:
-  «Алиса, давай учить ёлочку», «какие мелодии есть». На колонке клавиатуры нет — колонка скажет, где попросить.
-- **Для авторов:** право `midi`, Host API 1.3; в SDK пульта `useMidi`, `useSynth`, `PianoKeys`, `readMidiFile`,
-  `melodyOf`, `noteName`; заготовка `midi` (`duowave plugin new --midi`); `MIDI=0` выключает клавиатуры, `MIDI_REMOTE=1`
-  пускает их вне дома.
+- **Updating from 0.5.** The first start adds the memory and sleep tables to the gateway's database, and two package
+  fields: which feed the package came from and whether it is hidden (migrations 6–8). Before that the gateway puts a
+  copy of the database into `backups/`. Everything else (people, settings, apps, speakers, the journal) stays as it was.
+  Apps' keys move from the settings into the safe. To a speaker still on 0.5, the computer passes them the old way until
+  the speaker is updated. Characters' memory is on at once, and reflection is not. You switch them off in "Apps" →
+  "Memory" → "Settings".
+- **Own package sources.** "Catalog" → "Own sources": the admin adds a package feed by a link that someone gave them in
+  person, after a warning that nobody has checked its packages. Its packages show in the catalog marked "own source ·
+  *site*" and "not verified". Only characters and themes install from it, no code. You can have up to four sources and
+  remove them in the same place.
+  - A character with a voice of unknown origin (`voiceOrigin: unknown`) installs only from an own source and is marked
+    "voice not checked". Such a character does not install from the catalog or the store.
+  - A feed can hide a package (`"hidden": true`). Then the package is not in the catalog, and a copy installed from the
+    same feed disappears from "Installed" and from the characters, and its code does not run. If that character was
+    chosen, Alice speaks, and the character's voice changes to the backup one. The files stay: when the feed removes the
+    flag, the package comes back. A feed cannot hide other feeds' packages.
+  - An own source that answered 404 or 410 is closed: its packages leave the catalog, and the ones installed from it are
+    hidden.
+- **Characters' memory.** The speaker remembers what it was told about the home: "Remember: Masha is allergic to nuts",
+  "Forget about the nuts", "What do you remember about Masha?". This works at once, without a model. In conversation the
+  character also remembers things by itself, in passing (you can switch this off). The main things from memory are
+  always in the character's prompt; the character finds the rest when asked. "Don't remember anything until morning"
+  pauses the memory. You cannot switch memory off or erase it by voice, only in the panel.
+  - "Apps" → "Memory". "Overview": what is remembered, by whom, where and when, with "Undo" for each record, and
+    "Through the character's eyes": what the character knows for sure. "Home": people, pets, rooms and places, their
+    other names, who is linked to whom, and the history of what was before. "Settings": "Memory", "Remember in passing",
+    "Sleep and reflection".
+  - **Sleep and reflection** (reflection is off until you switch it on). At night, at 4:00 on the speaker's clock, the
+    memory thinks over the day's conversations. It glues repeats, closes what is out of date, links other names, puts
+    dates in place of "tomorrow" and moves what has passed into history. Then it writes a summary of the day for the
+    home and the character's diary in the character's voice. The character remembers the summary and the diary in the
+    next days. In the morning there is the "Overnight" tab: "Undo" for each change, and "Roll back the night" for the
+    whole night. "Run sleep now" is there too and in the memory "Settings"; when there is nothing to run, the button
+    says why.
+  - **The memory model** is separate from "Brain": its own model at home (the default), the same as "Brain", or any
+    model from "Brain", at home or in the cloud. The panel asks again before a cloud model.
+  - Under a speaker's answer: "Remembered: … · Undo". You can put the "Memory" widget on the desk with "New widget".
+  - Viewing memory needs the "View memory" right, and changing it needs "Change memory". The admin has both and gives
+    them to others.
+  - Conversations are kept word for word for 7 days. Each record remembers who said it and who could hear it: later the
+    memory will be split between the people of the home.
+  - The "Speaker memory" card (RAM and app storage) is now called "Speaker resources".
+- **A MIDI keyboard for apps.** The gateway hears a keyboard plugged into the computer with DuoWave (USB, or Bluetooth
+  on a Mac): in the DuoWave app, in any browser and from a tablet at home. The app needs the right "hear and play the
+  MIDI keyboard, at home, on this computer". The keyboard is open only while the app's window is open, and the notes go
+  only to that page: not to the journal, not to the agent, not out of the home. A keyboard plugged in on the go shows at
+  once. The app's card shows "Listening to the keyboard now". If you close the window in the middle of a note, the
+  gateway releases the note, so nothing rings forever. If the gateway has no keyboard and the panel is open in Chrome on
+  `localhost` or over https, the panel offers "Connect through the browser".
+- **"MIDI keyboard teacher".** Say "Make an app: a teacher for my MIDI keyboard", and you get a tile, "Try-on" with a
+  keyboard on the screen ("Expand" opens the lesson window) and "To the desk". Choose a melody, and the next note lights
+  up. Press it, and it sounds and the next one lights up; press a wrong one, and it flashes briefly. There are eight
+  melodies, folk tunes and old classics, and you can add your own as a `.mid` file (you choose the track). The first
+  time, the lesson asks how many keys the keyboard has (25, 32, 37, 49, 61, 76 or 88; a number from the name, as in
+  "KeyStep 37", is suggested). It also asks which key is the leftmost and whether the keyboard makes sound itself. If
+  you answered wrong, use "Keyboard again". "Listen": the panel plays the melody, or the keyboard does if it has its own
+  sound. With the speaker: "Alice, let's learn the Christmas tree song", "what melodies are there". The speaker has no
+  keyboard, so it says where to ask.
+- **For authors:** the `midi` right, Host API 1.3; in the panel SDK `useMidi`, `useSynth`, `PianoKeys`, `readMidiFile`,
+  `melodyOf`, `noteName`; the `midi` template (`duowave plugin new --midi`); `MIDI=0` turns keyboards off, and
+  `MIDI_REMOTE=1` lets them work outside the home.
 
-- **Сказали — и вещь появилась на столе.** «Сказать» в доке теперь микрофон пульта: «Сделай виджет: мои дела на сегодня
-  из Тудуиста» — и плитка «Новый виджет» становится этой вещью. Фиолетовая комета агента улетает от «Мозга» и рисует
-  пунктирный контур, внутри по шагам агента проявляются строки; стол и колонка в это время свободны. Готово — плитка
-  остаётся пунктирной («на примерке») с примером данных, а полоса над доком говорит: «Готово: виджет «Дела на сегодня».
-  Ему нужен ключ Todoist. Примерите — или сразу на стол?» Просили голосом — пульт 6 секунд слушает ответ без нажатия.
-  То же из «+»: напишите, что показать, — дальше плитка.
-- **«Примерка».** Окно с той же плиткой на кусочке стола: фразы для колонки (нажать или сказать «попробуй» — ответ из
-  примера), «Что ему нужно» (обычное можно сказать: «показывай три», личное — только руками) и «Что ему можно» (янтарь
-  — то, что уходит из дома). «На стол»: первую установку и новые права одобряете вы — плашка «Станет: …» и «Одобрить и
-  поставить · Enter», голосом нельзя. Без новых прав ставится сразу. Плитка садится на своё место настоящим виджетом с
-  меткой «новый» на сутки — и только теперь в ней ваши данные.
-- **До «да» — пример, а не ваши данные.** Агент пишет к вещи пример ответов сети (`examples.json`); плитка и
-  «Примерка» показывают его, а в сеть черновик не ходит. «Проверить» предупреждает, если примера нет.
-- **Ключи — только руками, хранятся в сейфе.** Пока открыто поле ключа, микрофон выключен — это видно в окне и в доке.
-  Ключи приложений больше не лежат открытым текстом в настройках: их хранит сейф шлюза, как ключи моделей; при
-  переезде они едут запечатанными, в журнале для агента вместо них «•••». Первый запуск переносит уже вписанные ключи.
-- **Колонка тоже: «Алиса, сделай виджет…».** Колонка отвечает «Делаю виджет. Скажу, когда будет готово» и свободна —
-  новое «Алиса» работу не обрывает. Черновик появляется на столе плиткой «попросили у колонки». В конце колонка сама
-  говорит «Готово…» и около 5 секунд слушает ответ без «Алиса»: «примерить» открывает «Примерку» в пульте, «на стол» —
-  окно «да» (сама колонка не ставит), «в черновики», «не надо», «переделай: …». Пока агент работает — «Алиса, что с
-  виджетом?» и «Алиса, отмени виджет». Занятая колонка (играет, звенит) скажет «Готово», когда освободится, — до 10
-  минут.
-- **Слух пульта — свой.** Речь пульта распознаёт «Слух» шлюза — тот же, что у колонки; в Google звук не уходит. На
-  полосе видно, где слышали: дома или в облаке (янтарём). Что пульт не понял, никуда не уходит: «Не понятно» и
-  подсказки. Прежнее «Сказать через колонку» — в поиске: «Текстом колонке…».
-- **«Навыки» стали «Приложениями».** Всё, что ставится, пульт называет приложением с лицами — виджет, навык, окно; в
-  карточке вместо «плагин» — где оно работает: «в шлюзе», «на компьютере», «в сети». Так же говорят «Память»,
-  «Расписания приложений», каталог, «+» и сообщения шлюза. Мастерская — место авторов — говорит по-прежнему.
-- **История приложений: любую версию можно вернуть.** Каждый шаг черновика (работа агента по одной просьбе — со словами
-  просьбы, сохранение руками) и каждая установка хранятся по хешу, как в git; одинаковое — один раз. В мастерской и в
-  окне приложения — лента «История»: сравнить с черновиком или с работающей версией, вернуть черновик к шагу,
-  «Вернуть…» поставленное — «Только код», «Код и данные» или «Только данные»; возврат — тоже запись, его можно
-  отменить. Перед каждой переменой шлюз сохраняет данные приложения (хранилище, задачи, картинки; настройки и ключи — нет).
-  Объединение версий: простое — само, спорное — агент, а если ему непонятно, что оставить, он спрашивает вас с
-  вариантами. Своя копия узнаёт о новой версии исходного приложения и предлагает объединить. Голосом: «Алиса, верни
-  погоду как было вчера», «отмени последнее изменение в погоде», «верни список покупок на вчера», «верни как было»,
-  «что поменялось в погоде?». Место: колонка — 2 МБ, компьютер — 200 МБ, старое чистится само; колонка может хранить
-  историю на компьютере («Где хранить историю»). На диске остаются работающая версия и одна до неё — остальные в истории.
-- **Слух работает сам — на любом компьютере, после перезагрузки и сбоя.** Приложение распознаёт речь само, без
-  сервера на Python и без терминала. При первом запуске оно скачивает GigaAM v3 (274 МБ, один раз; файл сверяется по
-  SHA-256, после обрыва докачивается), дальше модель работает на этом компьютере без интернета. На главной, пока
-  модель качается, — «Готовлю слух» с полосой; не встала — «Слух не встал» и «Повторить». Модель работает в
-  отдельном процессе приложения: упал или завис — поднимается снова и переслушивает фразу; отказала видеокарта —
-  распознаёт процессор; три сбоя за 5 минут — пауза и причина в пульте. Приложение закрылось или упало — процесс
-  заканчивается вместе с ним. Mac на Apple Silicon считает на видеокарте (Metal), остальные — на процессоре; на
-  M4 Max фраза — 15–30 мс против 60–90 мс у прежнего сервера, текст тот же. Другая модель (варианты GigaAM v3,
-  Parakeet v3, Whisper) включается в «Распознавании» без перезапуска: скачивается и встаёт, пока прежняя слушает.
-  Колонка в «Колонка + ПК» слушает тем же. Испорченный на диске файл модели скачивается заново сам. Прежний путь —
-  свой сервер распознавания по `ASR_BASE_URL` — остаётся: приложение уходит на него, если адрес записан в `.env`.
-- **Свой голос — без терминала.** Голоса Silero и Piper работают в приложении без своего сервера. При первом
-  выборе пульт предлагает поставить «Свой голос (Silero и Piper)» (~250 МБ на Mac, ~450 МБ в Windows и Linux).
-  Приложение само ставит Python и библиотеки, скачивает голос и включает его. Сервер голоса работает, пока такой
-  голос говорит. Упал — поднимается снова, при сбоях в пульте видна причина и «Повторить». Закрылось приложение —
-  сервер заканчивается с ним. uv теперь внутри приложения: голосовой лаборатории его тоже не нужно ставить руками.
-- **«Запускать при входе» включено с первого запуска приложения**: после перезагрузки компьютера шлюз и слух
-  возвращаются сами. Выключить — в меню значка; выключенное остаётся выключенным.
-- **«Сайт DuoWave» в меню значка** приложения, сразу под «Открыть пульт»: открывает duowave.ai в браузере.
-- **«Через 10 минут выключи свет».** Любую команду можно отложить: «через N минут …», «в 18:30 …», «завтра в 9 утра …» —
-  от минуты до суток, до 20 на колонку. В срок колонка выполняет слова так, будто их сказали сейчас. Сообщения и
-  звонки шлюз сначала переспрашивает («— верно?»). «Отмени отложенное», «отмени все отложенные», «что отложено»; в
-  «Приложения» → «Установлено» — список «Отложенные команды» со «Снять». Опоздавшая больше чем на 10 минут команда не
-  выполняется, а вам приходит сообщение.
-- **Картинки у приложений.** Приложение с правом `files` скачивает картинки (PNG, JPEG, WebP, GIF) и показывает их в своём
-  виджете (`useFile` в SDK пульта). На колонке места мало: картинка — до 1 МБ, все вместе — до 5 МБ; мастерская там
-  предупреждает. Переезд везёт картинки вместе с данными приложений: на колонку — сколько влезет, новые первыми.
-- **Игры на время: колонка сама говорит «Время вышло!».** Приложение может дать на ответ от 3 до 120 секунд
-  (`continue.timeout`, Host API 1.2). Отсчёт идёт с конца речи колонки; промолчали — колонка сама говорит «время
-  вышло», и игра идёт дальше. Две такие тишины подряд шлюз терпит, на третьей заканчивает игру сам: «Похоже, никого нет
-  — заканчиваю». В мастерской — заготовка «Викторина на время» и кнопка «Промолчать» в песочнице.
-- **Приложения действуют сами в срок.** Ритм в манифесте («по будням в 7:30», «каждые 2 часа с 9 до 21») или срок из кода
-  (`host.schedule.set`: «через час», «завтра в 18:00», «каждый день в 9») — в срок колонка говорит ответ приложения или
-  готовую фразу, а `notify` присылает вам сообщение в чат «Оповещения». В карточке приложения — «Расписание»: когда
-  следующий раз, чем кончился прошлый, «Запустить сейчас», «Пауза»; в «Установлено» — выключатель «Расписания
-  приложений». Предохранители держит шлюз: не больше 12 речей и 20 сообщений в час на приложение, после перерыва — не больше
-  трёх опоздавших подряд, пять ошибок подряд — пауза. Расписания переезжают вместе с данными приложений.
-- **«Алиса, стоп» снова останавливает сразу.** Если в комнате был фон, шлюз не замечал конца фразы. Запрос тянулся
-  до 15 секунд, и стоп срабатывал, когда останавливать было уже нечего. Теперь:
-  - фраза заканчивается и тогда, когда распознанный текст 2 секунды не меняется;
-  - стоп («стоп», «хватит», «замолчи», с «Алисой» или без) срабатывает, как только его подтвердит следующее
-    распознавание, примерно через секунду;
-  - «Стоп. Стоп.» — тоже стоп;
-  - дослушивание после вопроса берёт усиление с последней «Алисы», а не максимальное, и фон комнаты больше не
-    считается речью. Шлюз помнит усиление пяти последних «Алис» каждой колонки, и перезапуск его не стирает: если
-    в этом соединении «Алисы» ещё не было (колонка переподключилась или её зовут своим словом), берётся середина
-    из них, а у колонки, которая «Алису» ещё не слышала, — умеренные 30 дБ.
+- **Say it, and the thing appears on the desk.** "Say" in the dock is now the panel's microphone. Say "Make a widget: my
+  tasks for today from Todoist", and the "New widget" tile becomes that thing. The agent's purple comet flies from
+  "Brain" and draws a dashed outline, and lines appear inside it step by step as the agent works. The desk and the
+  speaker stay free meanwhile. When it is ready, the tile stays dashed ("on trial") with sample data. The bar above the
+  dock says: "Ready: the 'Today's tasks' widget. It needs a Todoist key. Try it on, or put it straight on the desk?" If
+  you asked by voice, the panel listens for the answer for 6 seconds without a press. The same works from "+": write
+  what to show, and the tile does the rest.
+- **"Try-on".** A window with the same tile on a piece of the desk. It has phrases for the speaker (press one or say
+  "try it", and the answer comes from the sample), "What it needs" and "What it may do". You can say ordinary needs
+  aloud ("show three"), but personal ones only by hand; amber marks what leaves the home. "To the desk": you approve the
+  first install and new rights, with the "Becomes: …" badge and "Approve and install · Enter", and not by voice. Without
+  new rights the thing installs at once. The tile takes its place as a real widget with a "new" mark for a day, and only
+  now does it show your data.
+- **Before "yes", a sample, not your data.** The agent writes a sample of network answers for the thing
+  (`examples.json`). The tile and "Try-on" show it, and the draft does not go to the network. "Check" warns when there
+  is no sample.
+- **Keys only by hand, kept in the safe.** While a key field is open, the microphone is off; this shows in the window
+  and in the dock. Apps' keys no longer lie as plain text in the settings: the gateway's safe keeps them, like model
+  keys. In a move they travel sealed, and in the agent's journal they show as "•••". The first start moves the keys you
+  already entered.
+- **The speaker too: "Alice, make a widget…".** The speaker answers "Making a widget. I'll tell you when it's ready" and
+  is free: a new "Alice" does not cut the work off. The draft appears on the desk as a tile marked "asked from the
+  speaker". At the end the speaker says "Ready…" by itself and listens for an answer for about 5 seconds without
+  "Alice". "Try it on" opens "Try-on" in the panel, and "to the desk" opens the "yes" window (the speaker itself does
+  not install). You can also say "to drafts", "no" or "redo: …". While the agent works: "Alice, how's the widget?" and
+  "Alice, cancel the widget". A busy speaker (playing, ringing) says "Ready" when it is free, within 10 minutes.
+- **The panel's hearing is our own.** The gateway's "Hearing" recognizes the panel's speech, the same as the speaker's;
+  the sound does not go to Google. The bar shows where the speech was heard: at home or in the cloud (in amber). What
+  the panel did not understand goes nowhere: it shows "Not understood" and hints. The old "Say through the speaker" is
+  in search: "Type to the speaker…".
+- **"Skills" became "Apps".** The panel calls everything you install an app with faces: a widget, a skill, a window. In
+  place of "plugin", the card says where the app runs: "in the gateway", "on the computer", "on the network". "Memory",
+  "App schedules", the catalog, "+" and the gateway's messages speak the same way. The workshop, the authors' place,
+  speaks as before.
+- **Apps' history: any version can come back.** Each step of a draft (the agent's work on one request, with the words of
+  the request, or a save by hand) and each install is kept by hash, as in git. The same content is kept only once. The
+  workshop and the app's window have the "History" feed. There you compare a version with the draft or with the running
+  version, return the draft to a step, or bring back an installed version: "Code only", "Code and data" or "Data only".
+  A return is a record too, and you can undo it. Before each change the gateway saves the app's data (storage, tasks,
+  pictures; not settings and keys). Merging versions: simple ones merge by themselves, disputed ones go to the agent,
+  and if the agent is not sure what to keep, it asks you and gives options. Your own copy learns about a new version of
+  the original app and offers to merge. By voice: "Alice, bring the weather back to how it was yesterday", "undo the
+  last change in the weather", "bring the shopping list back to yesterday", "bring it back", "what changed in the
+  weather?". Storage: 2 MB on the speaker and 200 MB on a computer; old versions are cleaned by themselves. The speaker
+  can keep its history on the computer ("Where to keep history"). The disk keeps the running version and the one before
+  it; the others are in the history.
+- **Hearing works by itself: on any computer, after a reboot and after a crash.** The app recognizes speech itself,
+  without a Python server and without a terminal. At the first start it downloads GigaAM v3 (274 MB, once; the file is
+  checked by SHA-256 and resumed after a break). Then the model runs on this computer without the internet. While the
+  model downloads, the home screen shows "Getting ready to listen" with a bar; if it fails, "Hearing did not start" and
+  "Retry". The model runs in a separate process of the app. If it crashes or hangs, it comes back and hears the phrase
+  again. If the graphics card fails, the processor recognizes. Three failures in 5 minutes give a pause and the reason
+  in the panel. When the app closes or crashes, the process ends with it. A Mac on Apple Silicon computes on the
+  graphics card (Metal), other computers on the processor. On an M4 Max a phrase takes 15–30 ms against 60–90 ms with
+  the old server, with the same text. Another model (GigaAM v3 variants, Parakeet v3, Whisper) switches on in
+  "Recognition" without a restart: it downloads and starts while the old one listens. A speaker in "Speaker + PC"
+  listens with the same model. A model file damaged on disk downloads again by itself. The old way, your own recognition
+  server at `ASR_BASE_URL`, stays: the app uses it if the address is in `.env`.
+- **Your own voice without a terminal.** Silero and Piper voices work in the app without a server of their own. At the
+  first choice the panel offers to install "Own voice (Silero and Piper)" (~250 MB on a Mac, ~450 MB on Windows and
+  Linux). The app installs Python and the libraries itself, downloads the voice and switches it on. The voice server
+  runs while such a voice speaks. If it crashes, it comes back; on failures the panel shows the reason and "Retry". When
+  the app closes, the server ends with it. uv is now inside the app, so the voice lab does not need it installed by hand
+  either.
+- **"Start at login" is on from the app's first start**: after a computer reboot, the gateway and hearing come back by
+  themselves. Switch it off in the icon's menu; off stays off.
+- **"DuoWave site" in the app's icon menu**, right under "Open panel": it opens duowave.ai in the browser.
+- **"Turn off the light in 10 minutes".** Any command can be delayed: "in N minutes …", "at 18:30 …", "tomorrow at 9 am
+  …", from a minute to a day, up to 20 per speaker. When the time comes, the speaker carries out the words as if they
+  were said now. For messages and calls, the gateway first asks again ("— right?"). "Cancel the delayed command",
+  "cancel all delayed commands", "what is delayed"; in "Apps" → "Installed" there is the "Delayed commands" list with
+  "Remove". A command more than 10 minutes late does not run, and you get a message instead.
+- **Pictures in apps.** An app with the `files` right downloads pictures (PNG, JPEG, WebP, GIF) and shows them in its
+  widget (`useFile` in the panel SDK). The speaker has little storage: up to 1 MB a picture and up to 5 MB in all; the
+  workshop warns about this there. A move takes pictures along with app data: to the speaker, as many as fit, newest
+  first.
+- **Timed games: the speaker says "Time's up!" by itself.** An app can give 3 to 120 seconds for an answer
+  (`continue.timeout`, Host API 1.2). The countdown starts when the speaker stops talking. If nobody answers, the
+  speaker says "time's up" by itself, and the game goes on. The gateway puts up with two such silences in a row; at the
+  third it ends the game itself: "Looks like nobody's here — finishing". The workshop has the "Timed quiz" starting
+  point and a "Stay silent" button in the sandbox.
+- **Apps act on time by themselves.** A rhythm in the manifest ("on weekdays at 7:30", "every 2 hours from 9 to 21") or
+  a time from the code (`host.schedule.set`: "in an hour", "tomorrow at 18:00", "every day at 9") sets when. When the
+  time comes, the speaker says the app's answer or a ready phrase, and `notify` sends you a message in the
+  "Notifications" chat. The app's card has "Schedule": when the next run is, how the last one ended, "Run now", "Pause".
+  "Installed" has the "App schedules" switch. The gateway keeps the safety limits: at most 12 speeches and 20 messages
+  an hour per app, at most three late runs in a row after a break, and a pause after five errors in a row. Schedules
+  move together with app data.
+- **"Alice, stop" stops at once again.** With background noise in the room, the gateway missed the end of a phrase. A
+  request dragged on for up to 15 seconds, and the stop worked when there was nothing left to stop. Now:
+  - a phrase also ends when the recognized text has not changed for 2 seconds;
+  - a stop word ("стоп", "хватит", "замолчи": stop, enough, be quiet; with "Alice" or without) works as soon as the next
+    recognition confirms it, in about a second;
+  - "Стоп. Стоп." ("Stop. Stop.") is a stop too;
+  - listening after a question takes the gain of the last "Alice", not the highest one, and the room's noise no longer
+    counts as speech. The gateway remembers the gain of the last five "Alice" calls for each speaker, and a restart does
+    not erase it. If there was no "Alice" in this connection yet (the speaker reconnected, or it is called by its own
+    word), the middle value of those is taken. A speaker that has not heard "Alice" yet gets a moderate 30 dB.
 
-  Настройки: `ASR_UNCHANGED_END_MS`, `ASR_STOP_END_MS` (0 выключает) и `AUDIO_GAIN_NO_WAKE_WORD_DB`.
-- **Запасная модель.** В «Персонаж» → «Мозг» под «Быстрой» и «Умной» — «Запасная»: если выбранная модель не ответила
-  (кончился лимит подписки, нет связи, сервис отказал), на тот же вопрос отвечает запасная. Ею может быть модель любого
-  провайдера или модель из .env; пульт пишет, куда тогда уйдёт вопрос. Без запасной всё как прежде.
-- **Ответы из подписки ChatGPT.** В «Персонаж» → «Мозг» появился провайдер ChatGPT: «Continue with ChatGPT», и модели
-  OpenAI отвечают из вашей подписки Plus или Pro — ключ API не нужен. Вход обновляется сам и хранится только на этом
-  компьютере. Когда лимит подписки исчерпан, отвечает запасная модель, если она выбрана, а без неё колонка так и
-  говорит; карточка провайдера показывает лимит. Сколько DuoWave может тратить, задаётся в ChatGPT → Settings → Usage.
-  С телефона после входа браузер покажет ошибку адреса 127.0.0.1 — этот адрес вставляют в пульт. Это превью OpenAI:
-  условия могут поменяться.
-- **OpenRouter подключается без ключа.** В «Персонаж» → «Мозг» у OpenRouter есть «Войти через OpenRouter»: вы входите
-  в свой аккаунт, ключ создаётся там и сам приходит в шлюз — копировать его не нужно. Пульт на компьютере со шлюзом
-  получает ключ сам; на телефоне или у шлюза на колонке страница OpenRouter показывает код — его вставляют в пульт.
-  Ключ виден в аккаунте OpenRouter под именем DuoWave, там же его удаляют.
-- **Шлюз на колонку руками ставится до конца.** `duowave station install`, запущенный по SSH, больше не зависает:
-  служба колонки запускается отдельно от того, кто её запустил, — в своём сеансе и без его вывода, — поэтому не держит
-  SSH-сессию и не останавливается вместе с ней. Прежде установка ждала вечно, а служба жила, пока была открыта сессия.
+  Settings: `ASR_UNCHANGED_END_MS`, `ASR_STOP_END_MS` (0 turns it off) and `AUDIO_GAIN_NO_WAKE_WORD_DB`.
+- **Backup model.** In "Character" → "Brain", under "Fast" and "Smart", there is "Backup". If the chosen model did not
+  answer (the plan's limit ran out, no connection, the service refused), the backup model answers the same question. It
+  can be a model of any provider or the model from .env; the panel says where the question will go then. Without a
+  backup model everything works as before.
+- **Answers from a ChatGPT plan.** "Character" → "Brain" has a ChatGPT provider: "Continue with ChatGPT", and OpenAI
+  models answer from your Plus or Pro plan. No API key is needed. The sign-in renews itself and is kept only on this
+  computer. When the plan's limit runs out, the backup model answers if one is chosen; without it, the speaker says so.
+  The provider's card shows the limit. How much DuoWave may spend is set in ChatGPT → Settings → Usage. From a phone,
+  after sign-in the browser shows an address error for 127.0.0.1: paste that address into the panel. This is an OpenAI
+  preview: the terms may change.
+- **OpenRouter connects without a key.** In "Character" → "Brain", OpenRouter has "Sign in with OpenRouter". You sign in
+  to your account, the key is created there and arrives in the gateway by itself, so you do not need to copy it. The
+  panel on the computer with the gateway gets the key itself. On a phone, or with the gateway on a speaker, the
+  OpenRouter page shows a code, and you paste it into the panel. The key shows in your OpenRouter account under the name
+  DuoWave, and you delete it there.
+- **A gateway installed on the speaker by hand finishes installing.** `duowave station install` run over SSH no longer
+  hangs. The speaker's service starts apart from whoever started it, in its own session and without its output. So it
+  does not hold the SSH session and does not stop with it. Before, the install waited forever, and the service lived
+  only while the session was open.
 
 ## 0.5.1 — 11.11.2026
 
-Исправления после 0.5.0: компьютер снова обновляет колонку — и Лайт 2 тоже, — а страница «Компьютер-помощник» больше
-не светлеет в тёмном пульте и открывает то, что обещает.
+Fixes after 0.5.0: the computer updates the speaker again, the Lite 2 too. The "Helper computer" page no longer turns
+light in the dark panel, and it opens what it promises.
 
-- **Колонка обновляется с компьютера и на Лайт 2.** Компьютер отправляет колонке сам архив, а не base64 в JSON, и
-  колонка пишет программу из него прямо на диск, не держа её в памяти. Прежде шлюзу колонки при обновлении не хватало
-  памяти: ядро его останавливало, и колонка возвращалась на прежнюю версию. Колонку на 0.5.0 и раньше один раз
-  обновляют вручную — компьютер так и скажет; дальше она обновляется из пульта.
-- **Видно, как идёт обновление колонки.** «Присматриваю за колонкой» пишет «Колонка обновляется…», а если не вышло —
-  почему: например, «связь со шлюзом колонки оборвалась на полпути». Прежде было короткое «Колонка обновляется.» и
-  тишина.
-- **«Открыть» на странице «Компьютер-помощник» работает:** показывает «Где работает DuoWave» — копии, перенос, что
-  случилось — прямо на странице. Прежде кнопка ничего не делала.
-- **Тема, выбранная в окне приложения, помнится,** и страница «Компьютер-помощник» красится так же. Прежде тёмная тема
-  в пульте колонки не сохранялась, а страница компьютера оставалась светлой.
-- **Приложение не падает при запуске,** когда шлюз ответил раньше, чем окно начало загружаться.
-- Уведомление о новой версии и подсказка колонки «кто её обновляет» называют новые места: «Настройки» → «Обновления и
-  копии», «Настройки» → «Компьютер-помощник».
+- **The speaker updates from the computer, the Lite 2 too.** The computer sends the speaker the archive itself, not
+  base64 in JSON, and the speaker writes the program from it straight to disk without holding it in memory. Before,
+  the speaker's gateway ran out of memory during the update: the kernel stopped it, and the speaker went back to the
+  old version. A speaker on 0.5.0 or older is updated by hand once, and the computer says so. After that it updates
+  from the panel.
+- **You can see how the speaker update goes.** "Watching over the speaker" says "The speaker is updating…", and if it
+  fails, it says why: for example, "the link to the speaker's gateway broke halfway". Before, there was a short "The
+  speaker is updating." and then silence.
+- **"Open" on the "Helper computer" page works:** it shows "Where DuoWave runs" (copies, moving, what happened) right
+  on the page. Before, the button did nothing.
+- **The theme you pick in the app window is remembered,** and the "Helper computer" page uses the same colors. Before,
+  the dark theme in the speaker's panel was not saved, and the computer's page stayed light.
+- **The app no longer crashes on start** when the gateway answered before the window began to load.
+- The new-version notice and the speaker's "who updates it" hint name the new places: "Settings" → "Updates and
+  backups", "Settings" → "Helper computer".
 
 ## 0.5.0 — 11.11.2026
 
-Пересобранный пульт: четыре места вместо девяти разделов, одно имя у каждой вещи, один пульт у компьютера, который
-помогает колонке, и первый запуск в четыре шага.
+A rebuilt panel: four places instead of nine sections, one name for each thing, one panel on the computer that helps
+the speaker, and a first run in four steps.
 
-- **Пульт — четыре места.** Внизу «Главная · Персонаж · Навыки · Настройки» и «Сказать»; «Ещё» и «+» у дока ушли.
-  - «Персонаж» — кто отвечает, его голос и мозг.
-  - «Навыки» — что колонка умеет, подключения, каталог и «Кто отвечает».
-  - «Настройки» — списком, как на Mac: колонка (имя и вид, режим, слух, где работает), компьютер-помощник, люди и
-    доступ, оформление, обновления и копии, история разговоров, «Для разработчиков».
-  - Наверху одна строка: колонка, точка связи и что с ней («на связи · компьютер помогает»). Рядом поиск ⌘K по
-    всему пульту и аватар: тема в одно нажатие, оформление, выход.
-  - Старые ссылки (`#/mind/…`, `#/house/…`, `#/journal`) ведут на новые места.
-- **«Персонаж» — одна страница.** Сверху тот, кто отвечает, с «послушать» и «Выбрать другого». Ниже голос, манера
-  (длина ответа и другие тоны — прямо на странице), мозг («думать дольше над трудным» у Claude) и «Свой голос». По
-  «›» — все персонажи, все голоса, модели и провайдеры. Окошки «Голос» и «Мозг» на главной ведут сюда же.
-- **«Навыки» — один список.** Что колонка умеет, и у каждого — кто отвечает: свой или Яндекс; чего пока не умеет — с
-  «Научить»: агент мастерской получает фразу и задание; подключения и программы (MCP). Установленное, каталог и «Сделать
-  свой навык» — по «›».
-- **Один пульт у компьютера.** Когда компьютер помогает колонке, окно приложения и есть её пульт: главная, персонаж,
-  навыки и настройки — колонки, через компьютер, без «окна колонки в окне». Своё у компьютера — страница «Настройки» →
-  «Компьютер-помощник»: помогать колонке, не засыпать, копии, его обновления и модели. «Мозг компьютера», «Плагины
-  компьютера» и тёмная рамка ушли. «Сказать» и полукруг на главной теперь о колонке, а не о компьютере. Колонка не
-  отвечает — пульт показывает её копию и говорит об этом.
-- **Первый запуск — четыре шага до «привет».** Найти колонку → проверить и подключить → выбрать, кто будет отвечать
-  → «Скажите колонке: «Алиса, какая погода завтра?»» и адрес пульта для телефона. Имя и вид — потом, плашкой на
-  главной. Если на колонке уже DuoWave, выбора размещения нет: компьютер становится её помощником одной кнопкой.
-- **Помощь без переключателей.** У компьютера один переключатель «Помогать колонке»; части по отдельности — «Тонкая
-  настройка» у разработчика. Копия настроек видна датой: «сегодня 14:02 ✓». Путь к Яндексу один — «Вернуть колонку
-  Яндексу» в «Настройки» → «Колонка», обратимо. Сообщения переноса называют места, которые есть в пульте.
-- **Одно имя у каждой вещи.** Режимы — «Яндекс · Вместе · Своё»; характер — «Манера», распознавание — «Слух»,
-  коннекторы — «Подключения», маршруты — «Кто отвечает», журнал — «История разговоров»; «ПК» и «помощник» —
-  «компьютер», «компьютер помогает». Так же говорят и сообщения шлюза.
-- **Колонку можно переименовать** в любой момент: «Настройки» → «Колонка» → «Имя и вид». Прежде имя задавалось только
-  при первой настройке.
-- **Слух Яндекса больше не уводит колонку молча.** Выбор его в «Слухе» сначала спрашивает: колонку тогда целиком
-  ведёт Яндекс.
-- **Точку новой версии видно** — на «Настройках» в доке; в меню «Ещё» её не было видно.
-- **Полукруг на столе.** Вокруг колонки — три узла, как в дизайне стола: слух слева, мозг сверху, голос справа, и
-  путь вопроса бежит по этой дуге. Мышление открывается из окошка «Мозг», характер — из окошка «Голос», а шар
-  персонажа вылетает в колонку из голоса.
-- **Виджеты у колонки стоят на месте.** В приложении столбцы виджетов по бокам от колонки прыгали на долю точки,
-  пока горели слух и голос (заметно, когда масштаб стола не 100 %). Больше не прыгают.
+- **The panel is four places.** At the bottom: "Main · Character · Skills · Settings" and "Say". "More" and "+" at the
+  dock are gone.
+  - "Character": who answers, their voice and brain.
+  - "Skills": what the speaker can do, connections, the catalog and "Who answers".
+  - "Settings": a list, as on a Mac. The speaker (name and look, mode, hearing, where it runs), the helper computer,
+    people and access, appearance, updates and backups, conversation history, "For developers".
+  - At the top there is one line: the speaker, a link dot and its state ("online · computer helps"). Next to it are a
+    ⌘K search across the whole panel and an avatar: theme in one tap, appearance, sign out.
+  - Old links (`#/mind/…`, `#/house/…`, `#/journal`) lead to the new places.
+- **"Character" is one page.** At the top is the one who answers, with "listen" and "Choose another". Below are the
+  voice, the manner (answer length and other tones, right on the page), the brain ("think longer on hard ones" for
+  Claude) and "Own voice". Behind "›" are all characters, all voices, models and providers. The "Voice" and "Brain"
+  boxes on the main page lead here too.
+- **"Skills" is one list.** What the speaker can do, and for each one who answers it: your own or Yandex. What it
+  cannot do yet has "Teach": the workshop agent gets the phrase and a task. Then connections and programs (MCP).
+  Installed items, the catalog and "Make your own skill" are behind "›".
+- **One panel on the computer.** When the computer helps the speaker, the app window is the speaker's panel: main,
+  character, skills and settings are the speaker's, through the computer, with no "speaker window inside a window".
+  The computer's own things are on the "Settings" → "Helper computer" page: help the speaker, do not sleep, copies,
+  its updates and models. "Computer brain", "Computer plugins" and the dark frame are gone. "Say" and the semicircle on
+  the main page are now about the speaker, not the computer. If the speaker does not answer, the panel shows its copy
+  and says so.
+- **First run: four steps to "hello".** Find the speaker → check and connect → choose who will answer → "Say to the
+  speaker: "Alice, what's the weather tomorrow?"" and the panel address for your phone. Name and look come later, as a
+  card on the main page. If DuoWave is already on the speaker, there is no placement choice: the computer becomes its
+  helper with one button.
+- **Help without switches.** The computer has one switch, "Help the speaker". The separate parts are in "Fine-tuning"
+  for developers. The settings copy shows its date: "today 14:02 ✓". There is one way back to Yandex: "Give the
+  speaker back to Yandex" in "Settings" → "Speaker", and you can undo it. Moving messages name places that exist in
+  the panel.
+- **One name for each thing.** Modes are "Yandex · Together · Own". Personality is now "Manner", recognition is
+  "Hearing", connectors are "Connections", routes are "Who answers", the journal is "Conversation history". "PC" and
+  "helper" are now "computer" and "computer helps". The gateway's messages use the same words.
+- **You can rename the speaker** at any time: "Settings" → "Speaker" → "Name and look". Before, you could set the name
+  only during the first setup.
+- **Yandex hearing no longer takes the speaker away silently.** Choosing it in "Hearing" asks first: Yandex then runs
+  the speaker fully.
+- **The new-version dot is visible** on "Settings" in the dock. In the "More" menu you could not see it.
+- **The semicircle on the desk.** Around the speaker there are three nodes, as in the desk design: hearing on the left,
+  brain at the top, voice on the right. The path of a question runs along this arc. Thinking opens from the "Brain"
+  box, personality from the "Voice" box, and the character's ball flies into the speaker from the voice.
+- **Widgets next to the speaker stay in place.** In the app, the widget columns on both sides of the speaker jumped by
+  a fraction of a pixel while hearing and voice were lit (you could see it when the desk zoom was not 100 %). They no
+  longer jump.
 
 ## 0.4.0 — 11.11.2026
 
-Каталог из нескольких лент, и настройки колонки, которые больше не меняются от одного взгляда на пульт.
+A catalog from several feeds, and speaker settings that no longer change when you just look at the panel.
 
-- **Дополнительные ленты каталога.** Главная лента каталога может назвать ещё до четырёх лент — наш магазин или ленту
-  партнёра, — и шлюз читает их следом за ней. У пакета из такой ленты в каталоге метка с её названием. Из них
-  ставятся персонажи и темы; плагины и приложения — пока нет, подписи для таких лент ещё нет. Если лента недоступна,
-  в каталоге об этом строка, а главная и остальные ленты работают как прежде. «Не загружать каталог» выключает все
-  ленты сразу.
-- **Настройки колонки не меняются от взгляда на них.** Пульт перечитывает список персонажей каждые 15 секунд, и
-  каждое чтение заново записывало персонажей из пакетов — ревизия настроек колонки росла раз в минуту. Компьютер
-  делал копию на каждую, и десять хранимых копий покрывали лишь последние десять минут. Теперь персонаж
-  записывается, только когда в нём что-то изменилось, — и при старте шлюза тоже.
+- **Extra catalog feeds.** The main catalog feed can name up to four more feeds, our store or a partner's feed, and
+  the gateway reads them after it. A package from such a feed has a label with the feed's name in the catalog. You
+  can install characters and themes from them. Plugins and apps not yet: there is no signature for such feeds yet. If
+  a feed is not available, the catalog shows a line about it, and the main feed and the other feeds work as before.
+  "Do not load the catalog" turns off all feeds at once.
+- **Speaker settings do not change when you look at them.** The panel rereads the character list every 15 seconds,
+  and each read wrote the characters from packages again, so the speaker settings revision grew once a minute. The
+  computer made a copy for each one, and the ten kept copies covered only the last ten minutes. Now a character is
+  written only when something in it changed, at gateway start too.
 
 ## 0.3.0 — 11.11.2026
 
-Стол вместо главного экрана, и шлюз на самой колонке, которому помогает компьютер.
+A desk instead of the main screen, and a gateway on the speaker itself, helped by the computer.
 
-- **Стол.** Пульт — бесконечный стол. В центре колонка: видно, кто сейчас слышит, думает и говорит. Вокруг —
-  виджеты: таймеры, что играет, погода, радио, курсы, календарь, список покупок, последние вопросы. Их двигают,
-  приближают и прячут, по столу ходят с картой. У каждого человека свой стол, и хранится он на шлюзе. Внизу док,
-  разделы открываются окнами поверх стола, а листы и вопросы всегда сверху.
-- **Виджет голосом.** «Давай сделаем виджет» — агент мастерской рисует его, пульт показывает вживую, а кнопка
-  «Поставить на стол» ставит.
-- **«Шлюз» и «Помощник».** Роль видна в рамке пульта. Шлюз — тот, кто отвечает колонке, у него рамка белая.
-  Помощник — компьютер, когда шлюз работает на колонке, у него рамка тёмная. Настройки колонки помощник правит прямо
-  на колонке, через пару.
-- **«Колонка + ПК».** Перенос шлюза на колонку и обратно везёт голос, плагины вместе с их данными, ключи и имя
-  колонки. Отозванный ключ остаётся отозванным. Перед тем как применить настройки, шлюз делает полную копию базы.
-  В окне «Голос» колонки можно выбрать голос компьютера.
-- **Сообщения через компьютер.** На колонке с помощником «Алиса, передай …» уходит через бота Telegram на компьютере,
-  а текст и голосовые, присланные боту, колонка проговаривает и проигрывает. За оба направления отвечает один
-  переключатель «Сообщения» в «Что даю колонке».
-- **Пульт не замирает с несколькими вкладками.** Живой канал пульта — один WebSocket на вкладку, события колонки идут
-  через компьютер, опросы не накладываются друг на друга. Окна и листы непрозрачны при любой теме.
-- **Плагины на колонке.** Плагин занимает её память, только пока загружен, поэтому включение больше не отказывает
-  из-за памяти.
-- **Без ложных тревог.** Пока шлюз на колонке, компьютер не пишет «колонка не подключена». Часы колонки сразу после
-  загрузки (1970 год) больше ничего не отсчитывают.
-- **Погода 1.1.2.** Город берётся по словарной форме: «в Москве» — это Москва, а не случайное совпадение начала
-  названия.
-- **Сайт — duowave.ai, почта — hello@duowave.ai.** Каталог пакетов встроен в каждый выпуск:
+- **Desk.** The panel is an endless desk. The speaker is in the center: you see who hears, thinks and speaks right
+  now. Around it are widgets: timers, what is playing, weather, radio, exchange rates, calendar, shopping list, recent
+  questions. You can move, zoom and hide them, and move around the desk with a map. Each person has their own desk,
+  and the gateway keeps it. The dock is at the bottom, sections open as windows over the desk, and sheets and
+  questions are always on top.
+- **Widget by voice.** "Let's make a widget": the workshop agent draws it, the panel shows it live, and the "Put on the
+  desk" button puts it there.
+- **"Gateway" and "Helper".** The role shows in the panel frame. The gateway is the one that answers the speaker; its
+  frame is white. The helper is the computer when the gateway runs on the speaker; its frame is dark. The helper edits
+  the speaker settings right on the speaker, through the pairing.
+- **"Speaker + PC".** Moving the gateway to the speaker and back carries the voice, plugins with their data, keys and
+  the speaker name. A revoked key stays revoked. Before it applies the settings, the gateway makes a full copy of the
+  database. In the speaker's "Voice" window you can choose the computer's voice.
+- **Messages through the computer.** On a speaker with a helper, "Alice, send …" goes through the Telegram bot on the
+  computer. Text and voice messages sent to the bot are read out and played by the speaker. One switch, "Messages" in
+  "What I give the speaker", controls both directions.
+- **The panel does not freeze with several tabs.** The panel's live channel is one WebSocket per tab, speaker events go
+  through the computer, and polls do not overlap. Windows and sheets are opaque in every theme.
+- **Plugins on the speaker.** A plugin takes the speaker's memory only while it is loaded, so turning one on no longer
+  fails for lack of memory.
+- **No false alarms.** While the gateway is on the speaker, the computer does not say "speaker not connected". The
+  speaker's clock right after boot (year 1970) no longer counts anything down.
+- **Weather 1.1.2.** The city is found by its dictionary form: "в Москве" ("in Moscow", a case form) is Moscow, not a
+  random match of the start of a name.
+- **Site: duowave.ai, mail: hello@duowave.ai.** The package catalog is built into every release:
   `packages.duowave.app/catalog.json`.
-- **«Шлюз» без своего распознавания ведёт запросы.** Когда голос целиком уходит Яндексу, это такой же запрос, как
-  остальные: виден в пульте и в журнале, со словами и ответом Яндекса. Колонка, которая переподключилась и сразу
-  заговорила, больше не теряет фразу: голос ждёт, пока откроется сессия с Яндексом (до 5 секунд).
-- **Запасной ключ обновлений.** Шлюз доверяет и второму, запасному ключу, который хранится отдельно: потеря основного
-  не оставит шлюзы без обновлений.
-- **Срочные обновления ставятся сами.** Выпуск, который исправляет что-то важное, помечен в ленте, и шлюз ниже этой
-  версии ставит его сам при ближайшей проверке (раз в час) — и сам по себе, и внутри приложения. В пульте такое
-  обновление видно сразу: строку не скрыть, а там, где шлюз сам не обновляется (Docker, Home Assistant, пакет на
-  колонке), написано, что сделать. Выключить: `UPDATE_AUTO_CRITICAL=false`. Обычные обновления, как и раньше, — по кнопке.
-- **Откат на старую версию не ставится.** В каждом архиве шлюза лежит `release.json` с версией и платформой под той же
-  подписью, что и программа. Шлюз ставит архив только как эту самую версию, собранную для него и новее стоящей:
-  подменённая лента больше не вернёт его на прежний выпуск. Лента и архивы — только по https.
-- **Паника в одной задаче больше не роняет весь шлюз.** Сборка для компьютера раскручивает стек: упавшая задача
-  завершается одна, остальные колонки работают, шлюз может обновиться. Сборка для колонки — как прежде.
-- **Docker собирается из исходников.** В образ не попадали скрипты колонки, которые шлюз встраивает в себя, и
-  `docker compose up --build` падал. Теперь `docker compose up -d` берёт готовый образ выпуска; сборка из исходников —
-  `docker compose build gateway`, и CI проверяет, что ей хватает всех встроенных файлов.
+- **"Gateway" mode without its own recognition handles requests.** When the voice goes fully to Yandex, it is a request
+  like the others: you see it in the panel and in the journal, with Yandex's words and answer. A speaker that
+  reconnected and spoke at once no longer loses the phrase: the voice waits until the Yandex session opens (up to 5
+  seconds).
+- **Backup update key.** The gateway also trusts a second, backup key that is kept apart. Losing the main key will not
+  leave gateways without updates.
+- **Urgent updates install themselves.** A release that fixes something important is marked in the feed. A gateway
+  below that version installs it by itself at the next check (once an hour), on its own and inside the app. The panel
+  shows such an update at once: you cannot hide the line, and where the gateway does not update itself (Docker, Home
+  Assistant, the package on the speaker), it says what to do. To turn it off: `UPDATE_AUTO_CRITICAL=false`. Normal
+  updates install on a button press, as before.
+- **A rollback to an old version does not install.** Each gateway archive holds `release.json` with the version and
+  platform, under the same signature as the program. The gateway installs an archive only as that exact version,
+  built for it and newer than the one installed: a forged feed can no longer take it back to an old release. The feed
+  and archives come only over https.
+- **A panic in one task no longer brings down the whole gateway.** The computer build unwinds the stack: the failed
+  task ends alone, other speakers keep working, and the gateway can update. The speaker build is as before.
+- **Docker builds from source.** The image did not get the speaker scripts that the gateway builds into itself, and
+  `docker compose up --build` failed. Now `docker compose up -d` takes the ready release image. To build from source:
+  `docker compose build gateway`, and CI checks that it has all the built-in files.
 
 ## 0.2.0 — 10.11.2026
 
-Первый открытый выпуск: код — [Apache-2.0](LICENSE), документация — CC BY 4.0 ([docs/LICENSE](docs/LICENSE)). Вклады
-идут под теми же лицензиями, без отдельного соглашения участника. Имя DuoWave и знак ДиВи — товарные знаки, лицензия
-кода прав на них не даёт ([TRADEMARKS.md](TRADEMARKS.md)).
+The first open release: the code is under [Apache-2.0](LICENSE), the docs under CC BY 4.0
+([docs/LICENSE](docs/LICENSE)). Contributions come under the same licenses, with no separate contributor agreement.
+The DuoWave name and the Deevi mark are trademarks, and the code license gives no rights to them
+([TRADEMARKS.md](TRADEMARKS.md)).
 
-**Новый ключ подписи обновлений.** С 0.1.x на 0.2.0 обновление само не пройдёт — её ставят вручную, дальше
-обновления идут как обычно. Шлюз теперь проверяет подпись по списку ключей (`gateway/updates.pub`, ключ в строке) и спрашивает ленту
-и по адресу своей версии, так что следующая смена ключа обойдётся без переустановки.
+**New update signing key.** The update from 0.1.x to 0.2.0 will not go through by itself: you install it by hand, and
+after that updates come as usual. The gateway now checks the signature against a list of keys (`gateway/updates.pub`,
+one key per line) and also asks the feed at its own version's address, so the next key change will not need a
+reinstall.
 
-Всё ниже — накопленное с самого начала, одним списком: первым выпуском выходит и то, что раньше не описывали.
+Everything below was gathered from the very start, in one list: the first release also carries what was not described
+before.
 
-- **Колонка больше не правится там, где её не откатить.** Шлюз не меняет файл прошивки `quasar.cfg`: копия с адресом
-  шлюза лежит в `/data/opt/duowave` и подключается поверх него при каждой загрузке (скрипт `/etc/init.d/S95duowave`,
-  до Алисы). Сброс колонки чистит `/data` — и это обычная Алиса, а не колонка, которая зовёт пропавший шлюз.
-  Обновление прошивки меняет её файл — копия не подключается, пульт говорит, что колонка обновилась. Копию, в которую
-  вписал адрес кто-то другой, шлюз не перепишет без явного возврата и не подключит. Колонку, подключённую раньше, один
-  раз возвращают к Яндексу прежним способом (`scripts/station-voice.sh legacy-yandex`).
-- **Аварийные слова.** «Алиса, аварийный возврат к Яндексу» отдаёт колонку Яндексу (копия убрана, перезагрузка),
-  «Алиса, переведи шлюз в режим Яндекса» — всё отвечает Яндекс. Шлюз слышит их раньше маршрутов, плагинов и модели,
-  только целой фразой.
-- **Шлюз на колонке надёжнее.**
-  - Стартует до Алисы и ждёт себя до 15 секунд, когда голос идёт в него.
-  - После отключения питания не принимает чужой процесс за себя: в pid-файле есть номер загрузки.
-  - Зависший шлюз (две минуты без ответа на `/health`) перезапускается; третий раз за полчаса — страховка.
-  - Автозапуск пишется только после того, как запущенный шлюз ответил.
-  - Удалённый пакет или выключенный шлюз не оставляет колонку немой.
-  - После страховки «Попробовать снова» больше не принимает её путь назад за чужую правку копии, а «На компьютере»
-    переписывает и копию: следующая загрузка не вернёт голос в шлюз колонки.
-- Клиент звонков следит за динамиком после звонка с ошибкой: застрял — перезапуск медиа-службы Алисы, потом
-  перезагрузка не чаще раза в час.
-- Прошивка колонки видна в пульте: проверяли ли с ней шлюз; её смена — в «Истории изменений». Проверка обновлений
-  при подключении видит и подменённый ключ OTA из вики.
-- `/uni.ws` не пускает страницы из браузера (заголовок `Origin`): колонка его не присылает.
-- Скрипты колонки проверяются на настоящем ядре и busybox: в CI — в контейнере, по кнопке — в эмуляторе КУЯСЭ
-  на прошивках Станции 2 и Мини (`scripts/emulator`).
-- **Пульт честнее о колонке.** Перезагрузившаяся или пропавшая из сети колонка больше не висит «в сети»: шлюз
-  пингует её сокет и отпускает его после 45 секунд тишины. Раньше такая сессия жила до первого пуша Яндекса, бывало
-  20–40 минут, и сторож молчал. После смены режима, пока колонка открывает новый сокет (обычно до пары минут),
-  пульт пишет «переподключается…», а не «не в сети». `STATION_PING_MS` (15 с; 0 — выключить).
+- **The speaker is no longer edited where it cannot be rolled back.** The gateway does not change the firmware file
+  `quasar.cfg`: a copy with the gateway address lives in `/data/opt/duowave` and is mounted over it at every boot
+  (script `/etc/init.d/S95duowave`, before Alice). A speaker reset clears `/data`, and you get plain Alice, not a
+  speaker that calls a gateway that is gone. A firmware update changes its file: the copy is not mounted, and the panel
+  says the speaker was updated. The gateway will not rewrite or mount a copy where someone else wrote the address,
+  unless you explicitly give it back. A speaker connected earlier is returned to Yandex once in the old way
+  (`scripts/station-voice.sh legacy-yandex`).
+- **Emergency phrases.** "Алиса, аварийный возврат к Яндексу" ("Alice, emergency return to Yandex") gives the speaker
+  back to Yandex (copy removed, reboot). "Алиса, переведи шлюз в режим Яндекса" ("Alice, switch the gateway to Yandex
+  mode") lets Yandex answer everything. The gateway hears them before routes, plugins and the model, and only as a
+  whole phrase.
+- **The gateway on the speaker is more reliable.**
+  - It starts before Alice and waits up to 15 seconds for itself when the voice goes to it.
+  - After a power cut it does not take another process for itself: the pid file holds the boot number.
+  - A hung gateway (two minutes without an answer on `/health`) restarts. The third time in half an hour, the safety
+    net steps in.
+  - Autostart is written only after the started gateway answered.
+  - A removed package or a stopped gateway does not leave the speaker mute.
+  - After the safety net, "Try again" no longer takes its way back for someone else's edit of the copy, and "On the
+    computer" rewrites the copy too: the next boot will not send the voice back to the speaker's gateway.
+- The call client watches the loudspeaker after a call with an error. If it is stuck, Alice's media service restarts,
+  then the speaker reboots, but not more than once an hour.
+- The speaker firmware shows in the panel: whether the gateway was tested with it. A firmware change shows in "Change
+  history". The update check on connect also sees a forged OTA key from the wiki.
+- `/uni.ws` does not let browser pages in (the `Origin` header): the speaker does not send it.
+- The speaker scripts are tested on a real kernel and busybox: in CI in a container, and on a button press in the
+  KUYASE emulator on Station 2 and Mini firmware (`scripts/emulator`).
+- **The panel is more honest about the speaker.** A speaker that rebooted or dropped off the network no longer hangs
+  "online": the gateway pings its socket and lets it go after 45 seconds of silence. Before, such a session lived until
+  the first Yandex push, sometimes 20–40 minutes, and the watchdog kept quiet. After a mode change, while the speaker
+  opens a new socket (usually up to a couple of minutes), the panel says "reconnecting…", not "offline".
+  `STATION_PING_MS` (15 s; 0 turns it off).
 
-- **Подтверждения работают в приложении.** «Обновить», «Удалить», «Отозвать ключ», «Выйти на всех устройствах» и ещё
-  14 вопросов спрашивали через `window.confirm`, а окно приложения его не показывает — кнопки молча ничего не делали.
-  Теперь вопрос — окно самого пульта, в любой теме; плагинам — `ask()` из SDK пульта.
-- «Минимал»: свечение за колонкой без резких углов в окне приложения (градиент вместо размытия).
-- **Порт шлюза — 7780, а не 80**: 80 на компьютерах разработчиков часто занят. Колонке порт 80 не нужен: адрес с портом
-  шлюз записывает ей при подключении. Приложение, Docker (`GATEWAY_PORT`), служба Linux и дополнение Home Assistant
-  ставят 7780; у кого шлюз уже стоит, его `.env` и колонка остаются как есть. Порт занят — приложение предлагает
-  «Взять свободный порт». Сменили порт, а колонка ходит на прежний — пульт показывает это на главном и предлагает
-  «Переподключить». Адрес шлюза, введённый в мастере без порта, теперь значит порт самого шлюза.
-- **Новый знак — ДиВи**: лаймовый квадрат с глазами, подмигивает. В пульте (шапка, вкладка браузера, «Powered by»),
-  в значке приложения и строки меню, на заставке приложения: пока шлюз запускается, ДиВи слушает и моргает.
-- **Новое имя — DuoWave** (сайт duowave.app): программа `duowave`, переменные `DUOWAVE_*`, база `duowave.sqlite`,
-  журнал `duowave.log`, на колонке — `/data/opt/duowave`, приложение — DuoWave (`app.duowave.desktop`), образы и
-  служба — `duowave`.
-- Первый запуск: после пароля пульт сразу открывает «Подключить колонку»; пока колонок нет, на главном — карточка
-  «Подключите колонку» (что нужно, что сделает мастер, как вернуть) вместо дашборда несуществующей колонки, в шапке —
-  «колонка не подключена». Голый адрес шлюза ведёт в пульт. Мастер называет настоящий порт шлюза, а не всегда 80.
-- Персонажи: «Мозг» → «Персонажи» вместо «Характер» — характер, тон и голос одним выбором. Персонажи ставятся
-  пакетами из каталога (первые — Артур, Ковчег, Палыч, Бублик), у каждого регуляторы тона и «Тонкая настройка» с
-  полным текстом; правки остаются при обновлении персонажа. Свои голоса персонажей — снимки под OmniVoice,
-  CosyVoice 3 и VoxCPM 2 (третий движок лаборатории голоса, Apache-2.0 и код, и веса; на Маке говорит на видеокарте);
-  пока их нет, персонаж говорит запасным голосом. На главном — «Сейчас отвечает».
-- Встроенная Алиса — одна карточка с регуляторами «Ирония», «Теплота», «Подробность» вместо «Стандартной»,
-  «Ироничной», «Тёплой» и «Деловой»: прежний выбор сам стал её положениями, в положениях по умолчанию она говорит
-  слово в слово как «Стандартная». «Мажордома» заменил персонаж Артур из каталога; выбравшим его шлюз оставляет
-  прежний текст, пульт предлагает поставить Артура.
-- Каталог пакетов: «Дом» → «Пакеты» — что поставлено и что есть в каталоге (`PACKAGES_FEED_URL`): установка,
-  обновление, удаление, фильтр по виду; «Не загружать каталог» — выключатель. Пока у каталога нет подписи, из него
-  ставятся только пакеты без кода — персонажи и темы.
-- Голос сам ставит свою модель: голос без модели или без скачанного файла предлагает «Скачать и включить» и
-  включается сам, когда она встанет; свой голос другой модели можно переснять из сохранённых записей.
-- Ссылки на экраны пульта: `#/<раздел>/<вкладка>/<id>` — например, `#/mind/characters/arthur?install` открывает
-  персонажа (или его карточку в каталоге) с кнопкой установки.
-- Плагины: свои навыки из пакетов в папке данных шлюза (`DATA_DIR/packages`) — фразы для колонки, инструменты для
-  «Мозга», источники музыки и радио. Код плагина работает в QuickJS с лимитами памяти и времени и получает только
-  то, что разрешено в его манифесте; включает плагины администратор (`/api/v1/packages`), `PLUGINS_DISABLED=1` —
-  запуск без плагинов. Как написать свой — `docs/plugins/AUTHORING.md`.
-- Встроенные плагины: радио, погода, новости, своя музыка, сказки, игры, утреннее шоу и умный дом пришли в шлюз
-  плагинами — их можно выключить или сделать свою копию и поправить; встроенные навыки остаются запасными. Новое:
-  «сочини сказку про …», «утреннее шоу» с музыкой или радио, игры разговором без «Алиса», радио запоминает станции,
-  на которых колонка молчит, и включает похожие.
-- Экран «Плагины» («Дом» → «Пакеты»): системные, встроенные, свои и из каталога — у каждого свои кнопки; память
-  против бюджета, права и хосты, журнал; «Откатить» к прежней версии. Плагин может добавить в пульт карточку,
-  вкладку или тему; `?safe=1` открывает пульт без них.
-- Мастерская (раздел пульта): агент пишет и чинит плагин или тему по описанию или по описанию API (OpenAPI), проверяет
-  в песочнице, прогоняет фразы и ставит новой версией — первую установку и новые права подтверждает администратор.
-  Голосом: «Алиса, давай сделаем навык». Для терминала — `duowave plugin new|test|install`, для Claude Code —
-  MCP-сервер `/mcp/workshop`; инструменты плагинов — MCP-сервер `/mcp/plugins`.
-- Колонка молчит на станции 5 секунд — шлюз сам открывает поток и отдаёт его колонке через себя, AAC перекодирует в
-  MP3 на компьютере (на колонке — с `MEDIA_TRANSCODE_ON_STATION=1`); в журнале запроса — «начала играть»,
-  «остановилась», «молчит N с». Инструменты плагинов сразу включают найденное.
-- Шлюз на колонке держит бюджет памяти плагинов: не помещается — не включится, под нехваткой памяти выгружает
-  простаивающие и выключает последний включённый (`PLUGINS_RESERVE_MB`, `PLUGINS_PRESSURE_ACTION`); «Дом» → «Шлюз» →
-  «Память колонки». Плагин с `"prefer": "home"` работает на компьютере, пока тот на связи.
-- Каталог подписан (minisign, `PACKAGES_PUBKEY`): из подписанного ставятся и плагины с приложениями; обновление
-  оставляет прежнюю версию для отката. Колонка без интернета берёт каталог через компьютер.
-- Плагины на WebAssembly и из MCP-серверов; приложения — свои программы рядом со шлюзом под надзором (перезапуск,
-  память, хеш сборки), с Host API по HTTP и своим звуком на колонку.
-- Темы пульта: тема меняет не только цвета, но и раскладку — «Стекло» с вкладками внизу, как раньше, и новая
-  «Простор» с боковой панелью. Выбор — «Дом» → «Доступ» → «Вид пульта».
-- Где работает шлюз — на выбор: на компьютере, на самой колонке или на колонке с компьютером как домашним сервером
-  («Дом» → «Шлюз» → «Где работает шлюз»). Переход из пульта компьютера — заданием с шагами по SSH, сборка для колонки
-  встроена в шлюз компьютера; можно и руками — `duowave station install|point|status|remove` или пакетом `yse`.
-  Оба пульта показывают, что где доступно (один список шлюза), где работает шлюз, что с колонкой и компьютером.
-- Домашний сервер: шлюз на колонке берёт распознавание, свой голос (и голоса лаборатории) и модель у компьютера,
-  пока тот на связи; компьютер спит — облако или Яндекс. «Свой» на колонке — только с ним: компьютер пропал — шлюз
-  сам переходит в «Шлюз» и возвращается, когда компьютер снова на связи, если вы сами не выбрали иначе.
-- Главные настройки шлюза на колонке — на колонке (компьютер держит последние 10 копий) или на компьютере; обновление
-  шлюза на колонке — кнопкой из пульта компьютера, без SSH, или автоматически.
-- Страховка службы на колонке: шлюз не поднимается — сначала прежняя версия, потом прежний адрес колонки; пульт
-  компьютера и оповещения говорят об этом. «Вернуть колонку Яндексу» — и в пульте самой колонки, без компьютера.
-- В трее приложения — строка о шлюзе на колонке.
-- Подключения настраиваются в пульте, «Дом» → «Коннекторы»: Home Assistant, Telegram (токен, контакты, «Написали
-  боту», чат оповещений), город погоды и ленты новостей — у каждого свой лист, секреты маской, «Проверить» словами,
-  перемены сразу, без перезапуска; чего нет — «не настроено». Звонки через LiveKit и SIP — пока «скоро»: их лист
-  откроется с обновлением. Значения из `.env` шлюз при первом запуске новой версии переносит в базу сам, дальше
-  `.env` для них не читает и в журнале пишет, какие строки можно убрать.
-- Новости: каталог из 37 проверенных русскоязычных лент по восьми темам, свои ленты по адресу с предпросмотром,
-  OPML туда и обратно; «Алиса, новости спорта» читает ленты своей темы.
-- «Мозг» открывается на «Моделях»: вкладки идут «Модели», «Характер», «Маршруты».
-- Шлюз переписан на Rust: одна программа `duowave` с пультом внутри вместо шлюза на Node — те же `.env` и
-  настройки, тот же пульт. Команды `duowave serve`, `duowave health`, `duowave update [--check]`, `duowave version`.
-  Служба на macOS пишет журнал в `logs/duowave.log`; службы, образ Docker, дополнение HA и приложение запускают
-  `duowave`. Node-шлюз удалён и остался в истории git (тег `node-gateway-last`).
-- Своя база с чистого листа: один файл `duowave.sqlite` с миграциями по номерам и копией перед ними; данные
-  Node-шлюза не переносятся — администратора, «Мозг» и MCP-серверы в пульте настраивают заново.
-- Обновления: шлюз находит новую версию в ленте выпусков, показывает её в «Дом» → «Обновления» и ставит с
-  проверкой подписи, когда согласен человек с правом ставить обновления; прежняя программа остаётся для отката.
-- Пакет `duowave` для `yse` несёт и шлюз, собранный для самой колонки (`duowave gateway install`); на колонке его
-  ещё не запускали.
-- В образе Docker и дополнении HA конец фразы слышен по громкости: Silero VAD — только в сборках для ПК с ним.
-- Средства разработчика — подкоманды `duowave`: `replay` (повтор записи голоса через конвейер и распознавание),
-  `journal` (ход запросов вживую), `animations` (анимации подсветки из журнала), `call-sim` (имитатор колонки для
-  звонков) и `livekit-token` (доступ в комнату LiveKit) — последние два только в сборке для ПК. Доступ к LiveKit для
-  телефона — ещё и `GET /calls/livekit/token` из домашней сети.
-- Подключение колонки из пульта: поиск в сети, проверка только на чтение, «Что изменится», подключение с копией и
-  откатом, «Сделаю сам» одной командой, «Вернуть к Яндексу».
-- Docker Compose: шлюз с пультом, наборы `full` (своё распознавание и голос на процессоре) и `gpu`; звонки — на Linux.
-- Служба systemd для Linux; `DATA_DIR` — все данные шлюза в одной папке.
-- Приложение для macOS, Windows и Linux: шлюз внутри, пульт в окне, значок в трее, запуск при входе, компьютер не
-  засыпает, пока шлюз работает.
-- Пакет `duowave` для `yse` на колонке и дополнение для Home Assistant.
-- Умолчания для нового дома: режим «Яндекс», звук запросов не пишется, журнал — 7 дней.
-- Верные лицензии моделей и голосов на карточках в пульте.
+- **Confirmations work in the app.** "Update", "Delete", "Revoke key", "Sign out on all devices" and 14 more questions
+  asked through `window.confirm`, and the app window does not show it, so the buttons silently did nothing. Now the
+  question is a window of the panel itself, in any theme. Plugins get `ask()` from the panel SDK.
+- "Minimal": the glow behind the speaker has no sharp corners in the app window (a gradient instead of a blur).
+- **The gateway port is 7780, not 80**: port 80 is often busy on developers' computers. The speaker does not need port
+  80: the gateway writes the address with the port to it on connect. The app, Docker (`GATEWAY_PORT`), the Linux
+  service and the Home Assistant add-on use 7780. If your gateway is already installed, its `.env` and the speaker
+  stay as they are. If the port is busy, the app offers "Take a free port". If you changed the port and the speaker
+  still goes to the old one, the panel shows it on the main page and offers "Reconnect". A gateway address typed in
+  the wizard without a port now means the gateway's own port.
+- **New mark: Deevi**, a lime square with eyes that winks. It is in the panel (header, browser tab, "Powered by"), in
+  the app icon and the menu bar icon, and on the app splash screen: while the gateway starts, Deevi listens and blinks.
+- **New name: DuoWave** (site duowave.app): the program `duowave`, variables `DUOWAVE_*`, database `duowave.sqlite`,
+  log `duowave.log`, on the speaker `/data/opt/duowave`, the app DuoWave (`app.duowave.desktop`), images and service
+  `duowave`.
+- First run: after the password, the panel opens "Connect the speaker" at once. While there are no speakers, the main
+  page shows a "Connect your speaker" card (what you need, what the wizard will do, how to undo it) instead of a
+  dashboard for a speaker that does not exist, and the header says "speaker not connected". The bare gateway address
+  leads to the panel. The wizard names the real gateway port, not always 80.
+- Characters: "Brain" → "Characters" instead of "Personality": personality, tone and voice in one choice. Characters
+  install as packages from the catalog (the first ones are Arthur, Kovcheg, Palych, Bublik). Each has tone controls
+  and "Fine-tuning" with the full text; your edits stay when the character updates. The characters' own voices are
+  snapshots for OmniVoice, CosyVoice 3 and VoxCPM 2 (the third voice lab engine, Apache-2.0 for both code and weights;
+  on a Mac it speaks on the graphics card). Until they are there, the character speaks with a fallback voice. The main
+  page shows "Answering now".
+- The built-in Alice is one card with "Irony", "Warmth" and "Detail" controls instead of "Standard", "Ironic", "Warm"
+  and "Business". The old choice became her control positions by itself; at the default positions she speaks word for
+  word like "Standard". "Butler" was replaced by the character Arthur from the catalog. For those who chose it, the
+  gateway keeps the old text, and the panel offers to install Arthur.
+- Package catalog: "Home" → "Packages" shows what is installed and what is in the catalog (`PACKAGES_FEED_URL`):
+  install, update, remove, filter by kind. "Do not load the catalog" is a switch. While the catalog has no signature,
+  only packages without code install from it: characters and themes.
+- A voice installs its own model: a voice without a model or without a downloaded file offers "Download and turn on"
+  and turns on by itself when the model is in place. You can re-record your own voice for another model from the
+  saved recordings.
+- Links to panel screens: `#/<section>/<tab>/<id>`. For example, `#/mind/characters/arthur?install` opens the character
+  (or its catalog card) with an install button.
+- Plugins: your own skills from packages in the gateway data folder (`DATA_DIR/packages`): phrases for the speaker,
+  tools for "Brain", music and radio sources. Plugin code runs in QuickJS with memory and time limits and gets only
+  what its manifest allows. The administrator turns plugins on (`/api/v1/packages`); `PLUGINS_DISABLED=1` starts
+  without plugins. How to write your own: `docs/plugins/AUTHORING.md`.
+- Built-in plugins: radio, weather, news, own music, fairy tales, games, the morning show and the smart home came into
+  the gateway as plugins. You can turn them off, or make your own copy and edit it; the built-in skills stay as a
+  fallback. New: "make up a fairy tale about …", "morning show" with music or radio, games by talking without "Alice",
+  and the radio remembers stations where the speaker stays silent and plays similar ones.
+- The "Plugins" screen ("Home" → "Packages"): system, built-in, your own and catalog plugins, each with its own
+  buttons; memory against the budget, permissions and hosts, journal; "Roll back" to the previous version. A plugin
+  can add a card, a tab or a theme to the panel; `?safe=1` opens the panel without them.
+- Workshop (a panel section): the agent writes and fixes a plugin or theme from a description or from an API
+  description (OpenAPI), tests it in a sandbox, runs the phrases and installs it as a new version. The administrator
+  confirms the first install and new permissions. By voice: "Alice, let's make a skill". For the terminal:
+  `duowave plugin new|test|install`; for Claude Code: the MCP server `/mcp/workshop`; plugin tools: the MCP server
+  `/mcp/plugins`.
+- If the speaker stays silent on a station for 5 seconds, the gateway opens the stream itself and passes it to the
+  speaker through itself. It transcodes AAC to MP3 on the computer (on the speaker with
+  `MEDIA_TRANSCODE_ON_STATION=1`). The request journal shows "started playing", "stopped", "silent for N s". Plugin
+  tools play what they found at once.
+- The gateway on the speaker keeps a memory budget for plugins: if a plugin does not fit, it does not turn on. Under
+  memory pressure the gateway unloads idle plugins and turns off the last one turned on (`PLUGINS_RESERVE_MB`,
+  `PLUGINS_PRESSURE_ACTION`). See "Home" → "Gateway" → "Speaker memory". A plugin with `"prefer": "home"` runs on the
+  computer while the computer is online.
+- The catalog is signed (minisign, `PACKAGES_PUBKEY`): from a signed catalog, plugins and apps install too. An update
+  keeps the previous version for a rollback. A speaker without internet gets the catalog through the computer.
+- Plugins on WebAssembly and from MCP servers. Apps are your own programs next to the gateway, under supervision
+  (restart, memory, build hash), with a Host API over HTTP and their own sound on the speaker.
+- Panel themes: a theme changes not only the colors but also the layout. "Glass" has tabs at the bottom, as before, and
+  the new "Space" has a side bar. To choose: "Home" → "Access" → "Panel look".
+- Where the gateway runs is your choice: on the computer, on the speaker itself, or on the speaker with the computer as
+  a home server ("Home" → "Gateway" → "Where the gateway runs"). The move from the computer's panel is a task with
+  steps over SSH, and the speaker build is built into the computer's gateway. You can also do it by hand:
+  `duowave station install|point|status|remove` or the `yse` package. Both panels show what is available where (one
+  gateway list), where the gateway runs, and the state of the speaker and the computer.
+- Home server: the gateway on the speaker takes recognition, your own voice (and the voice lab voices) and the model
+  from the computer while it is online. When the computer sleeps, the cloud or Yandex steps in. "Own" mode on the
+  speaker works only with the computer: if the computer is gone, the gateway switches to "Gateway" mode by itself and
+  comes back when the computer is online again, unless you chose otherwise.
+- The main settings of the gateway on the speaker live on the speaker (the computer keeps the last 10 copies) or on
+  the computer. The gateway on the speaker updates with a button in the computer's panel, without SSH, or
+  automatically.
+- Safety net for the service on the speaker: if the gateway does not come up, first the previous version is used,
+  then the speaker's previous address. The computer's panel and alerts say so. "Give the speaker back to Yandex" is in
+  the speaker's own panel too, without the computer.
+- The app's tray has a line about the gateway on the speaker.
+- Connections are set up in the panel, "Home" → "Connectors": Home Assistant, Telegram (token, contacts, "Wrote to the
+  bot", alert chat), the weather city and news feeds. Each has its own sheet, secrets are masked, "Check" answers in
+  words, changes apply at once, without a restart. What is missing says "not set up". Calls through LiveKit and SIP
+  are "soon" for now: their sheet opens with an update. On the first start of the new version, the gateway moves the
+  values from `.env` into the database by itself. After that it does not read `.env` for them and writes in the log
+  which lines you can remove.
+- News: a catalog of 37 checked Russian-language feeds on eight topics, your own feeds by address with a preview, OPML
+  in and out. "Alice, sports news" reads the feeds of that topic.
+- "Brain" opens on "Models": the tabs are "Models", "Personality", "Routes".
+- The gateway is rewritten in Rust: one program, `duowave`, with the panel inside, instead of the Node gateway. Same
+  `.env` and settings, same panel. Commands: `duowave serve`, `duowave health`, `duowave update [--check]`,
+  `duowave version`. The macOS service writes its log to `logs/duowave.log`. The services, the Docker image, the HA
+  add-on and the app start `duowave`. The Node gateway is removed and stays in git history (tag `node-gateway-last`).
+- Own database from a clean slate: one file, `duowave.sqlite`, with numbered migrations and a copy before them. The
+  Node gateway data is not moved: you set up the administrator, "Brain" and MCP servers in the panel again.
+- Updates: the gateway finds a new version in the release feed, shows it in "Home" → "Updates" and installs it with a
+  signature check when a person with the right to install updates agrees. The previous program stays for a rollback.
+- The `duowave` package for `yse` also carries the gateway built for the speaker itself (`duowave gateway install`).
+  It has not been run on the speaker yet.
+- In the Docker image and the HA add-on, the end of a phrase is detected by loudness: Silero VAD is only in the PC
+  builds that have it.
+- Developer tools are `duowave` subcommands: `replay` (replays a voice recording through the pipeline and
+  recognition), `journal` (live request flow), `animations` (light ring animations from the journal), `call-sim` (a
+  speaker simulator for calls) and `livekit-token` (access to a LiveKit room). The last two are only in the PC build.
+  For a phone, LiveKit access is also available through `GET /calls/livekit/token` from the home network.
+- Connecting the speaker from the panel: network search, a read-only check, "What will change", connecting with a
+  copy and rollback, "I'll do it myself" with one command, "Return to Yandex".
+- Docker Compose: the gateway with the panel, the `full` profile (own recognition and voice on the CPU) and `gpu`.
+  Calls work on Linux.
+- A systemd service for Linux. `DATA_DIR` keeps all gateway data in one folder.
+- An app for macOS, Windows and Linux: the gateway inside, the panel in a window, a tray icon, start at login. The
+  computer does not sleep while the gateway runs.
+- The `duowave` package for `yse` on the speaker, and an add-on for Home Assistant.
+- Defaults for a new home: "Yandex" mode, request sound is not recorded, the journal keeps 7 days.
+- Correct model and voice licenses on the cards in the panel.

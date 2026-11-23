@@ -371,6 +371,9 @@ async fn a_drive_offered_is_opened_by_yes() {
     let home = home(false).await;
     let usb = home._dir.path().join("Volumes/KINGSTON");
     std::fs::create_dir_all(usb.join("DCIM")).unwrap();
+    // The watcher's first look, before the drive is in: on Windows the letters of that look are the computer's own,
+    // only a letter that comes later is a drive plugged in (drives.rs, `after_start`).
+    home.drives.step(vec![]);
     home.drives.step(vec![Drive { mark: "KINGSTON:64".into(), label: "KINGSTON".into(), path: usb.clone() }]);
     let offer = home.drives.offers()[0].clone();
     let asked = phrase(&home, "driveFound", json!({ "name": offer.name, "offer": offer.id })).await;

@@ -2378,8 +2378,11 @@ async fn a_wish_in_ones_own_words_to_the_station_is_one_work_and_its_yes_puts_it
 
     // «да» without the wake word: on the desk.
     station.text_input("works-2", "req-works-2", json!({ "type": "text_input", "text": "да" }));
-    let yes = station.wait_for(response_to("req-works-2"), 8000).await;
-    assert_eq!(at(&yes, "event.aliceResponse.voiceResponse.outputSpeech.text"), "На столе.");
+    station.wait_for(response_to("req-works-2"), 8000).await;
+    // The words are the request's answer: the response goes early, without them, when putting the thing there takes
+    // longer than our skill's 300 ms (Windows CI 22.11, a debug build).
+    let yes = finished_trip(&env, "да").await;
+    assert_eq!(yes["answer"], "На столе.", "{yes}");
     assert!(env.gateway.app.workshop.host().installed(&draft).is_some(), "installed by voice");
     station.close();
 }

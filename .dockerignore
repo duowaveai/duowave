@@ -23,11 +23,14 @@
 !pnpm-lock.yaml
 !pnpm-workspace.yaml
 !panel
+# The mascot library the panel imports (mascot/README.md).
+!mascot
 !deploy/station-payload
 !deploy/prebuilt
 
 # Inside what is let in: nothing built, nothing private.
 panel/node_modules
+mascot/node_modules
 panel/dist
 panel/.impeccable
 **/.DS_Store

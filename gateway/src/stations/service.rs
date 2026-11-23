@@ -102,6 +102,19 @@ pub struct StationsService {
     invited: Mutex<HashMap<String, u64>>,
 }
 
+/// A new station's name: «Колонка» — and on a pretend station its own, for its own station (its voice from this very
+/// machine): «Кухня» in the home's device list, not three «Колонка» (docs/plans/pretend-stations.md).
+fn first_name(address: &str) -> String {
+    #[cfg(feature = "pc")]
+    if let Some(pretend) = crate::stations::pretend::get().filter(|pretend| pretend.is_station()) {
+        if plain(address).parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback()) {
+            return pretend.name.clone();
+        }
+    }
+    let _ = address;
+    "Колонка".into()
+}
+
 impl StationsService {
     /// Loads the records it already has: a failed read stops the start, as the TS bootstrap did — with none known,
     /// the first stranger would pass as the household's own. `start` then listens for a station's sync.
@@ -193,7 +206,7 @@ impl StationsService {
         };
         let record = StationView {
             device: device.to_string(),
-            name: "Колонка".into(),
+            name: first_name(address),
             status,
             last_address: Some(plain(address)),
             first_seen: now.clone(),

@@ -424,7 +424,13 @@ export const sdk = {
     pick: pickText,
 };
 
+/**
+ * Чего у хозяина нет: деталь SDK — `null`. Веб-хозяин сайта (web-host/) так убирает `readMidiFile` — файлы `.mid`
+ * читает шлюз, а его там нет; приложение видит `null` и прячет кнопку.
+ */
+export type FrameSdkOverrides = Partial<Record<'readMidiFile', null>>;
+
 /** Отдать модулю приложения Preact и SDK окошка — до его загрузки (import map ведёт к public/sdk/*). */
-export function installFrameSdk(): void {
-    (globalThis as unknown as { __duowave: unknown }).__duowave = { preact, hooks, jsxRuntime, sdk };
+export function installFrameSdk(overrides: FrameSdkOverrides = {}): void {
+    (globalThis as unknown as { __duowave: unknown }).__duowave = { preact, hooks, jsxRuntime, sdk: { ...sdk, ...overrides } };
 }

@@ -246,6 +246,10 @@ export function mark() {{
     ]
 }
 
+/// The title the workshop gives a teacher it makes (make.rs), and its English.
+pub const MIDI_TITLE: &str = "Учитель на MIDI-клавиатуре";
+const MIDI_TITLE_EN: &str = "MIDI keyboard teacher";
+
 /// A teacher for a MIDI keyboard (docs/plans/midi.md, «Заготовка»): a widget on the desk and a lesson window — the
 /// next note lit, a press sounds and lights the one after —, tunes of folk songs and old classics typed by hand, one's
 /// own from a .mid file, the progress, phrases for the station. It runs on a computer: the keyboard is the gateway's
@@ -261,6 +265,17 @@ pub fn midi(id: &str, title: &str) -> Vec<(String, String)> {
         "api": "^2",
         "runs": ["pc"],
         "dataVersion": 1,
+        // Its texts speak Russian and English (useT, host.i18n.t); the workshop's own title has an English one.
+        "languages": ["ru", "en"],
+        "locales": { "en": {
+            "title": (if title == MIDI_TITLE { MIDI_TITLE_EN } else { title }),
+            "description": "Teaches you to play a MIDI keyboard: lights up the next note, sounds and waits for the right one",
+            "settings": { "names": { "title": "Show note names" } },
+            "intents": {
+                "learn": ["let's learn {melody}", "let's play {melody}"],
+                "about": ["what tunes are there", "what are we learning"]
+            }
+        } },
         "budget": { "memoryMb": 4, "storageMb": 4 },
         "permissions": ["listen:device/midi"],
         "settings": [{ "key": "names", "type": "boolean", "title": "Подписывать ноты", "default": true }],

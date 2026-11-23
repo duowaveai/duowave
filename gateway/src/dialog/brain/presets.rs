@@ -232,6 +232,7 @@ pub const PROVIDER_PRESETS: &[ProviderPreset] = &[
         fast: &["claude-haiku-5-5"],
         brand: Some("claude"),
         order: 1,
+        usage_url: Some("https://console.anthropic.com/settings/billing"),
         ..BLANK
     },
     ProviderPreset {
@@ -243,6 +244,7 @@ pub const PROVIDER_PRESETS: &[ProviderPreset] = &[
         fast: &["gpt-5-mini", "gpt-5-nano", "gpt-4.1-mini", "gpt-4o-mini"],
         brand: Some("openai"),
         order: 2,
+        usage_url: Some("https://platform.openai.com/usage"),
         ..BLANK
     },
     ProviderPreset {
@@ -267,6 +269,7 @@ pub const PROVIDER_PRESETS: &[ProviderPreset] = &[
         sign_in: Some(OPENROUTER_SIGN_IN),
         brand: Some("openrouter"),
         order: 4,
+        usage_url: Some("https://openrouter.ai/settings/credits"),
         ..BLANK
     },
     ProviderPreset {

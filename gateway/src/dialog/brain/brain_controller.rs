@@ -196,7 +196,10 @@ mod tests {
         let ids: Vec<&str> = start["presets"].as_array().unwrap().iter().map(|p| p["id"].as_str().unwrap()).collect();
         assert_eq!(&ids[..5], &["duowave", "claude", "openai", "chatgpt", "openrouter"]);
         assert_eq!(start["providers"], json!([]));
-        assert_eq!(start["choice"], json!({"fast": null, "smart": null, "effort": "low", "autoBackup": true}));
+        assert_eq!(
+            start["choice"],
+            json!({"fast": null, "smart": null, "effort": "low", "autoBackup": true, "onLimit": "ask"})
+        );
         assert_eq!(start["status"]["source"], json!("env"));
 
         let added = json!({"preset": "custom-openai", "title": "Дома", "baseUrl": url, "key": "sk-test-key-1234"});
@@ -256,7 +259,10 @@ mod tests {
         assert_eq!(busy.unwrap_err().status, StatusCode::CONFLICT);
         let (_, back) = body(choose(State(app.clone()), admin(&app), Body(json!({"fast": null}))).await);
         assert_eq!(back["status"]["source"], json!("env"));
-        assert_eq!(back["choice"], json!({"fast": null, "smart": null, "effort": "low", "autoBackup": true}));
+        assert_eq!(
+            back["choice"],
+            json!({"fast": null, "smart": null, "effort": "low", "autoBackup": true, "onLimit": "ask"})
+        );
         let gone = remove(State(app.clone()), admin(&app), Path("custom-openai".into())).await.unwrap();
         assert_eq!(gone.status(), StatusCode::NO_CONTENT);
         let (_, after) = body(view(State(app.clone()), admin(&app)).await);

@@ -66,10 +66,6 @@ export function accessWarning(access: ProviderAccess): string | undefined {
             return tr.brain.accessModel;
         case 'ended':
             return tr.brain.accessEnded;
-        case 'quota':
-            return tr.brain.accessQuota;
-        case 'busy':
-            return tr.brain.accessBusy;
     }
     return access.active ? undefined : tr.brain.accessNoneNote;
 }

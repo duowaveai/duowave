@@ -1,7 +1,7 @@
 {
     "name": "panel",
     "private": true,
-    "version": "0.18.3",
+    "version": "0.18.4",
     "type": "module",
     "scripts": {
         "dev": "vite --port 5173 --strictPort",
@@ -9,9 +9,12 @@
         "preview": "vite preview",
         "icons": "node scripts/brand-icons.mjs",
         "qr": "node scripts/qr-check.ts",
-        "check": "node scripts/panel-check.ts"
+        "check": "node scripts/panel-check.ts",
+        "web-host-check": "node scripts/web-host-check.ts",
+        "web-tools": "node scripts/web-tools.ts"
     },
     "dependencies": {
+        "@duowave/mascot": "workspace:*",
         "preact": "^10.27.0"
     },
     "devDependencies": {

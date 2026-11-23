@@ -38,6 +38,8 @@ jobs:
         run: cd panel && npx tsc --noEmit -p .
       - name: Checks
         run: node panel/scripts/panel-check.ts
+      - name: Web host
+        run: node panel/scripts/web-host-check.ts
       - name: Build
         run: pnpm --filter panel build
 

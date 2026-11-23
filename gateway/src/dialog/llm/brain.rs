@@ -151,6 +151,11 @@ pub struct BrainNow {
 pub trait BrainSource: Send + Sync {
     /// The model of a profile now; None when there is none (the dialog is off).
     fn slot(&self, profile: ModelProfile) -> Option<ModelSlot>;
+    /// The profile's model for an answer a person who has just asked hears: as `slot`, and it may speak of a provider's
+    /// limit (docs/plans/provider-limits.md). Anything else — an app's text, a background round — takes `slot`.
+    fn spoken_slot(&self, profile: ModelProfile) -> Option<ModelSlot> {
+        self.slot(profile)
+    }
     /// A given provider's model, apart from the profiles (the workshop agent's own choice); None when there is no such
     /// provider — the caller falls back to a profile.
     fn slot_of(&self, _provider: &str, _model: &str) -> Option<ModelSlot> {
@@ -164,6 +169,17 @@ pub trait BrainSource: Send + Sync {
     fn now(&self, _profile: ModelProfile) -> Option<BrainNow> {
         None
     }
+    /// The limits of the provider whose limit leaves this profile with nobody to ask now — only the words, which say
+    /// when it renews (docs/plans/provider-limits.md); None while a model of it may be asked.
+    fn limit(&self, _profile: ModelProfile) -> Option<super::limits::ProviderCell> {
+        None
+    }
+    /// «Когда кончился лимит, а запасной нет»: ask once, Alice, or the words.
+    fn on_limit(&self) -> crate::settings::definitions::OnLimit {
+        crate::settings::definitions::OnLimit::Ask
+    }
+    /// The person's answer to «Пока передавать вопросы Алисе?», kept as the setting.
+    fn set_on_limit(&self, _on_limit: crate::settings::definitions::OnLimit) {}
     /// Whether what a model reads may leave the house now: a model that may take a round of either profile — the one
     /// that answers, or one standing behind it, which takes a round its model fails with all the earlier rounds read
     /// — is not at home. None for a source that cannot tell.

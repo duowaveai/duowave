@@ -3,6 +3,7 @@
 pub mod anthropic;
 pub mod brain;
 pub mod echo;
+pub mod limits;
 pub mod llm_client;
 pub mod openai_chat;
 pub mod openai_responses;

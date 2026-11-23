@@ -233,6 +233,7 @@ pub fn begin(app: &Arc<App>, principal: &Principal, turn: Turn) -> Result<Talk, 
     });
     // The computer's clock: no station says its time zone.
     let context = DialogContext {
+        spoken: true,
         profile: Some(ModelProfile::Fast),
         channel: crate::dialog::Channel::Computer,
         // A spoken answer: a few sentences (docs/plans/audio-interface.md, decision 14).

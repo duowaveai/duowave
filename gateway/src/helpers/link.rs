@@ -665,7 +665,7 @@ async fn dial(
     timing: &LinkTiming,
     pinned: Option<&Pinned>,
 ) -> Result<LinkSocket, DialError> {
-    let tcp = tokio::time::timeout(timing.connect, TcpStream::connect((target.host.as_str(), target.port)))
+    let tcp = tokio::time::timeout(timing.connect, crate::utils::net::dial(&target.host, target.port))
         .await
         .map_err(|_| {
             tell_dial(target, &format!("no TCP answer in {} ms", timing.connect.as_millis()));

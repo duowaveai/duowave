@@ -1,59 +1,49 @@
-// ДиВи в центре орбиты (docs/plans/mic-mode.md, «Главная без колонки»): в режиме «Микрофон» колонки нет, и на её месте
-// стоит знак DuoWave — в той же рамке и с тем же светом, что у рисунков колонок (kit.tsx), поэтому дашборд показывает
-// «слушает / думает / говорит» так же. Слушает — глаза открыты; думает — смотрит в сторону; говорит — улыбается.
-// Свет под ним — цвет того, кто работает: дома — лайм, облако — янтарь.
+// Deevi in the orbit's centre (docs/plans/mic-mode.md, «Главная без колонки»): in «Микрофон» mode there is no speaker,
+// and the DuoWave mascot stands in its place — in the same frame and with the same light as the speakers' drawings
+// (kit.tsx), so the dashboard shows «listens / thinks / speaks» the same way. The light under him is the colour of who
+// works: lime at home, amber in the cloud.
+//
+// The figure is the mascot library (ui/mascot.tsx): its CURRENT character, Deevi today, so a new mascot appears here
+// with no change in this file. Light body at once, rich (3D) when it loads and the frame is big enough. It follows the
+// stage with the same moods; offline it sleeps. The frame keeps the click «показать путь вопроса» (DIVI_HIT) and says
+// the label, so the figure takes no pointer events and is decoration for a screen reader.
 
 import { useId } from 'preact/hooks';
 
 import { tr } from '../i18n';
-import { DIVI_BODY, diviEyes } from '../ui/divi';
+import { DIVI_BODY, diviEyes } from '@duowave/mascot/mark';
+import type { MoodId } from '@duowave/mascot';
+import { Mascot } from '../ui/mascot';
 import { Defs, Frame, Light, Shadow, stageWord, ringSpot, skinOf, useReducedMotion } from './kit';
-import type { StationArtProps, StationGlyphProps } from './types';
+import type { StationArtProps, StationGlyphProps, StationStage } from './types';
 
 const LIME = '#B6F36A';
 const INK = '#0B0F0A';
-/** Знак 256×256 в рамке 240×200: тело — от y 31 до 172, по центру. */
-const SCALE = 0.8;
-const PLACE = `translate(${120 - 128 * SCALE} ${172 - 216 * SCALE}) scale(${SCALE})`;
 
-/** Где у ДиВи нажимается «показать путь вопроса»: его тело, в координатах рамки. */
+/** Where a click on Deevi shows the question's path: his body, in frame coordinates. */
 export const DIVI_HIT = { x: 52, y: 27, w: 136, h: 150, r: 56 };
+
+const MOOD: Record<StationStage, MoodId> = { idle: 'idle', listen: 'listen', think: 'think', speak: 'speak' };
 
 export function DiviArt({ ring, stage, offline }: StationArtProps) {
     const uid = useId().replace(/[^A-Za-z0-9_-]/g, '');
     const id = (name: string): string => `divi-${name}-${uid}`;
     const reduced = useReducedMotion();
-    const pose = offline ? 'open' : stage === 'think' ? 'look' : stage === 'speak' ? 'happy' : 'open';
-    const eyes = diviEyes(pose);
-    // Свет — площадка под ДиВи: ровный в покое, переливается в работе, как кольцо на крышке колонки.
+    // The light: a platform under Deevi, steady at rest, shimmering at work, like the ring on a speaker's top.
     const spot = ringSpot(120, 176, 62, 9, 1, 1.5);
     return (
-        <Frame label={tr.stations.diviLabel(offline ? tr.stations.offlineDivi : stageWord(stage))}>
+        <Frame
+            label={tr.stations.diviLabel(offline ? tr.stations.offlineDivi : stageWord(stage))}
+            overlay={<Mascot mood={offline ? 'sleep' : MOOD[stage]} interactive={false} shadow={false} label={false} class="st2-divi" />}
+        >
             <Defs id={id} skin={skinOf('graphite')} />
             <Shadow rx={74} blur={`url(#${id('soft')})`} />
             <Light spot={spot} ring={ring} stage={stage} offline={offline} uid={uid} reduced={reduced} />
-            <g transform={PLACE} class={`divi-art is-${offline ? 'offline' : stage}`}>
-                <path d={DIVI_BODY} fill={offline ? '#C9CEC4' : LIME} />
-                <g class="divi-eyes st2-anim">
-                    {eyes.map((eye, index) => (
-                        <path
-                            key={index}
-                            d={eye.d}
-                            fill="none"
-                            stroke={INK}
-                            stroke-linecap="round"
-                            stroke-width={eye.width}
-                            opacity={offline ? 0.55 : 1}
-                            style={{ transform: `translateX(${eye.dx}px)` }}
-                        />
-                    ))}
-                </g>
-            </g>
         </Frame>
     );
 }
 
-/** Значок ДиВи в шапке и списках: знак целиком, цвет — свой. */
+/** Deevi's icon in headers and lists: the whole mark, in its own colours. */
 export function DiviGlyph({ size = 28 }: StationGlyphProps) {
     const [left, right] = diviEyes('open');
     return (

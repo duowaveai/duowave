@@ -367,7 +367,7 @@ impl Workshop {
         let note = self.reach(template)?;
         let id = self.new_id();
         let title = match title.map(str::trim).filter(|title| !title.is_empty()) {
-            _ if template == "midi" => "Учитель на MIDI-клавиатуре".to_string(),
+            _ if template == "midi" => super::templates::MIDI_TITLE.to_string(),
             Some(title) => title.chars().take(60).collect(),
             None => title_of(face, &brief),
         };

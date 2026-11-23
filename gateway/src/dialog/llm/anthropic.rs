@@ -72,7 +72,13 @@ impl LlmClient for AnthropicLlm {
     fn stream(&self, request: LlmRequest, cancel: CancellationToken) -> LlmStream {
         let settings = self.settings.clone();
         generate(move |y| async move {
-            if let Err(error) = run(&settings, &request, &cancel, &y).await {
+            let limits = settings.limits.clone();
+            let result = match super::llm_client::claim(limits.as_ref()) {
+                Ok(_) => run(&settings, &request, &cancel, &y).await,
+                Err(paused) => Err(paused),
+            };
+            super::llm_client::settle(limits.as_ref(), &result);
+            if let Err(error) = result {
                 y.send(Err(error)).await;
             }
         })
@@ -91,7 +97,7 @@ async fn run(
     let body = body_of(settings, request, &model, haiku);
     let headers = headers_of(settings, &key, haiku)?;
     let url = messages_url(settings.base_url.as_deref().filter(|url| !url.is_empty()).unwrap_or(ANTHROPIC_BASE_URL));
-    let response = open(&url, headers, body.to_string(), cancel).await?;
+    let response = open(&url, headers, body.to_string(), cancel, settings.limits.as_ref()).await?;
 
     let mut message = Message::default();
     let mut text = String::new();
@@ -310,6 +316,7 @@ async fn open(
     headers: HeaderMap,
     body: String,
     cancel: &CancellationToken,
+    limits: Option<&super::llm_client::ProviderCell>,
 ) -> anyhow::Result<reqwest::Response> {
     if let Some(refused) = super::llm_client::egress_refusal(url) {
         return Err(refused);
@@ -324,12 +331,20 @@ async fn open(
         let asked_wait = match outcome {
             Ok(Ok(response)) if response.status().is_success() => return Ok(response),
             Ok(Ok(response)) => {
-                if retries == 0 || !should_retry(&response) {
+                // A long wait asked (a limit until a time) is not waited out here: the limit says it.
+                let long = retry_after(response.headers()).is_some_and(|wait| wait > LONGEST_RETRY_WAIT);
+                if retries == 0 || long || !should_retry(&response) {
                     let status = response.status().as_u16();
+                    let headers = response.headers().clone();
                     let text = tokio::select! {
                         _ = cancel.cancelled() => return Err(aborted()),
                         text = response.text() => text.unwrap_or_else(|error| error.to_string()),
                     };
+                    if let Some(refused) =
+                        limits.and_then(|cell| super::llm_client::refusal(cell, status, &headers, &text))
+                    {
+                        return Err(refused);
+                    }
                     return Err(status_error(status, &text));
                 }
                 retry_after(response.headers())
@@ -353,6 +368,9 @@ async fn open(
         }
     }
 }
+
+/// The longest `retry-after` the one retry waits out: longer is a limit until a time (limits.rs).
+const LONGEST_RETRY_WAIT: Duration = Duration::from_secs(60);
 
 /// Anthropic could not be reached: said to the person (the brain's check, «Спросить мозг»).
 fn unreachable() -> String {
@@ -747,7 +765,7 @@ mod tests {
             tokens_field: Default::default(),
             access: None,
             api: Default::default(),
-            duowave: None,
+            limits: None,
         }
     }
 

@@ -874,8 +874,14 @@ impl StationGateway {
         }
     }
 
+    /// Another record of this computer is at that centre.
+    fn centre_followed_already(&self, address: &str, port: u16) -> bool {
+        let all = self.settings.get(&STATION_PLACEMENTS, None).unwrap_or_default();
+        followed_elsewhere(&all, &self.key, address, port)
+    }
+
     /// The watched station became an ear of another centre: the record moves to the centre with its key. True when it
-    /// moved: the next look is at the centre.
+    /// moved, or when it is an ear of a centre this computer follows already: nothing more to do with it this look.
     async fn follow_centre(&self, client: &PeerClient) -> bool {
         let ear = self.live().health.as_ref().and_then(|health| health.pointer("/placement/earOf").cloned());
         if ear.is_none() {
@@ -893,6 +899,13 @@ impl StationGateway {
         let Some(mut record) = self.record() else { return false };
         if record.address == address && record.port == port {
             return false;
+        }
+        // This computer follows that centre already: the station is an ear it took into the home itself («Ещё
+        // колонка», stage 5 of docs/plans/home-setup-flow.md) — its record stays the ear's, so the panel counts it in
+        // the home, and nothing more is done with it here: the centre keeps it. Moving it made the centre's second
+        // record and the ear «не в доме» (pretend stations, 23.11).
+        if self.centre_followed_already(address, port) {
+            return true;
         }
         if self.keep_key(key).is_err() {
             return false;
@@ -934,10 +947,29 @@ impl StationGateway {
                 }
             }
         };
+        if outcome.is_ok() {
+            self.learn_device();
+        }
         if before != self.signature() {
             self.events.emit(GatewayEvent::PlacementChanged { what: "station".into() });
         }
         outcome
+    }
+
+    /// The station's device as its /health says it, into a record that does not know it yet: a station linked by the
+    /// code (not moved here by this computer) — the panel tells the hub and its ears from the stations not in the home
+    /// by it (pretend stations, 23.11: it offered them all «Подключить к дому»). A known device is never replaced.
+    fn learn_device(&self) {
+        let said = self.lock().health.as_ref().and_then(device_of);
+        let Some(device) = said else { return };
+        let Some(mut record) = self.record() else { return };
+        if record.device.is_some() {
+            return;
+        }
+        record.device = Some(device);
+        if self.store(&record, None).is_ok() {
+            self.events.emit(GatewayEvent::PlacementChanged { what: "station".into() });
+        }
     }
 
     /// Nothing answered — a look, or a request of the pass: refused, no route, no answer in time. The first miss of an
@@ -1313,6 +1345,17 @@ pub fn key_of(device: Option<&str>, address: &str) -> String {
         Some(device) => device.to_string(),
         None => format!("at:{address}"),
     }
+}
+
+/// The station's own device, as its /health says it (`placement.device`).
+fn device_of(health: &Value) -> Option<String> {
+    let device = health.pointer("/placement/device").and_then(Value::as_str)?;
+    (!device.trim().is_empty()).then(|| device.to_string())
+}
+
+/// Of these records, another than `key` is at `address:port`.
+fn followed_elsewhere(all: &BTreeMap<String, StationPlacement>, key: &str, address: &str, port: u16) -> bool {
+    all.iter().any(|(other, record)| other != key && record.address == address && record.port == port)
 }
 
 /// The computer's watches over the stations' gateways, one per station with a placement of its own
@@ -2639,5 +2682,34 @@ mod tests {
         // Everything at one version: nothing to do — «последняя версия» is true.
         assert_eq!(plan_update("0.16.3", "0.16.3", Ok(()), Some(&own(None, Ok(())))), None);
         assert_eq!(plan_update("0.16.3", "0.16.3", Ok(()), None), None);
+    }
+
+    /// An ear's record stays the ear's when this computer has the centre's record already (followed_elsewhere).
+    #[test]
+    fn an_ear_beside_a_followed_centre_is_not_moved() {
+        let record = |address: &str, port: u16| {
+            let mut record: StationPlacement = serde_json::from_value(serde_json::json!({
+                "address": address, "port": port, "placement": "station", "managed": false
+            }))
+            .unwrap();
+            record.port = port;
+            record
+        };
+        let mut all = BTreeMap::new();
+        all.insert("at:10.77.0.2".to_string(), record("10.77.0.2", 8790));
+        all.insert("at:10.77.0.3".to_string(), record("10.77.0.3", 8790));
+        assert!(followed_elsewhere(&all, "at:10.77.0.3", "10.77.0.2", 8790), "the centre is followed already");
+        assert!(!followed_elsewhere(&all, "at:10.77.0.2", "10.77.0.2", 8790), "itself does not count");
+        assert!(
+            !followed_elsewhere(&all, "at:10.77.0.3", "10.77.0.9", 8790),
+            "a centre not followed: the record moves"
+        );
+    }
+
+    #[test]
+    fn the_stations_device_is_read_from_its_health() {
+        assert_eq!(device_of(&serde_json::json!({ "placement": { "device": "h:ab12" } })).as_deref(), Some("h:ab12"));
+        assert_eq!(device_of(&serde_json::json!({ "placement": { "device": null } })), None);
+        assert_eq!(device_of(&serde_json::json!({ "placement": { "device": " " } })), None);
     }
 }

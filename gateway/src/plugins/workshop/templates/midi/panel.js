@@ -1,12 +1,91 @@
 // __TITLE__: виджет на столе и окно урока. Клавиатуру слышит useMidi (шлюз на компьютере; в «Примерке» — клавиатура
 // на экране), звук — useSynth, клавиши — PianoKeys (docs/plugins/AUTHORING.md, «MIDI-клавиатура»). Урок «ждёт тебя»:
 // темпа нет, следующая нота светится, пока её не нажмут. Прогресс сохраняется одним вызовом в конце, не на каждую
-// клавишу.
+// клавишу. Тексты — словарём по языкам (useT): язык пульта выбирает окошко. Свою мелодию файлом .mid читает шлюз;
+// где читать некому (readMidiFile — null), кнопки «Своя мелодия…» нет.
 import { h } from "preact";
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
-import { PianoKeys, definePlugin, icons, noteName, readMidiFile, melodyOf, useApi, useMidi, usePanelState, useSynth } from "@duowave/panel-sdk";
+import { PianoKeys, definePlugin, icons, noteName, readMidiFile, melodyOf, t as translate, useApi, useMidi, usePanelState, useSynth, useT } from "@duowave/panel-sdk";
 
 const ID = "__ID__";
+const TITLE = "__TITLE__";
+
+const T = {
+  ru: {
+    source: "приложение",
+    reading: "Читаю…",
+    noMelodies: "Мелодий нет",
+    passed: "Пройдена {times} раз · лучший раз — ошибок {best}",
+    notPassed: "Ещё не пройдена",
+    open: "Открыть урок",
+    onlyDrums: "В файле нет мелодии: только ударные.",
+    added: "Мелодия «{title}» добавлена.",
+    howMany: "Сколько клавиш у «{name}»?",
+    byName: " По названию — {keys}.",
+    leftmost: "Нажмите на клавиатуре самую левую клавишу.",
+    ownSound: "Клавиатура звучит сама, без компьютера?",
+    yesOwn: "Да, у неё свой звук",
+    noPanel: "Нет, звук — из пульта",
+    own: "Своя мелодия…",
+    remove: "Убрать",
+    whichTrack: "В файле {count} дорожки — какую учить?",
+    track: "Дорожка {n}",
+    notes: "{name} · {count} нот",
+    viaBrowser: "через браузер",
+    viaComputer: "через компьютер",
+    delay: " · задержка {ms} мс",
+    connecting: "Подключаю клавиатуру…",
+    keyboardAgain: "Клавиатура заново",
+    connectBrowser: "Подключить через браузер",
+    startSound: "Начать — включить звук",
+    bluetooth: "Звук идёт {ms} мс — наверное, наушники по Bluetooth. Играть удобнее со звуком клавиатуры или из динамиков.",
+    done: "Готово! «{title}», ошибок: {mistakes}. Ещё раз?",
+    progress: "«{title}» · {index} из {total}",
+    mistakes: " · ошибок {count}",
+    next: " · следующая — {note}",
+    folded: "Мелодия шире клавиатуры: {count} нот перенесены на октаву.",
+    restart: "Сначала",
+    stop: "Стоп",
+    listen: "Послушать",
+  },
+  en: {
+    source: "app",
+    reading: "Reading…",
+    noMelodies: "No tunes",
+    passed: "Played {times} times · best — {best} mistakes",
+    notPassed: "Not played yet",
+    open: "Open the lesson",
+    onlyDrums: "The file has no tune: drums only.",
+    added: "The tune “{title}” is added.",
+    howMany: "How many keys does “{name}” have?",
+    byName: " By its name — {keys}.",
+    leftmost: "Press the leftmost key on your keyboard.",
+    ownSound: "Does the keyboard make sound by itself, without the computer?",
+    yesOwn: "Yes, it has its own sound",
+    noPanel: "No, the panel plays the sound",
+    own: "My own tune…",
+    remove: "Remove",
+    whichTrack: "The file has {count} tracks — which one to learn?",
+    track: "Track {n}",
+    notes: "{name} · {count} notes",
+    viaBrowser: "through the browser",
+    viaComputer: "through the computer",
+    delay: " · delay {ms} ms",
+    connecting: "Connecting the keyboard…",
+    keyboardAgain: "Keyboard again",
+    connectBrowser: "Connect through the browser",
+    startSound: "Start — turn the sound on",
+    bluetooth: "The sound comes {ms} ms late — Bluetooth headphones, probably. Play with the keyboard’s own sound or the speakers.",
+    done: "Done! “{title}”, mistakes: {mistakes}. Again?",
+    progress: "“{title}” · {index} of {total}",
+    mistakes: " · {count} mistakes",
+    next: " · next — {note}",
+    folded: "The tune is wider than the keyboard: {count} notes moved by an octave.",
+    restart: "From the start",
+    stop: "Stop",
+    listen: "Listen",
+  },
+};
 const SIZES = [25, 32, 37, 49, 61, 76, 88];
 const LOWEST = { 25: 48, 32: 53, 37: 48, 49: 36, 61: 36, 76: 28, 88: 21 };
 
@@ -60,10 +139,11 @@ function layout(melody, board) {
 
 // Виджет клавиатуру не слушает: она открыта, только пока открыто окно урока.
 function Widget() {
+  const t = useT(T);
   const { data, error } = useTeacher();
   const panel = usePanelState();
   if (error) return h("p", { class: "w-cap m-0" }, error);
-  if (!data) return h("p", { class: "w-cap m-0" }, "Читаю…");
+  if (!data) return h("p", { class: "w-cap m-0" }, t("reading"));
   const melody = data.melodies.find((m) => m.id === data.current) ?? data.melodies[0];
   const progress = data.progress[melody?.id];
   const first = melody?.notes[0]?.[0] ?? 60;
@@ -71,14 +151,15 @@ function Widget() {
   return h(
     "div",
     { class: "flex flex-col gap-6" },
-    h("span", { class: "w-big" }, melody?.title ?? "Мелодий нет"),
-    h("span", { class: "w-cap" }, progress ? `Пройдена ${progress.times} раз · лучший раз — ошибок ${progress.best}` : "Ещё не пройдена"),
+    h("span", { class: "w-big" }, melody?.title ?? t("noMelodies")),
+    h("span", { class: "w-cap" }, progress ? t("passed", { times: progress.times, best: progress.best }) : t("notPassed")),
     h(PianoKeys, { from, to: from + 12, next: [first], names: false, height: 44 }),
-    h("button", { class: "w-btn", type: "button", onClick: () => panel.go(ID) }, "Открыть урок"),
+    h("button", { class: "w-btn", type: "button", onClick: () => panel.go(ID) }, t("open")),
   );
 }
 
 function Lesson() {
+  const t = useT(T);
   const { api, data, error } = useTeacher();
   const midi = useMidi();
   const synth = useSynth();
@@ -178,7 +259,7 @@ function Lesson() {
     try {
       const song = await readMidiFile(chosen);
       const usable = song.tracks.filter((track) => !track.drums && track.melody.length > 0);
-      if (usable.length === 0) throw new Error("В файле нет мелодии: только ударные.");
+      if (usable.length === 0) throw new Error(t("onlyDrums"));
       if (usable.length === 1) return save(chosen.name, song.tempo, usable[0]);
       setTracks({ name: chosen.name, tempo: song.tempo, list: usable });
     } catch (e) {
@@ -188,11 +269,11 @@ function Lesson() {
   const save = (name, tempo, track) => {
     setTracks(null);
     const title = name.replace(/\.midi?$/i, "") + (track.name ? ` · ${track.name}` : "");
-    api.call("add", { title, tempo, notes: melodyOf(track) }).then(() => setNote(`Мелодия «${title}» добавлена.`)).catch((e) => setNote(e?.message ?? String(e)));
+    api.call("add", { title, tempo, notes: melodyOf(track) }).then(() => setNote(t("added", { title }))).catch((e) => setNote(e?.message ?? String(e)));
   };
 
   if (error) return h("p", { class: "t-caption" }, error);
-  if (!data) return h("p", { class: "t-caption" }, "Читаю…");
+  if (!data) return h("p", { class: "t-caption" }, t("reading"));
 
   const guess = sizeByName(deviceName);
   const steps =
@@ -201,16 +282,16 @@ function Lesson() {
       "div",
       { class: "flex flex-col gap-6" },
       setup.step === "keys" && [
-        h("span", null, `Сколько клавиш у «${deviceName}»?${guess ? ` По названию — ${guess}.` : ""}`),
+        h("span", null, t("howMany", { name: deviceName }) + (guess ? t("byName", { keys: guess }) : "")),
         h("div", { class: "flex gap-6", style: { flexWrap: "wrap" } }, ...SIZES.map((keys) =>
           h("button", { class: keys === guess ? "pill pill-own" : "pill", type: "button", onClick: () => api.call("keyboard", { name: deviceName, keys }).then(() => setSetup({ step: "low" })) }, String(keys)))),
       ],
-      setup.step === "low" && h("span", null, "Нажмите на клавиатуре самую левую клавишу."),
+      setup.step === "low" && h("span", null, t("leftmost")),
       setup.step === "sounds" && [
-        h("span", null, "Клавиатура звучит сама, без компьютера?"),
+        h("span", null, t("ownSound")),
         h("div", { class: "flex gap-6" },
-          h("button", { class: "pill", type: "button", onClick: () => api.call("keyboard", { name: deviceName, sounds: true }).then(() => setSetup(null)) }, "Да, у неё свой звук"),
-          h("button", { class: "pill", type: "button", onClick: () => api.call("keyboard", { name: deviceName, sounds: false }).then(() => setSetup(null)) }, "Нет, звук — из пульта")),
+          h("button", { class: "pill", type: "button", onClick: () => api.call("keyboard", { name: deviceName, sounds: true }).then(() => setSetup(null)) }, t("yesOwn")),
+          h("button", { class: "pill", type: "button", onClick: () => api.call("keyboard", { name: deviceName, sounds: false }).then(() => setSetup(null)) }, t("noPanel"))),
       ],
     );
 
@@ -222,14 +303,14 @@ function Lesson() {
       { class: "flex gap-6", style: { flexWrap: "wrap", alignItems: "center" } },
       h("select", { value: melody?.id, onChange: (e) => api.call("choose", { id: e.currentTarget.value }) },
         ...data.melodies.map((m) => h("option", { value: m.id }, `${m.title} — ${m.level}`))),
-      h("button", { class: "pill", type: "button", onClick: () => file.current?.click() }, "Своя мелодия…"),
-      melody?.own && h("button", { class: "pill", type: "button", onClick: () => api.call("remove", { id: melody.id }) }, "Убрать"),
-      h("input", { ref: file, type: "file", accept: ".mid,.midi,audio/midi", hidden: true, onChange: pick }),
+      readMidiFile && h("button", { class: "pill", type: "button", onClick: () => file.current?.click() }, t("own")),
+      melody?.own && h("button", { class: "pill", type: "button", onClick: () => api.call("remove", { id: melody.id }) }, t("remove")),
+      readMidiFile && h("input", { ref: file, type: "file", accept: ".mid,.midi,audio/midi", hidden: true, onChange: pick }),
     ),
     tracks && h("div", { class: "flex flex-col gap-6" },
-      h("span", null, `В файле ${tracks.list.length} дорожки — какую учить?`),
+      h("span", null, t("whichTrack", { count: tracks.list.length })),
       h("div", { class: "flex gap-6", style: { flexWrap: "wrap" } }, ...tracks.list.map((track) =>
-        h("button", { class: "pill", type: "button", onClick: () => save(tracks.name, tracks.tempo, track) }, `${track.name ?? `Дорожка ${track.index + 1}`} · ${track.melody.length} нот`)))),
+        h("button", { class: "pill", type: "button", onClick: () => save(tracks.name, tracks.tempo, track) }, t("notes", { name: track.name ?? t("track", { n: track.index + 1 }), count: track.melody.length }))))),
     note && h("span", { class: "t-caption" }, note),
     h(
       "div",
@@ -238,29 +319,31 @@ function Lesson() {
         "span",
         { class: "t-caption" },
         midi.state === "ready"
-          ? `${midi.input?.name} · ${midi.via === "browser" ? "через браузер" : "через компьютер"}${midi.delayMs != null && midi.delayMs > 20 ? ` · задержка ${midi.delayMs} мс` : ""}`
-          : midi.why ?? "Подключаю клавиатуру…",
+          ? `${midi.input?.name} · ${midi.via === "browser" ? t("viaBrowser") : t("viaComputer")}${midi.delayMs != null && midi.delayMs > 20 ? t("delay", { ms: midi.delayMs }) : ""}`
+          : midi.why ?? t("connecting"),
       ),
       // Ответили не так — три шага заново.
       board?.keys && !setup &&
-        h("button", { class: "pill", type: "button", onClick: () => api.call("keyboard", { name: deviceName, reset: true }).then(() => setSetup({ step: "keys" })) }, "Клавиатура заново"),
+        h("button", { class: "pill", type: "button", onClick: () => api.call("keyboard", { name: deviceName, reset: true }).then(() => setSetup({ step: "keys" })) }, t("keyboardAgain")),
     ),
     midi.inputs.length > 1 && h("select", { value: midi.input?.id, onChange: (e) => midi.choose(e.currentTarget.value) },
       ...midi.inputs.map((port) => h("option", { value: port.id }, port.name))),
     (midi.state === "browser" || (midi.state === "nodevice" && midi.browserPossible)) &&
-      h("button", { class: "pill", type: "button", onClick: () => midi.useBrowser() }, "Подключить через браузер"),
+      h("button", { class: "pill", type: "button", onClick: () => midi.useBrowser() }, t("connectBrowser")),
     steps,
-    !sounds && synth.needsTap && h("button", { class: "pill", type: "button", onClick: () => synth.start() }, "Начать — включить звук"),
+    !sounds && synth.needsTap && h("button", { class: "pill", type: "button", onClick: () => synth.start() }, t("startSound")),
     synth.delayMs != null && synth.delayMs > 80 && !sounds &&
-      h("span", { class: "t-caption" }, `Звук идёт ${synth.delayMs} мс — наверное, наушники по Bluetooth. Играть удобнее со звуком клавиатуры или из динамиков.`),
+      h("span", { class: "t-caption" }, t("bluetooth", { ms: synth.delayMs })),
     h(
       "span",
       null,
       finished
-        ? `Готово! «${melody.title}», ошибок: ${mistakes}. Ещё раз?`
-        : `«${melody?.title}» · ${index} из ${fitted.notes.length}${mistakes ? ` · ошибок ${mistakes}` : ""}${target != null && data.names ? ` · следующая — ${noteName(target)}` : ""}`,
+        ? t("done", { title: melody.title, mistakes })
+        : t("progress", { title: melody?.title, index, total: fitted.notes.length }) +
+            (mistakes ? t("mistakes", { count: mistakes }) : "") +
+            (target != null && data.names ? t("next", { note: noteName(target) }) : ""),
     ),
-    fitted.folded > 0 && h("span", { class: "t-caption" }, `Мелодия шире клавиатуры: ${fitted.folded} нот перенесены на октаву.`),
+    fitted.folded > 0 && h("span", { class: "t-caption" }, t("folded", { count: fitted.folded })),
     h(PianoKeys, {
       from: fitted.from,
       to: fitted.to,
@@ -274,16 +357,16 @@ function Lesson() {
     h(
       "div",
       { class: "flex gap-6" },
-      h("button", { class: "pill", type: "button", onClick: restart }, "Сначала"),
-      h("button", { class: "pill", type: "button", onClick: listen }, playing != null ? "Стоп" : "Послушать"),
+      h("button", { class: "pill", type: "button", onClick: restart }, t("restart")),
+      h("button", { class: "pill", type: "button", onClick: listen }, playing != null ? t("stop") : t("listen")),
     ),
   );
 }
 
 export default definePlugin({
   id: ID,
-  sections: [{ id: ID, title: "__TITLE__", icon: icons.music, Screen: Lesson, nav: "link" }],
+  sections: [{ id: ID, title: TITLE, icon: icons.music, Screen: Lesson, nav: "link" }],
   slots: {
-    "desk.widgets": [{ id: "main", title: "__TITLE__", icon: icons.music, size: "small", initial: true, source: "приложение", Component: Widget }],
+    "desk.widgets": [{ id: "main", title: TITLE, icon: icons.music, size: "small", initial: true, source: translate(T, "source"), Component: Widget }],
   },
 });

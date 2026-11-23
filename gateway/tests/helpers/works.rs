@@ -158,6 +158,7 @@ fn routed(station: &Gateway) -> Decision {
             tools: dialog.tools_enabled(),
             unreachable_fast: !dialog.reachable(ModelProfile::Fast),
             unreachable_smart: !dialog.reachable(ModelProfile::Smart),
+            ..ModelState::default()
         },
         ..RouteInput::default()
     };

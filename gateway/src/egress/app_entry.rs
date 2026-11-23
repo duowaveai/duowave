@@ -192,7 +192,7 @@ async fn serve(mut client: TcpStream, decide: Decide, failed: Failed) -> Result<
             answer(&mut client, "503 Service Unavailable", words).await;
             return Ok(());
         }
-        Hop::Direct => match tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect((host.as_str(), port))).await {
+        Hop::Direct => match tokio::time::timeout(CONNECT_TIMEOUT, crate::utils::net::dial(&host, port)).await {
             Ok(Ok(stream)) => stream,
             Ok(Err(error)) => {
                 let why = if error.kind() == std::io::ErrorKind::ConnectionReset { "reset" } else { "refused" };

@@ -355,8 +355,8 @@ export interface ProviderAccount {
 
 /**
  * Доступ провайдера, как его назвал сервис (DuoWave): есть ли, тариф, до когда, и что просит последний отказ:
- * revoked — ключ отозван, model — модели нет в тарифе (оба: подключить заново); ended — доступ закончился, quota —
- * лимит недели (оба: кабинет); busy — слишком много запросов, подождать.
+ * revoked — ключ отозван, model — модели нет в тарифе (оба: подключить заново); ended — доступ закончился (кабинет).
+ * Лимиты — дневной, недельный, «слишком много запросов» — в `ProviderView.limit`.
  */
 export interface ProviderAccess {
     active: boolean;
@@ -364,7 +364,31 @@ export interface ProviderAccess {
     tier?: string;
     plan?: string;
     endsAt?: string;
-    problem?: 'revoked' | 'ended' | 'quota' | 'busy' | 'model';
+    problem?: 'revoked' | 'ended' | 'model';
+}
+
+/**
+ * Лимит провайдера, пока он держится (docs/plans/provider-limits.md): почему, до когда (ISO, UTC) и слова колонки —
+ * «Дневной лимит DuoWave закончился. Он обновится в 7:00.». Пока он держится, вопросы идут к запасной.
+ */
+export interface ProviderLimit {
+    reason: 'busy' | 'later' | 'day' | 'week' | 'plan' | 'service' | 'credits' | 'ended' | 'revoked';
+    until?: string;
+    words: string;
+}
+
+/** Один счётчик DuoWave: потрачено, лимит и когда обновится (день) или кончится период (неделя). */
+export interface QuotaPart {
+    used: number;
+    limit: number;
+    resetsAt?: string;
+}
+
+/** Сколько потрачено, как сказал шлюз DuoWave (`x-quota-*`, `GET /v1/quota`). Числа — его токены: показываем процент. */
+export interface ProviderQuota {
+    day?: QuotaPart;
+    period?: QuotaPart;
+    at: string;
 }
 
 /**
@@ -406,6 +430,10 @@ export interface ProviderView {
     account?: ProviderAccount;
     /** Доступ, как его назвал сервис (DuoWave); нет — сервис о доступе ничего не говорил. */
     access?: ProviderAccess;
+    /** Лимит, пока он держится. */
+    limit?: ProviderLimit;
+    /** Расход за день и за период (DuoWave). */
+    quota?: ProviderQuota;
     /** Модель помощника: строку ведёт шлюз (адрес и ключ — в «Помощниках»); `builtin` — сервер моделей этого компьютера. */
     helper?: { id: string; name: string; kind: HelperKind; state: HelperState; builtin?: boolean };
 }
@@ -586,6 +614,8 @@ export async function workshopChat(draft: string, message: string, fresh: boolea
     await readEvents(response, onEvent);
 }
 
+export type OnLimit = 'ask' | 'alice' | 'say';
+
 export interface BrainPick {
     provider: string;
     model: string;
@@ -609,6 +639,8 @@ export interface BrainView {
         backup?: BrainPick | null;
         backupBy?: 'gateway' | 'declined';
         autoBackup?: boolean;
+        /** «Когда кончился лимит, а запасной нет» (в «Вместе»): спросить голосом, отдавать Алисе, сказать, когда обновится. */
+        onLimit?: OnLimit;
     };
     status: BrainStatus;
     env: { provider: BrainStatus['provider']; title: string; models: { fast: string; smart: string }; usable: boolean; cloud: boolean };
@@ -4285,7 +4317,7 @@ export const api = {
     /** Код со страницы сервиса или адрес страницы после входа — с другого устройства. */
     completeSignIn: (id: string, text: string) => post<{ title: string; note?: string }>('/api/v1/oauth/complete', { id, text }),
     /** `backup`: null — «не нужна» (шлюз сам больше не ставит); 'auto' — «пусть выберет шлюз» (только при `autoBackup`). */
-    chooseBrain: (choice: { fast?: BrainPick | null; smart?: BrainPick | null; backup?: BrainPick | null | 'auto'; effort?: LlmEffort }) =>
+    chooseBrain: (choice: { fast?: BrainPick | null; smart?: BrainPick | null; backup?: BrainPick | null | 'auto'; effort?: LlmEffort; onLimit?: OnLimit }) =>
         put<BrainView>('/api/v1/brain/choice', choice),
 
     mcp: () => get<McpView>('/api/v1/mcp'),

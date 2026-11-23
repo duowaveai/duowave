@@ -76,8 +76,9 @@ jobs:
           tool: cargo-zigbuild
       - if: matrix.zig && steps.cache.outputs.cache-hit != 'true'
         run: cargo zigbuild -p duowave --target ${{ matrix.target }} --release
+      # As release.yml: the Mac and Windows gateways hear MIDI keyboards, so their cache holds midir too.
       - if: ${{ !matrix.zig && steps.cache.outputs.cache-hit != 'true' }}
-        run: cargo build -p duowave --target ${{ matrix.target }} --release
+        run: cargo build -p duowave --target ${{ matrix.target }} --release --features midi
 
   desktop:
     # As release.yml's desktop: the same Tauri build (its features and environment), without the bundles.
@@ -116,9 +117,11 @@ jobs:
       # The Tauri CLI release.yml builds with: one version, its files from the lock file, no install scripts.
       - if: steps.cache.outputs.cache-hit != 'true'
         run: npm ci --prefix scripts/release/tauri-cli --ignore-scripts --no-audit --no-fund
+      # As release.yml, with ALSA: the app hears MIDI keyboards (duowave's `midi`), and alsa-sys does not build without
+      # it — every Linux desktop build here failed from 14.11 on.
       - name: Tauri's system packages
         if: runner.os == 'Linux' && steps.cache.outputs.cache-hit != 'true'
-        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev libasound2-dev
       # As release.yml: Tauri wants uv beside the program (bundle.externalBin) even without the bundles; without it
       # every build here failed from 0.6.0 on.
       - name: uv for the build

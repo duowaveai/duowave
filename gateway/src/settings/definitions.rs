@@ -680,6 +680,31 @@ pub struct Brain {
     /// «пусть выберет шлюз» (decision 18). A gateway without the block never writes it: its «не нужна» is not kept.
     #[serde(default, rename = "backupBy", skip_serializing_if = "Option::is_none")]
     pub backup_by: Option<BackupBy>,
+    /// «Когда у модели кончился лимит и запасной нет» (docs/plans/provider-limits.md): unset — ask once by voice.
+    #[serde(default, rename = "onLimit", skip_serializing_if = "Option::is_none")]
+    pub on_limit: Option<OnLimit>,
+}
+
+/// What the station does when a profile's provider is out of its limit and nothing stands in for it, in «Вместе»:
+/// ask the person once (the default), give the questions to Alice, or say when the limit renews.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OnLimit {
+    #[default]
+    Ask,
+    Alice,
+    Say,
+}
+
+impl OnLimit {
+    pub fn parse(text: &str) -> Option<OnLimit> {
+        match text {
+            "ask" => Some(OnLimit::Ask),
+            "alice" => Some(OnLimit::Alice),
+            "say" => Some(OnLimit::Say),
+            _ => None,
+        }
+    }
 }
 
 /// The gateway set the backup by itself, or a person said «не нужна» — then the gateway sets none again until
@@ -736,6 +761,7 @@ pub const BRAIN: SettingDefinition<Brain> = SettingDefinition {
             effort: object.get("effort").and_then(|effort| as_one_of(effort, crate::config::LLM_EFFORTS)),
             backup: pick("backup"),
             backup_by: object.get("backupBy").and_then(|by| serde_json::from_value(by.clone()).ok()),
+            on_limit: object.get("onLimit").and_then(Value::as_str).and_then(OnLimit::parse),
         })
     },
 };

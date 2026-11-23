@@ -121,6 +121,9 @@ pub const DEFAULT_PORT: u16 = 7780;
 
 #[derive(Debug, Clone)]
 pub struct AppConfig {
+    /// BIND_ADDRESS: the one address the gateway listens on (its link's port too); unset — every address, as always.
+    /// A pretend station listens on its own (docs/plans/pretend-stations.md).
+    pub bind_address: Option<std::net::IpAddr>,
     /// NODE_ENV (kept for the name): development, production.
     pub env: String,
     pub port: u16,
@@ -720,6 +723,60 @@ pub struct PlacementConfig {
     /// DUOWAVE_ROLE=station: a computer's build plays the station's gateway (its role, its placement) — to try the
     /// pair on one computer and in the tests. Unset: the build's own.
     pub role: Option<String>,
+    /// DUOWAVE_PRETEND: a pretend station or the Turbo that tries it, on one Mac (docs/plans/pretend-stations.md).
+    pub pretend: Option<PretendConfig>,
+}
+
+/// What a pretend station is, or the test Turbo beside the pretend stations (docs/plans/pretend-stations.md). Unset —
+/// none of it: the gateway is what it always was.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PretendConfig {
+    /// DUOWAVE_PRETEND: `station` (with DUOWAVE_ROLE=station) or `turbo`.
+    pub kind: PretendKind,
+    /// DUOWAVE_PRETEND_ADDRESS: its own address on the Mac's loopback (10.77.0.x). A station listens on it; both leave
+    /// from it for the other pretend addresses (its /24), so each sees the other at its own address.
+    pub address: std::net::Ipv4Addr,
+    /// DUOWAVE_PRETEND_NAME: the name its mDNS answer gives («Кухня»).
+    pub name: String,
+    /// DUOWAVE_PRETEND_STATIONS: the only addresses the station search asks (mDNS, unicast) — never the home network.
+    pub stations: Vec<std::net::Ipv4Addr>,
+    /// DUOWAVE_PRETEND_SAY=1: a pretend station says its join codes with the Mac's voice (`say`) too.
+    pub say: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PretendKind {
+    Station,
+    Turbo,
+}
+
+impl PretendConfig {
+    fn of(env: &Env) -> Option<PretendConfig> {
+        let kind = match env.get("DUOWAVE_PRETEND")? {
+            "station" => PretendKind::Station,
+            "turbo" => PretendKind::Turbo,
+            _ => return None,
+        };
+        let address = env.get("DUOWAVE_PRETEND_ADDRESS")?.trim().parse().ok()?;
+        let stations = env.list("DUOWAVE_PRETEND_STATIONS", &[]).iter().filter_map(|one| one.parse().ok()).collect();
+        Some(PretendConfig {
+            kind,
+            address,
+            name: env.optional("DUOWAVE_PRETEND_NAME").unwrap_or_else(|| "Колонка".to_string()),
+            stations,
+            say: env.flag("DUOWAVE_PRETEND_SAY", false),
+        })
+    }
+
+    /// Whether a pretend station's.
+    pub fn is_station(&self) -> bool {
+        self.kind == PretendKind::Station
+    }
+
+    /// Whether `ip` is another pretend address: its /24, not itself.
+    pub fn near(&self, ip: std::net::Ipv4Addr) -> bool {
+        ip != self.address && ip.octets()[..3] == self.address.octets()[..3]
+    }
 }
 
 /// The local models (src/models): where the voices the gateway downloads go.
@@ -827,6 +884,10 @@ fn build(env: &Env) -> Config {
     Config {
         data_dir: env.get("DATA_DIR").map(str::trim).filter(|root| !root.is_empty()).map(PathBuf::from),
         app: AppConfig {
+            bind_address: env.get("BIND_ADDRESS").and_then(|address| address.trim().parse().ok()).or_else(|| {
+                // A pretend station listens on its own address alone: several of them share the Mac.
+                PretendConfig::of(env).filter(PretendConfig::is_station).map(|pretend| pretend.address.into())
+            }),
             env: env.string("NODE_ENV", "development"),
             port,
             public_port: env.get("PUBLIC_PORT").and_then(|port| port.trim().parse().ok()).filter(|port| *port > 0),
@@ -1046,6 +1107,7 @@ fn build(env: &Env) -> Config {
             peer_key: env.optional("PEER_KEY"),
             managed_by: env.optional("DUOWAVE_MANAGED"),
             role: env.optional("DUOWAVE_ROLE"),
+            pretend: PretendConfig::of(env),
         },
         models: ModelsConfig {
             tts_dir: env
@@ -1242,6 +1304,41 @@ pub fn host_of_url(url: &str) -> Option<String> {
 }
 
 /// Every value the gateway would not take, as Joi listed them.
+/// DUOWAVE_PRETEND and its company, whole or not at all (docs/plans/pretend-stations.md).
+fn pretend_problems(env: &Env) -> Vec<String> {
+    let mut problems = Vec::new();
+    if let Some(address) = env.get("BIND_ADDRESS") {
+        if address.trim().parse::<std::net::IpAddr>().is_err() {
+            problems.push("BIND_ADDRESS must be an IP address".to_string());
+        }
+    }
+    let Some(kind) = env.get("DUOWAVE_PRETEND") else { return problems };
+    if !cfg!(feature = "pc") {
+        problems.push("DUOWAVE_PRETEND is the computer's build's only".to_string());
+    }
+    match kind {
+        "station" if env.get("DUOWAVE_ROLE") != Some("station") => {
+            problems.push("DUOWAVE_PRETEND=station needs DUOWAVE_ROLE=station".to_string())
+        }
+        "station" | "turbo" => {}
+        _ => problems.push("DUOWAVE_PRETEND must be one of station, turbo".to_string()),
+    }
+    match env.get("DUOWAVE_PRETEND_ADDRESS").map(|address| address.trim().parse::<std::net::Ipv4Addr>()) {
+        Some(Ok(address)) if address.is_private() => {}
+        Some(Ok(_)) => problems.push(
+            "DUOWAVE_PRETEND_ADDRESS must be a private address (10.77.0.x), never 127.x: the gateway takes those for itself"
+                .to_string(),
+        ),
+        _ => problems.push("DUOWAVE_PRETEND needs DUOWAVE_PRETEND_ADDRESS, an IPv4 address".to_string()),
+    }
+    for one in env.list("DUOWAVE_PRETEND_STATIONS", &[]) {
+        if one.parse::<std::net::Ipv4Addr>().is_err() {
+            problems.push(format!("DUOWAVE_PRETEND_STATIONS: {one} is not an IPv4 address"));
+        }
+    }
+    problems
+}
+
 fn validate(env: &Env) -> Vec<String> {
     let mut problems = Vec::new();
     let mut one_of = |key: &str, allowed: &[&str]| {
@@ -1261,6 +1358,7 @@ fn validate(env: &Env) -> Vec<String> {
     one_of("DIALOG_LISTEN", &["question", "always", "never"]);
     one_of("TTS_PROVIDER", &["yandex", "mixed", "own", "none"]);
     one_of("TTS_OWN_FORMAT", &["wav", "opus"]);
+    problems.extend(pretend_problems(env));
 
     let mut number = |key: &str, min: Option<f64>, max: Option<f64>| {
         if let Some(value) = env.get(key) {
@@ -1588,6 +1686,46 @@ mod tests {
         assert_eq!(explicit.gateway.tts.own.as_ref().map(|own| own.base_url.as_str()), Some("https://tts.example/v1"));
         let bare = Config::load(&Env::from_pairs([("UNRELATED", "1")])).unwrap();
         assert!(bare.gateway.tts.own.is_none());
+    }
+
+    /// docs/plans/pretend-stations.md: nothing of it without DUOWAVE_PRETEND; a pretend station listens on its own
+    /// address alone; the variables come whole or the gateway does not start.
+    #[test]
+    fn a_pretend_station_is_read_whole_or_refused() {
+        let plain = Config::load(&Env::from_pairs([("PORT", "7780")])).unwrap();
+        assert_eq!((plain.app.bind_address, plain.placement.pretend), (None, None));
+
+        let kitchen = Config::load(&Env::from_pairs([
+            ("DUOWAVE_ROLE", "station"),
+            ("DUOWAVE_PRETEND", "station"),
+            ("DUOWAVE_PRETEND_ADDRESS", "10.77.0.2"),
+            ("DUOWAVE_PRETEND_NAME", "Кухня"),
+            ("DUOWAVE_PRETEND_STATIONS", "10.77.0.2, 10.77.0.3"),
+        ]))
+        .unwrap();
+        let pretend = kitchen.placement.pretend.clone().unwrap();
+        assert_eq!(kitchen.app.bind_address, Some("10.77.0.2".parse().unwrap()));
+        assert_eq!(
+            (pretend.kind, pretend.name.as_str(), pretend.stations.len(), pretend.say),
+            (PretendKind::Station, "Кухня", 2, false)
+        );
+        assert!(pretend.near("10.77.0.3".parse().unwrap()) && !pretend.near("10.77.0.2".parse().unwrap()));
+        assert!(!pretend.near("192.168.0.20".parse().unwrap()));
+
+        let turbo =
+            Config::load(&Env::from_pairs([("DUOWAVE_PRETEND", "turbo"), ("DUOWAVE_PRETEND_ADDRESS", "10.77.0.1")]))
+                .unwrap();
+        assert_eq!(turbo.app.bind_address, None, "the test Turbo listens on every address: its panel on 127.0.0.1");
+
+        let refused = |pairs: &[(&str, &str)]| Config::load(&Env::from_pairs(pairs.iter().copied())).is_err();
+        assert!(refused(&[("DUOWAVE_PRETEND", "station"), ("DUOWAVE_PRETEND_ADDRESS", "10.77.0.2")]), "no role");
+        assert!(refused(&[("DUOWAVE_PRETEND", "turbo")]), "no address");
+        assert!(
+            refused(&[("DUOWAVE_PRETEND", "turbo"), ("DUOWAVE_PRETEND_ADDRESS", "127.0.0.2")]),
+            "loopback: no code asked"
+        );
+        assert!(refused(&[("DUOWAVE_PRETEND", "ear"), ("DUOWAVE_PRETEND_ADDRESS", "10.77.0.2")]));
+        assert!(refused(&[("BIND_ADDRESS", "kitchen")]));
     }
 
     #[test]

@@ -1049,6 +1049,9 @@ html[data-theme='light'] .switch:disabled { background: rgba(13, 17, 23, 0.07); 
 /* ДиВи ведёт вход и мастер подключения: крупный и по центру (screens/auth.tsx, screens/connect.tsx). */
 .auth-hero, .connect-hero { display: flex; justify-content: center; }
 .auth-hero { padding-top: 4px; }
+/* Deevi's box (ui/mascot.tsx): the body takes ~43 % of its height, the rest is room for hops, dots and waves. */
+.auth-mascot { width: 190px; height: 168px; }
+.connect-mascot { width: 150px; height: 132px; }
 .auth-head { text-align: center; }
 
 /* «Колонка подключена»: кто отвечает сейчас и что дальше — карточками с примером фразы. */

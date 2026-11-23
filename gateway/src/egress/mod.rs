@@ -182,6 +182,10 @@ fn published() -> Option<Arc<Table>> {
 /// before); a connection's entry; or the gateway's entry with the user `down` — the call is refused on this machine.
 pub fn proxy_for(url: &url::Url) -> Option<url::Url> {
     let host = url.host_str()?;
+    // Another pretend station on this Mac: through the entry that leaves from this one's address (src/utils/net.rs).
+    if let Some(entry) = crate::utils::net::proxy_for(host) {
+        return Some(entry);
+    }
     if registry::is_local(host) {
         return None;
     }

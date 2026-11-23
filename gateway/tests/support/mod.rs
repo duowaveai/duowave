@@ -48,6 +48,8 @@ pub struct Gateway {
     pub restarts: Arc<AtomicUsize>,
     /// The test's own variables, for a restart.
     vars: Vec<(String, String)>,
+    /// Where it listens: 127.0.0.1, or every address of this machine (`start_open`).
+    host: &'static str,
     server: Server,
 }
 
@@ -81,7 +83,15 @@ impl Gateway {
     /// A gateway with these variables over the base, serving at once.
     pub async fn start(vars: &[(&str, &str)]) -> Gateway {
         let vars = vars.iter().map(|(key, value)| (key.to_string(), value.to_string())).collect();
-        Gateway::serve(tempfile::tempdir().expect("a temporary folder"), vars).await
+        Gateway::serve(tempfile::tempdir().expect("a temporary folder"), vars, "127.0.0.1").await
+    }
+
+    /// A gateway that listens on every address of this machine, still asked at 127.0.0.1: a computer a station leans
+    /// on tells the station its own address on the home network (src/placement/watch.rs, `keep_links`), and the
+    /// station dials that address from then on. A gateway on 127.0.0.1 only would be away for it.
+    pub async fn start_open(vars: &[(&str, &str)]) -> Gateway {
+        let vars = vars.iter().map(|(key, value)| (key.to_string(), value.to_string())).collect();
+        Gateway::serve(tempfile::tempdir().expect("a temporary folder"), vars, "0.0.0.0").await
     }
 
     /// The same gateway started again on its folder — its database, its secrets, a package of settings left for its
@@ -90,14 +100,14 @@ impl Gateway {
     pub async fn restart(mut self) -> Gateway {
         self.server.stop().await;
         self.app.requests.shutdown();
-        let Gateway { dir, vars, .. } = self;
-        Gateway::serve(dir, vars).await
+        let Gateway { dir, vars, host, .. } = self;
+        Gateway::serve(dir, vars, host).await
     }
 
-    async fn serve(dir: tempfile::TempDir, vars: Vec<(String, String)>) -> Gateway {
+    async fn serve(dir: tempfile::TempDir, vars: Vec<(String, String)>, host: &'static str) -> Gateway {
         // The port first: the gateway says it to others (an ear tells its centre where it listens), never the
         // default one a gateway of this computer may be listening on.
-        let listener = TcpListener::bind("127.0.0.1:0").await.expect("a free port");
+        let listener = TcpListener::bind((host, 0)).await.expect("a free port");
         let port = listener.local_addr().expect("a bound address").port();
         let mut env = Env::from_pairs(BASE.iter().copied())
             .with("DATA_DIR", &dir.path().to_string_lossy())
@@ -128,6 +138,7 @@ impl Gateway {
             client,
             restarts,
             vars,
+            host,
             server: Server { stop: Some(stop), handle: Some(server) },
         }
     }

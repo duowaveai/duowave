@@ -88,6 +88,7 @@ use crate::gateway::yandex::yandex_session::{
     YandexSessionOptions,
 };
 use crate::mcp::{McpOffer, McpService, OfferOptions};
+use crate::settings::definitions::OnLimit;
 use crate::skills::capabilities::{is_capability, CapabilityName, Intent};
 use crate::skills::media::recording::FileRecording;
 use crate::skills::own::reminders_skill::AudioClip;
@@ -318,6 +319,8 @@ const OWN_EARLY_MS: u64 = 300;
 const OWN_DISPLAY_EARLY_MS: u64 = 2000;
 /// How long the answer to the model's question about a command («На сколько поставить таймер?») stays a command.
 const COMMAND_QUESTION_MS: u64 = 30_000;
+/// How long «Пока передавать вопросы Алисе?» waits for its «да» or «нет» (docs/plans/provider-limits.md).
+const LIMIT_QUESTION_MS: u64 = 60_000;
 /// How long a callback for Yandex waits for our session with it while the session opens (the station just
 /// connected).
 const YANDEX_OPENING_WAIT_MS: u64 = 5000;
@@ -642,6 +645,9 @@ pub struct Inner {
     continuation: Option<Continuation>,
     /// Until when the next request answers the model's question about a command, and so is a command too.
     command_question_until: u64,
+    /// «Пока передавать вопросы Алисе?» was asked (a limit, no backup, «Вместе»): the question it was asked for, and
+    /// until when the answer counts. «Да» gives that question to Alice.
+    limit_question: Option<(String, u64)>,
     /// The request that was whispered: its answer is whispered too.
     whispered: Option<String>,
     /// The requests being followed (their trip: steps, words, end), by the station's message id.
@@ -927,6 +933,7 @@ impl StationSession {
                 answer: None,
                 continuation: None,
                 command_question_until: 0,
+                limit_question: None,
                 whispered: None,
                 trips: Vec::new(),
                 lingering: Vec::new(),
@@ -2327,6 +2334,53 @@ impl StationSession {
         if let Some(rescue) = super::rescue::rescue_of(text) {
             return self.rescue(inner, r#ref, request, text, rescue);
         }
+        // The answer to «Пока передавать вопросы Алисе?»: kept as «Когда кончился лимит»; «да» gives the question it
+        // was asked for to Alice. Anything else is a new request, and the question is not asked again this pause.
+        if let Some((question, until)) = inner.limit_question.take().filter(|(_, until)| *until > now_ms()) {
+            let _ = until;
+            match crate::dialog::llm::limits::yes_or_no(text) {
+                Some(true) => {
+                    self.deps.dialog.set_on_limit(OnLimit::Alice);
+                    self.record(
+                        EventDirection::Note,
+                        "route",
+                        Some(format!("«да»: while a limit is out, Alice answers; \"{question}\" → Yandex")),
+                        Some(&json!({ "executor": "yandex", "why": "limit", "onLimit": "alice", "text": question })),
+                        false,
+                    );
+                    if self.yandex_available(inner) {
+                        return self.ask_yandex(inner, r#ref, request, &question, CapabilityName::Chat, true);
+                    }
+                    return self.say_words(
+                        inner,
+                        r#ref,
+                        request,
+                        text,
+                        crate::tr!("Хорошо. Но Алиса сейчас не на связи."),
+                        ListenMode::Never,
+                    );
+                }
+                Some(false) => {
+                    self.deps.dialog.set_on_limit(OnLimit::Say);
+                    self.record(
+                        EventDirection::Note,
+                        "route",
+                        Some("«нет»: while a limit is out, the station says when it renews".to_string()),
+                        Some(&json!({ "why": "limit", "onLimit": "say" })),
+                        false,
+                    );
+                    return self.say_words(
+                        inner,
+                        r#ref,
+                        request,
+                        text,
+                        crate::tr!("Хорошо, вопросы Алисе не передаю."),
+                        ListenMode::Never,
+                    );
+                }
+                None => {}
+            }
+        }
         let router = self.deps.skills.router.clone();
         // A request an activator's word began, now with words: the word's character answers it — today the house's
         // from here on (src/activator, `WordCharacter`). A word heard in silence never gets here.
@@ -2413,6 +2467,24 @@ impl StationSession {
                 );
                 if let Some(trip) = inner.trip(r#ref) {
                     trip.routed(if command { None } else { Some("chat") }, "model");
+                }
+                // The profile's provider is out of its limit and nothing stands in for it (docs/plans/provider-limits.md):
+                // in «Вместе», while the owner has not said, the station asks once a pause whether Alice may answer.
+                if self.yandex_available(inner) && self.deps.dialog.on_limit() == OnLimit::Ask {
+                    if let Some(cell) = self.deps.dialog.limit(profile) {
+                        if let Some(limit) = cell.take_ask() {
+                            let words = crate::dialog::llm::limits::ask_words_now(&limit, cell.title());
+                            self.record(
+                                EventDirection::Note,
+                                "route",
+                                Some(format!("{}: out of its limit, no backup — asked about Alice", cell.title())),
+                                Some(&json!({ "executor": "own", "why": "limit", "text": text })),
+                                false,
+                            );
+                            inner.limit_question = Some((text.to_string(), now_ms() + LIMIT_QUESTION_MS));
+                            return self.say_words(inner, r#ref, request, text, words, ListenMode::Always);
+                        }
+                    }
                 }
                 // «Выход в интернет» (src/egress): the model goes through the person's server and that server does not
                 // answer — Alice answers instead, while Yandex is here («Вместе»); without her the model's call says
@@ -2564,6 +2636,9 @@ impl StationSession {
                 tools: self.deps.dialog.tools_enabled(),
                 unreachable_fast: !self.deps.dialog.reachable(ModelProfile::Fast),
                 unreachable_smart: !self.deps.dialog.reachable(ModelProfile::Smart),
+                limited_fast: self.deps.dialog.limit(ModelProfile::Fast).is_some(),
+                limited_smart: self.deps.dialog.limit(ModelProfile::Smart).is_some(),
+                limit_to_alice: self.deps.dialog.on_limit() == OnLimit::Alice,
             },
             now,
         }
@@ -2760,6 +2835,7 @@ impl StationSession {
                 return on_data(data.clone());
             }
             let context = DialogContext {
+                spoken: true,
                 timezone,
                 profile: Some(ModelProfile::Fast),
                 facts: Some(data.clone()),
@@ -2807,6 +2883,7 @@ impl StationSession {
         options.early = self.deps.dialog.config.early_response;
         let answer = self.start_answer(inner, options);
         let context = DialogContext {
+            spoken: true,
             timezone: self.timezone(inner, request),
             profile: Some(profile),
             // A spoken answer: a few sentences (docs/plans/audio-interface.md, decision 14).
@@ -2881,6 +2958,7 @@ impl StationSession {
         profile: ModelProfile,
     ) -> PhraseStream {
         let context = DialogContext {
+            spoken: true,
             timezone: self.timezone(inner, request),
             profile: Some(profile),
             facts: None,
@@ -3044,6 +3122,7 @@ impl StationSession {
         options.early = self.deps.dialog.config.early_response;
         let answer = self.start_answer(inner, options);
         let context = DialogContext {
+            spoken: true,
             timezone: self.timezone(inner, request),
             profile: Some(profile),
             facts: None,
@@ -3354,6 +3433,25 @@ impl StationSession {
         options.listen = ListenMode::Never;
         let answer = self.start_answer(inner, options);
         self.spawn_answer(answer, single(self.unsupported_phrase(reason)), text.to_string());
+    }
+
+    /// Our own words as the answer, the station listening after them as asked (a question asks for the answer).
+    fn say_words(
+        self: &Arc<Self>,
+        inner: &mut Inner,
+        r#ref: &str,
+        request: &AliceRequest,
+        text: &str,
+        words: String,
+        listen: ListenMode,
+    ) {
+        if let Some(trip) = inner.trip(r#ref) {
+            trip.step(RequestPhase::Think, Some(Place::Own), None);
+        }
+        let mut options = self.answer_options(inner, r#ref, request);
+        options.listen = listen;
+        let answer = self.start_answer(inner, options);
+        self.spawn_answer(answer, single(words), text.to_string());
     }
 
     /// What the station says when nobody serves a request: not yet, or not for this person.

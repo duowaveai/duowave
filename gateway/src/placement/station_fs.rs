@@ -86,8 +86,28 @@ pub trait System: Send + Sync {
 /// The station's own: busybox's mount, sync, reboot.
 pub struct RealSystem;
 
+/// A pretend station on a Mac (docs/plans/pretend-stations.md): it never mounts, runs the station's scripts or reboots.
+pub fn pretend_station() -> bool {
+    #[cfg(feature = "pc")]
+    {
+        crate::stations::pretend::is_station()
+    }
+    #[cfg(not(feature = "pc"))]
+    {
+        false
+    }
+}
+
+fn not_on_a_pretend_station() -> std::io::Result<()> {
+    if pretend_station() {
+        return Err(std::io::Error::other("a pretend station: no mounts, scripts or reboot"));
+    }
+    Ok(())
+}
+
 impl System for RealSystem {
     fn remount(&self, writable: bool) -> std::io::Result<()> {
+        not_on_a_pretend_station()?;
         let mode = if writable { "remount,rw" } else { "remount,ro" };
         let status = std::process::Command::new("mount").args(["-o", mode, "/"]).status()?;
         if writable && !status.success() {
@@ -97,21 +117,31 @@ impl System for RealSystem {
     }
 
     fn sync(&self) {
+        if pretend_station() {
+            return;
+        }
         let _ = std::process::Command::new("sync").status();
     }
 
     fn reboot(&self) -> std::io::Result<()> {
+        not_on_a_pretend_station()?;
         // A second's grace: the answer (to SSH or the panel) leaves first.
         std::process::Command::new("sh").args(["-c", "(sleep 1; reboot) >/dev/null 2>&1 &"]).status().map(|_| ())
     }
 
     fn service(&self, script: &Path, action: &str) -> std::io::Result<String> {
+        not_on_a_pretend_station()?;
         let output = std::process::Command::new("sh").arg(script).arg(action).output()?;
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
     }
 
     fn port_free(&self, port: u16) -> bool {
         std::net::TcpListener::bind(("0.0.0.0", port)).is_ok()
+    }
+
+    fn run(&self, command: &mut std::process::Command) -> std::io::Result<std::process::Output> {
+        not_on_a_pretend_station()?;
+        command.output()
     }
 
     fn healthy(&self, port: u16) -> bool {

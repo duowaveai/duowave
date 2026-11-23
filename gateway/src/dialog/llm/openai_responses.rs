@@ -55,7 +55,13 @@ impl LlmClient for OpenAiResponsesLlm {
         let settings = self.settings.clone();
         let url = format!("{}/responses", self.base_url);
         generate(move |y| async move {
-            if let Err(error) = run(&settings, &url, &request, &cancel, &y).await {
+            let limits = settings.limits.clone();
+            let result = match super::llm_client::claim(limits.as_ref()) {
+                Ok(_) => run(&settings, &url, &request, &cancel, &y).await,
+                Err(paused) => Err(paused),
+            };
+            super::llm_client::settle(limits.as_ref(), &result);
+            if let Err(error) = result {
                 y.send(Err(error)).await;
             }
         })
@@ -140,6 +146,7 @@ fn body_of(settings: &LlmSettings, request: &LlmRequest) -> Value {
 fn failure(settings: &LlmSettings, status: Option<u16>, error: &Value) -> anyhow::Error {
     let code = error.get("code").and_then(Value::as_str).filter(|code| !code.is_empty()).unwrap_or("unknown_error");
     let message = error.get("message").and_then(Value::as_str).unwrap_or_default();
+    let code_status = status;
     let status = status.map(|status| format!("HTTP {status}: ")).unwrap_or_default();
     let detail = if message.is_empty() {
         format!("ChatGPT: {status}{code}")
@@ -150,6 +157,18 @@ fn failure(settings: &LlmSettings, status: Option<u16>, error: &Value) -> anyhow
         "subscription_sharing_usage_limit_exceeded" => {
             if let Some(access) = &settings.access {
                 access.0.limited();
+            }
+            // With the provider's limits: a pause, said with its time when the service told it (limits.rs).
+            if let Some(cell) = &settings.limits {
+                let body = json!({ "error": error }).to_string();
+                let headers = reqwest::header::HeaderMap::new();
+                let now = chrono::Utc::now();
+                if let Some(limit) =
+                    super::limits::limit_of(cell.words(), code_status.unwrap_or(429), &headers, &body, now)
+                {
+                    cell.refused(&limit);
+                    return super::limits::failure(cell, &limit, code_status, code);
+                }
             }
             anyhow::Error::new(SpokenFailure { phrase: LIMIT_PHRASE.into(), detail })
         }
@@ -410,7 +429,7 @@ mod tests {
             tokens_field: Default::default(),
             access: Some(Access(access)),
             api: LlmApi::Responses,
-            duowave: None,
+            limits: None,
         }
     }
 

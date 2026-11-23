@@ -37,6 +37,18 @@ use crate::platform::http::Caller;
 pub const PER_ADDRESS: usize = 16;
 pub const IN_ALL: usize = 64;
 
+/// The socket comes from an ear of this centre: it carries this centre's pair key, from the home network.
+fn from_own_ear(caller: &Caller, peer_key: Option<&str>) -> bool {
+    use subtle::ConstantTimeEq as _;
+    let Some(expected) = peer_key.filter(|key| key.len() >= 16) else { return false };
+    if !matches!(caller.zone, crate::platform::http::zone::Zone::Local | crate::platform::http::zone::Zone::Home) {
+        return false;
+    }
+    let given =
+        caller.headers.get(crate::home::ear::EAR_KEY_HEADER).and_then(|value| value.to_str().ok()).unwrap_or("");
+    given.len() == expected.len() && bool::from(given.as_bytes().ct_eq(expected.as_bytes()))
+}
+
 /// The largest message a station may send: 16 MB.
 const MAX_MESSAGE: usize = 16 * 1024 * 1024;
 
@@ -302,6 +314,11 @@ async fn upgrade(State(app): State<Arc<App>>, caller: Caller, upgrade: WebSocket
         }
     };
     let device = device_tag_of(&caller.headers, config.recorder.redact);
+    // The station of this centre's own ear, its socket opened on by that ear with this centre's pair key: invited, as
+    // a station the admin connected from the panel is (src/home/ear.rs, EAR_KEY_HEADER).
+    if from_own_ear(&caller, app.placement.peer_key()) {
+        app.stations.expect(&address, 60_000);
+    }
     let admitted = app.stations.admit(&device, &address);
     if !admitted.ok {
         tracing::warn!(
@@ -312,7 +329,10 @@ async fn upgrade(State(app): State<Arc<App>>, caller: Caller, upgrade: WebSocket
         return refused(StatusCode::FORBIDDEN);
     }
     let sessions = app.sessions.clone();
-    let handshake = Handshake { headers: caller.headers.clone(), remote_address: address };
+    // The ear's key stays here: the station's headers go on to Yandex.
+    let mut headers = caller.headers.clone();
+    headers.remove(crate::home::ear::EAR_KEY_HEADER);
+    let handshake = Handshake { headers, remote_address: address };
     let ear_app = app.clone();
     upgrade.max_message_size(MAX_MESSAGE).on_upgrade(move |socket| async move {
         // An ear of the home's centre (docs/plans/home-and-devices.md, stage 4): the station's voice goes on to the

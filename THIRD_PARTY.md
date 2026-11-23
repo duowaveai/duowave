@@ -37,6 +37,7 @@ ISC, Zlib, Unicode-3.0, а корни сертификатов webpki-roots — 
 ## Пульт
 
 - Preact — MIT.
+- three.js (the `three` package, the mascot's 3D body in `mascot/src/scene3d.ts`) — MIT, © 2010–2026 three.js authors.
 - Шрифт Manrope (@fontsource/manrope) — SIL Open Font License 1.1.
 - Шрифты Inter, Inter Tight и JetBrains Mono (@fontsource/inter, @fontsource/inter-tight, @fontsource/jetbrains-mono) —
   SIL Open Font License 1.1.

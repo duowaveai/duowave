@@ -17,6 +17,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::anthropic::AnthropicLlm;
 use super::echo::EchoLlm;
+pub use super::limits::ProviderCell;
 use super::openai_chat::{tokens_field_for, OpenAiChatLlm, OPENAI_BASE_URL};
 use super::openai_responses::OpenAiResponsesLlm;
 use crate::config::{DialogConfig, DialogProvider, ModelPair};
@@ -38,72 +39,64 @@ pub enum ErrorWords {
     DuoWave,
 }
 
-/// What DuoWave's last refusal asks of the owner: connect again (`revoked`, `model` — the model is not in the plan,
-/// the profiles come back to the service's defaults), the account (`ended`, `quota`), or wait (`busy`).
+/// What DuoWave's last word on the access asks of the owner: connect again (`revoked`, `model` — the model is not in
+/// the plan, the profiles come back to the service's defaults) or the account (`ended`). The limits — the day's, the
+/// week's, too many requests — are the provider's `limit` (limits.rs).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum AccessProblem {
     Revoked,
     Ended,
-    Quota,
-    Busy,
     Model,
 }
 
-/// A provider's last refusal of DuoWave's kind, shared by its clients and its card: set by a refusal, cleared by an
-/// answer or a new sign-in. Memory only: a restart starts clean, the next request tells again.
-#[derive(Debug, Clone, Default)]
-pub struct ProblemCell(Arc<std::sync::Mutex<Option<AccessProblem>>>);
-
-impl ProblemCell {
-    pub fn get(&self) -> Option<AccessProblem> {
-        *self.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
-    }
-
-    pub fn set(&self, problem: Option<AccessProblem>) {
-        *self.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = problem;
-    }
-}
-
-/// «Через минуту» or «через N мин.»: how long `Retry-After` asks to wait, rounded up to minutes.
-fn wait_words(after: Option<std::time::Duration>) -> String {
-    match after.map(|after| after.as_secs().div_ceil(60)) {
-        None | Some(0) => crate::tr!("позже"),
-        Some(1) => crate::tr!("через минуту"),
-        Some(minutes) => crate::tr!("через {minutes} мин", minutes = minutes),
-    }
-}
-
-/// A DuoWave refusal in words (docs/plans/duowave-connect.md, step 5): our code is in `error.code` (Chat Completions,
-/// Responses); Messages has Anthropic's `error.type` only, so there the status decides. The cell learns what the
-/// owner should do. None — not one of ours: the plain error stays.
-pub fn duowave_refusal(
+/// A refusal of a provider with limits (limits.rs) in words: a limit — kept on the cell, a pause when it is one —, or
+/// DuoWave's model not in the plan. None — not one of these: the plain error stays.
+pub fn refusal(
+    cell: &ProviderCell,
     status: u16,
+    headers: &reqwest::header::HeaderMap,
     body: &str,
-    after: Option<std::time::Duration>,
-    cell: &ProblemCell,
 ) -> Option<anyhow::Error> {
-    let parsed: serde_json::Value = serde_json::from_str(body).unwrap_or(serde_json::Value::Null);
-    let code = parsed.pointer("/error/code").and_then(serde_json::Value::as_str).unwrap_or_default().to_lowercase();
-    let (problem, phrase) = match (status, code.as_str()) {
-        (401, _) => (AccessProblem::Revoked, crate::tr!("Подключение DuoWave отключено. Подключите DuoWave заново.")),
-        (402, "quota_exhausted") => (AccessProblem::Quota, crate::tr!("Лимит DuoWave на эту неделю исчерпан.")),
-        (402, _) => (AccessProblem::Ended, crate::tr!("Доступ к DuoWave закончился. Загляните в кабинет DuoWave.")),
-        (429, _) => (
-            AccessProblem::Busy,
-            crate::tr!("Слишком много запросов к DuoWave. Попробуйте {when}.", when = wait_words(after)),
-        ),
-        (403, "model_not_in_plan") => {
-            (AccessProblem::Model, crate::tr!("Этой модели нет в вашем тарифе DuoWave. Подключите DuoWave заново."))
+    let code = super::limits::code_of(body);
+    if let Some(limit) = super::limits::limit_of(cell.words(), status, headers, body, chrono::Utc::now()) {
+        cell.refused(&limit);
+        match limit.reason {
+            super::limits::LimitReason::Revoked => cell.set_problem(Some(AccessProblem::Revoked)),
+            super::limits::LimitReason::Ended => cell.set_problem(Some(AccessProblem::Ended)),
+            _ => {}
         }
-        _ => return None,
-    };
-    cell.set(Some(problem));
-    let code = if code.is_empty() { String::new() } else { format!(": {code}") };
-    Some(anyhow::Error::new(SpokenFailure {
-        phrase: phrase.to_string(),
-        detail: format!("DuoWave: HTTP {status}{code}"),
-    }))
+        return Some(super::limits::failure(cell, &limit, Some(status), &code));
+    }
+    if cell.words() == ErrorWords::DuoWave && status == 403 && code.eq_ignore_ascii_case("model_not_in_plan") {
+        cell.set_problem(Some(AccessProblem::Model));
+        return Some(anyhow::Error::new(SpokenFailure {
+            phrase: crate::tr!("Этой модели нет в вашем тарифе DuoWave. Подключите DuoWave заново.").to_string(),
+            detail: format!("DuoWave: HTTP {status}: {code}"),
+        }));
+    }
+    None
+}
+
+/// Right before a request of a provider with limits: Err(the words) while it is paused — nothing goes out —, else
+/// whether this request is its one probe.
+pub fn claim(cell: Option<&ProviderCell>) -> anyhow::Result<bool> {
+    let Some(cell) = cell else { return Ok(false) };
+    match cell.claim() {
+        super::limits::Claim::Go { probe } => Ok(probe),
+        super::limits::Claim::Paused(limit) => Err(super::limits::failure(cell, &limit, None, "")),
+    }
+}
+
+/// After a request of a provider with limits: an answer ends its limit; another failure ends a probe under way (a
+/// refusal was told the cell already, in `refusal`).
+pub fn settle(cell: Option<&ProviderCell>, result: &anyhow::Result<()>) {
+    let Some(cell) = cell else { return };
+    match result {
+        Ok(()) => cell.answered(),
+        Err(error) if error.downcast_ref::<SpokenFailure>().is_some() => {}
+        Err(_) => cell.failed(),
+    }
 }
 
 /// `Retry-After` in seconds (the form our services send; a date is not read).
@@ -381,8 +374,8 @@ pub struct LlmSettings {
     pub access: Option<Access>,
     /// /chat/completions or /responses, for an OpenAI-kind provider.
     pub api: LlmApi,
-    /// DuoWave's: its refusals said in words (`duowave_refusal`), the last one kept here for the card.
-    pub duowave: Option<ProblemCell>,
+    /// The provider's limits (limits.rs): its refusals in words, its pause, DuoWave's quota. A panel provider's.
+    pub limits: Option<ProviderCell>,
 }
 
 /// "model" or, when the profiles differ, "fast model-a, smart model-b".
@@ -422,7 +415,7 @@ impl LlmSettings {
             headers: BTreeMap::new(),
             access: None,
             api: LlmApi::Chat,
-            duowave: None,
+            limits: None,
         }
     }
 }

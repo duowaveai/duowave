@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'preact/hooks';
 
-import { BrainPick, BrainView, LlmEffort, ProviderCheck, ProviderPreset, ProviderView, api, can, problemOf } from '../api';
+import { BrainPick, BrainView, LlmEffort, OnLimit, ProviderCheck, ProviderPreset, ProviderQuota, ProviderView, api, can, problemOf } from '../api';
 import { IconKey } from '../icons';
 import { BRANDS, type BrandId } from '../brand-icons';
 import { placeIcon, placeTitle } from '../helpers';
@@ -14,7 +14,8 @@ import { AskSheet } from './ask';
 import { backupIdle, backupOf, backupPlace, backupShown, blankBackups, parsePick, pickValue } from './brain-backup';
 import { ask } from '../ui/confirm';
 import { byMode } from '../words';
-import { formatNumber, tr } from '../i18n';
+import { formatNumber, locale, tr } from '../i18n';
+import { clock } from '../time';
 import { accessLine, accessWarning } from './brain-connect';
 import { inviteCode } from '../invite-code';
 import { DuoWaveMark } from '../ui/duowave';
@@ -468,6 +469,11 @@ export function BrainTab({ spend, first = false }: { spend?: preact.ComponentChi
                     const managed = !!mark && !mark.builtin && provider.preset === 'helper';
                     const MarkIcon = mark && managed ? placeIcon(mark) : null;
                     const accessNote = access && accessWarning(access);
+                    // Its limit, while it holds (docs/plans/provider-limits.md): the station's own words, and who answers.
+                    const otherBackup = !!backup && backup.provider !== provider.id;
+                    const limitNote: CardNote | undefined = provider.limit
+                        ? { warning: otherBackup ? `${provider.limit.words} ${tr.brain.limitBackup}` : provider.limit.words }
+                        : undefined;
                     const accountNote: CardNote | undefined = accessNote
                         ? { warning: accessNote }
                         : !account
@@ -504,6 +510,7 @@ export function BrainTab({ spend, first = false }: { spend?: preact.ComponentChi
                             description={managed ? `${words.text} · ${tr.helpers.brainManaged}` : `${words.text} · ${keyLine}`}
                             note={
                                 notes[provider.id] ??
+                                limitNote ??
                                 accountNote ??
                                 (!managed && provider.needsKey && !provider.key.set ? { warning: noKey } : words.ok === false ? { error: words.text } : undefined)
                             }
@@ -550,6 +557,7 @@ export function BrainTab({ spend, first = false }: { spend?: preact.ComponentChi
                                     <Action label={tr.brain.remove} disabled={busy[provider.id]} onClick={() => void remove(provider)} />
                                 </div>
                             )}
+                            {provider.quota && <QuotaLines quota={provider.quota} />}
                             {mayManage && gift && <p class="t-caption m-0 pl-50">{tr.brain.inviteHere}</p>}
                             {/* Ещё не входили и кода нет: сначала «Есть код приглашения?» с полем; «войти без кода» — в ряду. */}
                             {mayManage && dwFresh && !gift && (
@@ -711,6 +719,41 @@ function modelOptions(view: BrainView, profile: 'fast' | 'smart' | 'backup') {
 }
 
 /**
+ * Расход DuoWave на карточке (контракт quota-headers.md): процент за день и за неделю, время — здесь, на компьютере.
+ * От 80% — жёлтым, на 100% — красным. Числа шлюза — его токены, не модели: их не показываем.
+ */
+function QuotaLines({ quota }: { quota: ProviderQuota }) {
+    const percent = (used: number, limit: number) => (limit > 0 ? Math.min(100, Math.floor((used * 100) / limit)) : 100);
+    const tone = (value: number) => (value >= 100 ? ' c-dot-offline' : value >= 80 ? ' c-pill-yandex-fg' : '');
+    const lines: { text: string; value: number }[] = [];
+    if (quota.day) {
+        const value = percent(quota.day.used, quota.day.limit);
+        lines.push({ text: tr.brain.quotaDay(value, quota.day.resetsAt ? clock(quota.day.resetsAt) : ''), value });
+    }
+    if (quota.period) {
+        const value = percent(quota.period.used, quota.period.limit);
+        const date = quota.period.resetsAt ? new Date(quota.period.resetsAt).toLocaleDateString(locale(), { day: 'numeric', month: 'long' }) : '';
+        lines.push({ text: tr.brain.quotaWeek(value, date), value });
+    }
+    return (
+        <div class="flex flex-col gap-2 pl-50">
+            {lines.map((line) => (
+                <p key={line.text} class={`t-caption m-0${tone(line.value)}`}>
+                    {line.text}
+                </p>
+            ))}
+        </div>
+    );
+}
+
+/** «Когда у модели кончился лимит, а запасной нет»: спросить голосом (так по умолчанию), отдавать Алисе, сказать время. */
+const ON_LIMIT: { id: OnLimit; label: () => string }[] = [
+    { id: 'ask', label: () => tr.brain.onLimitAsk },
+    { id: 'alice', label: () => tr.brain.onLimitAlice },
+    { id: 'say', label: () => tr.brain.onLimitSay },
+];
+
+/**
  * «Если Турбо уснёт» → «Думает» (страница «Дом», решение владельца 16.11): «Запасная» — кто ответит, пока модель Турбо
  * не на связи, и что станет с вопросом без неё. Прежде — в «Мозге», рядом с быстрой и умной; там теперь строка сюда.
  */
@@ -768,6 +811,19 @@ export function BackupChoice() {
             setPicked(undefined);
         }
     };
+    const setOnLimit = async (onLimit: OnLimit): Promise<void> => {
+        setBusy(true);
+        setNote({});
+        try {
+            setView(await api.chooseBrain({ onLimit }));
+            setNote({ notice: tr.brain.applied });
+        } catch (e) {
+            setNote({ error: problemOf(e) });
+        } finally {
+            setBusy(false);
+        }
+    };
+    const onLimit = choice.onLimit ?? 'ask';
     return (
         <div class="flex flex-col gap-6">
             <select
@@ -793,6 +849,27 @@ export function BackupChoice() {
             ))}
             {backupIdle(choice, [choice.fast, choice.smart].some((pick) => !!helperOf(pick))) && <p class="w-cap m-0">{tr.brain.backupGatewayIdle}</p>}
             {where && <p class="w-cap m-0">{tr.brain.backupExplain(where.title, where.cloud)}</p>}
+            {/* A gateway before the limits (0.18) sends no `onLimit`: nothing to choose there. */}
+            {choice.onLimit && (
+                <div class="flex flex-col gap-4 mt-4">
+                    <b class="w-cap">{tr.brain.onLimitTitle}</b>
+                    <div class="flex gap-6 flex-wrap" role="group" aria-label={tr.brain.onLimitTitle}>
+                        {ON_LIMIT.map((option) => (
+                            <button
+                                key={option.id}
+                                type="button"
+                                aria-pressed={onLimit === option.id}
+                                class={`pill ${onLimit === option.id ? 'pill-pick' : 'pill-off'} cursor-pointer py-8 px-14 min-h-32`}
+                                disabled={!mayChoose || busy}
+                                onClick={() => void setOnLimit(option.id)}
+                            >
+                                {option.label()}
+                            </button>
+                        ))}
+                    </div>
+                    <p class="w-cap m-0">{tr.brain.onLimitSub}</p>
+                </div>
+            )}
             {view.note && (
                 <p class={`w-cap m-0${view.note.kind === 'backupAuto' ? '' : ' c-pill-yandex-fg'}`} role="status">
                     {view.note.text}

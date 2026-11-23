@@ -1532,7 +1532,7 @@ mod tests {
         let checked = check(&folder, "uchitel", None).await;
         assert!(checked.ok && checked.warnings.is_empty(), "{checked:?}");
         let panel = std::fs::read_to_string(folder.join("panel.js")).unwrap();
-        assert!(panel.contains(r#"title: "Учитель «пианино»""#) && !panel.contains("__"), "the title filled in");
+        assert!(panel.contains(r#"const TITLE = "Учитель «пианино»""#) && !panel.contains("__"), "the title filled in");
         let kv = Arc::new(Mutex::new(Map::new()));
         let state = run(&folder, "uchitel", "state", json!({}), kv.clone(), None, &Trying::default()).await.unwrap();
         let melodies = state.result["melodies"].as_array().unwrap();
@@ -1563,7 +1563,11 @@ mod tests {
         let phrase = try_phrase(&folder, "uchitel", "Алиса, давай учить ёлочку", kv.clone(), None, &Trying::default())
             .await
             .unwrap();
-        assert_eq!(phrase.speech.as_deref(), Some("Учим «В лесу родилась ёлочка». Клавиатура ждёт в пульте."));
+        // The words found by the tune's Russian name; the answer in the household's language (the sandbox's English).
+        assert_eq!(
+            phrase.speech.as_deref(),
+            Some("Learning “The Little Fir Tree”. The keyboard is waiting in the panel.")
+        );
         let done = run(
             &folder,
             "uchitel",

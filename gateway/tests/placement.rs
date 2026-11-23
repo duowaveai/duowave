@@ -59,9 +59,14 @@ async fn the_station_leans_on_the_computer_and_the_computer_keeps_a_copy_of_its_
     // The computer gives the station its voice too: «Свой» has no Yandex, and the station leans on its helpers for
     // hearing and voice both (src/helpers, `svoi_lacks`). The voice server itself is not asked here.
     let voice = voice_port().await;
-    let pc =
-        Gateway::start(&[("ASR_PROVIDER", "openai"), ("ASR_BASE_URL", asr.as_str()), ("TTS_OWN_URL", voice.as_str())])
-            .await;
+    // The computer on every address of this machine: its watch tells the station its address on the home network, and
+    // the station leans on it there (Windows CI 22.11: on 127.0.0.1 only it was away for the station from then on).
+    let pc = Gateway::start_open(&[
+        ("ASR_PROVIDER", "openai"),
+        ("ASR_BASE_URL", asr.as_str()),
+        ("TTS_OWN_URL", voice.as_str()),
+    ])
+    .await;
     let (name, pc_admin) = admin(&pc, "pair-computer-password").await;
     // A key for the station's home server: only the right to the computer's models.
     let created = message(
@@ -135,7 +140,8 @@ async fn the_station_leans_on_the_computer_and_the_computer_keeps_a_copy_of_its_
     assert!(seen.copied_at.is_some(), "the home's copy on the computer: {:?}", seen.live.sync_error);
     let placement = message(pc.get("/api/v1/placement").header(name.clone(), pc_admin.clone()), StatusCode::OK).await;
     assert_eq!(placement["station"]["live"]["reachable"], true);
-    assert_eq!(placement["station"]["live"]["health"]["placement"]["homeServer"]["state"], "up");
+    let door = &placement["station"]["live"]["health"]["placement"]["homeServer"];
+    assert_eq!(door["state"], "up", "{door}");
     // The schema its import knows: the computer sends it what that import takes.
     assert_eq!(placement["station"]["live"]["health"]["build"]["settingsSchema"], transfer::SCHEMA);
 

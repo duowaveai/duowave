@@ -70,7 +70,13 @@ impl LlmClient for OpenAiChatLlm {
         let settings = self.settings.clone();
         let url = format!("{}/chat/completions", self.base_url);
         generate(move |y| async move {
-            if let Err(error) = run(&settings, &url, &request, &cancel, &y).await {
+            let limits = settings.limits.clone();
+            let result = match super::llm_client::claim(limits.as_ref()) {
+                Ok(_) => run(&settings, &url, &request, &cancel, &y).await,
+                Err(paused) => Err(paused),
+            };
+            super::llm_client::settle(limits.as_ref(), &result);
+            if let Err(error) = result {
                 y.send(Err(error)).await;
             }
         })
@@ -227,23 +233,24 @@ async fn run(
         _ = cancel.cancelled() => return Err(aborted()),
         response = send => response.map_err(|error| interrupted(format!("cannot reach {url}: {}", describe(&error))))?,
     };
+    // What DuoWave's gateway says is spent: in answers and refusals alike (limits.rs).
+    if let Some(cell) = &settings.limits {
+        cell.quota_seen(response.headers());
+    }
     if !response.status().is_success() {
         let status = response.status().as_u16();
-        let after = super::llm_client::retry_after_secs(response.headers());
+        let headers = response.headers().clone();
         let text = tokio::select! {
             _ = cancel.cancelled() => return Err(aborted()),
             text = response.text() => text.unwrap_or_default(),
         };
-        // DuoWave's refusals: words the owner can act on, kept for the card.
-        if let Some(cell) = &settings.duowave {
-            if let Some(refused) = super::llm_client::duowave_refusal(status, &text, after, cell) {
+        // A limit, or DuoWave's word on the access: words the owner can act on, kept for «Мозг» and the card.
+        if let Some(cell) = &settings.limits {
+            if let Some(refused) = super::llm_client::refusal(cell, status, &headers, &text) {
                 return Err(refused);
             }
         }
         bail!("HTTP {status}: {}", head(&text, 300));
-    }
-    if let Some(cell) = &settings.duowave {
-        cell.set(None);
     }
 
     // Server-sent events: `data: {json}` lines, then `data: [DONE]`.
@@ -378,6 +385,7 @@ pub(crate) mod tests {
     use axum::http::HeaderMap as Headers;
     use axum::response::IntoResponse;
     use axum::routing::post;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
     #[derive(Clone, Default)]
@@ -420,7 +428,7 @@ pub(crate) mod tests {
             tokens_field: TokensField::MaxTokens,
             access: None,
             api: crate::dialog::llm::LlmApi::Chat,
-            duowave: None,
+            limits: None,
         }
     }
 
@@ -619,32 +627,54 @@ pub(crate) mod tests {
             .starts_with("cannot reach http://127.0.0.1:9/v1/chat/completions"));
     }
 
-    /// A service that refuses as DuoWave's does, by the request's model: `401`, `402/quota`, `429` with `Retry-After`,
-    /// `403/model_not_in_plan`, `500`; any other model gets an answer.
-    async fn duowave_like() -> String {
+    /// A service that refuses as DuoWave's does, by the request's model: `401`, `402/no_access`, `402/quota`, `429`
+    /// with `Retry-After` (a minute's, the day's with its `x-quota-*`), `403/model_not_in_plan`, `500`; any other model
+    /// gets an answer with the day's spending. Counts the requests it gets.
+    async fn duowave_like() -> (String, Arc<AtomicUsize>) {
+        let asked = Arc::new(AtomicUsize::new(0));
+        let counted = asked.clone();
         let refusing = axum::Router::new().route(
             "/v1/chat/completions",
-            post(|body: String| async move {
-                let model =
-                    serde_json::from_str::<Value>(&body).unwrap()["model"].as_str().unwrap_or_default().to_string();
-                let refusal = |status: u16, code: &str| {
-                    let error = format!(r#"{{"error":{{"code":"{code}","message":"x"}}}}"#);
-                    (axum::http::StatusCode::from_u16(status).unwrap(), error).into_response()
-                };
-                match model.as_str() {
-                    "revoked" => refusal(401, "unauthorized"),
-                    "ended" => refusal(402, "no_access"),
-                    "quota" => refusal(402, "quota_exhausted"),
-                    "busy" => {
-                        let error = r#"{"error":{"code":"rate_limited","message":"x"}}"#;
-                        (axum::http::StatusCode::TOO_MANY_REQUESTS, [("retry-after", "90")], error).into_response()
-                    }
-                    "model" => refusal(403, "model_not_in_plan"),
-                    "broken" => refusal(500, "internal"),
-                    _ => {
-                        let chunk = json!({"choices": [{"delta": {"content": "Да."}, "finish_reason": "stop"}]});
-                        ([(CONTENT_TYPE, "text/event-stream")], format!("data: {chunk}\n\ndata: [DONE]\n\n"))
-                            .into_response()
+            post(move |body: String| {
+                let counted = counted.clone();
+                async move {
+                    counted.fetch_add(1, Ordering::SeqCst);
+                    let model =
+                        serde_json::from_str::<Value>(&body).unwrap()["model"].as_str().unwrap_or_default().to_string();
+                    let refusal = |status: u16, code: &str| {
+                        let error = format!(r#"{{"error":{{"code":"{code}","message":"x"}}}}"#);
+                        (axum::http::StatusCode::from_u16(status).unwrap(), error).into_response()
+                    };
+                    let quota = [
+                        ("x-quota-day-used", "271000"),
+                        ("x-quota-day-limit", "300000"),
+                        ("x-quota-day-reset", "2026-11-24T00:00:00.000Z"),
+                    ];
+                    match model.as_str() {
+                        "revoked" => refusal(401, "unauthorized"),
+                        "ended" => refusal(402, "no_access"),
+                        "quota" => refusal(402, "quota_exhausted"),
+                        "busy" => {
+                            let error = r#"{"error":{"code":"rate_limited","message":"x"}}"#;
+                            (axum::http::StatusCode::TOO_MANY_REQUESTS, [("retry-after", "90")], error).into_response()
+                        }
+                        "day" => {
+                            let error = r#"{"error":{"code":"day_limit","message":"x"}}"#;
+                            (axum::http::StatusCode::TOO_MANY_REQUESTS, [("retry-after", "22080")], error)
+                                .into_response()
+                        }
+                        "model" => refusal(403, "model_not_in_plan"),
+                        "broken" => refusal(500, "internal"),
+                        _ => {
+                            let chunk = json!({"choices": [{"delta": {"content": "Да."}, "finish_reason": "stop"}]});
+                            let mut response =
+                                ([(CONTENT_TYPE, "text/event-stream")], format!("data: {chunk}\n\ndata: [DONE]\n\n"))
+                                    .into_response();
+                            for (name, value) in quota {
+                                response.headers_mut().insert(name, value.parse().unwrap());
+                            }
+                            response
+                        }
                     }
                 }
             }),
@@ -652,40 +682,91 @@ pub(crate) mod tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}/v1", listener.local_addr().unwrap());
         tokio::spawn(async move { axum::serve(listener, refusing).await });
-        url
+        (url, asked)
     }
 
     #[tokio::test]
     async fn says_duowaves_refusals_in_words_and_keeps_what_to_do_until_an_answer() {
-        use crate::dialog::llm::{AccessProblem, ProblemCell, SpokenFailure};
-        let url = duowave_like().await;
-        let cell = ProblemCell::default();
-        let llm = OpenAiChatLlm::new(LlmSettings { duowave: Some(cell.clone()), ..settings(&url) });
+        use crate::dialog::llm::limits::LimitReason;
+        use crate::dialog::llm::{AccessProblem, ErrorWords, ProviderCell, SpokenFailure};
+        let (url, _) = duowave_like().await;
         let ask = |model: &str| LlmRequest { messages: question(), model: Some(model.into()), ..LlmRequest::default() };
-        for (model, problem, words) in [
-            ("revoked", AccessProblem::Revoked, "Подключение DuoWave отключено. Подключите DuoWave заново."),
-            ("ended", AccessProblem::Ended, "Доступ к DuoWave закончился. Загляните в кабинет DuoWave."),
-            ("quota", AccessProblem::Quota, "Лимит DuoWave на эту неделю исчерпан."),
-            ("busy", AccessProblem::Busy, "Слишком много запросов к DuoWave. Попробуйте через 2 мин."),
-            ("model", AccessProblem::Model, "Этой модели нет в вашем тарифе DuoWave. Подключите DuoWave заново."),
+        for (model, problem, reason, words) in [
+            (
+                "revoked",
+                Some(AccessProblem::Revoked),
+                Some(LimitReason::Revoked),
+                "Подключение DuoWave отключено. Подключите DuoWave заново.",
+            ),
+            (
+                "ended",
+                Some(AccessProblem::Ended),
+                Some(LimitReason::Ended),
+                "Доступ к DuoWave закончился. Загляните в кабинет DuoWave.",
+            ),
+            (
+                "quota",
+                None,
+                Some(LimitReason::Week),
+                "Лимит DuoWave на эту неделю закончился. Загляните в кабинет DuoWave.",
+            ),
+            ("busy", None, None, "Слишком много запросов к DuoWave. Попробуйте через 2 мин."),
+            (
+                "model",
+                Some(AccessProblem::Model),
+                None,
+                "Этой модели нет в вашем тарифе DuoWave. Подключите DuoWave заново.",
+            ),
         ] {
+            // A cell each: a limit pauses the provider, and the next request would not go out.
+            let cell = ProviderCell::new("DuoWave", ErrorWords::DuoWave);
+            let llm = OpenAiChatLlm::new(LlmSettings { limits: Some(cell.clone()), ..settings(&url) });
             let out: Vec<_> = llm.stream(ask(model), CancellationToken::new()).collect().await;
             let error = out[0].as_ref().unwrap_err();
             let spoken = error.downcast_ref::<SpokenFailure>().unwrap_or_else(|| panic!("{model}: {error}"));
             assert_eq!(spoken.phrase, words, "{model}");
             assert!(!error.to_string().contains("message"), "the service's own text stays out: {error}");
-            assert_eq!(cell.get(), Some(problem), "{model}");
+            assert_eq!(cell.problem(), problem, "{model}");
+            assert_eq!(cell.limit().map(|limit| limit.reason), reason, "{model}");
         }
         // Not one of ours: the plain error, the cell as it was; an answer clears it.
+        let cell = ProviderCell::new("DuoWave", ErrorWords::DuoWave);
+        let llm = OpenAiChatLlm::new(LlmSettings { limits: Some(cell.clone()), ..settings(&url) });
+        let _ = llm.stream(ask("model"), CancellationToken::new()).collect::<Vec<_>>().await;
         let out: Vec<_> = llm.stream(ask("broken"), CancellationToken::new()).collect().await;
         assert!(out[0].as_ref().unwrap_err().downcast_ref::<SpokenFailure>().is_none());
-        assert_eq!(cell.get(), Some(AccessProblem::Model));
+        assert_eq!(cell.problem(), Some(AccessProblem::Model));
         let out: Vec<_> = llm.stream(ask("duowave-fast"), CancellationToken::new()).collect().await;
         assert!(out.iter().all(Result::is_ok));
-        assert_eq!(cell.get(), None);
+        assert_eq!(cell.problem(), None);
         // Another provider's 401 stays as it was.
         let plain = OpenAiChatLlm::new(settings(&url));
         let out: Vec<_> = plain.stream(ask("revoked"), CancellationToken::new()).collect().await;
         assert!(out[0].as_ref().unwrap_err().to_string().starts_with("HTTP 401"));
+    }
+
+    /// The tester's day (22.11): the day's limit is said with its time, and until the probe no request goes out — the
+    /// next question gets the same words at once. The answers' `x-quota-*` are kept.
+    #[tokio::test]
+    async fn after_the_day_limit_no_request_goes_out_until_the_probe() {
+        use crate::dialog::llm::limits::LimitReason;
+        use crate::dialog::llm::{ErrorWords, ProviderCell, SpokenFailure};
+        let (url, asked) = duowave_like().await;
+        let cell = ProviderCell::new("DuoWave", ErrorWords::DuoWave);
+        let llm = OpenAiChatLlm::new(LlmSettings { limits: Some(cell.clone()), ..settings(&url) });
+        let ask = |model: &str| LlmRequest { messages: question(), model: Some(model.into()), ..LlmRequest::default() };
+        let out: Vec<_> = llm.stream(ask("duowave-smart"), CancellationToken::new()).collect().await;
+        assert!(out.iter().all(Result::is_ok));
+        assert_eq!(cell.quota().and_then(|quota| quota.day).map(|day| day.percent()), Some(90));
+        let out: Vec<_> = llm.stream(ask("day"), CancellationToken::new()).collect().await;
+        let spoken = out[0].as_ref().unwrap_err().downcast_ref::<SpokenFailure>().unwrap();
+        assert!(spoken.phrase.starts_with("Дневной лимит DuoWave закончился. Он обновится "), "{}", spoken.phrase);
+        assert_eq!(cell.limit().map(|limit| limit.reason), Some(LimitReason::Day));
+        assert_eq!(asked.load(Ordering::SeqCst), 2);
+        // The fast model too: the day is counted per person, not per model.
+        let out: Vec<_> = llm.stream(ask("duowave-fast"), CancellationToken::new()).collect().await;
+        let again = out[0].as_ref().unwrap_err().downcast_ref::<SpokenFailure>().unwrap();
+        assert_eq!(again.phrase, spoken.phrase);
+        assert_eq!(asked.load(Ordering::SeqCst), 2, "paused: nothing went out");
     }
 }

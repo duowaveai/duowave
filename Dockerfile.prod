@@ -21,10 +21,12 @@ WORKDIR /src
 RUN npm install -g pnpm@11
 ENV CI=true \
     PNPM_CONFIG_VERIFY_DEPS_BEFORE_RUN=false
-# Manifests first, for the layer cache; only the panel's dependencies are installed.
+# Manifests first, for the layer cache; only the panel's dependencies are installed, with the mascot it imports.
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY panel/package.json panel/
-RUN pnpm install --frozen-lockfile --filter panel
+COPY mascot/package.json mascot/
+RUN pnpm install --frozen-lockfile --filter "panel..."
+COPY mascot mascot
 COPY panel panel
 RUN pnpm --filter panel build
 

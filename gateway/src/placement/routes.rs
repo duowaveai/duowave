@@ -209,6 +209,11 @@ fn on_station(app: &App) -> Result<(), ApiError> {
     if app.placement.role() != Role::Station {
         return Err(ApiError::conflict(crate::tr!("Это делает хаб на самой колонке.")));
     }
+    // Its voice switched in the station's files, then a reboot: none of it on a pretend station.
+    #[cfg(feature = "pc")]
+    if crate::stations::pretend::is_station() {
+        return Err(crate::stations::pretend::refuse());
+    }
     Ok(())
 }
 
@@ -1116,6 +1121,28 @@ mod tests {
         );
         let ear = bedroom.settings.get(&crate::home::ear::HOME_EAR, None).expect("the bedroom is an ear now");
         assert_eq!((ear.address.as_str(), ear.port), ("127.0.0.1", centre_port));
+
+        // (The computer's records are by address — here both stations are 127.0.0.1, one record: that the ear's record
+        // stays the ear's is checked by placement::watch::tests and on pretend stations, docs/plans/pretend-stations.md.)
+
+        // The centre lets in the voice of its ear's station: the ear's socket carries the centre's pair key. The
+        // centre's own station is there already, so a stranger would wait for the admin.
+        assert!(centre.stations.admit("h:centres-own", "127.0.0.1").ok);
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("x-uprx-device-id", axum::http::HeaderValue::from_static("BEDROOMSTATION"));
+        assert!(crate::home::ear::dial(&bedroom, &headers).await.is_some(), "the centre took the ear's socket");
+        let approved = centre
+            .stations
+            .list()
+            .into_iter()
+            .filter(|station| station.view.status == crate::stations::StationStatus::Approved)
+            .count();
+        assert_eq!(approved, 2, "the ear's station approved by the join itself");
+        let stranger = format!("ws://127.0.0.1:{centre_port}/uni.ws");
+        let mut request =
+            tokio_tungstenite::tungstenite::client::IntoClientRequest::into_client_request(stranger).unwrap();
+        request.headers_mut().insert("x-uprx-device-id", axum::http::HeaderValue::from_static("STRANGER"));
+        assert!(tokio_tungstenite::connect_async(request).await.is_err(), "a station without the key waits");
     }
 
     #[tokio::test]

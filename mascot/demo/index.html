@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DuoWave mascot</title>
+<style>
+  /* The mascot library's demo page: the characters, one big stage with the mood controls, the two bodies side by side.
+     Words live in demo.ts (English first, Russian as a translation), never in the library. */
+  :root {
+    --bg: #FDFCFC; --card: #F5F3F1; --surface: #FFFFFF; --fg: #0B0F0A;
+    --muted: rgba(11, 15, 10, 0.6); --line: rgba(11, 15, 10, 0.12);
+    --stage-base: #F1F4EA; --stage-mix: 62%; --pill: rgba(255, 255, 255, 0.78); --focus: #0B0F0A;
+    --font: Inter, system-ui, -apple-system, "Segoe UI", sans-serif;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0B0F0A; --card: #151A14; --surface: #1D231B; --fg: #F3F6EE;
+      --muted: rgba(243, 246, 238, 0.62); --line: rgba(243, 246, 238, 0.14);
+      --stage-base: #10150F; --stage-mix: 30%; --pill: rgba(16, 21, 15, 0.66); --focus: #F3F6EE;
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0B0F0A; --card: #151A14; --surface: #1D231B; --fg: #F3F6EE;
+    --muted: rgba(243, 246, 238, 0.62); --line: rgba(243, 246, 238, 0.14);
+    --stage-base: #10150F; --stage-mix: 30%; --pill: rgba(16, 21, 15, 0.66); --focus: #F3F6EE;
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.45 var(--font);
+    padding: 28px max(16px, env(safe-area-inset-right, 0px)) 28px max(16px, env(safe-area-inset-left, 0px));
+  }
+  .wrap { max-width: 880px; margin: 0 auto; display: grid; gap: 16px; grid-template-columns: minmax(0, 440px) minmax(0, 1fr); align-items: start; }
+  @media (max-width: 760px) { .wrap { grid-template-columns: minmax(0, 1fr); } }
+  header { grid-column: 1 / -1; display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 0 4px; }
+  h1 { font-size: 20px; font-weight: 700; letter-spacing: -0.01em; margin: 0; }
+  h2 { font-size: 12px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); margin: 0; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 28px; padding: 14px; display: flex; flex-direction: column; gap: 14px; }
+  .stage {
+    --mood: #B6F36A; position: relative; aspect-ratio: 10 / 11; border-radius: 18px; overflow: hidden;
+    background: radial-gradient(120% 85% at 50% 0%, color-mix(in srgb, var(--mood) var(--stage-mix), var(--stage-base)), var(--stage-base) 78%);
+    transition: background 0.5s; color: var(--fg); cursor: grab; user-select: none; -webkit-user-select: none;
+  }
+  .stage.dragging { cursor: grabbing; }
+  .stage:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+  .pill { position: absolute; background: var(--pill); border-radius: 999px; padding: 6px 12px; font-size: 13px; pointer-events: none; -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px); }
+  .pill.state { top: 12px; right: 12px; font-weight: 600; }
+  .pill.body { bottom: 12px; right: 12px; color: var(--muted); }
+  .says {
+    position: absolute; left: 12px; top: 12px; max-width: 58%; background: var(--pill); border-radius: 16px 16px 16px 4px;
+    padding: 9px 13px; font-size: 13.5px; line-height: 1.35; pointer-events: none; transition: opacity 0.3s, transform 0.3s;
+    -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px);
+  }
+  .says.off { opacity: 0; transform: translateY(-4px); }
+  .says b { display: block; font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); margin-bottom: 2px; }
+  .row { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; }
+  button.chip, button.toggle {
+    font: 500 14px var(--font); color: var(--fg); background: var(--surface); border: 1.5px solid var(--line);
+    border-radius: 999px; padding: 6px 13px; cursor: pointer; transition: border-color 0.15s, transform 0.15s;
+  }
+  button.toggle { font-size: 13px; padding: 5px 11px; color: var(--muted); background: none; }
+  button.chip:hover, button.toggle:hover { border-color: var(--muted); }
+  button.chip:active { transform: scale(0.97); }
+  button[aria-pressed="true"] { border-color: var(--fg); color: var(--fg); }
+  button:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+  .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .pair .stage { aspect-ratio: 1 / 1.1; }
+  .pair figure { margin: 0; display: grid; gap: 6px; }
+  .pair figcaption { font-size: 13px; color: var(--muted); text-align: center; }
+  .sizes { display: flex; align-items: end; gap: 12px; flex-wrap: wrap; }
+  .sizes .stage { border-radius: 12px; }
+  .note { color: var(--muted); font-size: 13px; margin: 0; }
+  @media (prefers-reduced-motion: reduce) { .stage { transition: none; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1 id="title"></h1>
+    <div class="row">
+      <button class="toggle" id="lang" type="button"></button>
+      <button class="toggle" id="sound" type="button" aria-pressed="false"></button>
+    </div>
+  </header>
+
+  <section class="card">
+    <div class="stage" id="stage" tabindex="0" role="img">
+      <div class="says off" id="says"><b id="saysWho"></b><span id="saysText"></span></div>
+      <div class="pill state" id="stateLabel"></div>
+      <div class="pill body" id="bodyLabel"></div>
+    </div>
+    <div class="row">
+      <h2 id="castHeading"></h2>
+      <div class="chips" id="cast"></div>
+    </div>
+    <div class="row">
+      <h2 id="moodHeading"></h2>
+      <div class="chips" id="bodies"></div>
+    </div>
+    <div class="chips" id="moods"></div>
+  </section>
+
+  <section class="card">
+    <h2 id="pairHeading"></h2>
+    <div class="pair">
+      <figure><div class="stage" id="lightStage"></div><figcaption id="lightCaption"></figcaption></figure>
+      <figure><div class="stage" id="richStage"></div><figcaption id="richCaption"></figcaption></figure>
+    </div>
+    <h2 id="sizesHeading"></h2>
+    <div class="sizes" id="sizes"></div>
+    <p class="note" id="note"></p>
+  </section>
+</div>
+<script type="module" src="./demo.ts"></script>
+</body>
+</html>

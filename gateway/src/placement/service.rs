@@ -418,7 +418,17 @@ pub const DEFAULT_STATION_NAME: &str = "Колонка";
 /// move brought. The default name of a new station («Колонка») does not count. /health says it, and the gateway's own
 /// name follows it while nobody names the gateway (src/core/identity/home.rs).
 pub fn station_self(settings: &SettingsService, db: &Db) -> (Option<String>, Option<String>) {
-    let Some(own) = settings.get(&STATION_SELF, None) else { return (None, None) };
+    // No computer moved it here (installed from the terminal, stage 1 of docs/plans/home-setup-flow.md): the station
+    // whose voice comes from this very machine is its own. Without it a Turbo that joined by the code never learned
+    // the station's device, and its panel offered the hub and its ears as «не в доме» (pretend stations, 23.11).
+    let Some(own) = settings.get(&STATION_SELF, None) else {
+        let device = own_station(db);
+        let name = device
+            .as_deref()
+            .and_then(|device| station_name(db, device))
+            .filter(|name| !name.trim().is_empty() && name != DEFAULT_STATION_NAME);
+        return (device, name);
+    };
     let listed = own
         .device
         .as_deref()
@@ -426,6 +436,23 @@ pub fn station_self(settings: &SettingsService, db: &Db) -> (Option<String>, Opt
         .filter(|name| !name.trim().is_empty() && name != DEFAULT_STATION_NAME);
     let name = listed.or(own.name).filter(|name| !name.trim().is_empty());
     (own.device, name)
+}
+
+/// The approved station whose voice comes from this machine itself (quasar dials 127.0.0.1), the latest seen.
+fn own_station(db: &Db) -> Option<String> {
+    use rusqlite::OptionalExtension;
+    db.with(|connection| {
+        connection
+            .query_row(
+                "SELECT device FROM stations WHERE status = 'approved' AND last_address IN ('127.0.0.1', '::1') \
+                 ORDER BY last_seen DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+    })
+    .ok()
+    .flatten()
 }
 
 /// A station's name in this gateway's list of stations, by its device.
@@ -533,5 +560,23 @@ mod tests {
             .unwrap();
         secrets.set("helper:own-1:key", Some("vgw_own")).unwrap();
         assert_eq!(service.placement(), Placement::Station, "«the computer helps» stays the computer's");
+    }
+
+    /// Installed from the terminal, never moved here: its own station is the one whose voice comes from this machine.
+    #[test]
+    fn a_station_nobody_moved_knows_itself_by_its_own_voice() {
+        let db = Arc::new(Db::memory());
+        let settings = Arc::new(SettingsService::new(db.clone(), EventBus::new()));
+        assert_eq!(station_self(&settings, &db), (None, None));
+        db.with(|connection| {
+            connection.execute_batch(
+                "INSERT INTO stations (device, name, status, last_address, first_seen, last_seen) VALUES \
+                 ('h:ear', 'Колонка', 'approved', '10.77.0.3', 't', 't2'), \
+                 ('h:own', 'Кухня', 'approved', '127.0.0.1', 't', 't1'), \
+                 ('h:wait', 'Колонка', 'pending', '127.0.0.1', 't', 't3')",
+            )
+        })
+        .unwrap();
+        assert_eq!(station_self(&settings, &db), (Some("h:own".into()), Some("Кухня".into())));
     }
 }

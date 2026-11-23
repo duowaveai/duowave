@@ -81,13 +81,21 @@ pub fn client(ear: &EarOf, key: &str) -> PeerClient {
     PeerClient::new(&ear.address, ear.port, key)
 }
 
-/// The station's handshake headers that go on to the centre: all but the connection's own.
+/// The header an ear opens the centre's voice socket with: the centre's pair key, so the centre lets in the station
+/// of its own ear as one it invited (the join was the admin's approval: docs/plans/home-setup-flow.md, stage 5). The
+/// station's own Authorization goes on untouched — Yandex's, for the mode «Алиса». The centre takes it off before
+/// anything goes on to Yandex.
+pub const EAR_KEY_HEADER: &str = "x-duowave-ear-key";
+
+/// The station's handshake headers that go on to the centre: all but the connection's own — and an ear key the
+/// station itself might have sent.
 fn forwarded(headers: &HeaderMap) -> Vec<(axum::http::HeaderName, axum::http::HeaderValue)> {
     headers
         .iter()
         .filter(|(name, _)| {
             let name = name.as_str();
-            !matches!(name, "host" | "connection" | "upgrade" | "content-length") && !name.starts_with("sec-websocket-")
+            !matches!(name, "host" | "connection" | "upgrade" | "content-length" | EAR_KEY_HEADER)
+                && !name.starts_with("sec-websocket-")
         })
         .map(|(name, value)| (name.clone(), value.clone()))
         .collect()
@@ -97,13 +105,23 @@ type CentreSocket = tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeT
 
 /// The station's socket opened on to the centre, within `DIAL`; none — the centre is away.
 pub async fn dial(app: &App, headers: &HeaderMap) -> Option<CentreSocket> {
-    let (ear, _) = centre(app)?;
+    let (ear, key) = centre(app)?;
     let url = format!("ws://{}:{}{}", ear.address, ear.port, app.config.gateway.uniproxy_path);
     let mut request = url.into_client_request().ok()?;
     for (name, value) in forwarded(headers) {
         request.headers_mut().insert(name, value);
     }
-    match tokio::time::timeout(DIAL, tokio_tungstenite::connect_async(request)).await {
+    if let Ok(key) = axum::http::HeaderValue::from_str(&key) {
+        request.headers_mut().insert(EAR_KEY_HEADER, key);
+    }
+    // From this ear's own address when the centre is another pretend station (src/utils/net.rs); the system's else.
+    let opened = async {
+        let stream = crate::utils::net::dial(&ear.address, ear.port).await?;
+        tokio_tungstenite::client_async(request, tokio_tungstenite::MaybeTlsStream::Plain(stream))
+            .await
+            .map_err(std::io::Error::other)
+    };
+    match tokio::time::timeout(DIAL, opened).await {
         Ok(Ok((socket, _))) => Some(socket),
         Ok(Err(error)) => {
             tracing::info!(target: "home", "the centre did not take the station's socket: {error}; answering here");
@@ -318,6 +336,9 @@ async fn set(State(app): State<Arc<App>>, caller: Caller, Body(body): Body<Value
     if let Err(error) = keep(&app).await {
         tracing::info!(target: "home", "the first copy from the new centre: {error}");
     }
+    // Its own station reconnects: its voice goes to the centre from the next socket on, not from the next reboot
+    // (pretend stations 23.11: the open socket stayed here, the ear answered for itself).
+    app.sessions.drop_all("this station became an ear");
     Ok(ok(json!({ "earOf": ear })))
 }
 
@@ -327,6 +348,8 @@ async fn unset(State(app): State<Arc<App>>, caller: Caller) -> ApiResult<Value> 
     app.settings.forget(&HOME_EAR)?;
     app.secrets.delete(KEY_SECRET)?;
     app.events.emit(GatewayEvent::HomeDevicesChanged { reason: "ear".into() });
+    // The station's voice comes back here from the next socket on.
+    app.sessions.drop_all("this station is its own centre again");
     Ok(ok(json!({ "earOf": null })))
 }
 

@@ -384,6 +384,10 @@ impl StationConnectService {
             return Vec::new();
         }
         let port = if self.port == 80 { String::new() } else { format!(":{}", self.port) };
+        // A pretend Turbo is at its own pretend address for the pretend stations (docs/plans/pretend-stations.md).
+        if let Some(pretend) = super::super::pretend::get() {
+            return vec![format!("{}{port}", pretend.address)];
+        }
         let home = ["10.0.0.0/8".to_string(), "192.168.0.0/16".to_string(), "172.16.0.0/12".to_string()];
         let mut found: Vec<&Iface> = interfaces
             .iter()

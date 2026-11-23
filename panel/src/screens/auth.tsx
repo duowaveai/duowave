@@ -2,7 +2,7 @@ import { ComponentChildren } from 'preact';
 import { useState } from 'preact/hooks';
 
 import { PanelUser, api, problemOf, sessionStore } from '../api';
-import { DuoWaveMark } from '../ui/duowave';
+import { Mascot } from '../ui/mascot';
 import { language, tr } from '../i18n';
 import { LanguageSwitch } from '../i18n/picker';
 
@@ -67,11 +67,11 @@ export function AuthScreen({
     return (
         <div class="screen justify-center min-h-screen">
             <section class="card glass flex flex-col gap-14 p-24">
-                {/* ДиВи встречает: оглядывается, моргает, изредка здоровается (ui/divi.ts, 'lively'). */}
                 {/* Язык — первым: определён по системе, его можно сменить до всего остального. */}
                 <LanguageSwitch class="self-center" />
+                {/* The mascot meets you (ui/mascot.tsx, Deevi today): waits, thinks while the gateway checks, is sad while an error is shown. */}
                 <div class="auth-hero">
-                    <DuoWaveMark size={96} live idle="lively" />
+                    <Mascot mood={busy ? 'think' : error ? 'sad' : 'idle'} class="auth-mascot" />
                 </div>
                 <div class="auth-head">
                     <h1 class="t-title m-0">{mode === 'setup' ? tr.auth.welcome : tr.auth.panel}</h1>

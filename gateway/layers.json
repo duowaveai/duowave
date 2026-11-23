@@ -93,6 +93,7 @@
     "speech -> skills",
     "speech -> talk",
     "stations -> app",
+    "stations -> egress",
     "talk -> app",
     "talk -> gateway",
     "talk -> home",

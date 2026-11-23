@@ -32,11 +32,7 @@
     .st2-anim { animation: none !important; }
 }
 
-/* ДиВи в центре орбиты (divi.tsx): моргает, пока ждёт и слушает; думая, переводит взгляд; говоря, покачивает улыбкой. */
-.divi-eyes { transform-box: fill-box; transform-origin: center; }
-.divi-eyes path { transition: transform 0.26s ease; }
-@keyframes divi-blink { 0%, 93%, 100% { transform: scaleY(1); } 96% { transform: scaleY(0.08); } }
-@keyframes divi-talk { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-3px); } }
-.divi-art.is-idle .divi-eyes,
-.divi-art.is-listen .divi-eyes { animation: divi-blink 5.2s ease-in-out infinite; }
-.divi-art.is-speak .divi-eyes { animation: divi-talk 0.7s ease-in-out infinite; }
+/* Deevi in the orbit's centre (divi.tsx): the mascot's box over the 240 × 200 frame. Its body takes ~43 % of the box's
+   height, so the box is 330 frame units tall (164.85 %) to make the body 141 units, from y 31 to 172 as the old drawing;
+   it is 320 wide (133.33 %) so the waves fit. Clicks go to the frame (DIVI_HIT), not to him. */
+.st2-divi { position: absolute; left: -16.67%; top: -34.8%; width: 133.33%; height: 164.85%; pointer-events: none; }
