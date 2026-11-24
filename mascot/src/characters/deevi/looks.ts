@@ -6,8 +6,9 @@ import type { MoodId } from '../../engine/moods.ts';
 import type { MoodLook, Tunes } from '../../engine/types.ts';
 import { DIVI_COLORS } from './mark.ts';
 
-/** The logo's colours (mark.ts): the lime body and the dark ink of the eyes. */
-export const DEEVI_COLORS = { body: DIVI_COLORS.body, ink: DIVI_COLORS.eye } as const;
+/** The logo's colours (mark.ts): the lime body and the dark ink of the eyes; his effects (thinking dots, sparkles, and
+ * the waves' tint) are the home green, the colour of «it works» in the panel and of the sites' room. */
+export const DEEVI_COLORS = { body: DIVI_COLORS.body, ink: DIVI_COLORS.eye, effect: '#65A30D' } as const;
 
 /** Deevi has a look for every mood, so nothing falls back. */
 export const LOOKS: Record<MoodId, MoodLook> = {

@@ -103,8 +103,11 @@ export interface RichBodySpec<S> {
 export interface Character<S = unknown> {
     /** Stable id, like `deevi`. Hosts key their words (the name a screen reader says) by it. */
     id: string;
-    /** The character's own colours: the main one and the ink of its features. */
-    colors: { body: string; ink: string };
+    /**
+     * The character's own colours: the main one, the ink of its features and, optionally, the colour of its effects
+     * (waves, dots, sparkles) when the host names none. Without it the effects take the container's CSS `color`.
+     */
+    colors: { body: string; ink: string; effect?: string };
     /** Looks per mood. `idle` is required; the rest fall back (engine/moods.ts FALLBACK). */
     looks: { idle: MoodLook } & Partial<Record<MoodId, MoodLook>>;
     tunes?: Tunes;
@@ -133,7 +136,10 @@ export interface MascotOptions {
     sound?: boolean;
     /** Soft ground shadow. Default true. */
     shadow?: boolean;
-    /** Colour of the effects; the container's CSS `color` when not given. */
+    /**
+     * Colour of the effects. When not given: the container's `--mascot-effect` CSS property (it inherits, so a theme can
+     * set it once), then the character's own (`colors.effect`), then the container's CSS `color`.
+     */
     effectColor?: string;
     /** After every mood change (not the first mood); a tap waking a sleeping mascot changes the mood too. */
     onMoodChange?: (id: MoodId, mood: Mood) => void;
@@ -151,7 +157,8 @@ export interface Mascot {
     readonly character: Character;
     /** The body drawing now; `auto` starts `light` and may become `rich` a moment later. */
     readonly body: BodyKind;
-    /** Change the mood; `animate` plays the character's entrance move and chirp. False for an unknown id. */
+    /** Change the mood; `animate` plays the character's entrance move and chirp, unless nobody sees the mascot then (off
+     * screen, a hidden tab). False for an unknown id. */
     setMood(id: string, animate?: boolean): boolean;
     /** The mood the host asked for (the character may be showing a fallback for it). */
     getMood(): MoodId;

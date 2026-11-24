@@ -14,8 +14,17 @@
 // - Dragging sideways turns him; the engine lets the page scroll vertically over him (`touch-action: pan-y`), so a big
 //   Deevi on a phone doesn't trap the scroll.
 // - A lost WebGL context hands over to the flat body (BodyHost.lost).
+// - The bubble (handoff 1.2.0, 24.11.2026): a clear shell, back and front layer, with an iridescent rim and a window
+//   glare, and three balls of light inside; the eyes and the mouth are opaque and sit on the shell. The shell's shader
+//   patch is the handoff's, put where three 0.187 has the same values (before tone mapping and the sRGB output). The
+//   balls' colours and drift are shared with the flat body (bubble.ts, rig.ts `innerOf`). Draw order: back wall, the
+//   light, front wall, cheeks.
+// - The canvas reaches past the box (`resize`): the waves are wider than a narrow box, and a canvas the size of the
+//   box cut them at its edges, where the flat body's SVG simply overflows. The camera renders a wider view around
+//   the same frustum, so Deevi stays exactly where he was in the box.
 
 import {
+    BackSide,
     BufferAttribute,
     BufferGeometry,
     CanvasTexture,
@@ -23,6 +32,7 @@ import {
     Color,
     DirectionalLight,
     DoubleSide,
+    FrontSide,
     Group,
     HemisphereLight,
     LinearSRGBColorSpace,
@@ -35,16 +45,19 @@ import {
     PlaneGeometry,
     SRGBColorSpace,
     Scene,
+    ShaderMaterial,
     Shape,
     ShapeGeometry,
     SphereGeometry,
     TorusGeometry,
+    type WebGLProgramParametersWithUniforms,
     WebGLRenderer,
 } from 'three';
 
 import type { Body, BodyHost } from '../../engine/types.ts';
+import { type RGB, bubbleOf, mixLinear } from './bubble.ts';
 import { CHEEK, DEEVI_COLORS } from './looks.ts';
-import { type DeeviState, dotRadius, eyeOf, mouthOf, ringOf, shadowOf } from './rig.ts';
+import { type DeeviState, dotRadius, eyeOf, innerOf, mouthOf, ringOf, shadowOf } from './rig.ts';
 
 /** A hex colour taken as it is, the way r128 read material and light colours (see the top of the file). */
 const raw = (hex: number): Color =>
@@ -54,11 +67,59 @@ const INK = parseInt(DEEVI_COLORS.ink.slice(1), 16);
 /** Legacy light units multiplied light by π; the handoff's intensities are kept times π. */
 const PI = Math.PI;
 
+/** The shell's look (the handoff's patch): fresnel rim with a rainbow, the specular light, two window glares. The back
+ * wall is a faint tint; the front one is clear in the middle and pale toward the rim. */
+const shellShader = (shader: WebGLProgramParametersWithUniforms): void => {
+    shader.fragmentShader = shader.fragmentShader.replace(
+        '#include <tonemapping_fragment>',
+        [
+            'vec3 shN = normalize(normal), shV = normalize(vViewPosition);',
+            'float shF = pow(1.0 - clamp(abs(dot(shN, shV)), 0.0, 1.0), 2.0);',
+            'vec3 shS = reflectedLight.directSpecular + reflectedLight.indirectSpecular;',
+            'vec3 shI = 0.5 + 0.5 * cos(6.2832 * (shF * 1.3 + vec3(0.0, 0.33, 0.67)));',
+            'float shG = smoothstep(0.8, 0.99, dot(shN, normalize(vec3(-0.5, 0.62, 0.6)))) * 0.75;',
+            'float shG2 = smoothstep(0.93, 0.995, dot(shN, normalize(vec3(0.55, -0.45, 0.7)))) * 0.35;',
+            '#ifdef SHELL_BACK',
+            'gl_FragColor = vec4(gl_FragColor.rgb + shI * 0.15, 0.05 + 0.22 * shF);',
+            '#else',
+            'gl_FragColor.rgb += shI * shF * 0.45 + vec3(shG + shG2);',
+            'gl_FragColor.a = clamp(0.12 + 0.72 * shF + dot(shS, vec3(0.3, 0.6, 0.1)) * 1.6 + 0.8 * (shG + shG2), 0.0, 1.0);',
+            '#endif',
+            '#include <tonemapping_fragment>',
+        ].join('\n'),
+    );
+};
+
+const shellMaterial = (back: boolean): MeshPhysicalMaterial => {
+    const m = new MeshPhysicalMaterial({
+        color: 0xffffff,
+        roughness: 0.12,
+        metalness: 0,
+        clearcoat: 1,
+        clearcoatRoughness: 0.05,
+        transparent: true,
+        premultipliedAlpha: true,
+        depthWrite: false,
+        side: back ? BackSide : FrontSide,
+    });
+    if (back) m.defines = { ...m.defines, SHELL_BACK: '' };
+    m.onBeforeCompile = shellShader;
+    return m;
+};
+
+/** A ball of light: brightest in the middle, fading to nothing at its edge. It writes its colour as given (the sRGB
+ * numbers, as the handoff's r128 shader did), premultiplied. */
+const INNER_VERTEX =
+    'varying vec3 vN; varying vec3 vV; void main() { vec4 mv = modelViewMatrix * vec4(position, 1.0); vN = normalMatrix * normal; vV = -mv.xyz; gl_Position = projectionMatrix * mv; }';
+const INNER_FRAGMENT =
+    'uniform vec3 uColor; uniform float uAlpha; varying vec3 vN; varying vec3 vV; void main() { float d = clamp(dot(normalize(vN), normalize(vV)), 0.0, 1.0); float a = pow(d, 1.1) * uAlpha; gl_FragColor = vec4(uColor * a, a); }';
+
 /** Throws when WebGL is not available: the engine keeps the flat body then. */
 export function create3d(host: BodyHost): Body<DeeviState> {
     const { container } = host;
     const canvas = document.createElement('canvas');
-    canvas.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;display:block';
+    // Placed and sized by `resize`, past the box's edges; the box itself takes the pointer.
+    canvas.style.cssText = 'position:absolute;display:block;pointer-events:none';
     canvas.setAttribute('aria-hidden', 'true');
     // The renderer throws here when WebGL is missing; nothing is in the container yet.
     const renderer = new WebGLRenderer({ canvas, antialias: true, alpha: true });
@@ -100,19 +161,38 @@ export function create3d(host: BodyHost): Body<DeeviState> {
             p.setXYZ(i, HX * sgn(x) + R * x, HY * sgn(y) + R * y, R * z); // sphere normals stay valid
         }
     }
-    const bodyMat = new MeshPhysicalMaterial({
-        color: new Color(DEEVI_COLORS.body),
-        roughness: 0.38,
-        metalness: 0,
-        clearcoat: 0.55,
-        clearcoatRoughness: 0.3,
-    });
+    const shellFront = shellMaterial(false);
+    const shellBack = shellMaterial(true);
     const rig = new Group(); // jump + squash, pivot on the ground
     scene.add(rig);
     const head = new Group(); // rotation, pivot in the centre
     head.position.y = B;
     rig.add(head);
-    head.add(new Mesh(bodyGeo, bodyMat));
+    const back = new Mesh(bodyGeo, shellBack);
+    back.renderOrder = 1;
+    const front = new Mesh(bodyGeo, shellFront);
+    front.renderOrder = 3;
+    head.add(back, front);
+
+    // The light inside: three soft balls (bubble.ts), drawn between the walls.
+    const innerGeo = new SphereGeometry(1, 48, 32);
+    const inner = [0, 1, 2].map(() => {
+        const uniforms = { uColor: { value: new Color(0xffffff) }, uAlpha: { value: 1 } };
+        const m = new Mesh(
+            innerGeo,
+            new ShaderMaterial({
+                uniforms,
+                vertexShader: INNER_VERTEX,
+                fragmentShader: INNER_FRAGMENT,
+                transparent: true,
+                premultipliedAlpha: true,
+                depthWrite: false,
+            }),
+        );
+        m.renderOrder = 2;
+        head.add(m);
+        return { m, uniforms };
+    });
 
     const ink = new MeshStandardMaterial({ color: raw(INK), roughness: 0.25 });
     const face = new Group();
@@ -230,6 +310,7 @@ export function create3d(host: BodyHost): Body<DeeviState> {
         c.position.set(s * 0.6, -0.27, surfZ(0.6, -0.27) + 0.012);
         c.rotation.y = s * 0.56;
         c.scale.y = 0.62;
+        c.renderOrder = 4;
         face.add(c);
     }
 
@@ -242,8 +323,10 @@ export function create3d(host: BodyHost): Body<DeeviState> {
     oh.position.set(0, MY, MZ);
     face.add(frown, oh);
 
-    // Effects share one colour (see setEffectColor): thinking dots, wink sparkles, sound waves.
+    // Effects: the thinking dots and the wink sparkles are the effect colour (setEffectColor); the sound waves are the
+    // mood's colour nudged 15 % toward it, so they read on light and dark pages alike.
     const fxColor = raw(INK);
+    let fxRgb: RGB = [0, 0, 0];
     const dots: Mesh<SphereGeometry, MeshBasicMaterial>[] = [];
     for (let d = 0; d < 3; d++) {
         const dm = new Mesh(unit, new MeshBasicMaterial({ color: fxColor }));
@@ -272,7 +355,7 @@ export function create3d(host: BodyHost): Body<DeeviState> {
     const rings: Mesh<TorusGeometry, MeshBasicMaterial>[] = [];
     for (let r = 0; r < 3; r++) {
         const rm = new Mesh(
-            new TorusGeometry(1, 0.014, 8, 128),
+            new TorusGeometry(1, 0.02, 8, 128),
             new MeshBasicMaterial({ color: fxColor, transparent: true, opacity: 0, depthWrite: false }),
         );
         rm.position.set(0, B, -0.4);
@@ -283,8 +366,9 @@ export function create3d(host: BodyHost): Body<DeeviState> {
         try {
             fxColor.set(css);
             for (const m of dots) m.material.color.copy(fxColor);
-            for (const m of rings) m.material.color.copy(fxColor);
             starMat.color.copy(fxColor);
+            const c = fxColor.clone().convertLinearToSRGB();
+            fxRgb = [c.r, c.g, c.b];
         } catch {
             /* a colour three cannot read: keep the old one */
         }
@@ -324,9 +408,19 @@ export function create3d(host: BodyHost): Body<DeeviState> {
 
     return {
         resize(w, h) {
+            // Room for the effects around the box: the widest wave reaches 0.47 of the box's height from his centre,
+            // a hop lifts it by up to 0.08 more. So 0.15 of the height above and below, and at the sides enough for a
+            // half-width of 0.52 of the height.
+            const ey = Math.ceil(0.15 * h);
+            const ex = Math.ceil(Math.max(0.15 * h, 0.52 * h - w / 2));
+            const cw = w + 2 * ex;
+            const ch = h + 2 * ey;
             renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-            renderer.setSize(w, h, false);
+            renderer.setSize(cw, ch, false);
+            Object.assign(canvas.style, { left: `${-ex}px`, top: `${-ey}px`, width: `${cw}px`, height: `${ch}px` });
+            // The camera keeps the box's view and draws past it on every side: the body doesn't move.
             camera.aspect = w / h;
+            camera.setViewOffset(w, h, -ex, -ey, cw, ch);
             camera.updateProjectionMatrix();
         },
 
@@ -340,7 +434,18 @@ export function create3d(host: BodyHost): Body<DeeviState> {
                 st.m.position.set(st.x + k * 0.22, st.y + k * 0.2, 0.8);
                 st.m.rotation.z = -k * 1.6;
             }
-            bodyMat.color.setRGB(s.color[0] / 255, s.color[1] / 255, s.color[2] / 255, SRGBColorSpace);
+            const look = bubbleOf(s.color);
+            shellFront.color.setRGB(look.shell[0], look.shell[1], look.shell[2], SRGBColorSpace);
+            shellBack.color.copy(shellFront.color);
+            inner.forEach((ball, i) => {
+                const b = innerOf(s, i);
+                const c = look.inner[i];
+                ball.m.position.set(b.x, b.y, b.z);
+                ball.m.scale.setScalar(b.r);
+                ball.uniforms.uColor.value.setRGB(c[0], c[1], c[2], LinearSRGBColorSpace); // the numbers as they are
+                ball.uniforms.uAlpha.value = b.alpha;
+            });
+            const wave = mixLinear([s.color[0] / 255, s.color[1] / 255, s.color[2] / 255], fxRgb, 0.15);
             rig.scale.set(1 + s.squash * 0.8, 1 - s.squash, 1 + s.squash * 0.8);
             rig.position.y = s.jump;
 
@@ -368,6 +473,7 @@ export function create3d(host: BodyHost): Body<DeeviState> {
                 ring.scale.set(r.radius, r.radius * 1.08, 1);
                 ring.position.y = B + s.jump * 0.5;
                 ring.material.opacity = r.opacity;
+                ring.material.color.setRGB(wave[0], wave[1], wave[2], SRGBColorSpace);
             });
 
             const sh = shadowOf(s);

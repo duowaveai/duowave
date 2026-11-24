@@ -6,6 +6,7 @@
 
 import type { MoodId } from '../../engine/moods.ts';
 import type { PointerInput, Rig, RigContext } from '../../engine/types.ts';
+import { INNER } from './bubble.ts';
 import { LOOKS } from './looks.ts';
 
 /** Numeric pose per mood; every value is eased toward its target each frame.
@@ -72,6 +73,8 @@ export const POSES: Record<MoodId, Pose> = {
 export interface DeeviState {
     /** Seconds since he appeared. */
     t: number;
+    /** The mood he is in (the bubble's inner light drifts faster when he thinks and dims when he sleeps). */
+    mood: MoodId;
     /** The pose, eased toward the mood's. */
     pose: Pose;
     /** Head tilt in radians: the spring and the idle sway. */
@@ -95,8 +98,10 @@ export interface DeeviState {
     burst: number;
     /** Wink sparkles: 0 when none, else 0..1 through their life. */
     spark: number;
-    /** Body colour, sRGB 0–255, eased toward the mood's. */
+    /** The mood's colour, sRGB 0–255, eased toward the mood's: the light inside the bubble (bubble.ts). */
     color: [number, number, number];
+    /** How far each ball of light inside the bubble has drifted along its path (bubble.ts INNER). */
+    inner: [number, number, number];
     reduced: boolean;
 }
 
@@ -131,8 +136,22 @@ export function ringOf(s: DeeviState, i: number): { radius: number; opacity: num
     const p = (s.ringPhase + i / 3) % 1;
     const q = s.ringDir >= 0 ? p : 1 - p;
     const opacity =
-        s.reduced && s.burst <= 0 ? Math.abs(s.pose.ring) * 0.2 : Math.min(1, Math.abs(s.ringDir)) * Math.sin(p * Math.PI) * 0.34;
+        s.reduced && s.burst <= 0 ? Math.abs(s.pose.ring) * 0.3 : Math.min(1, Math.abs(s.ringDir)) * Math.sin(p * Math.PI) * 0.55;
     return { radius: 1.3 + q * 0.95, opacity };
+}
+
+/** Ball of light `i` (0..2) inside the bubble: its centre in units from the body's centre (z toward the viewer), its
+ * radius, and how bright it is (dimmer in sleep). It swells a little with the talking mouth. */
+export function innerOf(s: DeeviState, i: number): { x: number; y: number; z: number; r: number; alpha: number } {
+    const b = INNER[i];
+    const t = s.inner[i];
+    return {
+        x: Math.sin(t + b.phase) * b.ax,
+        y: Math.cos(t * 0.8 + b.phase) * b.ay,
+        z: -0.15 + Math.sin(t * 0.6 + b.phase) * 0.12,
+        r: b.r * (1 + s.pose.talk * 0.14 * Math.sin(s.t * 9 + i * 2)),
+        alpha: b.alpha * (s.mood === 'sleep' ? 0.55 : 1),
+    };
 }
 
 /** The ground shadow: how much of it shows (fades while he is up) and its size. */
@@ -147,6 +166,8 @@ const rgb = (hex: string): [number, number, number] => {
     return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
 };
 const ease = (a: number, b: number, k: number, dt: number): number => a + (b - a) * (1 - Math.exp(-k * dt));
+/** The squash spring's fastest push, per second: a hard landing (3.2) plus a mood's push (1.6) and a little over. */
+const SQ_V_MAX = 5;
 
 export function deeviRig(ctx: RigContext, first: MoodId): Rig<DeeviState> {
     const { reduced } = ctx;
@@ -155,6 +176,7 @@ export function deeviRig(ctx: RigContext, first: MoodId): Rig<DeeviState> {
     const target = rgb(LOOKS[first].color);
     const state: DeeviState = {
         t: 0,
+        mood: first,
         pose: cur,
         lean: 0,
         squash: 0,
@@ -169,6 +191,7 @@ export function deeviRig(ctx: RigContext, first: MoodId): Rig<DeeviState> {
         burst: 0,
         spark: 0,
         color: rgb(LOOKS[first].color),
+        inner: [0, 0, 0],
         reduced,
     };
     let jumpV = 0;
@@ -183,10 +206,14 @@ export function deeviRig(ctx: RigContext, first: MoodId): Rig<DeeviState> {
     let winkCycle = 0;
     const WP: Pose = { ...REST };
 
+    /** Push the squash spring. Pushes add up, but only so far: several moods in one frame squash him once, not apart. */
+    const kick = (v: number): void => {
+        sqV = Math.max(-SQ_V_MAX, Math.min(SQ_V_MAX, sqV + v));
+    };
     const hop = (v = 4.6): void => {
         if (state.jump < 0.02) {
             jumpV = v;
-            sqV -= 1.2;
+            kick(-1.2);
         }
     };
     const restartWink = (): void => {
@@ -221,6 +248,7 @@ export function deeviRig(ctx: RigContext, first: MoodId): Rig<DeeviState> {
     return {
         setMood(id, animate) {
             mood = id;
+            state.mood = id;
             const next = rgb(LOOKS[id].color);
             target[0] = next[0];
             target[1] = next[1];
@@ -228,7 +256,7 @@ export function deeviRig(ctx: RigContext, first: MoodId): Rig<DeeviState> {
             if (id === 'wink') restartWink();
             if (!animate) return;
             if (id === 'success' || id === 'surprise' || id === 'tender') hop(id === 'success' ? 5.2 : id === 'tender' ? 3.4 : 4);
-            else if (id !== 'sleep' && id !== 'sad' && id !== 'wink') sqV += 1.6;
+            else if (id !== 'sleep' && id !== 'sad' && id !== 'wink') kick(1.6);
             if (id !== 'wink') ctx.sound(id); // the wink chirps when it pops
         },
 
@@ -259,13 +287,16 @@ export function deeviRig(ctx: RigContext, first: MoodId): Rig<DeeviState> {
                 if (state.spark >= 1) state.spark = 0;
             }
             for (let i = 0; i < 3; i++) state.color[i] = ease(state.color[i], target[i], 6, dt);
+            // The light inside drifts slower in sleep, faster in thought.
+            const drift = reduced ? 0.25 : mood === 'sleep' ? 0.35 : mood === 'think' ? 1.9 : 1;
+            for (let i = 0; i < 3; i++) state.inner[i] += dt * INNER[i].speed * drift;
 
             // hop + squash spring
             if (state.jump > 0 || jumpV !== 0) {
                 jumpV -= 17 * dt;
                 state.jump += jumpV * dt;
                 if (state.jump <= 0) {
-                    sqV += Math.min(3.2, -jumpV * 0.55);
+                    kick(Math.min(3.2, -jumpV * 0.55));
                     state.jump = 0;
                     jumpV = 0;
                 }

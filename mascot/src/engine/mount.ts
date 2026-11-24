@@ -54,7 +54,12 @@ export function mount(container: HTMLElement, character: Character, options: Mas
     if (getComputedStyle(container).position === 'static') container.style.position = 'relative';
     const touchBefore = container.style.touchAction;
     let effect = options.effectColor;
-    const effectCss = (): string => effect || getComputedStyle(container).color || character.colors.ink;
+    /** The host's colour, else the page's `--mascot-effect`, else the character's own, else the text colour around it. */
+    const effectCss = (): string => {
+        if (effect) return effect;
+        const css = getComputedStyle(container);
+        return css.getPropertyValue('--mascot-effect').trim() || character.colors.effect || css.color || character.colors.ink;
+    };
     const fit = (b: Body<unknown>): void => {
         const w = container.clientWidth;
         const h = container.clientHeight;
@@ -102,9 +107,18 @@ export function mount(container: HTMLElement, character: Character, options: Mas
 
     const want = options.body ?? 'auto';
     const rich = character.rich;
-    if (rich && want !== 'light') {
+    /** `auto` decides once the box has a size: a box that is hidden (display: none, one of two layouts of a page)
+     * mustn't hold a WebGL context it never draws in. */
+    let richPending = false;
+    const tryRich = (): void => {
+        if (!rich || want === 'light' || dead) return;
         const rect = container.getBoundingClientRect();
-        const small = rect.width > 0 && rect.height > 0 && Math.min(rect.width, rect.height) < (rich.minSize ?? MIN_RICH_SIZE);
+        if (want === 'auto' && !(rect.width > 0 && rect.height > 0)) {
+            richPending = true;
+            return;
+        }
+        richPending = false;
+        const small = Math.min(rect.width, rect.height) < (rich.minSize ?? MIN_RICH_SIZE);
         if (want === 'rich' || (!small && liveRich < (rich.maxLive ?? MAX_RICH))) {
             liveRich++;
             holdsRich = true;
@@ -122,12 +136,15 @@ export function mount(container: HTMLElement, character: Character, options: Mas
                 })
                 .catch(() => releaseRich()); // the chunk did not load: stay light
         }
-    }
+    };
+    tryRich();
 
     // ---------- frames: none while off screen; requestAnimationFrame already stops in a hidden tab ----------
     let raf = 0;
     let last = 0;
     let visible = true;
+    /** Frames run: the box is on screen and the page is shown. */
+    const seen = (): boolean => visible && !(typeof document !== 'undefined' && document.hidden);
     const frame = (now: number): void => {
         raf = 0;
         if (dead || !visible) return;
@@ -150,16 +167,22 @@ export function mount(container: HTMLElement, character: Character, options: Mas
               })
             : null;
     io?.observe(container);
-    const refit = (): void => fit(body);
+    const refit = (): void => {
+        fit(body);
+        if (richPending) tryRich();
+    };
     const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(refit) : null;
     if (ro) ro.observe(container);
     else window.addEventListener('resize', refit);
 
     // ---------- moods and taps ----------
+    // A mood set while nobody sees the mascot (off screen, the tab in the background) comes without its move and chirp:
+    // the rig gets no frames then, so every move's push would wait and all of them would land at once on return,
+    // flinging the body out of its box.
     const change = (id: unknown, animate: boolean): boolean => {
         if (dead || !isMood(id)) return false;
         mood = id;
-        rig.setMood(drawnMood(character, id), animate);
+        rig.setMood(drawnMood(character, id), animate && seen());
         body.setEffectColor(effectCss());
         options.onMoodChange?.(id, lookOf(character, id));
         return true;

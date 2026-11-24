@@ -3,6 +3,13 @@
 What a gateway user can see, release by release. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versions follow [SemVer](https://semver.org/).
 
+## 0.19.1 — 24.11.2026
+
+- **Deevi is a clear bubble now**, with soft light inside in the colour of Deevi's mood, in the app and on the sites.
+- **In the app, Deevi's sound waves and thinking dots are coloured** instead of grey.
+- **Deevi's 3D waves are no longer cut at the edges of a small box.**
+- **After a tab sat in the background, Deevi no longer comes back squashed out of shape.**
+
 ## 0.19.0 — 24.11.2026
 
 - **A phrase said into the computer's microphone gets a spoken answer from the computer.** In the "Speaker" mode the

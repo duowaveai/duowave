@@ -88,7 +88,9 @@ If WebGL loses its context later, the light body takes over. `body: 'light'` nev
 tries it whatever the size. The handle's `body` property says which one is drawing now. The rig outlives the bodies, so
 a swap keeps the mood and the motion: a mascot in mid-hop lands in the other body.
 
-Both bodies stop drawing when the container is off screen (IntersectionObserver) or the tab is hidden.
+Both bodies stop drawing when the container is off screen (IntersectionObserver) or the tab is hidden. A mood set
+meanwhile comes without its move and chirp: the rig gets no frames then, so the pushes of every move would wait and
+land at once on return.
 
 ### Options
 
@@ -100,9 +102,13 @@ Both bodies stop drawing when the container is off screen (IntersectionObserver)
 | `interactive` | `true` | Tap to react, eyes follow the pointer, Enter and Space tap; a body that turns also turns when dragged. |
 | `sound` | `false` | Chirps on mood changes and taps (browsers allow sound only after a user gesture). |
 | `shadow` | `true` | Soft ground shadow. |
-| `effectColor` | the container's CSS `color` | Colour of the effects (Deevi: waves, thinking dots, sparkles). |
+| `effectColor` | see below | Colour of the effects (Deevi: thinking dots and sparkles; his waves take the mood's colour, nudged 15 % toward it). |
 | `onMoodChange(id, mood)` | — | After every mood change except the first; a tap waking a sleeping mascot changes the mood too. |
 | `onTap(id)` | — | A tap; return `false` to skip the character's reaction. |
+
+The effects' colour, when the host gives none: the container's `--mascot-effect` CSS property (it inherits, so a page or a
+theme sets it once), then the character's own (`colors.effect`; Deevi's is the home green `#65A30D`), then the
+container's CSS `color`. Before 24.11.2026 the text colour came first, so in the panel his waves and dots were grey.
 
 ### Handle
 
@@ -133,14 +139,18 @@ Wrap it in `defineCharacter({ … })` (it checks that the rig and the bodies agr
 
 ## Deevi
 
-The logo mark as a character: a lime rounded body with two eyes.
+The logo mark as a character: a rounded bubble with two eyes. Since the handoff 1.2.0 (24.11.2026) the body is a clear
+shell in a pale, cooler shade of the mood's colour, with three soft balls of light inside (the mood's colour, his lime
+at rest; a lighter shade; a slightly warmer one) drifting slowly: faster when he thinks, dimmer when he sleeps. Both
+bodies draw it; the colours and the drift are shared (`bubble.ts`, the rig's `innerOf`).
 
 | File | What it holds |
 | --- | --- |
 | `characters/deevi/index.ts` | The character: looks, tunes, rig, bodies. |
 | `characters/deevi/looks.ts` | Colours per mood, the cheeks, the chirps. |
-| `characters/deevi/rig.ts` | The motion for both bodies: poses per mood, hop and squash springs, head tilt, breathing, blinking, the wink number, the waves. |
-| `characters/deevi/flat.ts` | Light body: SVG; with the engine, under 8 KB gzip. |
+| `characters/deevi/rig.ts` | The motion for both bodies: poses per mood, hop and squash springs, head tilt, breathing, blinking, the wink number, the waves, the drift of the light inside. |
+| `characters/deevi/bubble.ts` | The bubble's colours from the mood's colour, and the balls of light inside. |
+| `characters/deevi/flat.ts` | Light body: SVG (the bubble with gradients, a rainbow rim and two glares); with the engine, about 8 KB gzip. |
 | `characters/deevi/scene3d.ts` | Rich body: three.js, its own chunk, ~142 KB gzip, fetched only when used. |
 | `characters/deevi/mark.ts` | The logo mark with its «Hello» scene (`mountDivi`), used in the panel's header. |
 
@@ -159,11 +169,16 @@ The logo mark as a character: a lime rounded body with two eyes.
 
 Open question: `think` is violet, and in the panel violet means «an agent answers» (DESIGN.md, the Who-Answers Rule).
 
+**Effects.** The thinking dots and the wink sparkles are the effect colour (his own is the home green `#65A30D`); the
+sound waves are the mood's colour nudged 15 % toward it, so they read on light and dark pages alike.
+
 **Where it came from.** The 3D body is the designer's handoff `duowave-mascot.js` (three.js r128, a global script),
 ported on 23.11.2026 to the `three` package (0.187.0) as an ES module, and then split: the motion went to `rig.ts`,
 shared with the flat body. The port keeps the picture: hex colours that r128 read as linear go through `raw()`, and
 light intensities are multiplied by π (r155 dropped the old light units). Measured against the handoff demo in
 Chromium: the eyes match to the pixel, the body comes out about 3 % darker (not visible by eye).
+The handoff 1.2.0 (24.11.2026) brought the bubble, thicker and stronger waves in the mood's colour; its shader patch for
+the shell is kept as written and sits in three 0.187 where r128 had it (before tone mapping and the sRGB output).
 
 **Geometry.** The logo's: body 160 × 176 with corner radius 68 on the 256 canvas, eyes centred at x 98 and 158, y 124,
 eyes 1.4× (brand kit, `DIVI.md`). One rig unit is 80 logo units. The flat body is framed like the 3D camera, so the swap
@@ -194,6 +209,11 @@ two bodies side by side, the sizes, English and Russian. URL parameters: `?chara
 - Chromium (desktop): moods in both bodies, light ↔ rich size, no WebGL → light, lost context → light with the mood
   kept, `dispose` empties the container (also before the rich body finished loading), no frames while off screen, the
   sample character with fallbacks and no rich body.
+- The bubble (24.11.2026, Chromium): 3D next to the handoff 1.2.0 demo on its dark stage looks the same; the flat body
+  is close (softer glares). On a light page the shell reads milky white with the light inside, as the shader makes
+  it. In the panel (mock gateway, sign-in) the thinking dots are green on the dark and the light theme.
+- A hidden tab (imitated: frames held and `document.hidden` for 12 s while the site's room kept changing moods): Deevi
+  comes back in his usual shape. Before the fix he came back squashed to 130 × 35 instead of about 90 × 90.
 - The still frame lies exactly on the live light body (192 × 211, 300 × 150, 80 × 120).
 - Not yet: Safari and the desktop app (WebKit), Firefox, phones.
 
