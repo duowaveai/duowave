@@ -46,7 +46,7 @@ ISC, Zlib, Unicode-3.0, а корни сертификатов webpki-roots — 
 
 - `assets/silero_vad.onnx` — Silero VAD, MIT, © Silero Team (`assets/SILERO_VAD_LICENSE`).
 - Ничего от Яндекса: ни звуков, ни анимаций подсветки, ни прошивки, ни схем protobuf. Анимации каждый шлюз снимает у
-  себя, из ответов Яндекса в журнале сессий; протокол колонки описан нами (`gateway/proto/station-protocol.proto`).
+  себя, из ответов Яндекса в журнале сессий; протокол колонки описан нами (`crates/duowave-ears/proto/station-protocol.proto`).
 - Каталог новостных лент (`gateway/src/skills/lookups/news_catalog.json`) — только названия изданий и адреса их
   RSS-лент, собраны 06.11.2026. Подсказкой служили открытые списки с лицензией CC0:
   [awesome-rss-feeds](https://github.com/plenaryapp/awesome-rss-feeds) и Wikidata (свойство P1019, «адрес

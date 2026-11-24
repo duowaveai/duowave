@@ -329,10 +329,13 @@ async fn says_a_phrase_with_the_households_own_voice_as_a_wav_and_refuses_in_wor
     gateway.stop().await;
 }
 
-#[cfg(feature = "pc")]
+/// The shop is a computer's (the station's build has none).
 #[tokio::test]
 async fn the_shop_sends_no_card_of_yandex_while_the_microphone_is_chosen() {
     let gateway = Gateway::start(ENV).await;
+    if !duowave::core::build::computer() {
+        return;
+    }
     let admin = setup(&gateway).await;
     let cards = |shop: &Value| -> Vec<String> {
         shop["tts"].as_array().unwrap().iter().map(|card| card["id"].as_str().unwrap().to_string()).collect()

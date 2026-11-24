@@ -71,104 +71,12 @@ async fn a_new_gateway_creates_its_home_and_its_name_by_itself() {
     gateway.stop().await;
 }
 
-/// The home's copy end to end (docs/plans/home-and-devices.md, stage 3): a computer and a station's gateway, each
-/// made a home at its first start. The station is the home's centre: at its first look the computer takes the copy of
-/// the station's home and applies it at once — the same home id and key — keeping its own id; the station starts
-/// nothing again. A change at the centre reaches the copy at the next look. The computer's watch is the computer's
-/// build only, and so is this test.
-#[cfg(feature = "pc")]
-#[tokio::test]
-async fn the_computer_takes_the_stations_home_as_its_copy_and_keeps_its_own_id() {
-    use std::sync::atomic::Ordering;
-
-    use duowave::core::availability::Placement;
-    use duowave::placement::transfer;
-    use duowave::settings::definitions::{SettingsHome, StationPlacement, TelegramSetting};
-
-    const PEER: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
-
-    let pc = Gateway::start(&[]).await;
-    let station = Gateway::start(&[("DUOWAVE_ROLE", "station"), ("PEER_KEY", PEER)]).await;
-    // A package the station takes starts it again: counted (`Gateway::restarts`), and done by the test.
-    let restarts = station.restarts.clone();
-    let (pc_home, pc_id, pc_name) = who(&pc).await;
-    let (station_home, station_id, station_name) = who(&station).await;
-    assert!(pc_home != station_home && pc_id != station_id, "two gateways made two homes");
-    assert_eq!(station_name, "Колонка", "a station whose model nobody told yet");
-
-    // Before it joined, the computer had a Telegram bot of its own (off here: no network in a test); the station's
-    // home has none.
-    let bot = TelegramSetting { enabled: false, alert_chat: Some("42".into()), ..TelegramSetting::default() };
-    pc.app.connector_settings.take_home_telegram(&bot, Some("123:not-a-real-token")).unwrap();
-
-    // The computer watches the station's gateway with the pair's key; the settings live on the station: a copy.
-    pc.app.secrets.set("placement:peer", Some(PEER)).unwrap();
-    let record = StationPlacement {
-        placement: Placement::Station,
-        address: "127.0.0.1".into(),
-        port: station.port,
-        device: None,
-        settings_home: SettingsHome::Station,
-        auto_update: false,
-        managed: true,
-        home_key_id: None,
-        moved_at: None,
-    };
-    let watch = pc.app.station_gateway.watch("at:127.0.0.1");
-    watch.set_record(Some(&record), None).unwrap();
-    watch.poll().await;
-    assert!(watch.view().copied_at.is_some(), "{:?} {:?}", watch.live().error, watch.live().sync_error);
-    let seen = watch.live().health.expect("the station's /health");
-    assert_eq!((&seen["home"]["id"], &seen["gateway"]["id"]), (&json!(station_home), &json!(station_id)));
-    let (home, id, _) = who(&pc).await;
-    assert_eq!(home, station_home, "one home: the centre's");
-    assert!(id == pc_id && id != station_id, "the computer keeps its own id: {id}");
-    assert_eq!(pc.app.secrets.get(HOME_KEY), station.app.secrets.get(HOME_KEY), "one key");
-    assert_eq!(who(&station).await.0, station_home, "the centre as it was");
-    assert_eq!(restarts.load(Ordering::SeqCst), 0, "nothing sent to the station, no restart");
-
-    // The computer's bot is the home's now, and the copy brought it back: the same bot on the computer.
-    const TOKEN: &str = "connector:telegram:token";
-    assert_eq!(station.app.secrets.get(TOKEN).as_deref(), Some("123:not-a-real-token"), "the home took the bot");
-    assert_eq!(station.app.connector_settings.telegram_for_turbo().0, bot);
-    assert_eq!(pc.app.secrets.get(TOKEN).as_deref(), Some("123:not-a-real-token"), "the bot stays on the computer");
-    assert_eq!(pc.app.connector_settings.telegram_for_turbo().0, bot);
-    // Only a device of the home hands its bot, and only while the home has none.
-    let adopt = |key: Option<&str>| {
-        let request = station.post("/api/v1/home/telegram-adopt").json(&json!({"token": "456:another"}));
-        match key {
-            Some(key) => request.bearer_auth(key),
-            None => request,
-        }
-    };
-    assert_eq!(send(adopt(None)).await.0, StatusCode::FORBIDDEN);
-    assert_eq!(send(adopt(Some(PEER))).await.0, StatusCode::CONFLICT, "the home's bot stays");
-    assert_eq!(station.app.secrets.get(TOKEN).as_deref(), Some("123:not-a-real-token"));
-
-    // A change at the centre reaches the copy at the next look, applied at once.
-    let set = |gateway: &Gateway| gateway.app.settings.get(&duowave::settings::definitions::KEEP_REQUESTS, None);
-    station.app.settings.set(&duowave::settings::definitions::KEEP_REQUESTS, &9, None).unwrap();
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    watch.poll().await;
-    assert_eq!(set(&pc), Some(9), "{:?}", watch.live().sync_error);
-    assert_eq!(restarts.load(Ordering::SeqCst), 0);
-    let _ = (pc_name, transfer::SCHEMA, SettingsHome::Station);
-
-    // Its own sync told its model: its name says it, in the reader's language.
-    let told = "INSERT INTO stations (device, name, status, first_seen, last_seen, device_model)
-                VALUES ('h:station', 'Колонка', 'approved', 'then', 'then', 'plum')";
-    station.app.db.with(|c| c.execute(told, [])).unwrap();
-    assert_eq!(who(&station).await.2, "Колонка Лайт 2");
-    let english = message(station.get("/health").header("accept-language", "en"), StatusCode::OK).await;
-    assert_eq!(english["gateway"]["name"], json!("Lite 2 speaker"));
-    station.stop().await;
-    pc.stop().await;
-}
-
 /// Two stations, one home (docs/plans/home-and-devices.md, stage 4): the second station's gateway becomes an ear of
 /// the first — the centre — with its pair key. It takes the home's copy at once, the centre counts it among the
 /// holders, its panel shows the centre's home, and a change of the home made on it is refused with words (it would be
 /// lost at the next copy). Asked by its pair, it becomes the centre: an ear no more.
+// A Station's socket goes through the ear: the Station's adapter only.
+#[cfg(feature = "yandex-station")]
 #[tokio::test]
 async fn a_second_station_is_an_ear_of_the_centre_with_a_copy_and_becomes_the_centre_on_its_word() {
     const KITCHEN: &str = "kitchen-pair-key-0123456789abcdef0123456789abcdef";

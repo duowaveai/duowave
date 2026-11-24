@@ -1,0 +1,105 @@
+[package]
+name = "duowave-apps"
+description = "DuoWave's floor «Приложения»: packages and their apps — the manifest and Host API, the plugins' engines (QuickJS, WebAssembly), the apps' own programs, the catalog and the workshop —, the cards and providers of «Связи», capabilities, connections, MCP, the screen and MIDI keyboards"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+# The gateway's own switches, passed down (gateway/Cargo.toml).
+station = ["yandex-station", "duowave-base/station", "duowave-rights/station", "duowave-voice/station", "duowave-brain/station", "duowave-ears/station"]
+yandex-station = ["duowave-ears/yandex-station"]
+# Plugins in WebAssembly (`"runtime": "wasm"`, plugins/wasm.rs): wasmi, an interpreter in pure Rust. In the computer's
+# build; the station's adds it with `--features station,wasm` when one is needed there.
+wasm = ["dep:wasmi"]
+# Calls through a LiveKit room (the program's feature): the connection's check here.
+livekit = []
+# MIDI keyboards for apps (midi, docs/plans/midi.md): midir — CoreMIDI on a Mac, WinMM on Windows, ALSA on Linux
+# (libasound2-dev to build) — and midly for .mid files. The desktop app and the program for a Mac and Windows; not the
+# station's build, nor the Linux program built for musl with zig (ALSA does not build there).
+midi = ["dep:midir", "dep:midly", "dep:coremidi", "dep:core-foundation"]
+# What the tests of the crates above take from this one: test packages written and signed (the catalog's key is a
+# throwaway one), MCP servers set up — in folders of their own.
+testing = ["duowave-base/testing", "duowave-rights/testing", "duowave-voice/testing", "duowave-brain/testing", "duowave-ears/testing", "dep:tempfile", "dep:minisign"]
+
+[dependencies]
+duowave-base = { path = "../duowave-base" }
+duowave-rights = { path = "../duowave-rights" }
+duowave-voice = { path = "../duowave-voice" }
+duowave-brain = { path = "../duowave-brain" }
+duowave-ears = { path = "../duowave-ears" }
+anyhow.workspace = true
+async-trait.workspace = true
+axum.workspace = true
+base64.workspace = true
+chrono.workspace = true
+chrono-tz.workspace = true
+# A Russian RTF's letters in Windows-1251 (bus/providers/files/text.rs); reqwest has it already.
+encoding_rs = "0.8.44"
+flate2.workspace = true
+futures.workspace = true
+hex.workspace = true
+# A PDF's text for the home folder's «прочитай» (bus/providers/files/text.rs): no clock, no threads of its own.
+lopdf = { version = "0.47.0", default-features = false }
+minisign = { workspace = true, optional = true }
+minisign-verify.workspace = true
+regex.workspace = true
+reqwest.workspace = true
+# The plugins' engine (plugins): QuickJS, built from its C sources with the target's cc (zig for the station).
+# Without "parallel": each plugin's runtime lives on its own thread and never crosses threads. "allocator": each runtime
+# takes its memory from a block of its own (plugins/quickjs_memory.rs), TLSF inside it (rlsf).
+rquickjs = { version = "0.14.0", default-features = false, features = ["std", "futures", "allocator"] }
+rlsf = "0.2.3"
+rmcp = { version = "3.9.0", default-features = false, features = ["client", "transport-streamable-http-client-reqwest", "reqwest-tls-no-provider", "auth"] }
+rusqlite.workspace = true
+rust-embed.workspace = true
+rustls.workspace = true
+semver.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+sse-stream = "0.2.6"
+tar.workspace = true
+tempfile = { workspace = true, optional = true }
+thiserror.workspace = true
+tokio.workspace = true
+tokio-stream.workspace = true
+tokio-tungstenite.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+# The household's folders (bus/providers/files): a name a Mac stored in NFD is found as it was said, in NFC.
+unicode-normalization = "0.1.25"
+url.workspace = true
+uuid.workspace = true
+wasmi = { version = "2.0.0", default-features = false, features = ["stable", "std", "validate", "auto-dispatch"], optional = true }
+# A Word document's text (.docx is a zip of XML), inflated by the flate2 the gateway has already.
+zip = { version = "9.4.1", default-features = false, features = ["deflate-flate2"] }
+midir = { version = "0.11.1", optional = true }
+midly = { version = "0.5.3", optional = true, default-features = false, features = ["alloc", "std"] }
+
+[dev-dependencies]
+duowave-base = { path = "../duowave-base", features = ["testing"] }
+duowave-rights = { path = "../duowave-rights", features = ["testing"] }
+duowave-voice = { path = "../duowave-voice", features = ["testing"] }
+duowave-brain = { path = "../duowave-brain", features = ["testing"] }
+duowave-ears = { path = "../duowave-ears", features = ["testing"] }
+bytes.workspace = true
+http-body-util.workspace = true
+image.workspace = true
+# Signs a test catalog with a throwaway key (plugins/catalog.rs): the gateway itself only verifies.
+minisign.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
+tower.workspace = true
+# Test plugins written as WebAssembly text (plugins/wasm.rs).
+wasmi = { version = "2.0.0", default-features = false, features = ["stable", "std", "validate", "auto-dispatch", "wat"] }
+
+[target."cfg(unix)".dependencies]
+libc.workspace = true
+
+# A Mac's MIDI: CoreMIDI tells of keyboards plugged in later only on the run loop of the thread its first client was
+# made on (midi/ports.rs).
+[target."cfg(target_os = \"macos\")".dependencies]
+coremidi = { version = "0.9.2", optional = true }
+core-foundation = { version = "0.10.1", optional = true }

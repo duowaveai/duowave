@@ -1,20 +1,31 @@
 #!/usr/bin/env node
 // The gateway's floors (docs/ARCHITECTURE.md, «Этажи»; docs/plans/modular-gateway.md): every top module of
-// gateway/src stands on a floor in gateway/layers.json, and a module may use its own floor and the floors below, never
-// one above. The floors are where the crates of the workspace will be cut later; until then the walls hold only on
-// discipline, so this reads the code instead — each `crate::<module>` outside comments and test code — and fails on a
-// link up that is not already among the known exceptions. The exceptions are the work list: the list only shrinks,
+// gateway/src and of the workspace's crates (crates/*/src) stands on a floor in gateway/layers.json, and a module may use its own floor and the floors below, never
+// one above. The floors are where the crates of the workspace are cut; inside one crate the walls hold only on
+// discipline, so this reads the code instead — each `crate::<module>` (or `duowave_<crate>::<module>`) outside comments
+// and test code — and fails on a link up that is not already among the known exceptions. The exceptions are the work list: the list only shrinks,
 // and an exception that is gone fails too, so that it is struck off and cannot come back unnoticed.
 // Node's built-in modules only, no cargo: a second, not a build.
 //
 //   node scripts/check-layers.mjs            check
 //   node scripts/check-layers.mjs --update   strike the exceptions that are gone off gateway/layers.json (never adds)
 //   node scripts/check-layers.mjs --report   the exceptions floor by floor, with where each is used
-import { readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
 const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
-const SRC = path.join(ROOT, 'gateway', 'src');
+// The source roots: the program's (gateway/src) and each crate's (crates/<name>/src); a module's name is unique among them.
+const CRATES = path.join(ROOT, 'crates');
+// The floor «Только компьютер» (crates/duowave-pc) also holds the computer's parts of modules of the floors below,
+// under their names (`models` there adds the model shop to «Голос»'s `models`): its files stand on its own floor
+// whatever their module is called. Read last, so that a name it shares stays the lower crate's module.
+const PC = path.join(CRATES, 'duowave-pc', 'src');
+const ROOTS = [
+    path.join(ROOT, 'gateway', 'src'),
+    ...(existsSync(CRATES) ? readdirSync(CRATES).sort().map((name) => path.join(CRATES, name, 'src')) : [])
+        .filter(existsSync)
+        .sort((a, b) => (a === PC) - (b === PC)),
+];
 const TABLE = path.join(ROOT, 'gateway', 'layers.json');
 const posix = (full) => path.relative(ROOT, full).split(path.sep).join('/');
 const args = new Set(process.argv.slice(2));
@@ -30,23 +41,44 @@ function sources(folder) {
     return found;
 }
 
-// The crate's top modules: its folders and its top files, without the crate root (lib.rs) and the programs beside the
-// library (main.rs, bin/), which reach it as `duowave::`, not `crate::`.
+// The crates' top modules: their folders and their top files, without a crate's root (lib.rs) and the programs beside
+// the library (main.rs, bin/), which reach it as `duowave::`, not `crate::`.
 const PROGRAMS = new Set(['lib.rs', 'main.rs', 'bin']);
-const modules = readdirSync(SRC)
-    .filter((name) => !PROGRAMS.has(name))
-    .filter((name) => statSync(path.join(SRC, name)).isDirectory() || name.endsWith('.rs'))
-    .map((name) => name.replace(/\.rs$/, ''))
-    .sort();
+const rootOf = new Map();
+// The modules of the floors below that the computer's floor adds to (see PC): `pc:<name>` for its own part.
+const merged = new Set();
+for (const src of ROOTS) {
+    for (const name of readdirSync(src)) {
+        if (PROGRAMS.has(name)) continue;
+        if (!statSync(path.join(src, name)).isDirectory() && !name.endsWith('.rs')) continue;
+        const module = name.replace(/\.rs$/, '');
+        if (src === PC && rootOf.has(module)) {
+            merged.add(module);
+            continue;
+        }
+        rootOf.set(module, src);
+    }
+}
+const modules = [...rootOf.keys()].sort();
 
 // `crate::<name>` that is not a module: an item of lib.rs (`pub use platform::http::ApiError` is platform's; a const or
 // fn of its own is the root's, `lib`) or a #[macro_export] macro, which lives at the crate root but is its module's.
-const lib = readFileSync(path.join(SRC, 'lib.rs'), 'utf8');
+// A crate root's `pub use` of another crate (`pub use duowave_base::…`) only passes its names on: the module or item
+// is the other crate's.
 const owner = new Map();
-for (const match of lib.matchAll(/pub use (\w+)::(?:\w+::)*(\w+);/g)) owner.set(match[2], match[1]);
-for (const match of lib.matchAll(/pub (?:const|fn|static) (\w+)/g)) owner.set(match[1], 'lib');
-const files = sources(SRC);
-const topOf = (full) => posix(full).slice('gateway/src/'.length).split('/')[0].replace(/\.rs$/, '');
+for (const src of ROOTS) {
+    const lib = existsSync(path.join(src, 'lib.rs')) ? readFileSync(path.join(src, 'lib.rs'), 'utf8') : '';
+    for (const match of lib.matchAll(/pub use (\w+)::(?:\w+::)*(\w+);/g)) {
+        if (!match[1].startsWith('duowave')) owner.set(match[2], match[1]);
+    }
+    for (const match of lib.matchAll(/pub (?:const|fn|static) (\w+)/g)) owner.set(match[1], 'lib');
+}
+const files = ROOTS.flatMap((src) => sources(src));
+const topOf = (full) => {
+    const src = ROOTS.find((root) => full.startsWith(root + path.sep));
+    const module = path.relative(src, full).split(path.sep)[0].replace(/\.rs$/, '');
+    return src === PC && merged.has(module) ? `pc:${module}` : module;
+};
 for (const full of files) {
     const text = readFileSync(full, 'utf8');
     for (const match of text.matchAll(/#\[macro_export\]\s*(?:#\[[^\]]*\]\s*)*macro_rules!\s*(\w+)/g)) {
@@ -111,7 +143,7 @@ for (const { full, lines, test } of read) {
         if (test[index]) return;
         // Comments out: a whole-line one always, a trailing one when no string on the line could hold a `//`.
         const code = line.includes('"') ? line.replace(/^\s*\/\/.*$/, '') : line.split('//')[0];
-        for (const match of code.matchAll(/(?<![\w$])crate::(\w+)/g)) {
+        for (const match of code.matchAll(/(?<![\w$])(?:crate|duowave_\w+)::(\w+)/g)) {
             const name = match[1];
             const to = modules.includes(name) ? name : owner.get(name);
             const where = `${posix(full)}:${index + 1}`;
@@ -137,14 +169,18 @@ table.floors.forEach((floor, level) => {
         floorOf.set(module, { level, ...floor });
     }
 });
+// The computer's parts of lower modules stand on the computer's floor.
+const pcFloor = table.floors.findIndex((floor) => floor.name === 'pc');
+for (const module of merged) floorOf.set(`pc:${module}`, { level: pcFloor, ...table.floors[pcFloor] });
 for (const module of [...modules, 'lib']) {
     if (!floorOf.has(module)) {
         problems.push(`a new module, ${module}: put it on a floor in gateway/layers.json (docs/ARCHITECTURE.md, «Этажи»)`);
     }
 }
 for (const module of floorOf.keys()) {
-    if (module !== 'lib' && !modules.includes(module)) {
-        problems.push(`${module} is in gateway/layers.json, but gateway/src has no such module any more`);
+    const part = module.startsWith('pc:') && merged.has(module.slice(3));
+    if (module !== 'lib' && !part && !modules.includes(module)) {
+        problems.push(`${module} is in gateway/layers.json, but no crate has such a module any more`);
     }
 }
 for (const what of unknown) problems.push(`${what}: neither a module, nor an item of lib.rs, nor an exported macro`);

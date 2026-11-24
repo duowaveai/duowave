@@ -121,7 +121,7 @@ const en: Translation<typeof ru> = {
     awayHomeLine: 'No clouds: without a Turbo at home, only Alice — if the mode lets her.',
     awayHomeLineComputer: 'No clouds: only this computer and the Turbos at home work.',
     awayMine: 'Home and my cloud',
-    awayMineLine: 'Your own server and DuoWave Cloud are fine; clouds on keys are not.',
+    awayMineLine: 'Your own server and self-hosted DuoWave are fine; clouds on keys are not.',
     awayAny: 'Any clouds',
     awayAnyLine: 'Clouds on your keys too — OpenAI, Claude… This may cost money.',
     awayYandex: 'Alice is not part of this: Who answers — “Alice · Alice + your AI · Your AI” — decides her.',

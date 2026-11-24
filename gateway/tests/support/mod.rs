@@ -9,6 +9,8 @@
 
 #![allow(dead_code)]
 
+pub mod live;
+
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
@@ -143,10 +145,9 @@ impl Gateway {
         }
     }
 
-    /// The port the link listens on (a computer that helps), once bound.
-    #[cfg(feature = "pc")]
+    /// The port the link listens on (a computer that helps), once bound; none in the station's build.
     pub fn link_port(&self) -> Option<u16> {
-        self.app.link.port()
+        self.app.pc.link_port()
     }
 
     pub fn url(&self, path: &str) -> String {

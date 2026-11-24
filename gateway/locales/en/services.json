@@ -1076,6 +1076,7 @@
   " Колонка говорит: {why}.": " The speaker says: {why}.",
   "Разрешите DuoWave в брандмауэре Windows для частной сети и проверьте, что сеть в Windows — «Частная».": "Allow DuoWave in Windows Firewall for private networks, and check that the network is “Private” in Windows.",
   " Компьютер включён и в той же сети? Не закрывает ли его брандмауэр или VPN?": " Is the computer on and in the same network? Is a firewall or a VPN keeping it closed?",
+  "macOS не пускает DuoWave в домашнюю сеть, поэтому колонок и других компьютеров не видно. Разрешите в «Системных настройках»: «Конфиденциальность и безопасность» → «Локальная сеть» → DuoWave.": "macOS keeps DuoWave off the home network, so no speakers or other computers can be seen. Allow it in System Settings: Privacy & Security → Local Network → DuoWave.",
   "На Windows поиск колонок может закрывать брандмауэр: введите адрес колонки сами.": "On Windows the firewall may keep the speaker search closed: enter the speaker’s address yourself.",
   "у этого устройства нет датчиков температуры, открытых для чтения": "this device has no temperature sensors open for reading",
   "температуру этой системы шлюз не читает": "the gateway does not read this system's temperature",

@@ -1,6 +1,6 @@
 [package]
 name = "duowave-desktop"
-version = "0.18.6"
+version = "0.19.0"
 description = "The voice gateway in the tray: runs the gateway (the Rust engine, crate duowave, inside the app) and shows its panel"
 edition = "2021"
 publish = false
@@ -52,4 +52,29 @@ debug = "line-tables-only"
 debug = false
 
 [profile.dev.package.duowave]
+debug = "line-tables-only"
+
+# The gateway's floors below it, crates of their own (../../crates, docs/plans/modular-gateway.md).
+[profile.dev.package.duowave-base]
+debug = "line-tables-only"
+
+[profile.dev.package.duowave-rights]
+debug = "line-tables-only"
+
+[profile.dev.package.duowave-voice]
+debug = "line-tables-only"
+
+[profile.dev.package.duowave-brain]
+debug = "line-tables-only"
+
+[profile.dev.package.duowave-ears]
+debug = "line-tables-only"
+
+[profile.dev.package.duowave-apps]
+debug = "line-tables-only"
+
+[profile.dev.package.duowave-home]
+debug = "line-tables-only"
+
+[profile.dev.package.duowave-pc]
 debug = "line-tables-only"

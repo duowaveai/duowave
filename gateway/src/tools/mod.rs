@@ -3,18 +3,12 @@
 //! Each reads the configuration as `serve` does — the environment over the `.env` files — and does its work with the
 //! gateway's own modules: the speech pipeline, the session journal, the calls hub's protocol, the LiveKit token.
 //!
-//! The station's build has no calls: `call-sim` and `livekit-token` are the PC's only.
+//! The computer's own — `call-sim`, `livekit-token`, `asr-check`, `pretend` — are in src/computer/tools; the station's
+//! build answers them that it has none.
 
 pub mod animations;
-#[cfg(feature = "pc")]
-pub mod asr_check;
-#[cfg(feature = "pc")]
-pub mod call_sim;
 pub mod journal;
-#[cfg(feature = "pc")]
-pub mod livekit_token;
-#[cfg(feature = "pc")]
-pub mod pretend;
+#[cfg(feature = "yandex-station")]
 pub mod replay;
 
 use crate::config::{Config, Env};
@@ -56,26 +50,15 @@ pub fn command(name: &str, args: &[String]) -> i32 {
 
 fn run(name: &str, args: &[String]) -> anyhow::Result<()> {
     match name {
+        #[cfg(feature = "yandex-station")]
         "replay" => replay::main(args),
+        #[cfg(not(feature = "yandex-station"))]
+        "replay" | "pretend" => Err(Usage(format!("duowave {name}: a build with Yandex's Station only")).into()),
         "journal" => journal::main(args),
         "animations" => animations::main(args),
-        #[cfg(feature = "pc")]
-        "call-sim" => call_sim::main(args),
-        #[cfg(feature = "pc")]
-        "livekit-token" => livekit_token::main(args),
-        #[cfg(feature = "pc")]
-        "asr-check" => asr_check::main(args),
-        #[cfg(feature = "pc")]
-        "pretend" => pretend::main(args),
-        #[cfg(not(feature = "pc"))]
-        "pretend" => Err(Usage("duowave pretend: the computer's build's only".into()).into()),
-        #[cfg(not(feature = "pc"))]
-        "asr-check" => Err(Usage("duowave asr-check: not in the station's build".into()).into()),
-        #[cfg(not(feature = "pc"))]
-        "call-sim" | "livekit-token" => {
-            Err(Usage(format!("duowave {name}: not in this build — the station's build has no calls")).into())
-        }
-        other => Err(Usage(format!("duowave: unknown command {other:?}")).into()),
+        // The computer's own (src/computer/tools); the station's build answers that it has none.
+        other => crate::computer::tools::run(other, args)
+            .unwrap_or_else(|| Err(Usage(format!("duowave: unknown command {other:?}")).into())),
     }
 }
 
@@ -128,9 +111,5 @@ mod tests {
     fn says_what_is_not_a_command_with_exit_code_2() {
         assert_eq!(command("dance", &[]), 2);
         assert!(run("dance", &[]).unwrap_err().is::<Usage>());
-        if cfg!(not(feature = "pc")) {
-            let refused = run("call-sim", &[]).unwrap_err();
-            assert!(refused.to_string().contains("no calls"), "{refused}");
-        }
     }
 }

@@ -1,0 +1,63 @@
+[package]
+name = "duowave-base"
+description = "DuoWave's base floor: the configuration, the database and its migrations, the secrets, outgoing HTTP, the API's answers and who asks, the languages, the shared types and events, the settings"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+# The gateway's own switches, passed down (gateway/Cargo.toml): the station's build, recognition on this computer.
+# What only a computer has is the computer's floor's (crates/duowave-pc; `core::build::computer`).
+station = []
+local-asr = []
+# What the tests of the crates above take from this one: the stand-in programs a test runs (utils::test_stub).
+testing = []
+
+[dependencies]
+aes-gcm.workspace = true
+anyhow.workspace = true
+axum.workspace = true
+base64.workspace = true
+chrono.workspace = true
+dotenvy.workspace = true
+futures.workspace = true
+hex.workspace = true
+# LiveKit's tokens are signed here (utils/jwt.rs).
+hmac.workspace = true
+# The home folder's pictures shown small (utils/preview.rs): the common photo formats only.
+image.workspace = true
+# The releases' and the catalog's minisign signatures checked (utils/verify.rs).
+minisign-verify.workspace = true
+rand.workspace = true
+regex.workspace = true
+reqwest.workspace = true
+rusqlite.workspace = true
+rustls.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_path_to_error.workspace = true
+sha2.workspace = true
+subtle.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-tungstenite.workspace = true
+tokio-util.workspace = true
+tower.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+url.workspace = true
+uuid.workspace = true
+webpki-roots.workspace = true
+
+[target."cfg(unix)".dependencies]
+libc.workspace = true
+
+[target."cfg(windows)".dependencies]
+# The system's and a process's memory (operations/system_memory.rs), the firewall and the network (platform/).
+windows-sys.workspace = true
+
+[dev-dependencies]
+http-body-util.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["test-util"] }

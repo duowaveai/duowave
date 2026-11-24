@@ -66,6 +66,7 @@ export default {
     pageUpdatesSub: 'версия DuoWave, копии настроек',
     pageHistory: 'История разговоров',
     pageHistorySub: 'что спрашивали и кто ответил',
+    pageFoldersSub: 'домашняя папка, подключённое, кто что видит',
     pageDevSub: 'слой разработчика, скрытое',
     settings: 'Настройки',
     newVersion: 'новая версия',

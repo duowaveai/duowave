@@ -1,0 +1,697 @@
+//! The tests of `plugins/workshop/routes.rs` that need the whole gateway (`App`): its crate does not have it, the
+//! program does.
+
+use axum::extract::Path;
+use axum::http::StatusCode;
+use http_body_util::BodyExt;
+use serde_json::{json, Map, Value};
+use tokio_util::sync::CancellationToken;
+
+use crate::config::{Config, Env};
+use crate::core::identity::principal::user_principal;
+use crate::core::identity::Role;
+use crate::platform::http::{Body, Caller, Uses};
+use crate::plugins::workshop::agent::{self};
+use crate::plugins::workshop::routes::*;
+use crate::plugins::workshop::Trying;
+use crate::settings::definitions::{BrainPick, WORKSHOP_AGENT};
+use crate::utils::time::now_ms;
+
+#[tokio::test]
+async fn shows_the_admin_what_the_agent_does_on_a_draft_under_its_title_and_stops_it() {
+    use crate::plugins::workshop::activity::By;
+
+    let dir = tempfile::tempdir().unwrap();
+    let text = |sub: &str| dir.path().join(sub).to_string_lossy().into_owned();
+    let env = Env::from_pairs([
+        ("STATE_DIR", String::new()),
+        ("PACKAGES_DIR", text("packages")),
+        ("DATA_DIR", text("data")),
+        ("VOICE_LAB_DIR", text("voice-lab")),
+        ("TTS_MODELS_DIR", text("voices")),
+    ]);
+    let app = crate::app::App::build(Config::for_tests(&env)).unwrap();
+    let admin = || Caller::local(app.clone(), Some(user_principal("u1", "Админ", Role::Admin, None)));
+    let member = || Caller::local(app.clone(), Some(user_principal("u2", "Аня", Role::Member, None)));
+    app.workshop.create("widget-a", Some("plugin"), Some("Курс крипты"), None).unwrap();
+    let before = now_ms();
+    let idle = activity(Uses::of(&app), Uses::of(&app), admin()).await.unwrap().1;
+    assert_eq!(idle["jobs"], json!([]));
+    // The gateway's clock comes with each answer: the helper's panel counts a station's work by the station's.
+    assert!(idle["now"].as_u64().is_some_and(|now| now >= before && now <= now_ms()), "{idle}");
+    assert!(activity(Uses::of(&app), Uses::of(&app), member()).await.is_err(), "the workshop is the admin's");
+    let from = |after: u64| axum::extract::Query(AfterQuery { after });
+    let none = activity_log(Uses::of(&app), Uses::of(&app), admin(), Path("widget-a".into()), from(0)).await.unwrap().1;
+    assert!(none["job"].is_null() && none["now"].as_u64().is_some(), "{none}");
+
+    let run =
+        app.workshop.activity().begin("widget-a", By::Voice, "Сделай виджет: курс биткоина", &CancellationToken::new());
+    let file = json!({"path": "panel.js", "content": "…"});
+    let call = app.workshop.activity().call(&run, "write_file", file.as_object().unwrap());
+    let jobs = activity(Uses::of(&app), Uses::of(&app), admin()).await.unwrap().1;
+    let job = &jobs["jobs"][0];
+    assert_eq!(
+        (job["title"].clone(), job["by"].clone(), job["busy"].clone(), job["last"]["tool"].clone()),
+        (json!("Курс крипты"), json!("voice"), json!(true), json!("write_file"))
+    );
+    app.workshop.activity().answer(&run, call, "write_file", "Записано.", false);
+    let log = activity_log(Uses::of(&app), Uses::of(&app), admin(), Path("widget-a".into()), from(0)).await.unwrap().1;
+    assert!(log["now"].as_u64().is_some_and(|now| now >= before), "{log}");
+    let steps = log["steps"].as_array().unwrap().clone();
+    assert_eq!(
+        steps.iter().map(|step| step["kind"].clone()).collect::<Vec<_>>(),
+        vec![json!("asked"), json!("tool"), json!("result")]
+    );
+    assert_eq!((steps[1]["seq"].clone(), steps[2]["call"].clone()), (json!(call), json!(call)), "its call");
+
+    // «Остановить»: the run's token is cancelled, the log ends with it.
+    assert_eq!(stop(Uses::of(&app), admin(), Path("widget-a".into())).await.unwrap().1["stopped"], json!(true));
+    assert!(run.cancel.is_cancelled());
+    let after = steps[2]["seq"].as_u64().unwrap();
+    let log = activity_log(
+        Uses::of(&app),
+        Uses::of(&app),
+        admin(),
+        Path("widget-a".into()),
+        axum::extract::Query(AfterQuery { after }),
+    )
+    .await
+    .unwrap()
+    .1;
+    assert_eq!((log["job"]["busy"].clone(), log["steps"][0]["kind"].clone()), (json!(false), json!("stopped")));
+    assert_eq!(stop(Uses::of(&app), admin(), Path("widget-a".into())).await.unwrap().1["stopped"], json!(false));
+}
+
+/// Stage 2 of docs/plans/voice-creation.md: a draft's card says who asked and where it is; the agent's work moves
+/// it (working, then ready with its last words); what it needs and the ready line come from its manifest; the
+/// panel hears which draft and what happened; «В черновики» parks it; a deleted draft takes its card along.
+#[tokio::test]
+async fn a_drafts_card_says_who_asked_and_where_it_is_and_the_panel_hears_which_draft() {
+    use crate::core::events::GatewayEvent;
+    use crate::plugins::workshop::activity::{By, StepKind};
+    use crate::plugins::workshop::{DraftMeta, Face, Stage};
+
+    let dir = tempfile::tempdir().unwrap();
+    let text = |sub: &str| dir.path().join(sub).to_string_lossy().into_owned();
+    let env = Env::from_pairs([
+        ("STATE_DIR", String::new()),
+        ("PACKAGES_DIR", text("packages")),
+        ("DATA_DIR", text("data")),
+        ("VOICE_LAB_DIR", text("voice-lab")),
+        ("TTS_MODELS_DIR", text("voices")),
+    ]);
+    let app = crate::app::App::build(Config::for_tests(&env)).unwrap();
+    let admin = || Caller::local(app.clone(), Some(user_principal("u1", "Админ", Role::Admin, None)));
+    let mut heard = app.events.subscribe();
+    app.workshop.create("widget-1", Some("widget"), Some("Дела на сегодня"), None).unwrap();
+    let mut manifest: Value = serde_json::from_str(&app.workshop.read("widget-1", "manifest.json").unwrap()).unwrap();
+    manifest["settings"] = json!([
+        { "key": "token", "type": "string", "title": "Ключ Todoist", "secret": true },
+        { "key": "count", "type": "number", "title": "Показывать", "default": 5 }
+    ]);
+    app.workshop.write("widget-1", "manifest.json", &manifest.to_string()).unwrap();
+
+    // No card yet: one read from what is known — the panel's, a widget by its card, waiting in the workshop.
+    let view = one(Uses::of(&app), admin(), Path("widget-1".into())).await.unwrap().1;
+    assert_eq!(
+        (view.meta.by, view.meta.stage, view.meta.kind, view.meta.kept),
+        (By::Panel, Stage::Parked, Face::Widget, false)
+    );
+    let card = DraftMeta {
+        by: By::Panel,
+        who: Some("Админ".into()),
+        asked: "мои дела на сегодня из Тудуиста".into(),
+        kind: Face::Widget,
+        stage: Stage::Working,
+        updated: 0,
+        note: None,
+        kept: true,
+        work: None,
+        unchanged: false,
+    };
+    app.workshop.keep_card("widget-1", card, Some("made")).unwrap();
+    let run = app.workshop.activity().begin("widget-1", By::Panel, "мои дела", &CancellationToken::new());
+    app.workshop.activity().said(&run, "Сделал виджет: дела на сегодня из Todoist.");
+    app.workshop.activity().said(&run, "Ключ впишите в «Примерке».");
+    // The agent wrote what it made: a run that changed nothing would be no «готово».
+    run.changed.store(true, std::sync::atomic::Ordering::Relaxed);
+    app.workshop.activity().end(&run, StepKind::Done, "");
+    // The gateway checks what the agent made before the card says «готово» (docs/plans/audio-interface.md).
+    for _ in 0..200 {
+        if app.workshop.card("widget-1").stage != Stage::Working {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+
+    let view = one(Uses::of(&app), admin(), Path("widget-1".into())).await.unwrap().1;
+    assert_eq!((view.meta.stage, view.meta.who.as_deref()), (Stage::Ready, Some("Админ")));
+    assert_eq!(
+        view.meta.note.as_deref(),
+        Some("Сделал виджет: дела на сегодня из Todoist. Ключ впишите в «Примерке».")
+    );
+    assert_eq!(
+        view.ready_line.as_deref(),
+        Some("Готово: виджет «Дела на сегодня». Ему нужен ключ Todoist. Примерите — или сразу на стол?")
+    );
+    let needs = serde_json::to_value(&view.needs).unwrap();
+    assert_eq!(
+        needs[0],
+        json!({ "key": "token", "title": "Ключ Todoist", "type": "string", "secret": true, "required": true })
+    );
+    assert_eq!((needs[1]["default"].clone(), needs[1]["required"].clone()), (json!(5), json!(false)));
+    let listed = list(Uses::of(&app), admin()).await.unwrap().1;
+    assert_eq!(serde_json::to_value(&listed).unwrap()["drafts"][0]["meta"]["stage"], json!("ready"));
+
+    // «В черновики».
+    let parked = park(Uses::of(&app), admin(), Path("widget-1".into())).await.unwrap().1;
+    assert_eq!(parked.meta.stage, Stage::Parked);
+    // The panel heard which draft and what happened to it, between the agent's steps.
+    let mut changes = Vec::new();
+    while let Ok(event) = heard.try_recv() {
+        if let GatewayEvent::WorkshopChanged { draft, change } = event.as_ref() {
+            // The card's changes; the agent's steps and the apps' history ride the same event.
+            if change != "agent" && change != "history" {
+                changes.push(format!("{draft}:{change}"));
+            }
+        }
+    }
+    assert_eq!(changes, ["widget-1:made", "widget-1:ready", "widget-1:parked"]);
+
+    app.workshop.delete("widget-1").unwrap();
+    assert!(!app.workshop.dir().join(".meta/widget-1.json").exists(), "the card goes with the draft");
+}
+
+/// Stage 3: a run on the draft's example takes plain settings and refuses a private one; the widget's template
+/// carries an empty example and passes «Проверить».
+#[tokio::test]
+async fn runs_a_draft_on_its_example_with_plain_settings_and_never_a_private_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let text = |sub: &str| dir.path().join(sub).to_string_lossy().into_owned();
+    let env = Env::from_pairs([
+        ("STATE_DIR", String::new()),
+        ("PACKAGES_DIR", text("packages")),
+        ("DATA_DIR", text("data")),
+        ("VOICE_LAB_DIR", text("voice-lab")),
+        ("TTS_MODELS_DIR", text("voices")),
+    ]);
+    let app = crate::app::App::build(Config::for_tests(&env)).unwrap();
+    let admin = || Caller::local(app.clone(), Some(user_principal("u1", "Админ", Role::Admin, None)));
+    let made = app.workshop.create("widget-2", Some("widget"), Some("Отметки"), None).unwrap();
+    assert!(made.files.iter().any(|file| file.path == "examples.json"), "the template carries an empty example");
+    assert!(app.workshop.read("widget-2", "examples.json").is_ok(), "a root file of a draft");
+    let checked = check(Uses::of(&app), admin(), Path("widget-2".into())).await.unwrap().1;
+    assert!(checked.ok && checked.warnings.is_empty(), "{checked:?}");
+    let mut manifest: Value = serde_json::from_str(&app.workshop.read("widget-2", "manifest.json").unwrap()).unwrap();
+    manifest["settings"] = json!([
+        { "key": "token", "type": "string", "title": "Ключ", "secret": true },
+        { "key": "caption", "type": "string", "title": "Подпись", "default": "отметок" }
+    ]);
+    app.workshop.write("widget-2", "manifest.json", &manifest.to_string()).unwrap();
+    let body = |settings: Value| RunBody {
+        function: "panelData".into(),
+        input: None,
+        example: true,
+        settings: settings.as_object().unwrap().clone(),
+    };
+    let ran =
+        run(Uses::of(&app), admin(), Path("widget-2".into()), Body(body(json!({ "caption": "дел" })))).await.unwrap().1;
+    assert!(ran.ok && ran.example, "{ran:?}");
+    let Err(private) =
+        run(Uses::of(&app), admin(), Path("widget-2".into()), Body(body(json!({ "token": "x-1234" })))).await
+    else {
+        panic!("a private setting reached the sandbox")
+    };
+    assert!(private.errors.as_ref().is_some_and(|errors| errors["token"][0].as_str().unwrap().starts_with("личное")));
+    assert!(run(Uses::of(&app), admin(), Path("widget-2".into()), Body(body(json!({ "nope": 1 })))).await.is_err());
+    assert!(run(Uses::of(&app), admin(), Path("widget-2".into()), Body(body(json!({ "caption": 3 })))).await.is_err());
+}
+
+/// Stage 4 of docs/plans/voice-creation.md: the values given in «Примерка» are checked against the draft's
+/// manifest and written before the plugin first starts — it works with its key from the first call. Nothing is
+/// written while the admin's «да» is awaited, nor when a value is wrong.
+#[tokio::test]
+async fn installs_a_draft_with_its_settings_and_the_plugin_starts_with_its_key() {
+    use crate::plugins::runtime::CallKind;
+    use crate::settings::definitions::PACKAGE_SETTINGS;
+
+    let dir = tempfile::tempdir().unwrap();
+    let text = |sub: &str| dir.path().join(sub).to_string_lossy().into_owned();
+    let env = Env::from_pairs([
+        ("STATE_DIR", String::new()),
+        ("PACKAGES_DIR", text("packages")),
+        ("DATA_DIR", text("data")),
+        ("VOICE_LAB_DIR", text("voice-lab")),
+        ("TTS_MODELS_DIR", text("voices")),
+    ]);
+    let app = crate::app::App::build(Config::for_tests(&env)).unwrap();
+    let admin = || Caller::local(app.clone(), Some(user_principal("u1", "Админ", Role::Admin, None)));
+    app.workshop.create("todo", Some("plugin"), Some("Дела"), None).unwrap();
+    let manifest = json!({
+        "schema": 1, "kind": "plugin", "id": "todo", "version": "0.1.0", "title": "Дела", "api": "^2",
+        "runs": ["pc", "station", "stationServer"], "permissions": [],
+        "settings": [
+            { "key": "token", "type": "string", "title": "Ключ Todoist", "secret": true },
+            { "key": "count", "type": "number", "title": "Показывать", "default": 5 }
+        ],
+        "contributes": { "intents": [{ "phrases": ["мои дела"], "handler": "tasks" }] }
+    });
+    app.workshop.write("todo", "manifest.json", &manifest.to_string()).unwrap();
+    let code = r#"export function tasks() { return `${host.settings.get("token")} ${host.settings.get("count")}`; }"#;
+    app.workshop.write("todo", "backend.js", code).unwrap();
+    let body =
+        |approve: bool, settings: Value| InstallBody { approve, settings: settings.as_object().unwrap().clone() };
+    let stored = || app.settings.get(&PACKAGE_SETTINGS, None).unwrap_or_default().get("todo").cloned();
+
+    // The «да» is awaited: nothing written yet — the key lives in the page alone.
+    let asked = install(
+        Uses::of(&app),
+        Uses::of(&app),
+        admin(),
+        Path("todo".into()),
+        Body(body(false, json!({ "token": "td-0123" }))),
+    )
+    .await
+    .unwrap()
+    .1;
+    assert!(asked.needs_approval.is_some() && !asked.installed);
+    assert!(!app.secrets.has("plugin:todo:token") && stored().is_none());
+    // A wrong value, an unknown one: nothing installed, nothing written.
+    for wrong in [json!({ "token": "td-0123", "count": "три" }), json!({ "token": "td-0123", "nope": 1 })] {
+        assert!(install(Uses::of(&app), Uses::of(&app), admin(), Path("todo".into()), Body(body(true, wrong)))
+            .await
+            .is_err());
+    }
+    assert!(app.plugins.installed("todo").is_none() && !app.secrets.has("plugin:todo:token"));
+
+    let given = json!({ "token": "td-0123", "count": 3 });
+    let done =
+        install(Uses::of(&app), Uses::of(&app), admin(), Path("todo".into()), Body(body(true, given))).await.unwrap().1;
+    assert!(done.installed, "{}", done.message);
+    assert_eq!(app.plugins.call("todo", "tasks", json!({}), CallKind::Voice).await.unwrap(), json!("td-0123 3"));
+    assert_eq!(stored(), Some(json!({ "count": 3 }).as_object().unwrap().clone()), "the key is not among the settings");
+    assert_eq!(app.secrets.get("plugin:todo:token").as_deref(), Some("td-0123"));
+    let shown = app.plugins.view_one("todo").await.unwrap();
+    assert_eq!(shown.settings[0].value, Some(json!(crate::plugins::manifest::SECRET_SHOWN)));
+}
+
+/// Stage 5: «сделай…» from the panel — the same road as the station's: a draft of the request's face under the
+/// panel's name, its card with who asked, the agent in the background; words that are not a request — 422.
+#[tokio::test]
+async fn makes_a_draft_from_the_panels_words_and_refuses_what_is_not_a_request() {
+    use crate::plugins::workshop::activity::By;
+    use crate::plugins::workshop::{Face, Stage};
+
+    let dir = tempfile::tempdir().unwrap();
+    let text = |sub: &str| dir.path().join(sub).to_string_lossy().into_owned();
+    let env = Env::from_pairs([
+        ("STATE_DIR", String::new()),
+        ("DIALOG_PROVIDER", "echo".into()),
+        ("PACKAGES_DIR", text("packages")),
+        ("DATA_DIR", text("data")),
+        ("VOICE_LAB_DIR", text("voice-lab")),
+        ("TTS_MODELS_DIR", text("voices")),
+    ]);
+    let app = crate::app::App::build(Config::for_tests(&env)).unwrap();
+    let admin = || Caller::local(app.clone(), Some(user_principal("u1", "Админ", Role::Admin, None)));
+    let member = || Caller::local(app.clone(), Some(user_principal("u2", "Аня", Role::Member, None)));
+    let words = |words: &str| Body(MakeBody { words: words.into(), draft: None });
+    assert!(make(Uses::of(&app), member(), words("Сделай виджет: погода")).await.is_err(), "the admin's");
+    let Err(not) = make(Uses::of(&app), admin(), words("Какая погода завтра?")).await else {
+        panic!("not a request, made")
+    };
+    assert_eq!(not.status, StatusCode::UNPROCESSABLE_ENTITY);
+    let made = make(Uses::of(&app), admin(), words("Сделай виджет: мои дела на сегодня из Тудуиста")).await.unwrap().1;
+    // The draft's id is random: who asked and what is its card's, not its id's.
+    assert!(crate::plugins::manifest::random_id(&made.draft), "{}", made.draft);
+    assert_eq!((made.kind, made.title.as_str()), (Face::Widget, "Мои дела на сегодня из тудуиста"));
+    let id = made.draft.as_str();
+    let card = app.workshop.card(id);
+    assert_eq!(
+        (card.by, card.who.as_deref(), card.asked.as_str()),
+        (By::Panel, Some("Админ"), "Сделай виджет: мои дела на сегодня из Тудуиста")
+    );
+    // The agent finishes in the background.
+    for _ in 0..200 {
+        if app.workshop.card(id).stage == Stage::Ready {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    assert_eq!(app.workshop.card(id).stage, Stage::Ready);
+    // «Переделай» on the same draft.
+    let again =
+        make(Uses::of(&app), admin(), Body(MakeBody { words: "Переделай: крупнее".into(), draft: Some(id.into()) }))
+            .await
+            .unwrap()
+            .1;
+    assert_eq!(again.draft, id);
+    // The wish the draft was made for rides with it: «переделай» alone does not say what the thing is (19.11).
+    assert_eq!(
+        app.workshop.card(id).asked,
+        "Переделай: крупнее\n\nРаньше об этой вещи просили: «Сделай виджет: мои дела на сегодня из Тудуиста»"
+    );
+}
+
+#[tokio::test]
+async fn writes_checks_and_installs_a_draft_the_admins_approval_first_and_serves_its_tools_over_mcp() {
+    const HELLO: &str = "p-00000000e110";
+    let dir = tempfile::tempdir().unwrap();
+    let text = |sub: &str| dir.path().join(sub).to_string_lossy().into_owned();
+    let env = Env::from_pairs([
+        ("STATE_DIR", String::new()),
+        ("PACKAGES_DIR", text("packages")),
+        ("DATA_DIR", text("data")),
+        ("VOICE_LAB_DIR", text("voice-lab")),
+        ("TTS_MODELS_DIR", text("voices")),
+    ]);
+    let app = crate::app::App::build(Config::for_tests(&env)).unwrap();
+    let admin = || Caller::local(app.clone(), Some(user_principal("u1", "Админ", Role::Admin, None)));
+    let member = || Caller::local(app.clone(), Some(user_principal("u2", "Аня", Role::Member, None)));
+
+    let body = |id: Option<&str>| CreateBody {
+        id: id.map(str::to_string),
+        kind: Some("plugin".into()),
+        title: Some("Привет".into()),
+        openapi: None,
+    };
+    assert!(create(Uses::of(&app), member(), Body(CreateBody::default())).await.is_err());
+    // A new draft's id is random: the workshop gives one, a readable one is refused.
+    let Err(readable) = create(Uses::of(&app), admin(), Body(body(Some("greeter")))).await else {
+        panic!("a readable id is refused")
+    };
+    assert!(readable.errors.as_ref().is_some_and(|errors| errors.get("id").is_some()), "{}", readable.message);
+    let given = create(Uses::of(&app), admin(), Body(body(None))).await.unwrap().1;
+    assert!(crate::plugins::manifest::random_id(&given.id), "{}", given.id);
+    app.workshop.delete(&given.id).unwrap();
+    let made = create(Uses::of(&app), admin(), Body(body(Some(HELLO)))).await.unwrap().1;
+    assert_eq!(made.id, HELLO);
+    assert!(made.files.iter().any(|file| file.path == "backend.js"));
+    let checked = check(Uses::of(&app), admin(), Path(HELLO.into())).await.unwrap().1;
+    assert!(checked.ok, "{checked:?}");
+    let tried = phrase(
+        Uses::of(&app),
+        admin(),
+        Path(HELLO.into()),
+        Body(PhraseBody { text: "Скажи привет Маша".into(), example: false, settings: Map::new() }),
+    )
+    .await
+    .unwrap()
+    .1;
+    assert_eq!(tried.speech.as_deref(), Some("Привет, маша! Это 1-й раз."));
+
+    // The first install waits for the admin's «ок»; then it is on.
+    let asked = install(
+        Uses::of(&app),
+        Uses::of(&app),
+        admin(),
+        Path(HELLO.into()),
+        Body(InstallBody { approve: false, ..InstallBody::default() }),
+    )
+    .await
+    .unwrap()
+    .1;
+    assert!(!asked.installed && asked.needs_approval.as_ref().is_some_and(|approval| approval.first));
+    let done = install(
+        Uses::of(&app),
+        Uses::of(&app),
+        admin(),
+        Path(HELLO.into()),
+        Body(InstallBody { approve: true, ..InstallBody::default() }),
+    )
+    .await
+    .unwrap()
+    .1;
+    assert!(done.installed, "{}", done.message);
+    assert_eq!(done.version.as_deref(), Some("0.1.0"));
+    assert!(app.plugins.is_active(HELLO));
+    // The same version again is the next patch; nothing new asked of the admin.
+    let again = install(
+        Uses::of(&app),
+        Uses::of(&app),
+        admin(),
+        Path(HELLO.into()),
+        Body(InstallBody { approve: false, ..InstallBody::default() }),
+    )
+    .await
+    .unwrap()
+    .1;
+    assert_eq!((again.installed, again.version.as_deref()), (true, Some("0.1.1")));
+    assert!(app.workshop.journal(HELLO).iter().any(|line| line.message.contains("0.1.1")));
+    // A new draft under the installed plugin's id would be its next version: refused with the way out.
+    app.workshop.delete(HELLO).unwrap();
+    let taken = app.workshop.create(HELLO, Some("plugin"), None, None).unwrap_err();
+    assert!(
+        taken.message.contains(&format!("id «{HELLO}» уже занят")) && taken.message.contains("Открыть в мастерской"),
+        "{}",
+        taken.message
+    );
+    assert!(app.workshop.create(HELLO, None, None, None).is_ok(), "opening the own plugin itself still works");
+
+    // The workshop as an MCP server.
+    let listed =
+        mcp(Uses::of(&app), admin(), Body(json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}))).await.unwrap();
+    let listed: Value = serde_json::from_slice(&listed.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert!(listed["result"]["tools"].as_array().unwrap().iter().any(|tool| tool["name"] == "try_phrase"));
+    let call = json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "read_file", "arguments": {"draft": HELLO, "path": "manifest.json"}}});
+    let answer = mcp(Uses::of(&app), admin(), Body(call)).await.unwrap();
+    let answer: Value = serde_json::from_slice(&answer.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert!(answer["result"]["content"][0]["text"].as_str().unwrap().contains("\"0.1.1\""), "{answer}");
+    let note = mcp(Uses::of(&app), admin(), Body(json!({"jsonrpc": "2.0", "method": "notifications/initialized"})))
+        .await
+        .unwrap();
+    assert_eq!(note.status(), StatusCode::ACCEPTED);
+}
+
+#[tokio::test]
+async fn shows_the_plan_before_an_install_tries_a_draft_for_a_while_and_keeps_the_agents_model_apart() {
+    let dir = tempfile::tempdir().unwrap();
+    let text = |sub: &str| dir.path().join(sub).to_string_lossy().into_owned();
+    let env = Env::from_pairs([
+        ("STATE_DIR", String::new()),
+        ("PACKAGES_DIR", text("packages")),
+        ("DATA_DIR", text("data")),
+        ("VOICE_LAB_DIR", text("voice-lab")),
+        ("TTS_MODELS_DIR", text("voices")),
+    ]);
+    let app = crate::app::App::build(Config::for_tests(&env)).unwrap();
+    let admin = || Caller::local(app.clone(), Some(user_principal("u1", "Админ", Role::Admin, None)));
+    let member = || Caller::local(app.clone(), Some(user_principal("u2", "Аня", Role::Member, None)));
+    app.workshop.create("hello", Some("plugin"), Some("Привет"), None).unwrap();
+
+    // The plan of the first install: nothing installed yet; the template asks for no rights (Host API 2: what it
+    // gives is no right).
+    assert!(plan(Uses::of(&app), member(), Path("hello".into())).await.is_err());
+    let first = plan(Uses::of(&app), admin(), Path("hello".into())).await.unwrap().1;
+    assert!(first.first && first.from.is_none(), "{first:?}");
+    assert_eq!(first.to, "0.1.0");
+    assert!(first.added.is_empty() && first.removed.is_empty() && first.kept.is_empty(), "{first:?}");
+    assert!(!first.phrases.is_empty(), "the template's phrases: {first:?}");
+    let done = install(
+        Uses::of(&app),
+        Uses::of(&app),
+        admin(),
+        Path("hello".into()),
+        Body(InstallBody { approve: true, ..InstallBody::default() }),
+    )
+    .await
+    .unwrap()
+    .1;
+    assert!(done.installed, "{}", done.message);
+    // The plan of the next one: the same rights kept, the next patch, nothing installed by asking.
+    let next = plan(Uses::of(&app), admin(), Path("hello".into())).await.unwrap().1;
+    assert_eq!((next.first, next.from.as_deref(), next.to.as_str()), (false, Some("0.1.0"), "0.1.1"));
+    assert!(next.added.is_empty() && next.removed.is_empty(), "{next:?}");
+    assert!(next.enabled);
+    assert_eq!(app.plugins.installed("hello").unwrap().version(), "0.1.0", "a plan installs nothing");
+
+    // A trial puts the draft in for a while; taken back, the version before is there again.
+    let body = || Body(TrialBody { approve: false, minutes: Some(5) });
+    let tried = trial(Uses::of(&app), admin(), Path("hello".into()), body()).await.unwrap().1;
+    assert!(tried.installed && tried.message.contains("Проба"), "{}", tried.message);
+    assert_eq!(app.plugins.installed("hello").unwrap().version(), "0.1.1");
+    let running = app.workshop.draft("hello").unwrap().trial.expect("the draft shows its trial");
+    assert_eq!((running.version.as_str(), running.previous.as_deref()), ("0.1.1", Some("0.1.0")));
+    assert!(trial(Uses::of(&app), admin(), Path("hello".into()), body()).await.is_err(), "one at a time");
+    let query = |keep| axum::extract::Query(EndTrialQuery { keep });
+    end_trial(Uses::of(&app), admin(), Path("hello".into()), query(false)).await.unwrap();
+    assert_eq!(app.plugins.installed("hello").unwrap().version(), "0.1.0");
+    assert!(app.plugins.is_active("hello"));
+    assert!(app.workshop.draft("hello").unwrap().trial.is_none());
+    // Kept, the trial's version stays as an install.
+    trial(Uses::of(&app), admin(), Path("hello".into()), body()).await.unwrap();
+    end_trial(Uses::of(&app), admin(), Path("hello".into()), query(true)).await.unwrap();
+    assert_eq!(app.plugins.installed("hello").unwrap().version(), "0.1.1");
+    assert!(end_trial(Uses::of(&app), admin(), Path("hello".into()), query(false)).await.is_err());
+
+    // A trial of a plugin that was not installed: it asks the first install's approval, and goes after.
+    app.workshop.create("bye", Some("plugin"), Some("Пока"), None).unwrap();
+    let asked = trial(Uses::of(&app), admin(), Path("bye".into()), body()).await.unwrap().1;
+    assert!(!asked.installed && asked.needs_approval.is_some());
+    let approved = Body(TrialBody { approve: true, minutes: None });
+    assert!(trial(Uses::of(&app), admin(), Path("bye".into()), approved).await.unwrap().1.installed);
+    assert!(app.plugins.is_active("bye"));
+    end_trial(Uses::of(&app), admin(), Path("bye".into()), query(false)).await.unwrap();
+    assert!(app.plugins.installed("bye").is_none());
+
+    // The agent's own model: a provider of «Мозг» or none; «Мозг» itself stays as it was.
+    let brain = app.settings.get(&crate::settings::definitions::BRAIN, None);
+    let unknown = Some(BrainPick { provider: "nope".into(), model: "big".into() });
+    assert!(set_agent_model(
+        Uses::of(&app),
+        Uses::of(&app),
+        Uses::of(&app),
+        Uses::of(&app),
+        admin(),
+        Body(AgentBody { choice: unknown.clone() })
+    )
+    .await
+    .is_err());
+    assert!(set_agent_model(
+        Uses::of(&app),
+        Uses::of(&app),
+        Uses::of(&app),
+        Uses::of(&app),
+        member(),
+        Body(AgentBody { choice: None })
+    )
+    .await
+    .is_err());
+    app.settings.set(&WORKSHOP_AGENT, &unknown.clone().unwrap(), None).unwrap();
+    assert_eq!(agent::context(&app.workshop, "hello", agent::model_of(&app.workshop)).model, unknown);
+    let reset = set_agent_model(
+        Uses::of(&app),
+        Uses::of(&app),
+        Uses::of(&app),
+        Uses::of(&app),
+        admin(),
+        Body(AgentBody { choice: None }),
+    )
+    .await
+    .unwrap()
+    .1;
+    assert!(reset["choice"].is_null(), "{reset}");
+    assert!(agent::model_of(&app.workshop).is_none());
+    assert_eq!(app.settings.get(&crate::settings::definitions::BRAIN, None), brain);
+}
+
+#[tokio::test]
+async fn starts_a_widget_that_passes_the_check_installs_and_shows_its_preview_by_a_token() {
+    let dir = tempfile::tempdir().unwrap();
+    let text = |sub: &str| dir.path().join(sub).to_string_lossy().into_owned();
+    let env = Env::from_pairs([
+        ("STATE_DIR", String::new()),
+        ("PACKAGES_DIR", text("packages")),
+        ("DATA_DIR", text("data")),
+        ("VOICE_LAB_DIR", text("voice-lab")),
+        ("TTS_MODELS_DIR", text("voices")),
+    ]);
+    let app = crate::app::App::build(Config::for_tests(&env)).unwrap();
+    let admin = || Caller::local(app.clone(), Some(user_principal("u1", "Админ", Role::Admin, None)));
+    // A title said in words, quotes and all, stays the card's title in the manifest.
+    app.workshop.create("widget-wash", Some("widget"), Some("Стирка \"быстрая\""), None).unwrap();
+    let report = app.workshop.check("widget-wash").await.unwrap();
+    assert!(report.ok && report.warnings.is_empty(), "{report:?}");
+    for function in ["panelData", "mark"] {
+        assert!(report.exports.iter().any(|name| name == function), "{function}: {report:?}");
+    }
+    let manifest: Value = serde_json::from_str(&app.workshop.read("widget-wash", "manifest.json").unwrap()).unwrap();
+    assert_eq!(manifest["contributes"]["panel"]["cards"][0]["title"], "Стирка \"быстрая\"");
+    // A card the panel draws: its function's answer is a card of known parts.
+    let shown = app.workshop.run("widget-wash", "panelData", json!({}), &Trying::example()).await.unwrap();
+    assert!(shown.ok && crate::bus::cards::check(&shown.result).is_empty(), "{shown:?}");
+
+    // A part the panel does not know, and a tap to a function the panel may not call: the check names both.
+    app.workshop
+        .write(
+            "widget-wash",
+            "backend.js",
+            "export function panelData() { return { big: \"1\", gauge: 3, buttons: [{ text: \"Сброс\", tap: \"reset\" }] }; }\nexport function mark() { return panelData(); }\nexport function reset() { return panelData(); }\n",
+        )
+        .unwrap();
+    let warned = app.workshop.check("widget-wash").await.unwrap();
+    assert!(warned.warnings.iter().any(|warning| warning.contains("«gauge»")), "{warned:?}");
+    assert!(warned.warnings.iter().any(|warning| warning.contains("reset")), "{warned:?}");
+    app.workshop
+        .write("widget-wash", "backend.js", &crate::plugins::workshop::templates::widget("widget-wash", "Стирка")[1].1)
+        .unwrap();
+
+    let done = install(
+        Uses::of(&app),
+        Uses::of(&app),
+        admin(),
+        Path("widget-wash".into()),
+        Body(InstallBody { approve: true, ..InstallBody::default() }),
+    )
+    .await
+    .unwrap()
+    .1;
+    assert!(done.installed, "{}", done.message);
+
+    // Its reading writes nothing: no word to the panel, or every widget on it would read again each second for
+    // as long as it is open (review: packages-data-loop). A person's «Отметить» writes, and is told.
+    let mut heard = app.events.subscribe();
+    for _ in 0..2 {
+        let read = app.plugins.panel_call("widget-wash", "panelData", json!({})).await.unwrap();
+        assert_eq!(read["big"], json!("0"), "{read}");
+    }
+    let marked = app.plugins.panel_call("widget-wash", "mark", json!({})).await.unwrap();
+    assert_eq!(marked["big"], json!("1"), "{marked}");
+    assert_eq!(app.plugins.panel_call("widget-wash", "panelData", json!({})).await.unwrap()["big"], json!("1"));
+    let mut told = Vec::new();
+    while let Ok(event) = heard.try_recv() {
+        if let crate::core::events::GatewayEvent::PackageDataChanged { package } = event.as_ref() {
+            told.push(package.clone());
+        }
+    }
+    assert_eq!(told, ["widget-wash"], "the mark only");
+
+    // A window of its own that only shows rows could be a card: the check says so.
+    app.workshop
+        .write(
+            "widget-wash",
+            "panel.js",
+            "import { h } from \"preact\";\nexport default definePlugin({ id: \"widget-wash\", slots: { \"desk.widgets\": [{ id: \"rows\", Component: () => h(\"p\", null, \"строка\") }] } });\n",
+        )
+        .unwrap();
+    let advised = app.workshop.check("widget-wash").await.unwrap();
+    assert!(advised.warnings.iter().any(|warning| warning.contains("может быть карточкой")), "{advised:?}");
+
+    // A panel part that does not parse fails the check here, not in the panel.
+    app.workshop
+        .write("widget-wash", "panel.js", "export default definePlugin({ id: \"widget-wash\", slots: { ")
+        .unwrap();
+    let broken = app.workshop.check("widget-wash").await.unwrap();
+    assert!(!broken.ok && broken.code.as_deref().is_some_and(|code| code.starts_with("panel.js:")), "{broken:?}");
+}
+
+#[tokio::test]
+async fn serves_a_drafts_preview_to_the_apps_window_across_origins_and_nothing_without_its_token() {
+    let dir = tempfile::tempdir().unwrap();
+    let text = |sub: &str| dir.path().join(sub).to_string_lossy().into_owned();
+    let env = Env::from_pairs([
+        ("STATE_DIR", String::new()),
+        ("PACKAGES_DIR", text("packages")),
+        ("DATA_DIR", text("data")),
+        ("VOICE_LAB_DIR", text("voice-lab")),
+        ("TTS_MODELS_DIR", text("voices")),
+    ]);
+    let app = crate::app::App::build(Config::for_tests(&env)).unwrap();
+    app.workshop.create("waves", Some("plugin"), Some("Волны"), None).unwrap();
+    app.workshop.write("waves", "panel.js", "export default {};\n").unwrap();
+    let (module, _) = app.workshop.preview("waves").unwrap();
+    let token = module.trim_start_matches("/panel-preview/").trim_end_matches("/panel.js").to_string();
+
+    // The app's window is a sandboxed frame of no origin: its `import()` is across origins and needs the allowance.
+    let response = preview_file(Uses::of(&app), Path((token.clone(), "panel.js".into()))).await.unwrap();
+    let headers = response.headers();
+    assert_eq!(headers[axum::http::header::ACCESS_CONTROL_ALLOW_ORIGIN], "*");
+    assert_eq!(headers[axum::http::header::CONTENT_TYPE], "text/javascript; charset=utf-8");
+    assert_eq!(headers[axum::http::header::X_CONTENT_TYPE_OPTIONS], "nosniff");
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(&body[..], b"export default {};\n");
+
+    // Only its two parts, only by a live token.
+    assert!(preview_file(Uses::of(&app), Path((token, "manifest.json".into()))).await.is_err());
+    assert!(preview_file(Uses::of(&app), Path(("0".repeat(32), "panel.js".into()))).await.is_err());
+}

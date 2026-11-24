@@ -5,6 +5,7 @@
 !Cargo.toml
 !Cargo.lock
 !gateway
+!crates
 !content/radio.json
 !content/README.md
 # What the program carries inside besides its own folder (include_str!, rust-embed): the built-in packages, the

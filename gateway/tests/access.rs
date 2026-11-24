@@ -106,7 +106,7 @@ async fn gives_a_station_the_scripts_for_sdelayu_sam_as_plain_sh_by_the_address_
 
     // Connecting one from the panel is a PC's (the station's own build has no SSH). Every request here stops at the
     // gate or at the check of what it asks: nothing reaches a station.
-    if cfg!(feature = "pc") {
+    if duowave::core::build::computer() {
         assert_eq!(status(gateway.get("/api/v1/stations/connect/discover")).await, StatusCode::UNAUTHORIZED);
         let connect = json!({"address": "192.0.2.23", "gateway": "192.0.2.10"});
         assert_eq!(status(gateway.post("/api/v1/stations/connect").json(&connect)).await, StatusCode::UNAUTHORIZED);
@@ -146,7 +146,7 @@ async fn closes_every_route_that_does_not_say_otherwise_and_opens_the_stations_o
         "/api/v1/connectors",
         "/api/v1/stations",
     ];
-    if cfg!(feature = "pc") {
+    if duowave::core::build::computer() {
         closed.push("/calls/status");
     }
     for path in closed {

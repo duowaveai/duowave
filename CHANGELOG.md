@@ -3,6 +3,40 @@
 What a gateway user can see, release by release. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versions follow [SemVer](https://semver.org/).
 
+## 0.19.0 — 24.11.2026
+
+- **A phrase said into the computer's microphone gets a spoken answer from the computer.** In the "Speaker" mode the
+  computer now says its answer aloud, as in the "Microphone" mode, when the home's voice is its own: a model on the
+  computer or in the cloud. With Alice's voice the answer is still text, because Alice speaks only through the
+  speaker.
+- **First steps, "Whose AI answers": a large "Open the DuoWave page" button.** It opens the sign-in page after "Get your
+  gift", instead of a small link above the code field. The same goes for OpenRouter.
+- **First steps, "Whose AI answers": "Next" waits until DuoWave is connected and says why.** The line under the choice
+  says "Next opens once DuoWave is connected. Or choose another AI." OpenRouter, an own key and a model on the
+  computer still go on without signing in.
+- **First steps, "Your home": "Search again".** A hub switched on later is found without restarting DuoWave.
+- **"Connect the home" no longer offers an address the hub cannot reach.** The connection key lists the home network's
+  address first, and never an address on the loopback adapter. Tunnels and virtual adapters come after the home ones.
+- **Without macOS "Local Network", DuoWave says so.** The journal has a line with where to allow it, and the panel
+  shows "macOS keeps DuoWave off the home network". Once allowed, the home is announced again without a restart.
+- **A Turbo can be removed from the home on its own page.** "Remove from home" is next to "Check now" on the Turbo's
+  "Device" tab.
+- **A Mac is named by its family by default**, such as "MacBook Pro computer" or "Mac mini computer", so two Macs in
+  one home are told apart. The name the owner gave the Mac in macOS is not used: other homes can see the gateway's
+  name.
+- **Settings → Home has a "Folders" line.** It opens the "Folders" window: the home folder, what is attached, who sees
+  what.
+- **On a hub on the speaker, "Music" and "Stories" are in place.** On a new speaker they no longer said the folder
+  was missing. The hub's "Folders" says that the home's folders are on the Turbo too, and a Turbo's file shows its
+  computer's name.
+- **The workshop's MIDI teacher also works on a hub on the speaker with a Turbo.** The teacher runs on the speaker,
+  and the Turbo passes on the keyboard's notes. On a speaker without a Turbo it still cannot be installed.
+- **The "Where DuoWave runs" slider's English label says "self-hosted DuoWave".**
+- **For developers: the gateway is built from crates.** The workspace has `crates/duowave-{base,rights,voice,brain,
+  ears,apps,home,pc}` and the program `gateway`. Everything only a computer needs is in `duowave-pc`; the speaker's
+  build leaves it out. Build commands are the same. The speaker's program is about 650 KB larger.
+- **The gateway's Docker image keeps the program in one layer**, with `setcap` in a build stage of its own.
+
 ## 0.18.6 — 24.11.2026
 
 - **The store and added sources have a backup host.** When the host of the store or of a source you added does not

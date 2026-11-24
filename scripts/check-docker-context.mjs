@@ -14,14 +14,16 @@ const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..')
 const GATEWAY = path.join(ROOT, 'gateway');
 const posix = (full) => path.relative(ROOT, full).split(path.sep).join('/');
 
-/** What the gateway's code embeds from outside gateway/: repository path → where the code names it. */
+/** What the gateway's code embeds from outside gateway/ and the workspace's crates/: repository path → where the code
+ * names it. */
 function embedded() {
     const found = new Map();
     const note = (full, where) => {
         const file = posix(full);
-        if (file !== 'gateway' && !file.startsWith('gateway/') && !found.has(file)) found.set(file, where);
+        const own = ['gateway', 'crates'].some((folder) => file === folder || file.startsWith(`${folder}/`));
+        if (!own && !found.has(file)) found.set(file, where);
     };
-    const read = (source) => {
+    const read = (source, crate) => {
         const text = readFileSync(source, 'utf8');
         const at = (index) => `${posix(source)}:${text.slice(0, index).split('\n').length}`;
         for (const match of text.matchAll(/include_(?:str|bytes)!\(\s*"([^"]+)"\s*\)/g)) {
@@ -29,17 +31,21 @@ function embedded() {
         }
         // rust-embed's folders are relative to the crate (CARGO_MANIFEST_DIR).
         for (const match of text.matchAll(/#\[folder\s*=\s*"([^"]+)"\s*\]/g)) {
-            note(path.resolve(GATEWAY, match[1]), at(match.index));
+            note(path.resolve(crate, match[1]), at(match.index));
         }
     };
-    const walk = (folder) => {
+    const walk = (folder, crate) => {
         for (const name of readdirSync(folder)) {
             const full = path.join(folder, name);
-            if (statSync(full).isDirectory()) walk(full);
-            else if (name.endsWith('.rs')) read(full);
+            if (statSync(full).isDirectory()) walk(full, crate);
+            else if (name.endsWith('.rs')) read(full, crate);
         }
     };
-    walk(path.join(GATEWAY, 'src'));
+    walk(path.join(GATEWAY, 'src'), GATEWAY);
+    const crates = path.join(ROOT, 'crates');
+    for (const name of existsSync(crates) ? readdirSync(crates) : []) {
+        if (existsSync(path.join(crates, name, 'src'))) walk(path.join(crates, name, 'src'), path.join(crates, name));
+    }
     return found;
 }
 
@@ -170,4 +176,4 @@ if (problems.length) {
     console.error(`Dockerfile.prod cannot build the gateway from source:\n  ${problems.join('\n  ')}`);
     process.exit(1);
 }
-console.log(`ok: the gateway stage has all ${embedded().size} files the program carries from outside gateway/`);
+console.log(`ok: the gateway stage has all ${embedded().size} files the program carries from outside gateway/ and crates/`);

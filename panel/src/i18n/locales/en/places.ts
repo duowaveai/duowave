@@ -63,6 +63,7 @@ const en: Translation<typeof ru> = {
     pageUpdatesSub: 'DuoWave version, settings backups',
     pageHistory: 'Conversation history',
     pageHistorySub: 'what was asked and who answered',
+    pageFoldersSub: 'the home folder, what is attached, who sees what',
     pageDevSub: 'developer layer, hidden options',
     settings: 'Settings',
     newVersion: 'new version',

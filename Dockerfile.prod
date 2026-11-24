@@ -55,6 +55,8 @@ RUN case "$TARGETARCH" in \
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY gateway gateway
+# The floors below the gateway, crates of their own (docs/plans/modular-gateway.md).
+COPY crates crates
 # What a new content folder starts with, built into the program (gateway/src/config/data_dir.rs).
 COPY content/radio.json content/README.md content/
 # And what else it carries inside (include_str!, rust-embed; .dockerignore lets in just these): the built-in packages,
@@ -66,12 +68,17 @@ COPY docs/plugins/AUTHORING.md docs/plugins/panel-sdk.d.ts docs/plugins/cards.md
 COPY docs/plugins/skill docs/plugins/skill
 COPY docs/design/glass/THEMES.md docs/design/glass/
 COPY --from=panel /src/panel/dist panel/dist
-# The station's signed build, when the release put it there: built into the program (gateway/build.rs).
+# The station's signed build, when the release put it there: built into the program (crates/duowave-home/build.rs).
 COPY deploy/station-payload deploy/station-payload
+# target/ is one cache for the builds of every checkout, and cargo tells our crates' freshness by their files' times: a
+# checkout older than the last build took that build's crates of the same names (24.11: main after the modular branch
+# — «couldn't read …/out/migrations.rs»). So every file of the context is made newer than any build kept: our crates
+# and their build scripts always build from these files, the dependencies' builds stay shared.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/src/target,sharing=locked \
     triple=$(cat /triple) \
+    && find /src -path /src/target -prune -o -type f -exec touch {} + \
     && if [ -f deploy/station-payload/duowave-station-aarch64.tar.gz.sig ]; then \
            export DUOWAVE_STATION_PAYLOAD=/src/deploy/station-payload/duowave-station-aarch64.tar.gz; fi \
     && cargo zigbuild -p duowave --release --locked --target "$triple" \
@@ -88,17 +95,25 @@ COPY deploy/prebuilt/${TARGETARCH}/duowave /out/duowave
 FROM ${GATEWAY} AS program
 
 # ---------------------------------------
+# The program with its right to a port below 1024 without root, should one be chosen on the host network of
+# compose.calls.yaml (7780 by default; in a bridge network 3000 is published instead). Given here, before the runtime
+# stage: setcap there rewrote the whole file into a layer of its own, so the image carried the program twice. COPY
+# keeps the right (the file's security.capability attribute), so the runtime stage takes the program in one layer.
+# setcap only writes that attribute, so this runs on the build machine for any target.
+# ---------------------------------------
+FROM --platform=$BUILDPLATFORM alpine:${ALPINE_VERSION} AS program-cap
+RUN apk add --no-cache libcap
+COPY --from=program /out/duowave /out/duowave
+RUN setcap cap_net_bind_service=+ep /out/duowave
+
+# ---------------------------------------
 # Runtime
 # ---------------------------------------
 FROM alpine:${ALPINE_VERSION} AS production
 # The gateway's user: uid and gid 1000, as the Node image's was, so a data volume from it stays writable.
 RUN addgroup -g 1000 duowave && adduser -D -H -u 1000 -G duowave -h /data -s /sbin/nologin duowave
-COPY --from=program /out/duowave /usr/local/bin/duowave
-# A port below 1024 without root, should one be chosen on the host network of compose.calls.yaml (7780 by default; in a
-# bridge network 3000 is published instead).
-RUN apk add --no-cache --virtual .setcap libcap \
-    && setcap cap_net_bind_service=+ep /usr/local/bin/duowave \
-    && apk del .setcap
+# With cap_net_bind_service already on it (program-cap above).
+COPY --from=program-cap /out/duowave /usr/local/bin/duowave
 
 # Everything the gateway writes goes to /data (gateway/src/config/data_dir.rs): one volume to keep and back up.
 # DUOWAVE_MANAGED: updates come with a new image, the gateway only offers them. VAD_ENGINE: what this build has.

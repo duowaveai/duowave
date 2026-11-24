@@ -18,7 +18,7 @@ import { devMode } from '../shell/dev';
 import { matchAction, micHeld } from './phrases';
 import { ANSWER_WAIT_MS, answerTo, sayAloud, stopAnswer } from './speak';
 import { StripMessage, hideStrip, onStripClosed, showStrip, stripNow, updateStrip } from './strip';
-import { onComputer } from '../voice-input';
+import { computerVoice, onComputer } from '../voice-input';
 import { chosenInput } from './devices';
 import { LISTEN_TONE_MS, playTone } from './tones';
 
@@ -344,7 +344,8 @@ function park(text: string, ms: number): void {
 
 /**
  * Что сказано: фраза кнопки на экране, а остальное — в разговор (решение 6 аудиоинтерфейса): правила слоя и «Мозг»
- * отвечают на полосе, в режиме «Микрофон» — ещё и голосом. `why` — фраза сказана без нажатия, в окне после нашей
+ * отвечают на полосе и голосом компьютера — в режиме «Микрофон» всегда, в режиме «Колонка» — когда голос дома свой
+ * (решение владельца к находке 9 проверки шага 11: где спросили, там и ответ; голос Алисы здесь не звучит — текстом). `why` — фраза сказана без нажатия, в окне после нашей
  * реплики: она идёт шлюзу как есть (его закрытое окно решает, принять ли), кнопки на экране её не перехватывают —
  * разве что после вопроса «Мозга», как и раньше. После ответа микрофон снова открывается сам, если шлюз так сказал.
  */
@@ -354,7 +355,7 @@ function act(text: string, heard?: { by: 'home' | 'cloud'; ms?: number }, why?: 
         if (action) return action.run();
     }
     // Может ли этот вход говорить (`use:chat`), знает шлюз: откажет — его слова встанут на полосу.
-    const voice = onComputer();
+    const voice = onComputer() || computerVoice();
     answerTo({ text, via: why ? 'answer' : 'button', why, heard }, voice ? (reason) => listenFor(ANSWER_WAIT_MS, reason) : undefined, voice);
 }
 

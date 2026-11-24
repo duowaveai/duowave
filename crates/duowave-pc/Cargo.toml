@@ -1,0 +1,105 @@
+[package]
+name = "duowave-pc"
+description = "DuoWave's floor «Только компьютер»: calls (the call page over WebRTC, LiveKit, SIP, the Telegram bot) and the agents' works in work folders — what only a computer's gateway has"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+# The floor itself: without it the crate is empty (lib.rs), so a station's build of the whole workspace leaves it out.
+# The gateway's feature `pc` turns it on.
+pc = []
+# A browser on the call page (/calls) over WebRTC: webrtc-rs, pure Rust (calls/webrtc_endpoint.rs).
+webrtc = ["pc", "dep:webrtc", "dep:rtc"]
+# Calls through a LiveKit room: LiveKit's Rust SDK, which downloads a prebuilt libwebrtc at build time.
+livekit = ["pc", "dep:livekit", "duowave-apps/livekit"]
+# Recognition on this computer itself (speech/asr/local): GigaAM, Parakeet and Whisper as GGUF through transcribe.cpp,
+# in a worker process of the program. transcribe.cpp compiles from C++ source: cmake and a C++ toolchain.
+local-asr = ["pc", "duowave-base/local-asr", "dep:transcribe-cpp"]
+yandex-station = ["duowave-ears/yandex-station", "duowave-apps/yandex-station", "duowave-home/yandex-station"]
+# What the tests of the program take from this one.
+testing = ["duowave-base/testing", "duowave-rights/testing", "duowave-voice/testing", "duowave-brain/testing", "duowave-ears/testing", "duowave-apps/testing", "duowave-home/testing"]
+
+[dependencies]
+# The floor stands on all the others (their computer's parts come with the feature `pc`).
+duowave-base = { path = "../duowave-base" }
+duowave-rights = { path = "../duowave-rights" }
+duowave-voice = { path = "../duowave-voice" }
+duowave-brain = { path = "../duowave-brain" }
+duowave-ears = { path = "../duowave-ears" }
+duowave-apps = { path = "../duowave-apps" }
+duowave-home = { path = "../duowave-home" }
+anyhow.workspace = true
+async-trait.workspace = true
+axum.workspace = true
+base64.workspace = true
+bytes.workspace = true
+chrono.workspace = true
+flate2.workspace = true
+futures.workspace = true
+hex.workspace = true
+# The computer's own addresses on the home network, for finding stations (stations/connect).
+if-addrs = "0.15.0"
+livekit = { version = "0.10.1", default-features = false, features = ["native", "rustls-tls-webpki-roots"], optional = true }
+rand.workspace = true
+reqwest.workspace = true
+# MCP servers as programs (mcp/programs.rs): the client over a program's pipes.
+rmcp = { version = "3.9.0", default-features = false, features = ["client", "transport-async-rw"] }
+# The helper's own TLS key for the link (helpers/link_serve.rs): ECDSA P-256, already in both builds through
+# rustls's `ring`.
+ring.workspace = true
+# The station's root password asked with no echo by `duowave station setup` (placement/setup.rs): from the terminal
+# itself — /dev/tty, the Windows console — as `curl | sh` holds stdin. Already in the lock through minisign.
+rpassword.workspace = true
+rtc = { version = "0.21.1", default-features = false, optional = true }
+rusqlite.workspace = true
+# A station's setup over SSH (stations/connect).
+russh = { version = "0.65.1", default-features = false, features = ["ring", "rsa"] }
+rustls.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tar.workspace = true
+thiserror.workspace = true
+# Recognition on this computer (feature local-asr): its processor everywhere, Metal on a Mac with Apple Silicon (the
+# target table below). Pinned: the engine is young (0.x), a new one is taken knowingly.
+transcribe-cpp = { version = "=0.4.1", default-features = false, optional = true }
+tokio.workspace = true
+tokio-rustls.workspace = true
+tokio-tungstenite.workspace = true
+tokio-util.workspace = true
+tower.workspace = true
+tracing.workspace = true
+regex.workspace = true
+sha2.workspace = true
+# The network's own sockets for the stations' search (stations/connect/discovery.rs).
+socket2 = { version = "0.6.5", features = ["all"] }
+url.workspace = true
+uuid.workspace = true
+webrtc = { version = "0.21.1", optional = true }
+
+[dev-dependencies]
+duowave-base = { path = "../duowave-base", features = ["testing"] }
+duowave-rights = { path = "../duowave-rights", features = ["testing"] }
+duowave-voice = { path = "../duowave-voice", features = ["testing"] }
+duowave-brain = { path = "../duowave-brain", features = ["testing"] }
+duowave-ears = { path = "../duowave-ears", features = ["testing"] }
+duowave-apps = { path = "../duowave-apps", features = ["testing"] }
+duowave-home = { path = "../duowave-home", features = ["testing"] }
+hmac.workspace = true
+http-body-util.workspace = true
+sha2.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
+
+[target."cfg(unix)".dependencies]
+libc.workspace = true
+
+# Metal on Apple Silicon. An Intel Mac stays on its processor: ggml's Metal shaders hang there on some AMD cards
+# (as Handy found), and Metal buys little at these models' sizes.
+[target."cfg(all(target_os = \"macos\", target_arch = \"aarch64\"))".dependencies]
+transcribe-cpp = { version = "=0.4.1", default-features = false, features = ["metal"], optional = true }
+
+[target."cfg(windows)".dependencies]
+# The voice lab's processes on Windows (voice_lab/platform.rs).
+windows-sys.workspace = true

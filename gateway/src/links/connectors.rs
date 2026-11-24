@@ -114,7 +114,7 @@ mod tests {
     use crate::app::App;
     use crate::config::{Config, Env};
     use crate::connectors::builtin::StationSessions;
-    use crate::core::connectors::{ConnectorState, ConnectorStatus};
+    use crate::dialog::connectors::{ConnectorState, ConnectorStatus};
 
     struct Station;
 

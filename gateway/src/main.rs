@@ -56,6 +56,8 @@ fn main() -> anyhow::Result<()> {
     let memory_was = station_memory::tune();
     #[cfg(not(all(feature = "station", target_env = "musl")))]
     let memory_was = ();
+    // The computer's floor says it is here first: before the configuration is read, a password asked, a station set up.
+    duowave::computer::install();
     // A recognition worker of this program's own gateway (src/speech/asr/local): nothing else starts in it.
     #[cfg(feature = "local-asr")]
     if duowave::speech::asr::local::is_worker_invocation() {

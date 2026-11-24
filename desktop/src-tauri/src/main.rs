@@ -310,7 +310,7 @@ fn build_window(app: &AppHandle) -> tauri::Result<()> {
             let gateway = dropping.state::<Arc<Gateway>>();
             let Some(drives) = gateway
                 .app()
-                .and_then(|app| app.bus.files())
+                .and_then(|app| duowave::bus::BusFolders::files(&*app.bus))
                 .and_then(|files| files.drives())
             else {
                 return;

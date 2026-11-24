@@ -8,6 +8,8 @@
 //! (src/gateway/uniproxy, mode) adds its own when it stands: its sessions to /health, the connectors and the
 //! skills' speaker.
 //!
+//! The computer's own links — the calls', the voice's — are in src/computer/links.
+//!
 //! The `*.module.ts` named in src/links are the Node gateway's, removed from the tree: git tag `node-gateway-last`.
 
 pub mod app_player;
@@ -20,8 +22,3 @@ pub mod http;
 pub mod playback;
 pub mod plugins;
 pub mod stations;
-
-#[cfg(feature = "pc")]
-pub mod calls;
-#[cfg(feature = "pc")]
-pub mod voice;

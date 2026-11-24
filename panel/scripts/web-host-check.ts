@@ -38,7 +38,7 @@ function teacher(): { manifest: string; backend: string; panel: string; names: s
         version: '0.1.0',
         title: 'Piano teacher',
         api: '^2',
-        runs: ['pc'],
+        runs: ['pc', 'stationServer'],
         languages: ['ru', 'en'],
         permissions: ['listen:device/midi'],
         settings: [{ key: 'names', type: 'boolean', title: 'Подписывать ноты', default: true }],
@@ -52,8 +52,8 @@ function teacher(): { manifest: string; backend: string; panel: string; names: s
     };
     return {
         manifest: JSON.stringify(manifest),
-        backend: fill(read('gateway/src/plugins/workshop/templates/midi/backend.js')),
-        panel: fill(read('gateway/src/plugins/workshop/templates/midi/panel.js')),
+        backend: fill(read('crates/duowave-apps/src/plugins/workshop/templates/midi/backend.js')),
+        panel: fill(read('crates/duowave-apps/src/plugins/workshop/templates/midi/panel.js')),
         names: ['README.md', 'backend.js', 'manifest.json', 'panel.js'],
     };
 }
@@ -240,7 +240,7 @@ check('the gateway’s frame and the web host’s boot the same code', () => {
     const web = read('panel/src/web-host/frame.tsx');
     expect(main.includes("from './boot'") && web.includes("from '../frame/boot'"), 'both through boot.tsx');
     expect(web.includes('readMidiFile: null'), 'no .mid on the site');
-    expect(read('gateway/src/plugins/workshop/templates/midi/panel.js').includes('readMidiFile && h("button"'), 'the teacher hides the file button');
+    expect(read('crates/duowave-apps/src/plugins/workshop/templates/midi/panel.js').includes('readMidiFile && h("button"'), 'the teacher hides the file button');
 });
 
 let failed = 0;

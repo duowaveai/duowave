@@ -115,6 +115,9 @@ function FoldersList({ view, onOpen }: { view: FoldersView; onOpen: (address: st
                         : tr.folders.homeHidden}
                     {view.home ? ` ${view.home}` : ''}
                 </p>
+                {/* Папки Турбо — тоже папки дома: на хабе-колонке их файлы видны внутри папок, а сказано об этом не было
+                    (находка 12 проверки шага 11). */}
+                {view.turbo && <p class="t-caption m-0 mb-8">{tr.folders.alsoAtTurbo(view.turbo)}</p>}
                 <div class="flex flex-wrap gap-8">
                     {view.local && view.folders[0] && <Action label={tr.folders.revealInFinder} onClick={() => void api.folderReveal(view.folders[0].address).catch(() => {})} />}
                 </div>
@@ -460,6 +463,7 @@ function Browser({ root }: { root: string }) {
                         >
                             <Tile item={item} link={link} />
                             <span class="folders-name">{item.name}</span>
+                            {item.placeName && <span class="folders-name t-caption">{item.placeName}</span>}
                         </button>
                     );
                 })}

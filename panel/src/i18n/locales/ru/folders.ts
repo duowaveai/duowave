@@ -27,6 +27,7 @@ export default {
     homeTitle: 'Домашняя папка DuoWave',
     homeVisible: 'Обычная папка на этом компьютере — её видно в Finder. Голос, агент и приложения работают только в ней.',
     homeHidden: 'Папка DuoWave в данных хаба. Голос, агент и приложения работают только в ней.',
+    alsoAtTurbo: (name: string) => `Папки дома есть и на Турбо «${name}». Внутри каждой папки видны и его файлы.`,
     revealInFinder: 'Показать в Finder',
     seenBy: (who: string) => `видят ${who}`,
     notHere: 'сейчас нет на месте',

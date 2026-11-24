@@ -73,8 +73,8 @@ jobs:
         run: node scripts/check-docker-context.mjs
 
   layers:
-    # The floors between the gateway's modules, where its crates will be cut (docs/plans/modular-gateway.md): reads each
-    # `crate::<module>` of gateway/src and fails on a link up a floor that is not a known exception. No cargo, Node's
+    # The floors between the gateway's modules, its crates (docs/plans/modular-gateway.md): reads each `crate::<module>`
+    # of gateway/src and crates/*/src and fails on a link up a floor that is not a known exception. No cargo, Node's
     # built-in modules only — under a second.
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -143,16 +143,21 @@ jobs:
           components: clippy, rustfmt
       - uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Format
-        run: cargo fmt -p duowave --check
+        run: cargo fmt --all --check
       - name: Lints
-        run: cargo clippy -p duowave --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Lints, the station's build
-        run: cargo clippy -p duowave --no-default-features --features station -- -D warnings
+        run: cargo clippy --workspace --no-default-features --features station -- -D warnings
+      # Without Yandex's Station (feature yandex-station, docs/plans/modular-gateway.md, «Договор уха»): the brain speaks
+      # to the ear contract only, so a home without the Station still builds.
+      - name: Lints, the build without Yandex's Station
+        run: cargo clippy --workspace --no-default-features --features pc,wasm --all-targets -- -D warnings
       # MIDI keyboards (src/midi): midir needs ALSA's headers on Linux.
       - name: Lints, with MIDI
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev && cargo clippy -p duowave --all-targets --features midi -- -D warnings
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev && cargo clippy --workspace --all-targets --features midi -- -D warnings
+      # The gateway and the floors below it, crates of their own (crates/, docs/plans/modular-gateway.md).
       - name: Tests
-        run: cargo test -p duowave
+        run: cargo test --workspace
 
   rust-station:
     # The build that runs on the station: static aarch64 musl, cross-compiled with zig, size reported.
@@ -172,13 +177,13 @@ jobs:
       - run: cargo install cargo-zigbuild --locked
       - run: cargo zigbuild -p duowave --profile station --target aarch64-unknown-linux-musl --no-default-features --features station
       - run: ls -l target/aarch64-unknown-linux-musl/station/duowave
-      # The computer's build carries the station's (gateway/build.rs): built in, the program found inside. The signature
-      # is a placeholder — the release signs; this checks the carrying.
+      # The computer's build carries the station's (crates/duowave-home/build.rs): built in, the program found inside.
+      # The signature is a placeholder — the release signs; this checks the carrying.
       - name: The station's build inside the computer's
         run: |
           tar -czf duowave-station-aarch64.tar.gz -C target/aarch64-unknown-linux-musl/station duowave
           echo "untrusted comment: CI, not signed" > duowave-station-aarch64.tar.gz.sig
-          DUOWAVE_STATION_PAYLOAD=$PWD/duowave-station-aarch64.tar.gz cargo test -p duowave --lib placement::payload
+          DUOWAVE_STATION_PAYLOAD=$PWD/duowave-station-aarch64.tar.gz cargo test -p duowave-home --lib placement::payload
 
   rust-windows:
     # The gateway's tests on Windows, the same `cargo test` as on Linux: the code only Windows runs (the firewall's look
@@ -194,7 +199,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable, 10.11.2026
       - uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Tests
-        run: cargo test -p duowave --no-fail-fast
+        run: cargo test --workspace --no-fail-fast
 
   desktop:
     # The desktop app (desktop/src-tauri, a Cargo workspace of its own) with the Rust gateway inside: format, lints

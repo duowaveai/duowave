@@ -30,6 +30,7 @@ import { shellFor } from './shell/shells';
 import { Boundary, Slot } from './shell/slot';
 import { useTheme } from './shell/theme';
 import { DIVI_DRAWING, drawingOf } from './stations';
+import { LocalNetworkBanner } from './ui/local-network-banner';
 import { MovedBanner } from './ui/moved-banner';
 import { UpdateBanner } from './ui/update-banner';
 import { OWN_READ_MS, readOwnUpdateStatus, readUpdateStatus, useOfferedUpdate } from './updates';
@@ -60,7 +61,7 @@ import { deskActions } from './shell/widgets';
 import { StationFrame, StationModeChip, ViaRefused, WindowShell } from './shell/station-window';
 import { leaving, mayLeave } from './shell/leave';
 import { LOCAL, ONBOARDING, OWN_PAGE, TOP_VIA, VIA, WINDOW } from './via';
-import { noteVoiceInput, useOnComputer } from './voice-input';
+import { noteVoice, noteVoiceInput, useOnComputer } from './voice-input';
 import { OwnPage } from './screens/helper-pc';
 import { ViaNotice } from './shell/station-window';
 
@@ -417,6 +418,7 @@ export function App() {
                     const h = await api.health();
                     if (alive) {
                         noteVoiceInput(h.voiceInput);
+                        noteVoice(h.tts);
                         setHealth(h);
                         setOffline(false);
                     }
@@ -663,6 +665,8 @@ export function App() {
         recent: can('journal.view') ? ofStation.slice(0, 3) : undefined,
         banner: (
             <>
+                {/* macOS не пускает DuoWave в домашнюю сеть: без этого его не видят колонки и другие компьютеры дома. */}
+                {health?.placement?.localNetwork === 'blocked' && <LocalNetworkBanner />}
                 {moved.map((entry) => (
                     <MovedBanner
                         key={entry.address}

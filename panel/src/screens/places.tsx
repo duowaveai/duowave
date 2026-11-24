@@ -13,6 +13,7 @@ import {
     IconChevronLeft,
     IconChevronRight,
     IconEar,
+    IconFolder,
     IconGlobe,
     IconHome,
     IconJournal,
@@ -79,6 +80,8 @@ interface SettingsPage {
     /** Группа списка (docs/plans/menu-scheme.md): устройство, доступ и вид, система. */
     group: 'home' | 'access' | 'system';
     Page: FunctionComponent;
+    /** Строка-ссылка: ведёт в свой раздел пульта, а не открывает страницу здесь. */
+    go?: string;
 }
 
 /** Карточка страницы «Настроек» с заголовком — для того, у чего своего заголовка нет (виджеты). */
@@ -364,6 +367,11 @@ function settingsPages(offered: boolean, voiceAsks: boolean): SettingsPage[] {
               ]
             : []),
         ...(can('connectors.view') ? [{ id: 'away', title: tr.devices.awayTitle, sub: tr.devices.awaySub, icon: IconGlobe, group: 'home' as const, Page: AwayPage }] : []),
+        // «Папки» — приложение со своим окном (`#/folders`), ячейки в доке у него нет: строка «Дома» ведёт туда, иначе
+        // папки было не найти на экране (находка 10 проверки шага 11).
+        ...(can('station.view')
+            ? [{ id: 'folders', title: tr.core.sectionFolders, sub: tr.places.pageFoldersSub, icon: IconFolder, group: 'home' as const, go: 'folders', Page: DevicesPage }]
+            : []),
         { id: 'access', title: tr.places.pageAccess, sub: tr.places.pageAccessSub, icon: IconKey, group: 'access', Page: AccessPage },
         { id: 'look', title: tr.places.pageLook, sub: tr.places.pageLookSub, icon: IconPalette, group: 'access', Page: LookPage },
         ...(can('station.view')
@@ -391,7 +399,7 @@ export function SettingsSection() {
     const pages = settingsPages(offered, voiceAsks);
     // Прежние «Колонка», «Дом», «Этот компьютер» и «Где работает DuoWave» — теперь «Устройства».
     const wanted = ['station', 'helpers', 'helper', 'placement'].includes(page) ? 'devices' : page;
-    const shown = pages.find((entry) => entry.id === wanted) ?? pages[0];
+    const shown = pages.find((entry) => entry.id === wanted && !entry.go) ?? pages[0];
     // Скрытые возможности разработчика: восемь нажатий подряд на «Для разработчиков» — строку списка или заголовок
     // открытой страницы (на телефоне список прячется после первого). Последние четыре — с подсказкой, сколько ещё.
     const [devLeft, setDevLeft] = useState<number | null>(null);
@@ -400,6 +408,8 @@ export function SettingsSection() {
         setDevLeft(left !== null && left <= 4 ? left : null);
     };
     const open = (id: string) => {
+        const link = pages.find((entry) => entry.id === id)?.go;
+        if (link) return panel.go(link);
         if (id === 'dev') tapDevPage();
         setListed(false);
         setPage(id);

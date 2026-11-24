@@ -1,0 +1,517 @@
+//! The bus with a made-up provider: letters, questions, answers, news, lists and fuses as a whole.
+
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Mutex;
+
+use futures::future::BoxFuture;
+use serde_json::json;
+
+use serde_json::Value;
+
+use super::*;
+use crate::core::events::EventBus;
+use crate::core::identity::principal::{household_principal, user_principal};
+use crate::core::identity::roles::Role;
+use crate::rights::danger::Danger;
+use crate::rights::links::{Link, LinkSource};
+use crate::settings::SettingsService;
+use crate::storage::Db;
+
+/// Apps `app/a` … with a few handles: `list` (call), `wipe` (call, dangerous), `notes` (call, personal), `smart`
+/// (call, needs `use:smart_home`), `edit` (edit). `app/a` asked for `call:app/b` in its manifest.
+pub(crate) struct Toy {
+    pub calls: AtomicU32,
+    pub heard: Mutex<Vec<String>>,
+}
+
+impl Toy {
+    pub fn new() -> Arc<Toy> {
+        Arc::new(Toy { calls: AtomicU32::new(0), heard: Mutex::new(Vec::new()) })
+    }
+}
+
+impl Provider for Toy {
+    fn kind(&self) -> &'static str {
+        "app"
+    }
+
+    fn participants(&self) -> Vec<Participant> {
+        ["a", "b", "c", "lock"]
+            .iter()
+            .map(|id| Participant::new(Address::app(id), &format!("Приложение {id}")))
+            .collect()
+    }
+
+    fn handles(&self, _address: &Address) -> Vec<Handle> {
+        vec![
+            Handle::new("list", Level::Call).titled("список"),
+            Handle::new("wipe", Level::Call).dangerous(Some(Danger::Delete)),
+            Handle::new("notes", Level::Call).private(true),
+            Handle::new("smart", Level::Call).needs(Some("use:smart_home".into())),
+            Handle::new("edit", Level::Edit),
+        ]
+    }
+
+    fn declared(&self, from: &Address, to: &Address) -> Level {
+        if from.as_str() == "app/a" && to.as_str() == "app/b" {
+            Level::Call
+        } else if from.as_str() == "app/c" && to.as_str() == "app/a" {
+            Level::Listen
+        } else if from.as_str() == "app/a" && Pattern::parse("files/home/Documents/*").unwrap().matches(to) {
+            Level::Edit
+        } else {
+            Level::None
+        }
+    }
+
+    fn call(&self, letter: Letter) -> BoxFuture<'static, Result<Value, BusError>> {
+        self.calls.fetch_add(1, Ordering::Relaxed);
+        let root = letter.trail.root.label();
+        Box::pin(
+            async move { Ok(json!({ "handle": letter.handle, "root": root, "trail": trail::current().is_some() })) },
+        )
+    }
+
+    fn listeners(&self, from: &Address, event: &str) -> Vec<Address> {
+        if from.as_str() == "app/a" && event == "bought" {
+            vec![Address::app("b"), Address::app("c")]
+        } else {
+            Vec::new()
+        }
+    }
+
+    fn deliver(&self, to: &Address, news: News) -> BoxFuture<'static, Result<(), BusError>> {
+        self.heard.lock().unwrap().push(format!("{to}:{}", news.event));
+        Box::pin(async { Ok(()) })
+    }
+}
+
+pub(crate) fn bus() -> (Arc<Bus>, Arc<Toy>) {
+    let db = Arc::new(Db::open(None).unwrap());
+    let events = EventBus::new();
+    let settings = Arc::new(SettingsService::new(db.clone(), events.clone()));
+    let bus = Bus::new(BusDeps { db, settings, events, keep_lines: 1000 });
+    let toy = Toy::new();
+    bus.register(toy.clone());
+    (bus, toy)
+}
+
+fn a() -> Address {
+    Address::app("a")
+}
+
+fn b() -> Address {
+    Address::app("b")
+}
+
+#[tokio::test]
+async fn a_letter_without_a_link_meets_a_closed_door_and_with_one_goes_through_in_its_trail() {
+    let (bus, toy) = bus();
+    let trail = Trail::app("c");
+    let shut = bus.call(trail.clone(), Address::app("c"), b(), "list", json!({}), vec![]).await;
+    assert!(matches!(shut, Err(BusError::NotFound(_))), "{shut:?}");
+    bus.links
+        .grant(
+            Link::new(
+                Pattern::exact(&Address::app("c")),
+                Pattern::parse("app/*").unwrap(),
+                Level::Call,
+                LinkSource::Owner,
+            ),
+            None,
+        )
+        .unwrap();
+    let answer = bus.call(trail, Address::app("c"), b(), "list", json!({}), vec![]).await.unwrap();
+    assert_eq!(answer, json!({"handle": "list", "root": "app:c", "trail": true}));
+    assert_eq!(toy.calls.load(Ordering::Relaxed), 1);
+    let lines = bus.journal.read(None, None, 10);
+    assert_eq!(lines[0].outcome, "ok");
+    assert_eq!(lines[1].outcome, "notFound");
+}
+
+#[tokio::test]
+async fn what_the_manifest_asked_for_waits_for_a_yes_once_then_goes_through() {
+    let (bus, toy) = bus();
+    let first = bus.call(Trail::app("a"), a(), b(), "list", json!({}), vec![]).await;
+    let Err(BusError::NeedsYes { id, why }) = first else { panic!("{first:?}") };
+    assert_eq!(why, "«Приложение a» хочет звать «Приложение b»");
+    // Asked again while it waits: the same question, no second one.
+    let _ = bus.call(Trail::app("a"), a(), b(), "list", json!({}), vec![]).await;
+    assert_eq!(bus.consent.waiting().len(), 1);
+    bus.answer(&id, true, None).unwrap().unwrap();
+    assert_eq!(bus.links.level(&a(), &b()), Level::Call);
+    bus.call(Trail::app("a"), a(), b(), "list", json!({}), vec![]).await.unwrap();
+    assert_eq!(toy.calls.load(Ordering::Relaxed), 1);
+    // The answer «нет» is remembered as a phone remembers it: the door stays shut, and the app is not asked about
+    // again — until the owner opens it in «Связи».
+    let (bus, _) = super::tests::bus();
+    let Err(BusError::NeedsYes { id, .. }) = bus.call(Trail::app("a"), a(), b(), "list", json!({}), vec![]).await
+    else {
+        panic!()
+    };
+    bus.answer(&id, false, None).unwrap();
+    assert_eq!(
+        bus.links.link(&a(), &b()).map(|link| (link.level, link.source)),
+        Some((Level::None, LinkSource::Refused))
+    );
+    let again = bus.call(Trail::app("a"), a(), b(), "list", json!({}), vec![]).await;
+    assert!(matches!(again, Err(BusError::Denied(_))), "{again:?}");
+    assert!(bus.consent.waiting().is_empty());
+    bus.links
+        .grant(Link::new(Pattern::exact(&a()), Pattern::exact(&b()), Level::Call, LinkSource::Owner), None)
+        .unwrap();
+    bus.call(Trail::app("a"), a(), b(), "list", json!({}), vec![]).await.unwrap();
+}
+
+#[tokio::test]
+async fn a_yes_for_a_folder_covers_all_in_it_and_what_was_not_asked_for_is_not_there() {
+    let (bus, _) = bus();
+    let dir = tempfile::tempdir().unwrap();
+    let places = providers::files::Places::new(&dir.path().join("data"), &dir.path().join("content"), false);
+    let files = Arc::new(providers::files::Files::new(places, Arc::new(|_| 64)));
+    files.set_bus(Arc::downgrade(&bus));
+    bus.register(files);
+    let doc = |name: &str| Address::parse(&format!("files/home/Documents/{name}")).unwrap();
+    let first = bus.call(Trail::app("a"), a(), doc("a.txt"), "write", json!({"text": "x"}), vec![]).await;
+    let Err(BusError::NeedsYes { id, why }) = first else { panic!("{first:?}") };
+    assert_eq!(why, "«Приложение a» хочет менять файлы в папке «Документы»");
+    let question = bus.consent.waiting().remove(0);
+    assert_eq!((question.grant.as_str(), question.level), ("files/home/Documents/*", Level::Edit));
+    // Reading first, then writing: still the one question.
+    let _ = bus.call(Trail::app("a"), a(), doc("b.txt"), "read", json!({}), vec![]).await;
+    assert_eq!(bus.consent.waiting().len(), 1);
+    bus.answer(&id, true, None).unwrap();
+    bus.call(Trail::app("a"), a(), doc("a.txt"), "write", json!({"text": "x"}), vec![]).await.unwrap();
+    bus.call(Trail::app("a"), a(), doc("b.txt"), "write", json!({"text": "y"}), vec![]).await.unwrap();
+    let read = bus.call(Trail::app("a"), a(), doc("b.txt"), "read", json!({"as": "text"}), vec![]).await.unwrap();
+    assert_eq!(read["text"], "y");
+    // «Картинки» it never asked for: not there for it at all.
+    let pictures = Address::parse("files/home/Pictures/c.png").unwrap();
+    let unseen = bus.call(Trail::app("a"), a(), pictures, "read", json!({}), vec![]).await;
+    assert!(matches!(unseen, Err(BusError::NotFound(_))), "{unseen:?}");
+}
+
+#[tokio::test]
+async fn a_chain_a_guest_started_cannot_reach_through_an_app_what_the_guest_cannot() {
+    let (bus, toy) = bus();
+    bus.links
+        .grant(Link::new(Pattern::exact(&a()), Pattern::exact(&b()), Level::Call, LinkSource::Owner), None)
+        .unwrap();
+    let guest = Trail::principal(&household_principal(Role::Guest, None)).entering("a").unwrap();
+    let refused = bus.call(guest, a(), b(), "smart", json!({}), vec![]).await;
+    assert!(matches!(refused, Err(BusError::Denied(ref why)) if why.contains("Дом")), "{refused:?}");
+    let member = Trail::principal(&user_principal("u1", "Мама", Role::Member, None)).entering("a").unwrap();
+    bus.call(member, a(), b(), "smart", json!({}), vec![]).await.unwrap();
+    // An app on its own answers for itself with its links.
+    bus.call(Trail::app("a"), a(), b(), "smart", json!({}), vec![]).await.unwrap();
+    assert_eq!(toy.calls.load(Ordering::Relaxed), 2);
+}
+
+#[tokio::test]
+async fn danger_without_a_person_asks_each_time_and_a_yes_buys_one_action() {
+    let (bus, toy) = bus();
+    bus.links
+        .grant(Link::new(Pattern::exact(&a()), Pattern::exact(&b()), Level::Call, LinkSource::Owner), None)
+        .unwrap();
+    let person = Trail::principal(&user_principal("u1", "Мама", Role::Admin, None));
+    bus.call(person, a(), b(), "wipe", json!({}), vec![]).await.unwrap();
+    let Err(BusError::NeedsYes { id, why }) = bus.call(Trail::app("a"), a(), b(), "wipe", json!({}), vec![]).await
+    else {
+        panic!()
+    };
+    assert!(why.contains("удаляет"), "{why}");
+    bus.answer(&id, true, None).unwrap();
+    // «Да» to a dangerous action is no link: one action.
+    assert_eq!(bus.links.level(&a(), &b()), Level::Call);
+    bus.call(Trail::app("a"), a(), b(), "wipe", json!({}), vec![]).await.unwrap();
+    assert!(matches!(
+        bus.call(Trail::app("a"), a(), b(), "wipe", json!({}), vec![]).await,
+        Err(BusError::NeedsYes { .. })
+    ));
+    assert_eq!(toy.calls.load(Ordering::Relaxed), 2);
+}
+
+#[tokio::test]
+async fn the_personal_and_the_isolated_are_not_there_and_free_opens_only_the_open() {
+    let (bus, _) = bus();
+    bus.links.set_mode(Some(&a()), Some(links::Mode::Free), None).unwrap();
+    bus.call(Trail::app("a"), a(), b(), "list", json!({}), vec![]).await.unwrap();
+    assert!(matches!(
+        bus.call(Trail::app("a"), a(), b(), "notes", json!({}), vec![]).await,
+        Err(BusError::NotFound(_))
+    ));
+    assert!(matches!(bus.call(Trail::app("a"), a(), b(), "edit", json!({}), vec![]).await, Err(BusError::Denied(_))));
+    bus.links.set_mode(Some(&b()), Some(links::Mode::Isolated), None).unwrap();
+    assert!(matches!(bus.call(Trail::app("a"), a(), b(), "list", json!({}), vec![]).await, Err(BusError::NotFound(_))));
+    // A person still reaches the isolated app in the panel.
+    let person = Trail::principal(&user_principal("u1", "Мама", Role::Admin, None));
+    bus.call(person, Address::parse("person/u1").unwrap(), b(), "list", json!({}), vec![]).await.unwrap();
+}
+
+#[tokio::test]
+async fn news_reaches_the_listeners_the_rule_lets_hear_and_asks_for_the_declared() {
+    let (bus, toy) = bus();
+    bus.links
+        .grant(Link::new(Pattern::exact(&b()), Pattern::exact(&a()), Level::Listen, LinkSource::Owner), None)
+        .unwrap();
+    bus.tell(Trail::app("a"), a(), "bought", json!({"item": "молоко"}));
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    assert_eq!(*toy.heard.lock().unwrap(), vec!["app/b:bought".to_string()]);
+    // `app/c` asked to listen in its manifest: a question waits for it.
+    let waiting = bus.consent.waiting();
+    assert_eq!(waiting.len(), 1);
+    assert_eq!(waiting[0].from.as_str(), "app/c");
+}
+
+#[tokio::test]
+async fn a_list_shows_only_what_the_caller_may_see_or_ask_for() {
+    let (bus, _) = bus();
+    let seen = bus.list(&Trail::app("a"), &a());
+    // `app/b`: declared, so its handles show as askable; the rest are not there.
+    assert_eq!(seen.len(), 1);
+    assert_eq!(seen[0].participant.address, b());
+    assert!(seen[0].handles.iter().any(|handle| handle.handle.name == "list" && handle.asks));
+    assert!(!seen[0].handles.iter().any(|handle| handle.handle.name == "notes"));
+}
+
+#[tokio::test]
+async fn two_apps_answering_each_other_stop_at_the_days_budget() {
+    let (bus, _) = bus();
+    bus.links
+        .grant(Link::new(Pattern::exact(&a()), Pattern::exact(&b()), Level::Call, LinkSource::Owner), None)
+        .unwrap();
+    for _ in 0..PAIR_BUDGET {
+        bus.call(Trail::app("a"), a(), b(), "list", json!({}), vec![]).await.unwrap();
+    }
+    let stopped = bus.call(Trail::app("a"), a(), b(), "list", json!({}), vec![]).await;
+    assert!(matches!(stopped, Err(BusError::Fuse(_))), "{stopped:?}");
+    // A person's chain is not counted.
+    let person = Trail::principal(&user_principal("u1", "Мама", Role::Admin, None));
+    bus.call(person, a(), b(), "list", json!({}), vec![]).await.unwrap();
+}
+
+#[tokio::test]
+async fn a_folder_is_closed_to_roles_not_ticked_to_a_model_in_the_cloud_and_outside_the_home() {
+    let (bus, _) = bus();
+    let dir = tempfile::tempdir().unwrap();
+    let places = providers::files::Places::new(&dir.path().join("data"), &dir.path().join("content"), false);
+    places.prepare();
+    let files = Arc::new(providers::files::Files::new(places.clone(), Arc::new(|_| 64)));
+    let folders = providers::files::rules::Folders::new(Arc::new(crate::storage::Db::memory()), places, None);
+    files.set_folders(folders.clone());
+    // Yandex's voice says our answers; the model is in the cloud.
+    files.set_leaving(Arc::new(|| false), Arc::new(|| true));
+    files.set_bus(Arc::downgrade(&bus));
+    bus.register(files);
+    let docs = Pattern::parse("files/home/Documents/*").unwrap();
+    bus.links.grant(Link::new(Pattern::exact(&a()), docs, Level::Edit, LinkSource::Owner), None).unwrap();
+    let doc = Address::parse("files/home/Documents/a.txt").unwrap();
+    bus.call(Trail::app("a"), a(), doc.clone(), "write", json!({"text": "x"}), vec![]).await.unwrap();
+    let guest = || Trail::principal(&household_principal(Role::Guest, None));
+    let member = || Trail::principal(&user_principal("u1", "Мама", Role::Member, None));
+    // A guest's chain: the folder is not there for it at all.
+    let unseen = bus.call(guest().entering("a").unwrap(), a(), doc.clone(), "read", json!({}), vec![]).await;
+    assert!(matches!(unseen, Err(BusError::NotFound(_))), "{unseen:?}");
+    // Through a model in the cloud: nothing — neither the file nor the list of names.
+    let folder = Address::parse("files/home/Documents").unwrap();
+    for (to, handle) in [(doc.clone(), "read"), (folder.clone(), "list")] {
+        let cloud =
+            bus.call(member().through_model(true).entering("a").unwrap(), a(), to, handle, json!({}), vec![]).await;
+        assert!(matches!(cloud, Err(BusError::Denied(ref why)) if why.contains("Модель может читать")), "{cloud:?}");
+    }
+    // Our own model reads at home.
+    bus.call(member().through_model(false).entering("a").unwrap(), a(), doc.clone(), "read", json!({}), vec![])
+        .await
+        .unwrap();
+    // From outside the home: not there.
+    let afar =
+        bus.call(member().from_afar(true).entering("a").unwrap(), a(), doc.clone(), "read", json!({}), vec![]).await;
+    assert!(matches!(afar, Err(BusError::NotFound(_))), "{afar:?}");
+    // The household's ticks open each.
+    let change = providers::files::rules::Change {
+        roles: Some(vec!["member".into(), "guest".into()]),
+        model: Some(true),
+        remote: Some(true),
+        ..Default::default()
+    };
+    folders.change(&folder, &change).unwrap();
+    for trail in [guest(), member().through_model(true), member().from_afar(true)] {
+        bus.call(trail.entering("a").unwrap(), a(), doc.clone(), "read", json!({}), vec![]).await.unwrap();
+    }
+    // Yandex's voice names the files only with its own tick.
+    let stat = bus.call(member().entering("a").unwrap(), a(), folder, "stat", json!({}), vec![]).await.unwrap();
+    assert_eq!((&stat["speak"], &stat["model"]), (&json!(false), &json!(true)));
+}
+
+/// docs/plans/audio-interface.md, «На стол голосом»: a right that reaches a handle marked dangerous is the panel's to
+/// approve, never a voice's; hosts and harmless rights are not.
+#[test]
+fn a_right_that_reaches_a_dangerous_handle_is_for_the_panel() {
+    let (bus, _) = bus();
+    assert!(bus.any_dangerous(&["call:app/a".into()]), "app/a has `wipe`, dangerous, at the call level");
+    assert!(bus.any_dangerous(&["edit:app/*".into()]), "a wider pattern and a higher level reach it too");
+    assert!(!bus.any_dangerous(&["see:app/a".into()]), "seeing it does not reach a call");
+    assert!(!bus.any_dangerous(&["net:api.todoist.com".into(), "call:system/voice".into()]));
+    assert!(!bus.any_dangerous(&[]));
+}
+
+/// A made-up station microphone: `system/mic` and `system/other`, each with `open` — dangerous, its «да» for good — and
+/// `wipe`, dangerous for one act.
+struct Mic;
+
+impl Provider for Mic {
+    fn kind(&self) -> &'static str {
+        "system"
+    }
+
+    fn participants(&self) -> Vec<Participant> {
+        ["mic", "other"]
+            .iter()
+            .map(|name| Participant::new(Address::parse(&format!("system/{name}")).unwrap(), name))
+            .collect()
+    }
+
+    fn handles(&self, _address: &Address) -> Vec<Handle> {
+        vec![
+            Handle::new("open", Level::Call).dangerous(Some(Danger::Camera)).standing(),
+            Handle::new("wipe", Level::Call).dangerous(Some(Danger::Delete)),
+        ]
+    }
+
+    fn call(&self, letter: Letter) -> BoxFuture<'static, Result<Value, BusError>> {
+        Box::pin(async move { Ok(json!({ "handle": letter.handle })) })
+    }
+}
+
+/// docs/plans/wake-word-station.md: the rights approved with an install are links before the app first runs — it asks
+/// nothing at first use; a standing danger the rights name exactly is «всегда» for this app; one act's danger still
+/// asks each time, and a wider pattern gives no «всегда».
+#[tokio::test]
+async fn rights_approved_with_the_install_ask_nothing_and_a_standing_danger_is_always() {
+    let (bus, _) = bus();
+    bus.register(Arc::new(Mic));
+    let (mic, other) = (Address::parse("system/mic").unwrap(), Address::parse("system/other").unwrap());
+    let rights = vec![(Level::Call, Pattern::exact(&mic)), (Level::Call, Pattern::parse("system/*").unwrap())];
+    assert_eq!(bus.approve_install(&a(), &rights, None).unwrap(), 2);
+    assert_eq!(bus.links.all().iter().filter(|link| link.source == LinkSource::Install).count(), 2);
+    for _ in 0..2 {
+        bus.call(Trail::app("a"), a(), mic.clone(), "open", json!({}), vec![]).await.unwrap();
+    }
+    assert!(matches!(
+        bus.call(Trail::app("a"), a(), mic, "wipe", json!({}), vec![]).await,
+        Err(BusError::NeedsYes { .. })
+    ));
+    assert!(matches!(
+        bus.call(Trail::app("a"), a(), other, "open", json!({}), vec![]).await,
+        Err(BusError::NeedsYes { .. })
+    ));
+    assert_eq!(bus.approve_install(&a(), &rights, None).unwrap(), 0, "approved again: nothing new");
+    // Removed: its links and its «всегда» go with it — put in again, it is asked anew.
+    bus.forget(&a(), None);
+    assert!(bus.links.all().is_empty() && bus.links.dangers().is_empty());
+}
+
+/// Clean-path check 18.11, item 13: the station's microphone came to the bus after the wake word was installed, so no
+/// «всегда» was written at the install. The install's exact link stands for it: the app is not asked again; a wider
+/// pattern still gives no «всегда», and the owner's own word on the handle still rules.
+#[tokio::test]
+async fn a_standing_danger_that_came_after_the_install_is_always_by_its_install_link() {
+    let (bus, _) = bus();
+    let (mic, other) = (Address::parse("system/mic").unwrap(), Address::parse("system/other").unwrap());
+    let rights = vec![(Level::Call, Pattern::exact(&mic)), (Level::Call, Pattern::parse("system/*").unwrap())];
+    // Installed before the microphone's provider is there: links, no «всегда».
+    assert_eq!(bus.approve_install(&a(), &rights, None).unwrap(), 2);
+    assert!(bus.links.dangers().is_empty());
+    bus.register(Arc::new(Mic));
+    bus.call(Trail::app("a"), a(), mic.clone(), "open", json!({}), vec![]).await.unwrap();
+    assert!(matches!(
+        bus.call(Trail::app("a"), a(), mic, "wipe", json!({}), vec![]).await,
+        Err(BusError::NeedsYes { .. })
+    ));
+    assert!(matches!(
+        bus.call(Trail::app("a"), a(), other, "open", json!({}), vec![]).await,
+        Err(BusError::NeedsYes { .. })
+    ));
+}
+
+/// Clean-path check 18.11, item 17: the owner's «да» to a standing danger (the wake word's microphone) is for good — it
+/// outlives a restart of the gateway (a new bus over the same database). A danger for one act is still one act.
+#[tokio::test]
+async fn a_yes_to_a_standing_danger_outlives_a_restart() {
+    let db = Arc::new(Db::open(None).unwrap());
+    let events = EventBus::new();
+    let settings = Arc::new(SettingsService::new(db.clone(), events.clone()));
+    let start = || {
+        let bus =
+            Bus::new(BusDeps { db: db.clone(), settings: settings.clone(), events: events.clone(), keep_lines: 1000 });
+        bus.register(Toy::new());
+        bus.register(Arc::new(Mic));
+        bus
+    };
+    let mic = Address::parse("system/mic").unwrap();
+    let bus = start();
+    bus.links
+        .grant(Link::new(Pattern::exact(&a()), Pattern::exact(&mic), Level::Call, LinkSource::Answer), None)
+        .unwrap();
+    for handle in ["open", "wipe"] {
+        let Err(BusError::NeedsYes { id, .. }) =
+            bus.call(Trail::app("a"), a(), mic.clone(), handle, json!({}), vec![]).await
+        else {
+            panic!("{handle}: a danger asks first")
+        };
+        bus.answer(&id, true, None).unwrap().unwrap();
+    }
+    bus.call(Trail::app("a"), a(), mic.clone(), "open", json!({}), vec![]).await.unwrap();
+
+    let again = start();
+    again.call(Trail::app("a"), a(), mic.clone(), "open", json!({}), vec![]).await.unwrap();
+    again.call(Trail::app("a"), a(), mic.clone(), "open", json!({}), vec![]).await.unwrap();
+    assert!(matches!(
+        again.call(Trail::app("a"), a(), mic, "wipe", json!({}), vec![]).await,
+        Err(BusError::NeedsYes { .. })
+    ));
+}
+
+/// The gateway's services with nothing behind them but the device's state, which is the gateway's own reading.
+struct DeviceOnly;
+
+impl crate::plugins::host_api::HostServices for DeviceOnly {
+    fn content(&self, _folder: &str, _query: Option<String>, _limit: usize) -> BoxFuture<'static, Vec<Value>> {
+        Box::pin(async { Vec::new() })
+    }
+    fn smart_home_devices(&self) -> BoxFuture<'static, Result<Value, String>> {
+        Box::pin(async { Ok(Value::Null) })
+    }
+    fn smart_home_act(&self, _: String, _: String, _: Option<f64>) -> BoxFuture<'static, Result<String, String>> {
+        Box::pin(async { Ok(String::new()) })
+    }
+    fn weather_place(&self) -> Option<String> {
+        None
+    }
+    fn news_feeds(&self) -> Vec<Value> {
+        Vec::new()
+    }
+}
+
+/// `system/device` (operations/device_state.rs): an app that did not ask does not know it is there; asked for and
+/// approved with the install as `see:` — the lowest step — it reads the device, and nothing more is open with it.
+#[tokio::test]
+async fn the_devices_state_is_seen_only_by_the_app_that_asked_for_it() {
+    let (bus, _) = bus();
+    let system = Arc::new(crate::bus::providers::system::System::new());
+    let services: Arc<dyn crate::plugins::host_api::HostServices> = Arc::new(DeviceOnly);
+    system.set_services(Arc::downgrade(&services));
+    bus.register(system);
+    let device = Address::parse("system/device").unwrap();
+    let shut = bus.call(Trail::app("a"), a(), device.clone(), "state", json!({}), vec![]).await;
+    assert!(matches!(shut, Err(BusError::NotFound(_))), "{shut:?}");
+    assert_eq!(bus.approve_install(&a(), &[(Level::See, Pattern::exact(&device))], None).unwrap(), 1);
+    let state = bus.call(Trail::app("a"), a(), device.clone(), "state", json!({}), vec![]).await.unwrap();
+    assert_eq!(state["itself"], true, "{state}");
+    assert!(state.get("memory").is_some() && state.get("cpu").is_some(), "{state}");
+    let history = bus.call(Trail::app("a"), a(), device.clone(), "history", json!({}), vec![]).await.unwrap();
+    assert!(history["samples"].as_array().is_some_and(|samples| !samples.is_empty()), "a graph has a point at once");
+    // The same right opens nothing else of the gateway's.
+    let voice = bus.call(Trail::app("a"), a(), Address::parse("system/voice").unwrap(), "say", json!({}), vec![]).await;
+    assert!(matches!(voice, Err(BusError::NotFound(_))), "{voice:?}");
+}

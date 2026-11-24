@@ -6,7 +6,7 @@
 # release, so installed gateways keep updating if the repository ever moves.
 #
 # The station's build comes first: every computer build — the gateway alone, the desktop app, the gateway's image —
-# carries it signed (DUOWAVE_STATION_PAYLOAD, gateway/build.rs), so the panel moves the gateway onto a station without
+# carries it signed (DUOWAVE_STATION_PAYLOAD, crates/duowave-home/build.rs), so the panel moves the gateway onto a station without
 # a file to find, and the YAM package carries the program itself.
 #
 # The model images (recognition and our voice) need none of that and start at once, each architecture on its own
@@ -585,8 +585,8 @@ jobs:
   gateway-image:
     # The gateway's image for amd64 and arm64: the very programs of gateway-binaries' Linux archives (static musl, the
     # feed and the station's build inside), put into Dockerfile.prod's runtime stage (GATEWAY=prebuilt). Only that stage
-    # runs on arm64 under QEMU: an apk and a setcap. Only the two Linux programs matter here, so another platform's
-    # failed build does not hold the image back.
+    # runs on arm64 under QEMU: an addgroup and a mkdir (the setcap runs on the build machine). Only the two Linux
+    # programs matter here, so another platform's failed build does not hold the image back.
     needs: gateway-binaries
     if: ${{ !cancelled() && needs.gateway-binaries.result != 'skipped' }}
     runs-on: ubuntu-latest

@@ -1392,6 +1392,8 @@ export interface PlacementHealth {
      * прохода к центру, имя дома, есть ли связь сейчас. Шлюз присылает, только когда центр принимает пульт по связи.
      */
     centre?: LinkCentre;
+    /** Mac: macOS не пускает DuoWave в домашнюю сеть (нет «Локальной сети»), его не видят колонки и другие компьютеры. */
+    localNetwork?: 'blocked';
 }
 
 /** Центр дома для его Турбо по связи: проход `/station/<ключ>/…` идёт к нему обратно по связи. */
@@ -2563,6 +2565,8 @@ export type ScreenAction = 'keep' | 'temporary' | 'close' | 'pause' | 'resume' |
 export interface FoldersView {
     home?: string;
     visible: boolean;
+    /** Турбо, чьи папки — тоже папки дома: в списке папки здесь видны и его файлы. */
+    turbo?: string;
     attach: boolean;
     pick: boolean;
     local: boolean;
@@ -2583,6 +2587,8 @@ export interface FolderItem {
     kind: 'folder' | 'image' | 'text' | 'pdf' | 'doc' | 'audio' | 'video' | 'other';
     size: number;
     modified?: string | null;
+    /** Где лежит, когда папка дома есть и на Турбо: его имя для людей (`HouseFiles`). */
+    placeName?: string;
 }
 
 export interface FolderPage {

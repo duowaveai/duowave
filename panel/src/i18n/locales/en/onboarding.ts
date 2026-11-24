@@ -32,6 +32,7 @@ const en: Translation<typeof ru> = {
     noStation: 'No speakers found on the network. You can connect one later, or enter its address on the next step.',
     foundIn: 'Found on the network:',
     noStationShort: 'No speakers found on the network.',
+    searchAgain: 'Search again',
     whereComputer: 'hub: this computer',
     whereStation: 'hub: the speaker',
     changeLater: 'You can change this later in “Settings” → “Home” → “Devices”. Nothing changes on the speaker until you press “Connect”.',

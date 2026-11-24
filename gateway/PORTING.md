@@ -31,7 +31,7 @@ path without `.ts` (`src/links`, `src/app.rs`, `src/tools`) is this crate's own.
 - Shared types already exist; use them, do not redefine them: `config` (every env variable), `core` (events, identity,
   requests, settings, presence), `skills::capabilities`, `dialog::llm::llm_client` (the model interface),
   `gateway::protocol::protocol_types` (the station protocol's model) and `gateway::protocol::pb` (the wire messages,
-  generated from `proto/station-protocol.proto`).
+  generated from `crates/duowave-ears/proto/station-protocol.proto`).
 - Comments: the TS comments carry over — they explain why. Plain, short English; no comment that only restates code.
 
 ## Conventions
@@ -67,7 +67,7 @@ path without `.ts` (`src/links`, `src/app.rs`, `src/tools`) is this crate's own.
 
 ## Done means
 
-- `cargo test -p duowave` green, `cargo clippy -p duowave --all-targets` without warnings, `cargo fmt` applied
+- `cargo test --workspace` green, `cargo clippy --workspace --all-targets` without warnings, `cargo fmt` applied
   (`../rustfmt.toml`: width 120).
 - A commit with what was ported, and in the report: what is left or behaves differently, and every change to a shared
   file (`Cargo.toml`, `src/lib.rs`, `src/app.rs`, `src/config/mod.rs`, a new migration).

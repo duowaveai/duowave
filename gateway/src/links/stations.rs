@@ -15,6 +15,32 @@ impl PresenceSource for LivePresence {
     }
 }
 
+/// Alice's road to Yandex by «Выход в интернет» (src/gateway/yandex: its trait; src/egress: the decision).
+#[cfg(feature = "yandex-station")]
+pub struct EgressRoad;
+
+#[cfg(feature = "yandex-station")]
+impl crate::gateway::yandex::yandex_session::AliceRoad for EgressRoad {
+    fn hop(&self) -> crate::gateway::yandex::yandex_session::AliceHop {
+        use crate::egress::app_entry::Hop;
+        use crate::gateway::yandex::yandex_session::AliceHop;
+        match crate::egress::alice() {
+            Hop::Direct => AliceHop::Direct,
+            Hop::Via(entry) => AliceHop::Via(entry),
+            Hop::Refuse(words) => AliceHop::Refuse(words),
+        }
+    }
+
+    fn tunnel<'a>(
+        &'a self,
+        entry: &'a url::Url,
+        host: &'a str,
+        port: u16,
+    ) -> futures::future::BoxFuture<'a, Result<tokio::net::TcpStream, String>> {
+        Box::pin(crate::egress::app_entry::tunnel(entry, host, port))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Mutex;
@@ -26,10 +52,10 @@ mod tests {
     use crate::utils::time::now_ms;
 
     /// A panel's stream that keeps what it is sent.
-    #[derive(Default)]
-    struct Panel(Mutex<Vec<LiveMessage>>);
+    #[derive(Default, Clone)]
+    struct Panel(std::sync::Arc<Mutex<Vec<LiveMessage>>>);
 
-    impl LiveSink for std::sync::Arc<Panel> {
+    impl LiveSink for Panel {
         fn send(&self, message: &LiveMessage) -> bool {
             self.0.lock().unwrap().push(message.clone());
             true
@@ -52,7 +78,7 @@ mod tests {
             grants: vec!["station.view".into()],
             denies: Vec::new(),
         };
-        let panel = std::sync::Arc::new(Panel::default());
+        let panel = Panel::default();
         let _leave = app.live.join(&admin, Box::new(panel.clone()));
         let messages = panel.0.lock().unwrap().clone();
         let Some(LiveMessage::Hello { presence, .. }) = messages.first() else { panic!("a hello first: {messages:?}") };

@@ -1,0 +1,71 @@
+[package]
+name = "duowave-ears"
+description = "DuoWave's floor «Уши»: the ears' adapters to the ear contract — the Station's (Yandex's protocol, the uniproxy server and sessions, the relay to Yandex, its commands) behind its own feature —, the stations and their connection, Alice's listener, the panel's live channel and the requests' journal"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+build = "build.rs"
+
+[features]
+# The gateway's own switches, passed down (gateway/Cargo.toml). Connecting stations over SSH and finding them on the
+# network is the computer's floor's (crates/duowave-pc).
+station = ["yandex-station", "duowave-base/station", "duowave-rights/station", "duowave-voice/station", "duowave-brain/station"]
+# The Station's adapter to the ear contract (src/gateway: Yandex's protocol, the uniproxy server and sessions, the relay
+# to Yandex, the Station's commands; Alice's listener, src/activator). A build without it is a home without Yandex's
+# Station — the computer's microphone, the panel, the apps.
+yandex-station = []
+# What the tests of the crates above take from this one (the pretend station's tools, in a folder of their own).
+testing = ["duowave-base/testing", "duowave-rights/testing", "duowave-voice/testing", "duowave-brain/testing", "dep:tempfile"]
+
+[dependencies]
+duowave-base = { path = "../duowave-base" }
+duowave-rights = { path = "../duowave-rights" }
+duowave-voice = { path = "../duowave-voice" }
+duowave-brain = { path = "../duowave-brain" }
+anyhow.workspace = true
+axum.workspace = true
+base64.workspace = true
+bytes.workspace = true
+chrono.workspace = true
+flate2.workspace = true
+futures.workspace = true
+hex.workspace = true
+image.workspace = true
+# The Station's protocol (proto/station-protocol.proto, build.rs): prost types and the codec's reflection.
+prost = "0.14.4"
+prost-reflect = "0.16.5"
+prost-types = "0.14.4"
+regex.workspace = true
+reqwest.workspace = true
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+subtle.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-stream.workspace = true
+tokio-tungstenite.workspace = true
+tokio-util.workspace = true
+tower.workspace = true
+tower-http = { version = "0.7.1", features = ["fs"] }
+# The pretend station's folder (stations/connect/station_scripts.rs `tests::Pretend`, feature testing).
+tempfile = { workspace = true, optional = true }
+tracing.workspace = true
+url.workspace = true
+uuid.workspace = true
+
+[build-dependencies]
+prost-build = "0.14.4"
+protox = "0.10.0"
+
+[dev-dependencies]
+duowave-base = { path = "../duowave-base", features = ["testing"] }
+duowave-rights = { path = "../duowave-rights", features = ["testing"] }
+duowave-voice = { path = "../duowave-voice", features = ["testing"] }
+duowave-brain = { path = "../duowave-brain", features = ["testing"] }
+http-body-util.workspace = true
+rand.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["test-util"] }

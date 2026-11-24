@@ -22,6 +22,21 @@ export function onComputer(): boolean {
     return input === 'computer';
 }
 
+/** Чей голос говорит — `/health` `tts` (VoiceService::describe): «own…», «mixed…», «yandex…», «off». */
+let tts = '';
+
+export function noteVoice(next: string | undefined): void {
+    tts = next ?? '';
+}
+
+/**
+ * Скажет ли компьютер ответ вслух: голос дома свой — модель на компьютере или облачная. Голос Алисы звучит только через
+ * колонку (`/api/v1/talk/speech` ответил бы 409): тогда ответ — текстом (решение владельца к находке 9 проверки шага 11).
+ */
+export function computerVoice(): boolean {
+    return /^(own|mixed)\b/.test(tts) && !tts.includes('TTS_OWN_URL not set');
+}
+
 /** То же для отрисовки: перерисовывает, когда режим меняется. */
 export function useOnComputer(): boolean {
     const [value, setValue] = useState(input);

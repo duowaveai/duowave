@@ -39,15 +39,9 @@ impl Gate for App {
     }
 }
 
-impl Provides<Arc<dyn Gate>> for Arc<App> {
-    fn provide(&self) -> Arc<dyn Gate> {
-        self.clone()
-    }
-}
-
-impl Provides<crate::models::home_voice::HomeVoice> for Arc<App> {
-    fn provide(&self) -> crate::models::home_voice::HomeVoice {
-        crate::models::home_voice::HomeVoice {
+impl Provides<crate::helpers::home_voice::HomeVoice> for App {
+    fn provide(&self) -> crate::helpers::home_voice::HomeVoice {
+        crate::helpers::home_voice::HomeVoice {
             voice: self.voice.clone(),
             helpers: self.helpers.clone(),
             settings: self.settings.clone(),
@@ -59,7 +53,7 @@ impl Provides<crate::models::home_voice::HomeVoice> for Arc<App> {
     }
 }
 
-impl Provides<crate::talk::Parts> for Arc<App> {
+impl Provides<crate::talk::Parts> for App {
     fn provide(&self) -> crate::talk::Parts {
         let requests = self.requests.clone();
         let connectors = self.connectors.clone();
@@ -77,25 +71,17 @@ impl Provides<crate::talk::Parts> for Arc<App> {
     }
 }
 
-impl Provides<crate::connectors::controller::Parts> for Arc<App> {
+impl Provides<crate::connectors::controller::Parts> for App {
     fn provide(&self) -> crate::connectors::controller::Parts {
         crate::connectors::controller::Parts {
             connector_settings: self.connector_settings.clone(),
             config: self.config.clone(),
-            #[cfg(feature = "pc")]
-            calls: self.calls.clone(),
+            calls: self.pc.calls_sheet(),
         }
     }
 }
 
-#[cfg(feature = "pc")]
-impl Provides<crate::home_server::serve::Door> for Arc<App> {
-    fn provide(&self) -> crate::home_server::serve::Door {
-        crate::home_server::serve::Door { clients: self.clients.clone(), voice: self.voice.clone() }
-    }
-}
-
-impl Provides<crate::home::Parts> for Arc<App> {
+impl Provides<crate::home::Parts> for App {
     fn provide(&self) -> crate::home::Parts {
         crate::home::Parts {
             config: self.config.clone(),
@@ -113,34 +99,30 @@ impl Provides<crate::home::Parts> for Arc<App> {
             placement: self.placement.clone(),
             connector_settings: self.connector_settings.clone(),
             joins: self.joins.clone(),
+            #[cfg(feature = "yandex-station")]
             sessions: self.sessions.clone(),
             voice: self.voice.clone(),
             modes: self.modes.clone(),
             health: self.health.clone(),
             brain: self.brain.clone(),
-            #[cfg(feature = "pc")]
-            station_gateway: self.station_gateway.clone(),
-            #[cfg(feature = "pc")]
-            models: self.models.clone(),
-            #[cfg(feature = "pc")]
-            voice_lab: self.voice_lab.clone(),
-            #[cfg(feature = "pc")]
-            link: self.link.clone(),
-            #[cfg(feature = "pc")]
-            clients: self.clients.clone(),
+            computer: self.pc.home(),
         }
     }
 }
 
-impl Provides<crate::midi::routes::Parts> for Arc<App> {
+impl Provides<crate::midi::routes::Parts> for App {
     fn provide(&self) -> crate::midi::routes::Parts {
         crate::midi::routes::Parts {
             midi: self.midi.clone(),
             house: self.house.clone(),
             config: self.config.clone(),
             plugins: self.plugins.clone(),
-            #[cfg(feature = "pc")]
-            placement: self.placement.clone(),
+            // A computer's stations, for their windows on the keyboard here; the station's build has none.
+            stations: self
+                .placement
+                .computer()
+                .is_some()
+                .then(|| self.placement.clone() as Arc<dyn crate::midi::routes::PairedStations>),
         }
     }
 }
@@ -152,7 +134,7 @@ pub fn home_parts(app: &Arc<App>) -> impl Fn() -> Option<crate::home::Parts> + C
     move || weak.upgrade().map(|app| app.provide())
 }
 
-impl Provides<crate::helpers::Parts> for Arc<App> {
+impl Provides<crate::helpers::Parts> for App {
     fn provide(&self) -> crate::helpers::Parts {
         crate::helpers::Parts {
             helpers: self.helpers.clone(),
@@ -163,15 +145,7 @@ impl Provides<crate::helpers::Parts> for Arc<App> {
             modes: self.modes.clone(),
             placement: self.placement.clone(),
             voice: self.voice.clone(),
-            own_bot: {
-                #[cfg(feature = "pc")]
-                let calls = self.calls.clone();
-                #[cfg(feature = "pc")]
-                let on: crate::helpers::OwnBot = Arc::new(move || calls.telegram.enabled());
-                #[cfg(not(feature = "pc"))]
-                let on: crate::helpers::OwnBot = Arc::new(|| false);
-                on
-            },
+            own_bot: self.pc.own_bot(),
         }
     }
 }
@@ -180,12 +154,53 @@ impl Provides<crate::helpers::Parts> for Arc<App> {
 macro_rules! provides {
     ($($(#[$attr:meta])* $field:ident: $ty:ty,)*) => {$(
         $(#[$attr])*
-        impl Provides<$ty> for Arc<App> {
+        impl Provides<$ty> for App {
             fn provide(&self) -> $ty {
                 self.$field.clone()
             }
         }
     )*};
+}
+
+/// The home folder's media engine for the station's `/media/v/<key>` (src/gateway/media): the folders' provider keeps
+/// it, the bus keeps that provider.
+impl Provides<crate::gateway::media::FolderMedia> for App {
+    fn provide(&self) -> crate::gateway::media::FolderMedia {
+        use crate::bus::BusFolders;
+        crate::gateway::media::FolderMedia(self.bus.files().map(|files| files.media_shared()))
+    }
+}
+
+/// Whether this gateway is the station's own now, for the talk's voice input (src/talk/routes.rs).
+impl Provides<crate::talk::OnStation> for App {
+    fn provide(&self) -> crate::talk::OnStation {
+        crate::talk::OnStation(self.placement.role() == crate::placement::service::Role::Station)
+    }
+}
+
+/// The placement's pair key for the station's socket (src/gateway/uniproxy/uniproxy_server.rs).
+#[cfg(feature = "yandex-station")]
+impl Provides<crate::gateway::uniproxy::uniproxy_server::PairKey> for App {
+    fn provide(&self) -> crate::gateway::uniproxy::uniproxy_server::PairKey {
+        crate::gateway::uniproxy::uniproxy_server::PairKey(self.placement.peer_key().map(str::to_string))
+    }
+}
+
+/// The apps' sound and the packages' assets for the media (src/gateway/media).
+impl Provides<Arc<dyn crate::gateway::media::AppMedia>> for App {
+    fn provide(&self) -> Arc<dyn crate::gateway::media::AppMedia> {
+        self.plugins.clone()
+    }
+}
+
+// A computer's own parts — the shop, the voice lab, the calls, the link, the stations' watch, the works' seats — are
+// given in src/computer; the station's build gives what stands in for them there (computer/none.rs).
+
+/// A Турбо's files by their key for the media (src/gateway/media).
+impl Provides<Arc<dyn crate::gateway::media::TurboMedia>> for App {
+    fn provide(&self) -> Arc<dyn crate::gateway::media::TurboMedia> {
+        self.house.clone()
+    }
 }
 
 provides! {
@@ -195,21 +210,13 @@ provides! {
     secrets: Arc<SecretsService>,
     cloud_speech: Arc<crate::speech::cloud_speech::CloudSpeech>,
     speech: Arc<crate::speech::SpeechService>,
-    #[cfg(feature = "pc")]
-    voice_lab: Arc<crate::voice_lab::VoiceLabService>,
-    #[cfg(feature = "pc")]
-    builtin: Arc<crate::helpers::builtin::BuiltinHelper>,
-    #[cfg(feature = "pc")]
-    models: Arc<crate::models::ModelsService>,
-    #[cfg(feature = "pc")]
-    local_asr: Option<Arc<crate::speech::asr::local::supervisor::LocalAsr>>,
     brain: Arc<crate::dialog::brain::BrainService>,
     oauth: Arc<crate::oauth::OAuthService>,
     personas: Arc<crate::dialog::PersonaService>,
     router: Arc<crate::router::Router>,
     talk: Arc<crate::talk::TalkLayer>,
     placement: Arc<crate::placement::PlacementService>,
-    modes: Arc<crate::gateway::mode::ModeService>,
+    modes: Arc<crate::ear::mode::ModeService>,
     memory: Arc<crate::memory::MemoryService>,
     reflection: Arc<crate::memory::reflect::Reflection>,
     characters: Arc<crate::characters::CharactersService>,
@@ -219,8 +226,7 @@ provides! {
     live: Arc<crate::live::LiveHub>,
     requests: Arc<crate::requests::RequestsService>,
     stations: Arc<crate::stations::StationsService>,
-    #[cfg(feature = "pc")]
-    station_connect: Arc<crate::stations::connect::station_connect::StationConnectService>,
+    #[cfg(feature = "yandex-station")]
     sessions: Arc<crate::gateway::uniproxy::SessionRegistry>,
     bus: Arc<crate::bus::Bus>,
     streams: Arc<crate::gateway::media::stream::StreamRelays>,
@@ -241,25 +247,13 @@ provides! {
     egress: Arc<crate::egress::Egress>,
     health: Arc<crate::health_status::HealthStatusService>,
     updates: Arc<crate::updates::UpdatesService>,
-    #[cfg(feature = "pc")]
-    calls: Arc<crate::calls::CallsService>,
-    #[cfg(feature = "pc")]
-    works: Option<Arc<crate::works::FolderWorks>>,
     db: Arc<crate::storage::Db>,
     availability: Arc<crate::placement::AvailabilityService>,
     events: crate::core::events::EventBus,
     identity: Arc<crate::core::identity::home::Identity>,
-    #[cfg(feature = "pc")]
-    station_gateway: Arc<crate::placement::watch::StationGateways>,
-    #[cfg(feature = "pc")]
-    moves: Arc<crate::placement::moves::MovesService>,
     home_server: Arc<crate::home_server::HomeServerService>,
     connector_settings: Arc<crate::connectors::settings::ConnectorSettings>,
     voice: Arc<crate::speech::VoiceService>,
-    #[cfg(feature = "pc")]
-    clients: Arc<crate::helpers::clients::Clients>,
-    #[cfg(feature = "pc")]
-    link: Arc<crate::helpers::link_serve::LinkServer>,
     helpers: Arc<crate::helpers::Helpers>,
     joins: Arc<crate::home::join::Joins>,
     house: Arc<crate::home::turbo_devices::HouseDevices>,

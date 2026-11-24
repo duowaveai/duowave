@@ -174,6 +174,8 @@ const en: Translation<typeof ru> = {
     inviteSave: 'Apply',
     inviteWhy: 'Enter it before signing in: the invitation gift is given only at your very first sign-in on the site.',
     actDuowaveNoCode: 'Connect without a code',
+    duowaveNextAfter: 'Next opens once DuoWave is connected. Or choose another AI.',
+    duowaveNextAfterCode: 'Next opens once you are signed in. Paste the code from the DuoWave page and press “finish signing in”. Or choose another AI.',
     optOpenRouter: 'OpenRouter',
     optOpenRouterSub: 'one sign-in, many models',
     optKey: 'Own key',

@@ -11,7 +11,7 @@ import { useState } from 'preact/hooks';
 import { ApiError, api, can, ownCall, problemOf } from '../api';
 import { ask } from '../ui/confirm';
 import type { HomeDevice, HomeDevices, PluggedKind, PluggedPlace, PluggedView } from '../api';
-import { ABILITY_ICONS, abilityTitle, useHelpers } from '../helpers';
+import { ABILITY_ICONS, abilityTitle, applyHelpers, useHelpers } from '../helpers';
 import {
     centreOf,
     deviceDot,
@@ -644,11 +644,17 @@ function TurboOverview({ device, mine }: { device: HomeDevice; mine: boolean }) 
     );
 }
 
-/** Турбо глазами центра: его версия и «Проверить сейчас». Обновляется Турбо у себя. */
+/**
+ * Турбо глазами центра: его версия, «Проверить сейчас» и «Убрать из дома» — то же, что «⋯» → «Убрать» в списке
+ * «Отдаю Турбо» хаба: на странице самого Турбо отключить его было нечем (находка 4 проверки шага 11). Обновляется
+ * Турбо у себя.
+ */
 function TurboDevice({ device }: { device: HomeDevice }) {
     const { view } = useHelpers();
+    const linked = useLinkedItem('settings', 'devices');
     const helper = view?.helpers.find((entry) => `turbo:${entry.id}` === device.id);
     const [note, setNote] = useState<string | null>(null);
+    const [busy, setBusy] = useState(false);
     const check = async (): Promise<void> => {
         if (!helper) return;
         setNote(null);
@@ -656,6 +662,21 @@ function TurboDevice({ device }: { device: HomeDevice }) {
             await api.checkHelper(helper.id);
         } catch (e) {
             setNote(problemOf(e));
+        }
+    };
+    const remove = async (): Promise<void> => {
+        if (!helper) return;
+        const yes = await ask({ title: tr.helpers.removeTitle(helper.name), text: tr.helpers.removeText, ok: tr.helpers.removeOk, danger: true });
+        if (!yes) return;
+        setBusy(true);
+        setNote(null);
+        try {
+            applyHelpers(await api.removeHelper(helper.id));
+            linked.close();
+        } catch (e) {
+            setNote(problemOf(e));
+        } finally {
+            setBusy(false);
         }
     };
     return (
@@ -668,9 +689,14 @@ function TurboDevice({ device }: { device: HomeDevice }) {
             )}
             {helper && can('connectors.manage') && (
                 <div class="w-actions">
-                    <button class="w-btn" onClick={() => void check()}>
+                    <button class="w-btn" disabled={busy} onClick={() => void check()}>
                         {tr.helpers.menuCheck}
                     </button>
+                    {!helper.builtin && (
+                        <button class="w-btn" disabled={busy} onClick={() => void remove()}>
+                            {tr.devices.turboRemove}
+                        </button>
+                    )}
                 </div>
             )}
             {note && (

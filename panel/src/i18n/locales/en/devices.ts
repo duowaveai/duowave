@@ -43,6 +43,7 @@ export default {
     ownHere: 'What is this computer’s own — models, voices, “don’t sleep”, whom it helps — is on this page. The rest belongs to the home.',
     otherHomesLead: 'This computer can be Turbo for another home too — say, your parents’ speaker. They only get its powers: their home stays their own.',
     deviceLead: 'Updates, storage and memory of this device.',
+    turboRemove: 'Remove from home',
     roomLead: 'Per room only the name, Alice’s mode, the volume and who answers here differ. Memory, people and apps are the home’s.',
     gives: 'Gives the home',
     voiceMissing: 'not installed',

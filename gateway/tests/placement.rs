@@ -5,8 +5,6 @@
 //! computer, the station's own panel does not change them. No station, no network beyond 127.0.0.1. The computer's
 //! side (its watch over the station) is in the computer's build only, and so is this test.
 
-#![cfg(feature = "pc")]
-
 mod support;
 
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -128,7 +126,7 @@ async fn the_station_leans_on_the_computer_and_the_computer_keeps_a_copy_of_its_
         home_key_id: Some(created["key"]["id"].as_str().unwrap().into()),
         moved_at: None,
     };
-    let watch = pc.app.station_gateway.watch("at:127.0.0.1");
+    let watch = pc.app.pc.station_gateway.watch("at:127.0.0.1");
     watch.set_record(Some(&record), None).unwrap();
     watch.poll().await;
     // The home's copy (docs/plans/home-and-devices.md, stage 3): the computer's people are the home's now — the
@@ -369,7 +367,7 @@ async fn the_bots_messages_reach_the_station_the_computer_helps_while_it_takes_m
         home_key_id: None,
         moved_at: None,
     };
-    let watch = pc.app.station_gateway.watch("at:127.0.0.1");
+    let watch = pc.app.pc.station_gateway.watch("at:127.0.0.1");
     watch.set_record(Some(&record), None).unwrap();
     watch.poll().await;
     assert!(watch.live().reachable, "{:?}", watch.live().error);

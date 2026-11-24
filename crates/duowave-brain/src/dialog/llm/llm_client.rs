@@ -1,0 +1,444 @@
+//! The model's side of a dialog, whatever the provider: a request (instructions, turns, tools) and a stream of what
+//! the model writes. Claude (anthropic.rs), any OpenAI-compatible /chat/completions (openai_chat.rs), OpenAI's
+//! /responses for the ChatGPT plan (openai_responses.rs) and the echo for checks implement `LlmClient`.
+//!
+//! A client takes its bearer right before each request (`bearer_of`): a key, or the access a sign-in keeps fresh
+//! (src/oauth) — tokens that live an hour are renewed there, ahead of time and once for everyone waiting.
+
+use std::collections::BTreeMap;
+use std::fmt;
+use std::sync::Arc;
+
+use futures::future::BoxFuture;
+use futures::stream::BoxStream;
+use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
+use tokio_util::sync::CancellationToken;
+
+use super::anthropic::AnthropicLlm;
+use super::echo::EchoLlm;
+pub use super::limits::ProviderCell;
+use super::openai_chat::{tokens_field_for, OpenAiChatLlm, OPENAI_BASE_URL};
+use super::openai_responses::OpenAiResponsesLlm;
+use crate::config::{DialogConfig, DialogProvider, ModelPair};
+
+/// Which of OpenAI's APIs an OpenAI-kind provider speaks: /chat/completions (every compatible service) or /responses
+/// (the ChatGPT plan, which takes nothing else).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LlmApi {
+    #[default]
+    Chat,
+    Responses,
+}
+
+/// How a provider's refusals are said (`ProviderPreset.errors`): as they come, or DuoWave's own codes in words.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ErrorWords {
+    #[default]
+    Plain,
+    DuoWave,
+}
+
+/// What DuoWave's last word on the access asks of the owner: connect again (`revoked`, `model` — the model is not in
+/// the plan, the profiles come back to the service's defaults) or the account (`ended`). The limits — the day's, the
+/// week's, too many requests — are the provider's `limit` (limits.rs).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AccessProblem {
+    Revoked,
+    Ended,
+    Model,
+}
+
+/// A refusal of a provider with limits (limits.rs) in words: a limit — kept on the cell, a pause when it is one —, or
+/// DuoWave's model not in the plan. None — not one of these: the plain error stays.
+pub fn refusal(
+    cell: &ProviderCell,
+    status: u16,
+    headers: &reqwest::header::HeaderMap,
+    body: &str,
+) -> Option<anyhow::Error> {
+    let code = super::limits::code_of(body);
+    if let Some(limit) = super::limits::limit_of(cell.words(), status, headers, body, chrono::Utc::now()) {
+        cell.refused(&limit);
+        match limit.reason {
+            super::limits::LimitReason::Revoked => cell.set_problem(Some(AccessProblem::Revoked)),
+            super::limits::LimitReason::Ended => cell.set_problem(Some(AccessProblem::Ended)),
+            _ => {}
+        }
+        return Some(super::limits::failure(cell, &limit, Some(status), &code));
+    }
+    if cell.words() == ErrorWords::DuoWave && status == 403 && code.eq_ignore_ascii_case("model_not_in_plan") {
+        cell.set_problem(Some(AccessProblem::Model));
+        return Some(anyhow::Error::new(SpokenFailure {
+            phrase: crate::tr!("Этой модели нет в вашем тарифе DuoWave. Подключите DuoWave заново.").to_string(),
+            detail: format!("DuoWave: HTTP {status}: {code}"),
+        }));
+    }
+    None
+}
+
+/// Right before a request of a provider with limits: Err(the words) while it is paused — nothing goes out —, else
+/// whether this request is its one probe.
+pub fn claim(cell: Option<&ProviderCell>) -> anyhow::Result<bool> {
+    let Some(cell) = cell else { return Ok(false) };
+    match cell.claim() {
+        super::limits::Claim::Go { probe } => Ok(probe),
+        super::limits::Claim::Paused(limit) => Err(super::limits::failure(cell, &limit, None, "")),
+    }
+}
+
+/// After a request of a provider with limits: an answer ends its limit; another failure ends a probe under way (a
+/// refusal was told the cell already, in `refusal`).
+pub fn settle(cell: Option<&ProviderCell>, result: &anyhow::Result<()>) {
+    let Some(cell) = cell else { return };
+    match result {
+        Ok(()) => cell.answered(),
+        Err(error) if error.downcast_ref::<SpokenFailure>().is_some() => {}
+        Err(_) => cell.failed(),
+    }
+}
+
+/// `Retry-After` in seconds (the form our services send; a date is not read).
+pub fn retry_after_secs(headers: &reqwest::header::HeaderMap) -> Option<std::time::Duration> {
+    headers
+        .get(reqwest::header::RETRY_AFTER)?
+        .to_str()
+        .ok()?
+        .trim()
+        .parse::<u64>()
+        .ok()
+        .map(std::time::Duration::from_secs)
+}
+
+/// Where a client takes its bearer before each request when a sign-in keeps it (src/oauth).
+pub trait AccessSource: Send + Sync {
+    /// The bearer for the next request: renewed first when it is about to run out.
+    fn bearer(&self) -> BoxFuture<'_, anyhow::Result<String>>;
+    /// A request went through: a limit noted earlier is over.
+    fn ok(&self) {}
+    /// The service said the plan's limit is reached: the panel shows it on the provider.
+    fn limited(&self) {}
+}
+
+/// The access in a client's settings. No Debug of what it holds.
+#[derive(Clone)]
+pub struct Access(pub Arc<dyn AccessSource>);
+
+impl fmt::Debug for Access {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("Access(…)")
+    }
+}
+
+/// A failure the station says in its own words instead of the error phrase, because the owner can do something about
+/// it (the ChatGPT plan's limit, a sign-in to renew). `detail` is for the log and the panel.
+#[derive(Debug)]
+pub struct SpokenFailure {
+    pub phrase: String,
+    pub detail: String,
+}
+
+impl fmt::Display for SpokenFailure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.detail)
+    }
+}
+
+impl std::error::Error for SpokenFailure {}
+
+/// «Выход в интернет» (src/egress): the provider goes through the person's server and that server does not answer —
+/// the call is refused at once, in words the owner can act on, rather than wait out a timeout. Nothing goes out
+/// directly: a key from a country the service refuses would risk the account.
+pub fn egress_refusal(url: &str) -> Option<anyhow::Error> {
+    let host = url::Url::parse(url).ok()?.host_str()?.to_string();
+    crate::utils::http::refused_host(&host).then(|| {
+        anyhow::Error::new(SpokenFailure {
+            phrase: crate::tr!("VPN не отвечает: модель сейчас недоступна. Проверьте подключение в приложении «VPN».")
+                .to_string(),
+            detail: format!("{host}: the VPN connection does not answer («Выход в интернет»)"),
+        })
+    })
+}
+
+/// The bearer of the next request: the access's when a sign-in gives it, else the key; None without either.
+pub async fn bearer_of(settings: &LlmSettings) -> anyhow::Result<Option<String>> {
+    if let Some(access) = &settings.access {
+        return access.0.bearer().await.map(Some);
+    }
+    Ok(settings.api_key.clone().filter(|key| !key.is_empty()))
+}
+
+/// A function the model may call: a station command, a lookup on our side or an MCP server's tool.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LlmTool {
+    pub name: String,
+    pub description: String,
+    /// JSON Schema of the input object.
+    pub parameters: Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ToolCall {
+    pub id: String,
+    pub name: String,
+    pub input: Map<String, Value>,
+    /// Why the call cannot run as written (arguments that are not a JSON object): said back to the model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolResult {
+    pub id: String,
+    pub content: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub is_error: bool,
+}
+
+/// Tokens of one model turn: the base floor's word (core/llm.rs), the request journal sums them.
+pub use crate::core::llm::LlmUsage;
+
+/// The model's turn, as the conversation goes on after tool results.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AssistantTurn {
+    pub content: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_calls: Vec<ToolCall>,
+    /// The provider's own parts of the turn (Claude's thinking blocks, another's reasoning), sent back unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<LlmUsage>,
+    /// The turn stopped at its output limit before it called anything: its words or its thinking were cut short.
+    /// Rounds that know what to do about it (the workshop agent's, `ToolBox::cut_answer_note`) go on and tell the
+    /// model; anywhere else the turn ends the answer as it is, a spoken one too.
+    #[serde(skip)]
+    pub out_of_tokens: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum LlmMessage {
+    User(String),
+    Assistant(AssistantTurn),
+    Tool(Vec<ToolResult>),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ToolChoice {
+    #[default]
+    Auto,
+    /// The tools stay in the request (the history holds calls) but the model must answer in words.
+    None,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct LlmRequest {
+    /// The part of the instructions that stays the same between questions: a provider may cache it.
+    pub system: String,
+    /// What changes with every question (the time, a lookup's data): after the cached part.
+    pub system_tail: Option<String>,
+    /// Earlier turns, then the question (and after a tool call, the model's turn and the results).
+    pub messages: Vec<LlmMessage>,
+    /// The profile's model; the provider's default model without it.
+    pub model: Option<String>,
+    pub tools: Vec<LlmTool>,
+    pub tool_choice: ToolChoice,
+    /// An output limit of its own instead of the client's (LLM_MAX_TOKENS), for this request only: the workshop's
+    /// agent writes files (WORKSHOP_MAX_TOKENS), a spoken answer is short (SPEECH_MAX_TOKENS). The ChatGPT plan sends
+    /// no limit at all.
+    pub max_tokens: Option<u32>,
+    /// Cache the history as well as the stable instructions: Claude marks the last message too, so the next round of
+    /// a long run reads all before it from the cache. The other clients do not read it.
+    pub cache_history: bool,
+}
+
+/// A turn cut off by its output limit in the middle of a tool call. The call is not run: its input is cut short.
+/// Rounds that know what to do about it (the workshop agent's, `ToolBox::cut_note`) go on and tell the model;
+/// anywhere else the answer fails with it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolCallCut {
+    /// Who ran out, in the log's words: «Claude», «the model».
+    pub who: &'static str,
+    /// The tool it was calling.
+    pub tool: String,
+    /// The file the call was writing, when its input named it before the cut.
+    pub path: Option<String>,
+}
+
+impl ToolCallCut {
+    /// A cut call of `tool`; its file is read from the input written so far.
+    pub fn new(who: &'static str, tool: &str, partial_input: &str) -> ToolCallCut {
+        ToolCallCut { who, tool: tool.to_string(), path: path_in(partial_input) }
+    }
+}
+
+impl fmt::Display for ToolCallCut {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} ran out of tokens in a tool call", self.who)
+    }
+}
+
+impl std::error::Error for ToolCallCut {}
+
+/// An answer the service did not finish through no fault of the request: the connection could not be made, broke or
+/// ended early mid-answer, or the service was overloaded. The same request may go through a little later. Rounds that
+/// may ask again (the workshop agent's, `ToolBox::retries`) do; anywhere else the answer fails with it. A turn's calls
+/// run only once the turn is whole, so none of an interrupted turn's ran.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Interrupted(pub String);
+
+impl fmt::Display for Interrupted {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for Interrupted {}
+
+/// `Interrupted` with its message, as an `anyhow` error.
+pub fn interrupted(message: impl Into<String>) -> anyhow::Error {
+    anyhow::Error::new(Interrupted(message.into()))
+}
+
+/// The `path` of a tool input cut short: the JSON string after `"path":`, when it was written whole.
+fn path_in(partial: &str) -> Option<String> {
+    let (_, after) = partial.split_once("\"path\"")?;
+    let mut chars = after.trim_start().strip_prefix(':')?.trim_start().strip_prefix('"')?.chars();
+    let mut path = String::new();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => return Some(path).filter(|path| !path.is_empty()),
+            '\\' => path.push(chars.next()?),
+            c => path.push(c),
+        }
+    }
+    None
+}
+
+/// Text as the model writes it; once the turn is over, its tool calls and the turn itself.
+#[derive(Debug, Clone, PartialEq)]
+pub enum LlmEvent {
+    Text(String),
+    Tool(ToolCall),
+    Turn(AssistantTurn),
+}
+
+pub type LlmStream = BoxStream<'static, anyhow::Result<LlmEvent>>;
+
+pub trait LlmClient: Send + Sync {
+    /// Model and provider, for logs and health.
+    fn description(&self) -> String;
+    /// Whether the model can be offered tools.
+    fn tools(&self) -> bool;
+    /// What the model writes; `cancel` stops it (the station cancelled, a newer question came).
+    fn stream(&self, request: LlmRequest, cancel: CancellationToken) -> LlmStream;
+}
+
+/// The name of the output limit: OpenAI's own API wants max_completion_tokens, the compatible ones max_tokens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TokensField {
+    #[default]
+    MaxTokens,
+    MaxCompletionTokens,
+}
+
+/// What a client is built from: the model part of the dialog settings. From .env (DIALOG_PROVIDER, LLM_*) or from a
+/// provider the panel added; `explicit` ones never fall back to the environment's keys and addresses.
+#[derive(Debug, Clone)]
+pub struct LlmSettings {
+    pub provider: DialogProvider,
+    pub model: String,
+    pub models: ModelPair,
+    pub base_url: Option<String>,
+    pub api_key: Option<String>,
+    pub max_tokens: u32,
+    pub effort: String,
+    /// Use only the key and address given here: a panel provider must not borrow ANTHROPIC_API_KEY.
+    pub explicit: bool,
+    /// Extra request headers a provider needs (YandexGPT's folder).
+    pub headers: BTreeMap<String, String>,
+    pub tokens_field: TokensField,
+    /// The bearer from a sign-in, taken fresh before each request, in place of `api_key`.
+    pub access: Option<Access>,
+    /// /chat/completions or /responses, for an OpenAI-kind provider.
+    pub api: LlmApi,
+    /// The provider's limits (limits.rs): its refusals in words, its pause, DuoWave's quota. A panel provider's.
+    pub limits: Option<ProviderCell>,
+}
+
+/// "model" or, when the profiles differ, "fast model-a, smart model-b".
+pub fn describe_models(models: &ModelPair) -> String {
+    if models.fast == models.smart {
+        models.fast.clone()
+    } else {
+        format!("fast {}, smart {}", models.fast, models.smart)
+    }
+}
+
+impl LlmSettings {
+    /// The model .env describes (DIALOG_PROVIDER, LLM_*). Claude also takes what its SDK read from the environment
+    /// itself: ANTHROPIC_API_KEY (or ANTHROPIC_AUTH_TOKEN) without LLM_API_KEY, ANTHROPIC_BASE_URL without LLM_BASE_URL.
+    pub fn from_dialog(config: &DialogConfig) -> LlmSettings {
+        let claude = config.provider == DialogProvider::Anthropic;
+        let base_url = if claude {
+            config.base_url.clone().or_else(|| config.anthropic_base_url.clone())
+        } else {
+            config.base_url.clone()
+        };
+        let api_key = if claude {
+            config.api_key.clone().or_else(|| config.anthropic_key.clone())
+        } else {
+            config.api_key.clone()
+        };
+        LlmSettings {
+            provider: config.provider,
+            model: config.model.clone(),
+            models: config.models.clone(),
+            tokens_field: tokens_field_for(base_url.as_deref().unwrap_or(OPENAI_BASE_URL)),
+            base_url,
+            api_key,
+            max_tokens: config.max_tokens,
+            effort: config.effort.clone(),
+            explicit: false,
+            headers: BTreeMap::new(),
+            access: None,
+            api: LlmApi::Chat,
+            limits: None,
+        }
+    }
+}
+
+/// The client for these settings; None for `none`, the dialog is off.
+pub fn create_llm(settings: &LlmSettings) -> Option<Arc<dyn LlmClient>> {
+    match settings.provider {
+        DialogProvider::Anthropic => Some(Arc::new(AnthropicLlm::new(settings.clone()))),
+        DialogProvider::OpenAi if settings.api == LlmApi::Responses => {
+            Some(Arc::new(OpenAiResponsesLlm::new(settings.clone())))
+        }
+        DialogProvider::OpenAi => Some(Arc::new(OpenAiChatLlm::new(settings.clone()))),
+        DialogProvider::Echo => Some(Arc::new(EchoLlm)),
+        DialogProvider::None => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_cut_call_names_its_file_when_the_input_wrote_it_whole() {
+        let cut = ToolCallCut::new("Claude", "write_file", r#"{"path": "panel.js", "content": "export function"#);
+        assert_eq!(cut.path.as_deref(), Some("panel.js"));
+        assert_eq!(cut.to_string(), "Claude ran out of tokens in a tool call");
+        assert_eq!(
+            ToolCallCut::new("the model", "write_file", r#"{"path":"ui/main.js","content":"#).path.as_deref(),
+            Some("ui/main.js")
+        );
+        assert_eq!(ToolCallCut::new("the model", "write_file", r#"{"path": "pan"#).path, None, "cut inside the name");
+        assert_eq!(ToolCallCut::new("the model", "write_file", r#"{"content": "x"#).path, None);
+        assert_eq!(ToolCallCut::new("the model", "write_file", "").path, None);
+    }
+}

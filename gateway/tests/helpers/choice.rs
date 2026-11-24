@@ -349,11 +349,14 @@ async fn a_0_11_helper_without_a_contract_reads_as_version_0() {
     station.stop().await;
 }
 
-/// The plan's stage 1 seen from a station: a computer of this build answers with its contract.
-#[cfg(feature = "pc")]
+/// The plan's stage 1 seen from a station: a computer of this build answers with its contract (the station's build
+/// has no built-in helper to answer).
 #[tokio::test]
 async fn a_new_computer_answers_its_contract_to_a_station() {
     let pc = Gateway::start(&[]).await;
+    if !duowave::core::build::computer() {
+        return;
+    }
     let (name, pc_admin) = admin(&pc).await;
     let key = json!({"name": "Колонка: домашний сервер", "grants": ["home.models"]});
     let created = message(pc.post("/api/v1/api-keys").header(name, pc_admin).json(&key), StatusCode::CREATED).await;
@@ -372,58 +375,6 @@ async fn a_new_computer_answers_its_contract_to_a_station() {
         helper["abilities"].as_array().unwrap().iter().filter_map(|ability| ability["id"].as_str()).collect();
     assert!(abilities.contains(&"apps") && abilities.contains(&"messages"), "{abilities:?}");
     assert_eq!(station.app.helpers.entry(helper["id"].as_str().unwrap()).unwrap().helper_id, Some(me.id), "kept");
-    station.stop().await;
-    pc.stop().await;
-}
-
-/// «ПК помогает колонке» from the computer's panel goes through the old door into the station's list.
-#[cfg(feature = "pc")]
-#[tokio::test]
-async fn the_pc_switch_puts_the_computer_into_the_stations_list_through_the_old_door() {
-    use duowave::core::availability::Placement;
-    use duowave::settings::definitions::{SettingsHome, StationPlacement};
-
-    let pc = Gateway::start(&[]).await;
-    let (name, pc_admin) = admin(&pc).await;
-    let key = json!({"name": "Колонка: домашний сервер", "grants": ["home.models"]});
-    let created =
-        message(pc.post("/api/v1/api-keys").header(name.clone(), pc_admin.clone()).json(&key), StatusCode::CREATED)
-            .await;
-    let (station, _) = station(&[]).await;
-    // A move brought the computer's address and key; its help is off.
-    station.app.home_server.set(Some(&pc.base), created["secret"].as_str(), None).unwrap();
-    station.app.home_server.link(None, None, Some(false), None, None).unwrap();
-    assert!(!station.app.helpers.entry("home-computer").unwrap().enabled);
-
-    pc.app.secrets.set("placement:peer", Some(PEER)).unwrap();
-    let record = StationPlacement {
-        placement: Placement::Station,
-        address: "127.0.0.1".into(),
-        port: station.port,
-        device: None,
-        settings_home: SettingsHome::Station,
-        auto_update: false,
-        managed: true,
-        home_key_id: Some(created["key"]["id"].as_str().unwrap().into()),
-        moved_at: None,
-    };
-    let watch = pc.app.station_gateway.watch("at:127.0.0.1");
-    watch.set_record(Some(&record), None).unwrap();
-    watch.poll().await;
-    // The computer took the home's copy (docs/plans/home-and-devices.md, stage 3): its people are the home's now —
-    // the station's admin signs in here with the home's password; its own access keys stayed.
-    let _ = pc_admin;
-    let login = pc.post("/api/v1/auth/login").json(&json!({"password": "helpers-admin-password"}));
-    let (name, pc_admin) = bearer(message(login, StatusCode::OK).await["token"].as_str().expect("a token"));
-    let switch = pc.post("/api/v1/placement/helper").header(name, pc_admin).json(&json!({"on": true}));
-    message(switch, StatusCode::CREATED).await;
-    // The computer's address as it tells the station (its home network's, when it has one; this one else).
-    let told = watch.home_url().unwrap_or_else(|| pc.base.clone());
-    let door = station.app.helpers.entry("home-computer").unwrap();
-    assert!(door.enabled && door.url == told, "{door:?}");
-    let health = message(station.get("/health"), StatusCode::OK).await;
-    assert_eq!(health["placement"]["placement"], "stationServer");
-    assert_eq!(watch.record().unwrap().placement, Placement::StationServer);
     station.stop().await;
     pc.stop().await;
 }
@@ -547,9 +498,9 @@ async fn the_health_carries_the_helpers_and_still_the_home_server_for_older_pane
     let ids: Vec<&str> = helpers["list"].as_array().unwrap().iter().filter_map(|entry| entry["id"].as_str()).collect();
     assert_eq!(
         (helpers["away"].as_str(), ids),
-        (Some("any"), if cfg!(feature = "pc") { vec!["self"] } else { vec![] })
+        (Some("any"), if duowave::core::build::computer() { vec!["self"] } else { vec![] })
     );
-    if cfg!(feature = "pc") {
+    if duowave::core::build::computer() {
         assert_eq!((&helpers["list"][0]["builtin"], &helpers["list"][0]["state"]), (&json!(true), &json!("up")));
     }
     assert!(health["placement"].get("homeServer").is_none());

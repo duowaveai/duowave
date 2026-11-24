@@ -53,6 +53,26 @@ impl HealthSources for ModuleHealth {
     }
 }
 
+/// The station link's part of /health: the sessions open now, and whether a station is connected (the offline
+/// watch's view).
+#[cfg(feature = "yandex-station")]
+pub struct StationLinkHealth {
+    pub sessions: Arc<crate::gateway::uniproxy::SessionRegistry>,
+    pub watch: Arc<crate::operations::station_watch::StationWatch>,
+}
+
+#[cfg(feature = "yandex-station")]
+impl HealthSources for StationLinkHealth {
+    fn active_sessions(&self) -> Option<usize> {
+        Some(self.sessions.active_count())
+    }
+
+    fn station(&self) -> Option<crate::health_status::StationHealth> {
+        let status = self.watch.status();
+        Some(crate::health_status::StationHealth { connected: status.connected, last_seen_at: status.last_seen_at })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use axum::body::Body;

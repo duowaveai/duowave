@@ -119,6 +119,8 @@ html[data-theme='light'] .onb {
 .onb .ico-lg { width: 22px; height: 22px; }
 .onb .scan { display: inline-flex; align-items: center; gap: 10px; min-height: 38px; padding: 8px 16px; border-radius: var(--radius-pill); background: var(--card); border: 1px solid var(--line); font-size: 14px; line-height: 20px; }
 .onb .scan a { color: var(--sub); }
+/* «Искать снова» внутри строки поиска: тише строки, на одной высоте с ней. */
+.onb .scan .scan-again { height: 28px; margin: -4px -8px -4px 0; padding: 0 12px; font-size: 13px; }
 .onb .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex: none; background: #a8a29e; }
 .onb .dot-ok { background: var(--own); box-shadow: 0 0 0 4px var(--own-bg); }
 .onb .dot-warn { background: var(--out); box-shadow: 0 0 0 4px var(--out-bg); }

@@ -1,0 +1,348 @@
+//! The tests of `voice_lab/controller.rs` that need the whole gateway (`App`): its crate does not have it, the program
+//! does.
+//!
+//! test/voice-lab.e2e-spec.ts through the handlers, with the caller a signed-in admin of this computer (sign-in itself
+//! is the access module's): engines, takes, an imprint, choosing it. tests/voice_lab.rs asks the same over HTTP.
+
+use std::sync::atomic::Ordering;
+use std::time::Duration;
+
+use axum::body::Body as RawBody;
+use axum::extract::{Path, RawQuery};
+use axum::http::{header, StatusCode};
+use axum::response::Response;
+use futures::StreamExt;
+use serde::Serialize;
+use serde_json::{json, Value};
+
+use crate::computer::tests::voice_lab_testing::{lab, spoken_take, Lab};
+use crate::core::identity::principal::user_principal;
+use crate::core::identity::Role;
+use crate::platform::http::{Api, ApiError, ApiResult, Body, Caller, Uses, Zone};
+use crate::voice_lab::controller::*;
+use crate::voice_lab::voice_store::MAX_TAKE_BYTES;
+
+fn admin(lab: &Lab) -> Caller {
+    Caller::local(lab.app.clone(), Some(user_principal("admin", "Админ", Role::Admin, None)))
+}
+
+/// An answer as the envelope carries it: the status and the message's JSON, or the error's.
+fn answer<T: Serialize>(result: ApiResult<T>) -> (StatusCode, Value) {
+    match result {
+        Ok(Api(status, value)) => (status, serde_json::to_value(value).unwrap()),
+        Err(error) => (error.status, Value::String(error.message)),
+    }
+}
+
+async fn view_of(lab: &Lab) -> Value {
+    let (status, view) = answer(view(Uses::of(&lab.app), admin(lab)).await);
+    assert_eq!(status, StatusCode::OK);
+    view
+}
+
+async fn add(lab: &Lab, query: Option<&str>, body: Vec<u8>) -> (StatusCode, Value) {
+    answer(add_take(Uses::of(&lab.app), admin(lab), RawQuery(query.map(str::to_string)), RawBody::from(body)).await)
+}
+
+async fn imprint_as(lab: &Lab, body: Value) -> (StatusCode, Value) {
+    answer(imprint(Uses::of(&lab.app), admin(lab), Body(body)).await)
+}
+
+async fn finished_job(lab: &Lab) -> Value {
+    for _ in 0..100 {
+        let job = view_of(lab).await["job"].clone();
+        if job["state"] != "running" {
+            return job;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("the imprint did not finish");
+}
+
+async fn imprinted(lab: &Lab, name: &str) -> String {
+    assert_eq!(add(lab, Some("passage=1"), spoken_take()).await.0, StatusCode::CREATED);
+    let (status, job) = imprint_as(lab, json!({ "engine": "omnivoice", "name": name })).await;
+    assert_eq!(status, StatusCode::CREATED, "{job}");
+    assert_eq!(
+        (&job["kind"], &job["engine"], &job["state"]),
+        (&json!("imprint"), &json!("omnivoice"), &json!("running"))
+    );
+    let job = finished_job(lab).await;
+    assert_eq!((&job["state"], &job["peakMb"]), (&json!("done"), &json!(2100)), "{job}");
+    assert_eq!((&job["result"]["peakMb"], &job["result"]["rtf"]), (&json!(2100), &json!(1.2)), "{job}");
+    job["result"]["voiceId"].as_str().unwrap().to_string()
+}
+
+#[tokio::test]
+async fn takes_a_voice_again_for_another_engine_and_a_characters_voice_from_its_reference() {
+    let lab = lab().await;
+    let id = imprinted(&lab, "Мой голос").await;
+    let reimprint_as = |body: Value| reimprint(Uses::of(&lab.app), admin(&lab), Path(id.clone()), Body(body));
+    let (status, message) = answer(reimprint_as(json!({ "engine": "cosyvoice3" })).await);
+    assert_eq!((status, message), (StatusCode::BAD_REQUEST, json!("Сначала установите CosyVoice 3.")));
+    let (status, _) = answer(reimprint_as(json!({ "engine": "omnivoice" })).await);
+    assert_eq!(status, StatusCode::BAD_REQUEST, "the engine it has already");
+    // CosyVoice 3 installed (a Python that only pretends, as OmniVoice's).
+    let runtime = lab.app.config.voice_lab.runtime_dir.join("cosyvoice3");
+    crate::utils::test_stub::put_at(&runtime.join("env/bin/python"));
+    std::fs::write(runtime.join("ready.json"), r#"{"engine":"cosyvoice3","device":"cpu","torch":"2.3.1","source":"bench","installedAt":"2026-11-07T00:00:00Z"}"#).unwrap();
+    let (status, job) = answer(reimprint_as(json!({ "engine": "cosyvoice3" })).await);
+    assert_eq!(status, StatusCode::CREATED, "{job}");
+    let job = finished_job(&lab).await;
+    assert_eq!(job["state"], "done", "{job}");
+    let again = job["result"]["voiceId"].as_str().unwrap();
+    let store = &lab.app.pc.voice_lab.store;
+    let voice = store.voice(again).unwrap();
+    assert_eq!((voice.engine.as_str(), voice.name.as_str(), voice.takes), ("cosyvoice3", "Мой голос", 1));
+    assert!(store.voice(&id).is_some(), "the old one stays");
+
+    // A character's voice from its package's reference and words: the id it is given, its origin noted.
+    let reference = store.voices_dir.join(&id).join("ref.wav");
+    let mut meta = serde_json::Map::new();
+    meta.insert("origin".into(), json!("package"));
+    meta.insert("package".into(), json!("arthur"));
+    let started = lab
+        .app
+        .pc
+        .voice_lab
+        .imprint_reference(
+            "c-arthur-arthur-omnivoice",
+            "omnivoice",
+            &reference,
+            "Чай подан, сэр.",
+            "Артур",
+            meta,
+            false,
+            None,
+        )
+        .await;
+    assert!(started.is_ok(), "{:?}", started.err());
+    assert_eq!(finished_job(&lab).await["state"], "done");
+    let character = store.voice("c-arthur-arthur-omnivoice").unwrap();
+    assert_eq!((character.origin.as_deref(), character.package.as_deref()), (Some("package"), Some("arthur")));
+    let twice = lab
+        .app
+        .pc
+        .voice_lab
+        .imprint_reference(
+            "c-arthur-arthur-omnivoice",
+            "omnivoice",
+            &reference,
+            "Чай подан.",
+            "Артур",
+            serde_json::Map::new(),
+            false,
+            None,
+        )
+        .await;
+    assert_eq!(twice.unwrap_err().status, StatusCode::CONFLICT);
+}
+
+#[tokio::test]
+async fn sees_this_computer_and_its_engines() {
+    let lab = lab().await;
+    let view = view_of(&lab).await;
+    assert_eq!(view["available"], true);
+    assert_eq!(view["platform"]["summary"], "Мак, Apple M4 Max, 36 ГБ ОЗУ");
+    assert_eq!((&view["platform"]["os"], &view["platform"]["gpu"]), (&json!("darwin"), &json!("apple")));
+    let engines: Vec<(Value, Value, Value)> = view["engines"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|engine| (engine["id"].clone(), engine["status"].clone(), engine["device"].clone()))
+        .collect();
+    assert_eq!(
+        engines,
+        vec![
+            (json!("omnivoice"), json!("ready"), json!("mps")),
+            (json!("cosyvoice3"), json!("missing"), json!("cpu")),
+            (json!("voxcpm"), json!("missing"), json!("mps"))
+        ]
+    );
+    assert_eq!(view["passages"].as_array().unwrap().len(), 5);
+    assert_eq!(
+        view["memory"],
+        json!({ "totalMb": 36_864, "poolMb": 16_384, "reserveMb": 2_212, "pressure": "normal" })
+    );
+    // The voice's server says what it holds: its next start is judged by its peak, not by the engine's guess.
+    let server = &view["servers"]["omnivoice"];
+    assert_eq!((&server["up"], &server["memoryMb"], &server["peakMb"]), (&json!(true), &json!(2_600), &json!(3_000)));
+    assert_eq!(view["engines"][0]["needMb"], json!({ "imprint": 3_500, "serve": 3_450 }));
+}
+
+#[tokio::test]
+async fn records_a_take_plays_it_back_refuses_what_is_not_a_wav() {
+    let lab = lab().await;
+    let (status, added) = add(&lab, Some("passage=2"), spoken_take()).await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!((&added["n"], &added["passage"], &added["verdict"]), (&json!(1), &json!(2), &json!("good")));
+    let audio = take_wav(&lab, "1").await.unwrap();
+    assert_eq!(audio.status(), StatusCode::OK);
+    assert_eq!(audio.headers()[header::CONTENT_TYPE], "audio/wav");
+    assert_eq!(audio.headers()[header::CACHE_CONTROL], "no-store");
+    assert_eq!(add(&lab, None, b"ID3...".to_vec()).await.0, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        answer(clear_draft(Uses::of(&lab.app), admin(&lab)).await),
+        (StatusCode::OK, json!({ "cleared": true }))
+    );
+    assert_eq!(view_of(&lab).await["draft"], json!({ "takes": [], "seconds": 0 }));
+}
+
+async fn take_wav(lab: &Lab, n: &str) -> Result<Response, ApiError> {
+    take(Uses::of(&lab.app), admin(lab), Path(n.to_string())).await
+}
+
+#[tokio::test]
+async fn takes_an_imprint_the_takes_go_with_the_voice_its_sample_plays_it_can_be_renamed_and_deleted() {
+    let lab = lab().await;
+    let id = imprinted(&lab, "Тестовый").await;
+    let view = view_of(&lab).await;
+    assert_eq!(view["draft"]["takes"], json!([]));
+    let voices = view["voices"].as_array().unwrap();
+    assert_eq!(voices.len(), 1);
+    for (field, value) in [
+        ("id", json!(id)),
+        ("name", json!("Тестовый")),
+        ("engine", json!("omnivoice")),
+        ("takes", json!(1)),
+        ("chosen", json!(false)),
+        ("refSeconds", json!(6)),
+    ] {
+        assert_eq!(voices[0][field], value, "{field}");
+    }
+    let played = sample(Uses::of(&lab.app), admin(&lab), Path((id.clone(), "1".into()))).await.unwrap();
+    assert_eq!(played.status(), StatusCode::OK);
+    let missing = sample(Uses::of(&lab.app), admin(&lab), Path((id.clone(), "7".into()))).await.unwrap_err();
+    assert_eq!(missing.status, StatusCode::NOT_FOUND);
+    let (status, renamed) = answer(
+        rename(Uses::of(&lab.app), admin(&lab), Path(id.clone()), Body(json!({ "name": "Второй голос" }))).await,
+    );
+    assert_eq!((status, &renamed["name"]), (StatusCode::OK, &json!("Второй голос")));
+    assert_eq!(
+        answer(remove(Uses::of(&lab.app), admin(&lab), Path(id)).await),
+        (StatusCode::OK, json!({ "deleted": true }))
+    );
+    assert_eq!(view_of(&lab).await["voices"], json!([]));
+}
+
+/// What the models ask of the voice lab (the cards, a chosen voice's route), and what it answers once the
+/// models chose `own:<id>` through the voice (src/links). The whole path over HTTP is tests/voice_lab.rs.
+#[tokio::test]
+async fn chooses_an_own_voice_through_the_models_the_gateway_speaks_through_its_server_and_keeps_it_from_deletion() {
+    let lab = lab().await;
+    let id = imprinted(&lab, "Мой голос").await;
+    let cards = serde_json::to_value(lab.app.pc.voice_lab.voices_for_cards().await).unwrap();
+    for (field, value) in [
+        ("id", json!(id)),
+        ("engine", json!("omnivoice")),
+        ("name", json!("Мой голос")),
+        ("serving", json!(true)),
+        ("ready", json!(true)),
+    ] {
+        assert_eq!(cards[0][field], value, "{field}");
+    }
+    assert_eq!(cards[0]["samples"].as_array().unwrap().len(), 1);
+    let prepared = lab.app.pc.voice_lab.prepare(&id, false).await.unwrap();
+    assert_eq!(prepared.route.base_url(), lab.clone_url, "it speaks through its own server");
+    let activated = lab.app.pc.models.activate_tts(&json!({ "modelId": format!("own:{id}") }), None).await.unwrap();
+    assert!(!activated.needs_restart);
+    assert_eq!(lab.app.voice.own_choice().map(|pair| (pair.model, pair.voice)), Some(("omnivoice".into(), id.clone())));
+    assert_eq!(lab.app.voice.own_speech().unwrap().base_url(), lab.clone_url);
+    assert_eq!(view_of(&lab).await["voices"][0]["chosen"], true);
+    let (status, _) = answer(remove(Uses::of(&lab.app), admin(&lab), Path(id)).await);
+    assert_eq!(status, StatusCode::CONFLICT);
+}
+
+#[tokio::test]
+async fn only_warns_when_memory_is_tight_or_the_mac_is_short_and_starts_on_the_owners_vse_ravno() {
+    let lab = lab().await;
+    // Measured once (2.1 GB), the imprint needs 2.4 GB with its margin; its ceiling is half again above.
+    imprinted(&lab, "Мой голос").await;
+    assert_eq!(add(&lab, None, spoken_take()).await.0, StatusCode::CREATED);
+    lab.memory.free_mb.store(4_000, Ordering::SeqCst);
+    let warned = imprint_as(&lab, json!({ "engine": "omnivoice" })).await;
+    assert_eq!(
+        warned,
+        (
+            StatusCode::PRECONDITION_REQUIRED,
+            json!("ОЗУ впритык: свободно 3,9 ГБ, нужно около 2,4 ГБ, а 2,2 ГБ держу для колонки — она может подтормаживать.")
+        )
+    );
+    lab.memory.pressure_level.store(2, Ordering::SeqCst);
+    let pressed = imprint_as(&lab, json!({ "engine": "omnivoice" })).await;
+    assert_eq!(pressed.0, StatusCode::PRECONDITION_REQUIRED, "a pressed computer is a warning, not a refusal");
+    assert!(pressed.1.as_str().unwrap().contains("не хватает ОЗУ"), "{}", pressed.1);
+    lab.memory.pressure_level.store(1, Ordering::SeqCst);
+    assert_eq!(imprint_as(&lab, json!({ "engine": "omnivoice", "anyway": true })).await.0, StatusCode::CREATED);
+    let job = finished_job(&lab).await;
+    assert_eq!((&job["state"], &job["limitMb"]), (&json!("done"), &json!(3_623)));
+    lab.memory.free_mb.store(16_384, Ordering::SeqCst);
+    assert_eq!(answer(stop(Uses::of(&lab.app), admin(&lab)).await), (StatusCode::CREATED, json!({ "stopped": false })));
+}
+
+/// imprint.py's loopback recognition (item 38): only from this computer and only with the gateway's key; this test
+/// gateway hears through a server, not inside itself, so the right call is told there is no own recognition.
+#[tokio::test]
+async fn the_imprints_recognition_route_is_this_computers_and_needs_the_key() {
+    let lab = lab().await;
+    let key = lab.app.pc.voice_lab.asr_key_for_tests();
+    let call = |caller: Caller, key: &str| {
+        crate::home_server::serve::imprint_asr(
+            Uses::of(&lab.app),
+            Uses::of(&lab.app),
+            caller,
+            Path(key.to_string()),
+            axum::http::HeaderMap::new(),
+            Default::default(),
+        )
+    };
+    let status = |result: Result<Response, ApiError>| match result {
+        Ok(response) => response.status(),
+        Err(error) => error.status,
+    };
+    assert_eq!(status(call(Caller::local(lab.app.clone(), None), "guess").await), StatusCode::NOT_FOUND);
+    let mut outside = Caller::local(lab.app.clone(), None);
+    outside.zone = Zone::Remote;
+    assert_eq!(status(call(outside, &key).await), StatusCode::NOT_FOUND, "not from another computer");
+    assert_eq!(status(call(Caller::local(lab.app.clone(), None), &key).await), StatusCode::SERVICE_UNAVAILABLE);
+}
+
+#[tokio::test]
+async fn lets_everyone_who_sees_the_station_look_and_only_managers_change() {
+    let lab = lab().await;
+    let nobody = || Caller::local(lab.app.clone(), None);
+    assert_eq!(answer(view(Uses::of(&lab.app), nobody()).await).0, StatusCode::UNAUTHORIZED);
+    let anonymous = answer(install(Uses::of(&lab.app), nobody(), Path("cosyvoice3".into())).await);
+    assert_eq!(anonymous.0, StatusCode::UNAUTHORIZED);
+    let member = || Caller::local(lab.app.clone(), Some(user_principal("m", "Участник", Role::Member, None)));
+    assert_eq!(answer(view(Uses::of(&lab.app), member()).await).0, StatusCode::OK);
+    let (status, message) = answer(install(Uses::of(&lab.app), member(), Path("cosyvoice3".into())).await);
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(message.as_str().unwrap().starts_with("Нет права:"), "{message}");
+}
+
+#[tokio::test]
+async fn takes_arrive_only_from_the_home_network_and_no_larger_than_16_mb() {
+    let lab = lab().await;
+    let mut from_outside = admin(&lab);
+    from_outside.zone = Zone::Remote;
+    let refused = add_take(Uses::of(&lab.app), from_outside, RawQuery(None), RawBody::from(spoken_take())).await;
+    assert_eq!(answer(refused), (StatusCode::FORBIDDEN, json!("Только из домашней сети.")));
+    let large = read_body(RawBody::from(vec![0u8; MAX_TAKE_BYTES + 1]), MAX_TAKE_BYTES).await.unwrap_err();
+    assert_eq!((large.status, large.message.as_str()), (StatusCode::BAD_REQUEST, "Запись больше 16 МБ."));
+    // A phone gone mid-take without a word: the upload stands still, and the request lets it go.
+    let first = Ok::<_, std::io::Error>(axum::body::Bytes::from_static(b"RIFF"));
+    let stalled = RawBody::from_stream(futures::stream::iter([first]).chain(futures::stream::pending()));
+    let gone = read_body_within(stalled, MAX_TAKE_BYTES, Duration::from_millis(50)).await.unwrap_err();
+    assert_eq!(
+        (gone.status, gone.message.as_str()),
+        (StatusCode::REQUEST_TIMEOUT, "Запись не дошла: связь прервалась.")
+    );
+    assert_eq!(passage(Some("passage=3")), Some(3));
+    assert_eq!(passage(Some("passage=2.5")), None);
+    assert_eq!(passage(Some("passage=1&passage=2")), None);
+    assert_eq!(passage(None), None);
+    let (status, message) = imprint_as(&lab, json!({ "name": "Мой голос" })).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(message, json!(r#"body: {"engine": "omnivoice", "name": "Мой голос"}"#));
+}

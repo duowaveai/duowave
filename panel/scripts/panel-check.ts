@@ -663,7 +663,7 @@ check('the_first_steps_wait_for_the_hub_and_never_take_a_queued_change_for_its_a
     const fetcher = api.slice(api.indexOf('async function stationFetch'), api.indexOf('export async function stationCall'));
     expect(fetcher.includes('new QueuedChange('), 'a queued change through the pass is an error, never a value');
     expect(fetcher.includes('new HubAway('), 'the hub away for one who waits is told apart');
-    const proxy = source('../gateway/src/placement/proxy.rs');
+    const proxy = source('../crates/duowave-pc/src/placement/proxy.rs');
     for (const name of ['x-duowave-wait', 'x-duowave-away']) {
         expect(api.includes(`'${name}'`) && proxy.includes(`"${name}"`), `the panel and the pass name ${name} alike`);
     }

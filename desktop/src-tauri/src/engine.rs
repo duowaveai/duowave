@@ -317,7 +317,7 @@ impl Gateway {
             .as_ref()
             .map(|(_, engine)| engine.clone());
         if let Some(engine) = engine {
-            let lab = engine.voice_lab.clone();
+            let lab = engine.pc.voice_lab.clone();
             let released = tauri::async_runtime::block_on(async move {
                 tokio::time::timeout(VOICE_RELEASE_GRACE, lab.release()).await.is_ok()
             });

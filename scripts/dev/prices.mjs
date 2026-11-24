@@ -12,8 +12,8 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
 const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..', '..');
-const PRESETS = path.join(ROOT, 'gateway/src/dialog/brain/presets.rs');
-const OUT = path.join(ROOT, 'gateway/src/router/prices.json');
+const PRESETS = path.join(ROOT, 'crates/duowave-brain/src/dialog/brain/presets.rs');
+const OUT = path.join(ROOT, 'crates/duowave-brain/src/router/prices.json');
 const SOURCE = 'https://models.dev/api.json';
 
 // A preset of «Мозг» → its provider in models.dev; null — none to take: at home (0 by itself), priced as another

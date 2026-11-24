@@ -431,6 +431,13 @@ interface Scan {
     withGateway: Found[];
     helperDeclined: boolean;
     declineHelper: () => void;
+    /**
+     * «Искать снова»: поиск идёт при открытии шага, а хаб, что включили позже, без него был виден только после
+     * перезапуска (находка 6 проверки шага 11).
+     */
+    again: () => void;
+    /** Почему поиск ничего не мог найти: на Mac — нет «Локальной сети» у DuoWave, на Windows — брандмауэр. */
+    whyNone: string | null;
 }
 
 function useScan(enabled: boolean): Scan {
@@ -438,6 +445,8 @@ function useScan(enabled: boolean): Scan {
     const [found, setFound] = useState<FoundStation[] | null>(null);
     const [withGateway, setWithGateway] = useState<Found[]>([]);
     const [declined, setDeclined] = useState(false);
+    const [round, setRound] = useState(0);
+    const [whyNone, setWhyNone] = useState<string | null>(null);
     // Компьютер уже связан с колонкой — помогать нечему предлагать.
     const linked = !!panel.health?.placement?.station || panel.role.role === 'helper';
     useEffect(() => {
@@ -448,9 +457,11 @@ function useScan(enabled: boolean): Scan {
         let alive = true;
         void (async () => {
             try {
-                const { stations, homes = [] } = await api.discoverStations();
+                const { stations, homes = [], whyNone: why } = await api.discoverStations();
                 if (!alive) return;
                 setFound(stations);
+                setWithGateway([]);
+                setWhyNone(why ?? null);
                 if (linked) return;
                 const probed = await Promise.all(
                     stations.slice(0, 6).map(async (station): Promise<Found | null> => {
@@ -486,8 +497,19 @@ function useScan(enabled: boolean): Scan {
         return () => {
             alive = false;
         };
-    }, [enabled]);
-    return { done: found !== null, found: found ?? [], withGateway, helperDeclined: declined, declineHelper: () => setDeclined(true) };
+    }, [enabled, round]);
+    return {
+        done: found !== null,
+        found: found ?? [],
+        withGateway,
+        helperDeclined: declined,
+        declineHelper: () => setDeclined(true),
+        whyNone,
+        again: () => {
+            setFound(null);
+            setRound((now) => now + 1);
+        },
+    };
 }
 
 /**
@@ -634,12 +656,24 @@ function WhereStep({ choice, scan, onPick }: { choice: Choice; scan: Scan; onPic
                         <span>
                             {t.foundIn} <b>{nameOf(first)}</b> · {first.address}
                         </span>
+                        <button type="button" class="btn-ghost scan-again" onClick={scan.again}>
+                            {t.searchAgain}
+                        </button>
                     </div>
                 ) : (
                     <div class="scan">
                         <span class="dot" />
                         <span>{t.noStationShort}</span>
+                        <button type="button" class="btn-ghost scan-again" onClick={scan.again}>
+                            {t.searchAgain}
+                        </button>
                     </div>
+                )}
+                {/* Поиск не мог и спросить: на Mac у DuoWave нет «Локальной сети» (находка 3 проверки шага 11). */}
+                {scan.done && scan.whyNone && (
+                    <p class="small" role="status" style={{ margin: 0 }}>
+                        {scan.whyNone}
+                    </p>
                 )}
                 <div class="onb-opts">
                     {option(

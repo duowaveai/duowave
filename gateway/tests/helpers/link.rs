@@ -485,10 +485,10 @@ async fn the_station_pairs_with_the_computer_over_wss_and_takes_hearing_voice_an
     let abilities: Vec<&str> =
         row["abilities"].as_array().unwrap().iter().filter_map(|ability| ability["id"].as_str()).collect();
     assert_eq!(abilities, ["hearing", "voice", "model"], "another home: the muscles the computer has: {row}");
-    assert_eq!(row["link"]["pin"], format!("sha256:{}", pc.app.link.fingerprint().unwrap()), "{row}");
+    assert_eq!(row["link"]["pin"], format!("sha256:{}", pc.app.pc.link.fingerprint().unwrap()), "{row}");
     // Pinned: the computer's certificate, its self-signed one.
     let pin = station.app.helpers.pin(&entry).expect("a pin");
-    assert_eq!(pin.sha256, pc.app.link.fingerprint());
+    assert_eq!(pin.sha256, pc.app.pc.link.fingerprint());
     assert!(until(5000, || up(&station, &entry)).await, "{:?}", link_state(&station, &entry));
 
     // Hearing over the link.
@@ -614,7 +614,7 @@ async fn a_substituted_certificate_is_refused_before_anything_is_sent() {
     let (pc, pc_admin) = computer(&servers, &[]).await;
     let (station, station_admin) = station().await;
     let link_port = pc.link_port().unwrap();
-    let clients = || pc.app.clients.view(&[]);
+    let clients = || pc.app.pc.clients.view(&[]);
 
     // (1) At the first meeting: an impostor with its own certificate between them — the bindings differ, the key is
     // refused, nothing is paired; the same key then pairs directly (it was not spent).
@@ -702,7 +702,7 @@ async fn a_wrong_key_is_refused_without_a_hint() {
     let entry = paired(&station, &station_admin, &url, &key).await;
     let link_key = station.app.secrets.get(&format!("helper:{entry}:key")).expect("the link key");
     assert!(link_key.starts_with("dwl1_"));
-    let pin = pc.app.link.fingerprint().map(|pin| hex::decode(pin).unwrap().try_into().unwrap()).unwrap();
+    let pin = pc.app.pc.link.fingerprint().map(|pin| hex::decode(pin).unwrap().try_into().unwrap()).unwrap();
     assert_eq!(link_with(link_port, &link_key, pin).await, Ok("welcome".to_string()));
     // Another key under the right id, or the right key bound to another certificate (a relay's): 4401 after the proof.
     let other = format!("{}{}", &link_key[..link_key.len() - 1], if link_key.ends_with('0') { '1' } else { '0' });
@@ -713,7 +713,7 @@ async fn a_wrong_key_is_refused_without_a_hint() {
     let garbage = link_with(link_port, "garbage", pin).await;
     let unknown = link_with(link_port, &unknown, pin).await;
     let (header, auth) = &pc_admin;
-    let client = pc.app.clients.view(&[])[0].id.clone();
+    let client = pc.app.pc.clients.view(&[])[0].id.clone();
     let remove = pc.delete(&format!("/api/v1/helpers/clients/{client}")).header(header.clone(), auth.clone());
     message(remove, StatusCode::OK).await;
     let removed = link_with(link_port, &link_key, pin).await;
@@ -787,7 +787,7 @@ async fn another_home_gets_the_muscles_until_the_owner_gives_more() {
 
     // The owner gives this home the messages too: the computer answers for its bot (none set up here).
     let (header, auth) = &pc_admin;
-    let client = pc.app.clients.view(&[])[0].id.clone();
+    let client = pc.app.pc.clients.view(&[])[0].id.clone();
     let gives = json!({ "gives": ["hearing", "voice", "model", "catalog", "messages"] });
     let put = pc.put(&format!("/api/v1/helpers/clients/{client}")).header(header.clone(), auth.clone());
     let clients = message(put.json(&gives), StatusCode::OK).await;
@@ -803,7 +803,7 @@ async fn another_home_gets_the_muscles_until_the_owner_gives_more() {
     let (header, auth) = &station_admin;
     message(station.delete(&format!("/api/v1/helpers/{entry}")).header(header.clone(), auth.clone()), StatusCode::OK)
         .await;
-    assert!(until(5000, || pc.app.clients.view(&[]).is_empty()).await, "{:?}", pc.app.clients.view(&[]));
+    assert!(until(5000, || pc.app.pc.clients.view(&[]).is_empty()).await, "{:?}", pc.app.pc.clients.view(&[]));
     assert!(
         station.app.helpers.pin(&entry).is_none() && station.app.secrets.get(&format!("helper:{entry}:key")).is_none()
     );
@@ -823,7 +823,7 @@ async fn a_home_claimed_without_its_key_is_another_home() {
     station.app.settings.set(&HOME_IDENTITY, &HomeIdentity { id: home.clone(), name: None }, None).unwrap();
     let key = connection_key(&pc, &pc_admin).await;
     let entry = paired(&station, &station_admin, &url, &key).await;
-    let client = pc.app.clients.view(&[]).into_iter().next().unwrap();
+    let client = pc.app.pc.clients.view(&[]).into_iter().next().unwrap();
     assert_eq!((client.own_home, client.gives.len()), (false, 4), "{client:?}");
 
     // With the home's key too (the computer's package taken): its own home — everything, by a new pairing that renews
@@ -838,7 +838,7 @@ async fn a_home_claimed_without_its_key_is_another_home() {
         (Some(entry.as_str()), Some(entry.as_str()))
     );
     // One gateway, one client: the pairing that proved the home replaced the one that only claimed it.
-    let clients = pc.app.clients.view(&[]);
+    let clients = pc.app.pc.clients.view(&[]);
     assert_eq!(clients.len(), 1, "{clients:?}");
     assert!(clients[0].own_home);
     // Its own home gets contract 1's and the computer's devices and folders (contract 3, docs/plans/turbo-devices.md).
@@ -994,7 +994,7 @@ async fn adding_the_same_helper_again_renews_its_entry_and_the_probe_checks_as_t
     assert_eq!((list[0].name.as_str(), &list[0].without), ("Ноутбук", &vec![Ability::Model]));
     assert!(until(5000, || up(&station, &entry)).await);
     // The old key's client said `bye` over the old link: the helper keeps one client for the one gateway.
-    assert!(until(5000, || pc.app.clients.view(&[]).len() == 1).await, "{:?}", pc.app.clients.view(&[]));
+    assert!(until(5000, || pc.app.pc.clients.view(&[]).len() == 1).await, "{:?}", pc.app.pc.clients.view(&[]));
     // «Подключить заново» names an entry that is not there: refused before anything is spent, the probe as the add.
     let key = connection_key(&pc, &pc_admin).await;
     for dry in [true, false] {
@@ -1005,7 +1005,7 @@ async fn adding_the_same_helper_again_renews_its_entry_and_the_probe_checks_as_t
     let (status, _) = add(&station, &station_admin, json!({ "url": url, "key": key, "replace": entry })).await;
     assert_eq!(status, StatusCode::CREATED, "the key was not spent by the refusals");
     assert!(until(5000, || up(&station, &entry)).await);
-    assert!(until(5000, || pc.app.clients.view(&[]).len() == 1).await, "{:?}", pc.app.clients.view(&[]));
+    assert!(until(5000, || pc.app.pc.clients.view(&[]).len() == 1).await, "{:?}", pc.app.pc.clients.view(&[]));
     station.stop().await;
     pc.stop().await;
 }
@@ -1061,7 +1061,7 @@ async fn a_proxy_on_the_helper_hands_the_link_on_by_the_outside_name() {
     let paired = pair_over(&mut socket, &key, &me, "", &name, &quick(), false, &accept).await.expect("paired");
     assert_eq!(paired.pin.public.as_deref(), Some("helper.example.com"));
     let link_key = paired.key.expect("a link key");
-    let clients = pc.app.clients.view(&[]);
+    let clients = pc.app.pc.clients.view(&[]);
     assert_eq!((clients.len(), clients[0].own_home), (1, false), "{clients:?}");
     // Later links through the same door: the link key, proven over the outside name, opens it, and the welcome comes.
     assert_eq!(link_through_the_proxy(pc.port, &link_key).await, Ok("welcome".to_string()));
@@ -1140,7 +1140,7 @@ async fn a_computer_never_pairs_with_itself_and_an_entry_that_names_it_is_itself
         (StatusCode::CONFLICT, Some("Это сам этот хаб: себя в Турбо не добавляют.")),
         "{body}"
     );
-    assert!(pc.app.helpers.list().is_empty() && pc.app.clients.view(&[]).is_empty(), "nothing stored, no client");
+    assert!(pc.app.helpers.list().is_empty() && pc.app.pc.clients.view(&[]).is_empty(), "nothing stored, no client");
     // The key was not spent: a station pairs with it.
     let (station, station_admin) = station().await;
     paired(&station, &station_admin, &url, &key).await;
@@ -1151,7 +1151,7 @@ async fn a_computer_never_pairs_with_itself_and_an_entry_that_names_it_is_itself
     let id = "home-0a1b2c3d";
     let link_key = format!("dwl1_{}_{}", "0".repeat(12), "a".repeat(64));
     pc.app.secrets.set(&format!("helper:{id}:key"), Some(&link_key)).unwrap();
-    let pin = HelperPin { sha256: pc.app.link.fingerprint(), public: None, since: String::new() };
+    let pin = HelperPin { sha256: pc.app.pc.link.fingerprint(), public: None, since: String::new() };
     pc.app.settings.set(&HELPER_PINS, &std::collections::BTreeMap::from([(id.to_string(), pin)]), None).unwrap();
     let entry = HelperSetting {
         id: id.into(),
@@ -1191,7 +1191,7 @@ async fn a_station_takes_its_parts_over_the_link_and_hears_its_computers_model_f
         c.execute("UPDATE llm_providers SET base_url = ?1 WHERE id = 'stand'", [model.url.as_str()])
     };
     pc.app.db.with(moved).unwrap();
-    pc.app.builtin.check().await;
+    pc.app.pc.builtin.check().await;
     let (station, station_admin) = station().await;
     let url = format!("https://127.0.0.1:{}", pc.link_port().unwrap());
     let key = connection_key(&pc, &pc_admin).await;
@@ -1232,7 +1232,7 @@ async fn a_station_takes_its_parts_over_the_link_and_hears_its_computers_model_f
 
     // The computer's model server closes; the computer's look sees it and the link tells its home (merged, ≤ 5 s).
     model.close().await;
-    pc.app.builtin.check().await;
+    pc.app.pc.builtin.check().await;
     let silent = || {
         let views = station.app.helpers.views();
         let view = views.iter().find(|view| view.id == entry);
@@ -1316,7 +1316,7 @@ async fn a_computer_lists_itself_first_and_its_linked_helper_after_it() {
     assert_eq!(send(order(json!(["self", entry]))).await.0, StatusCode::BAD_REQUEST, "never moved");
     message(order(json!([entry])), StatusCode::OK).await;
     // The other computer helps this one as another home: one client, on the line.
-    let clients = other.app.clients.view(&[]);
+    let clients = other.app.pc.clients.view(&[]);
     assert_eq!((clients.len(), clients[0].own_home), (1, false), "{clients:?}");
     pc.stop().await;
     other.stop().await;

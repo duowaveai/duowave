@@ -10,6 +10,7 @@ use serde_json::{json, Map, Value};
 use tokio_util::sync::CancellationToken;
 
 use crate::bus::Trail;
+use crate::plugins::agent_files::{agent_file_tools, agent_list, agent_read, agent_write, AGENT_READ_MAX};
 use crate::plugins::host_api::HostServices;
 use crate::plugins::PluginHost;
 use crate::skills::smart_home::home_assistant::HomeAssistantProvider;
@@ -44,7 +45,32 @@ pub struct PluginServices {
     /// «Выход в интернет»: the connections an app gives (`system/network` → `connections`).
     egress: OnceLock<Weak<crate::egress::Egress>>,
     /// The station's microphone and its Alice, for the apps that hear a word of their own (src/activator).
-    activator: OnceLock<Arc<crate::activator::Activator>>,
+    activator: OnceLock<Arc<Activator>>,
+}
+
+/// The Station's microphone and its Alice (src/activator, part of the Station's adapter).
+#[cfg(feature = "yandex-station")]
+pub type Activator = crate::activator::Activator;
+
+/// Without the Station's adapter there is no station microphone to open nor a station to wake: never made, so the
+/// apps' calls answer that only the hub on a station can.
+#[cfg(not(feature = "yandex-station"))]
+pub enum Activator {}
+
+#[cfg(not(feature = "yandex-station"))]
+impl Activator {
+    fn mic(&self) -> Result<Value, String> {
+        match *self {}
+    }
+
+    async fn wake(
+        &self,
+        _app: &str,
+        _words: &[crate::ear::word::ActivatorSpec],
+        _input: &Value,
+    ) -> Result<Value, String> {
+        match *self {}
+    }
 }
 
 /// The words an interest is found by in the memory: likes, pastimes, what one watches and reads.
@@ -56,13 +82,11 @@ const INTEREST_WORDS: &str =
 const WRITE_PROMPT_MAX: usize = 100_000;
 const WRITE_SYSTEM_MAX: usize = 20_000;
 const WRITE_LIMIT: std::time::Duration = std::time::Duration::from_secs(180);
-/// An app's agent: its steps (rounds of tool calls) and minutes at most, and by default; what one file tool gives.
+/// An app's agent: its steps (rounds of tool calls) and minutes at most, and by default.
 const AGENT_STEPS_MAX: u64 = 40;
 const AGENT_STEPS: u64 = 12;
 const AGENT_MINUTES_MAX: u64 = 30;
 const AGENT_MINUTES: u64 = 10;
-const AGENT_READ_MAX: usize = 64 * 1024;
-const AGENT_WRITE_MAX: usize = 256 * 1024;
 
 /// A line to voice at most; how long the voice may take.
 const SYNTH_TEXT_MAX: usize = 4000;
@@ -120,7 +144,7 @@ impl PluginServices {
     }
 
     /// The activators' service, once the station's sessions stand.
-    pub fn set_activator(&self, activator: Arc<crate::activator::Activator>) {
+    pub fn set_activator(&self, activator: Arc<Activator>) {
         let _ = self.activator.set(activator);
     }
 
@@ -953,78 +977,6 @@ impl crate::plugins::schedule::OwnerNotice for OwnerAlerts {
     }
 }
 
-/// The gateway's file tools of an app's agent: its own folder only.
-pub(crate) fn agent_file_tools() -> Vec<crate::dialog::llm::LlmTool> {
-    let tool = |name: &str, description: &str, parameters: Value| crate::dialog::llm::LlmTool {
-        name: name.into(),
-        description: description.into(),
-        parameters,
-    };
-    vec![
-        tool(
-            "list_files",
-            "Файлы и папки в папке приложения (path — подпапка, пусто — сама папка).",
-            json!({ "type": "object", "properties": { "path": { "type": "string" } } }),
-        ),
-        tool(
-            "read_file",
-            "Текст файла папки приложения, до 64 КБ.",
-            json!({ "type": "object", "properties": { "path": { "type": "string" } }, "required": ["path"] }),
-        ),
-        tool(
-            "write_file",
-            "Записать текстовый файл в папку приложения целиком (до 256 КБ); папки на пути создаются.",
-            json!({
-                "type": "object",
-                "properties": { "path": { "type": "string" }, "text": { "type": "string" } },
-                "required": ["path", "text"]
-            }),
-        ),
-    ]
-}
-
-pub(crate) fn agent_list(files: &crate::plugins::files::PluginFiles, app: &str, path: &str) -> Result<String, String> {
-    let dir = if path.trim_matches('/').is_empty() { files.root().join(app) } else { files.inside(app, path)? };
-    let mut names: Vec<String> = std::fs::read_dir(&dir)
-        .map_err(|_| format!("нет папки {path}"))?
-        .flatten()
-        .filter(|entry| !entry.file_name().to_string_lossy().starts_with('.'))
-        .map(|entry| {
-            let name = entry.file_name().to_string_lossy().into_owned();
-            match entry.metadata() {
-                Ok(meta) if meta.is_dir() => format!("{name}/"),
-                Ok(meta) => format!("{name} ({} Б)", meta.len()),
-                Err(_) => name,
-            }
-        })
-        .collect();
-    names.sort();
-    Ok(if names.is_empty() { "пусто".into() } else { names.join("\n") })
-}
-
-pub(crate) fn agent_read(files: &crate::plugins::files::PluginFiles, app: &str, path: &str) -> Result<String, String> {
-    let file = files.inside(app, path)?;
-    let bytes = std::fs::read(&file).map_err(|_| format!("нет файла {path}"))?;
-    if bytes.len() > AGENT_READ_MAX {
-        return Err(format!("{path}: больше 64 КБ"));
-    }
-    String::from_utf8(bytes).map_err(|_| format!("{path}: не текст"))
-}
-
-pub(crate) fn agent_write(
-    files: &crate::plugins::files::PluginFiles,
-    app: &str,
-    path: &str,
-    text: &str,
-) -> Result<String, String> {
-    if text.len() > AGENT_WRITE_MAX {
-        return Err(format!("{path}: больше 256 КБ"));
-    }
-    let file = files.place(app, path)?;
-    std::fs::write(&file, text).map_err(|error| format!("{path}: {error}"))?;
-    Ok(format!("записано: {path}, {} Б", text.len()))
-}
-
 /// The model a letter asks for: `"fast"` / `"smart"` — the household's profile; `{provider, model}` — a model of the
 /// panel chosen by the app itself (its provider gone — the profile answers).
 fn model_choice(
@@ -1127,23 +1079,5 @@ mod model_and_voice_tests {
         assert!(pick(json!({"model": "best"})).is_err());
         assert!(pick(json!({"model": {"provider": "openai"}})).is_err());
         assert!(pick(json!({"model": 5})).is_err());
-    }
-
-    #[test]
-    fn the_agents_file_tools_stay_inside_the_apps_folder() {
-        let dir = tempfile::tempdir().unwrap();
-        let files = crate::plugins::files::PluginFiles::new(dir.path().to_path_buf(), Arc::new(|| false));
-        assert!(agent_write(&files, "feed", "episodes/01/plan.json", "{\"shots\": 3}")
-            .unwrap()
-            .starts_with("записано"));
-        assert_eq!(agent_read(&files, "feed", "episodes/01/plan.json").unwrap(), "{\"shots\": 3}");
-        assert_eq!(agent_list(&files, "feed", "").unwrap(), "episodes/");
-        assert!(agent_list(&files, "feed", "episodes/01").unwrap().starts_with("plan.json ("));
-        for bad in ["../other/secret.txt", ".hidden", "episodes/../../x", ""] {
-            assert!(agent_write(&files, "feed", bad, "x").is_err(), "{bad}");
-            assert!(agent_read(&files, "feed", bad).is_err(), "{bad}");
-        }
-        assert!(!dir.path().join("other").exists());
-        assert!(agent_write(&files, "feed", "big.txt", &"x".repeat(AGENT_WRITE_MAX + 1)).is_err());
     }
 }

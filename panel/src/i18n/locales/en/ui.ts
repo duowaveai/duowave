@@ -34,6 +34,8 @@ const en: Translation<typeof ru> = {
     movedLabel: 'The speaker is waiting for the hub at the old address',
     movedTitle: (name: string) => `${name}: can’t hear the hub`,
     movedAbout: (was: string, now: string) => `it goes to ${was}, but the hub is now at ${now}`,
+    localNetworkTitle: 'macOS keeps DuoWave off the home network',
+    localNetworkAbout: 'Speakers and the home’s other computers can’t see this one. Allow it in System Settings: Privacy & Security → Local Network → DuoWave.',
     reconnect: 'Reconnect',
     fileLabel: (path: string) => `File ${path}`,
     yes: 'Yes',

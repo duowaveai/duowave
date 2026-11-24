@@ -2,7 +2,7 @@
 
 ## Проверено
 
-- [ ] `cargo test -p duowave` проходит, `cargo clippy -p duowave --all-targets` без предупреждений; пульт собирается (`pnpm --filter panel build`)
+- [ ] `cargo test --workspace` проходит, `cargo clippy --workspace --all-targets` без предупреждений; пульт собирается (`pnpm --filter panel build`)
 - [ ] Без идентификаторов, ключей и записей голоса — ни в коде, ни в тестах
 - [ ] Если PR трогает колонку: что меняется, где копия, как откатить, на какой модели и прошивке проверено
 

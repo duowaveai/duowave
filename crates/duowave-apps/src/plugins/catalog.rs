@@ -1,0 +1,5756 @@
+//! The packages' catalog (docs/plans/characters.md, sections 2 and 4): one feed for every kind of package —
+//! characters first — as static files on our site, read when the panel opens the catalog and not more often than
+//! every 6 hours, with its ETag. Its last good copy and the previews it names live in `DATA_DIR/packages-catalog/`:
+//! without the network the panel sees that copy, and the site never learns who looks at what. A feed that does not
+//! parse leaves the copy before it in place and says why.
+//!
+//! The feed comes from PACKAGES_FEED_URL, else the one built in at release (DUOWAVE_PACKAGES_FEED); `off` keeps the
+//! gateway off the network for it, and so does the owner's switch (setting `packages_catalog`). HTTPS only (HTTP for
+//! this computer, to try a catalog), and every file it names from the same origin. Nothing installs by itself: a
+//! person with the right presses the button. Until the catalog is signed (stage 8), plugins and apps in it are listed
+//! and never installed — only packages without code.
+//!
+//! The main feed may name extra feeds (`feeds`, up to 4: docs/plans/catalog-feeds.md) — our store, a partner's. Each is
+//! read after it, into its own folder `packages-catalog/feeds/<name by its address>/` with its own ETag and state; a
+//! feed the main one no longer names goes with its copy. Their packages come after the main's, in the main's order,
+//! and an id an earlier feed has is not taken from a later one. Every file from the package's own feed's origin;
+//! `verified` only when the main feed's declaration allows it; code from them only when the signed main feed pinned
+//! that very archive by its hash (`recommends`, `code_allowed`). Only the main feed names feeds: an extra feed's own `feeds` are not followed.
+//!
+//! Own sources (docs/plans/custom-feeds.md): feeds the admin adds here by a link, after a warning — read after the
+//! main feed's, kept in `packages-catalog/sources.json` (up to 4), vouched for and given code only by the main feed's
+//! pin of the very archive (the YouTube app of a separate feed, docs/plugins/apps/youtube-turbo.md). One that answers 404
+//! or 410 is closed: its copy goes and what was installed from it is hidden.
+//!
+//! The demo feed (owner 22.11): a release may carry one more feed's address, DUOWAVE_DEMO_FEED — a secret of the
+//! release build, never in the code or the public repository. A gateway puts it among its own sources once, by itself,
+//! the first time its catalog starts (mark `demo-seeded` beside `sources.json`): every new home has the demo
+//! characters without typing a link, and the admin removes it like any own source — it does not come back.
+//!
+//! Mirrors (docs/plans/package-mirror.md, utils/mirrors.rs): the extra feeds and the own sources, their archives and
+//! previews may also come from a mirror when their own host fails or stalls. The address stays the feed's own
+//! everywhere; only the bytes come from elsewhere, and they are checked as if they came from the feed. Only the feed's
+//! own host closes an own source (404, 410): a mirror without the feed (404) is a mirror behind, and its 410 says the
+//! feed was closed where it copies from. The main feed is read from its own host only (owner, 24.11).
+//!
+//! A feed may say a package is `hidden`: it is not listed or installed, and the installed one that came from that very
+//! feed is hidden here (registry `hidden`) — not listed, its code off, its characters not offered — until the feed
+//! stops saying so.
+//!
+//! A feed may also keep a whole package out of sight (`unlisted: true`): it installs as any other, but the catalog's
+//! view and the voice leave it out unless the admin turned on the hidden developer option «Показывать скрытые пакеты»
+//! (setting packages.show_hidden), or it is installed here — then its card and updates are the household's.
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use sha2::Digest;
+
+use super::controller::{PackageView, PlacementNow, PluginHost};
+use super::install::{self, Expected, MAX_ARCHIVE};
+use super::manifest::{agent_card, valid_id, AgentCard, PackageKind, HOST_API, MAX_LICENSE};
+use super::registry;
+use crate::config::PluginsConfig;
+use crate::core::availability::Placement;
+use crate::core::events::{Actor, EventBus, GatewayEvent};
+use crate::platform::http::ApiError;
+use crate::settings::definitions::{PACKAGES_CATALOG, PACKAGES_SHOW_HIDDEN};
+use crate::settings::SettingsService;
+use crate::storage::Db;
+use crate::utils::mirrors::{self, Mirrors};
+use crate::utils::time::now_iso;
+
+/// The feed built into a release; none in a local build.
+const BUILT_IN_FEED: Option<&str> = option_env!("DUOWAVE_PACKAGES_FEED");
+/// The demo feed a release puts among the own sources once; none in a local build.
+const BUILT_IN_DEMO: Option<&str> = option_env!("DUOWAVE_DEMO_FEED");
+/// Beside `sources.json`: the demo feed was put there once — removed, it is not put again.
+const DEMO_MARK: &str = "demo-seeded";
+/// The feed format this gateway reads.
+pub const FEED_FORMAT: u64 = 1;
+/// The feed is read again after this long.
+const FRESH: Duration = Duration::from_secs(6 * 3600);
+/// A copy through the home server that came older than `FRESH` is asked again this often.
+const HOME_AGAIN: Duration = Duration::from_secs(15 * 60);
+const FEED_TIMEOUT: Duration = Duration::from_secs(20);
+const MAX_FEED: u64 = 1024 * 1024;
+/// A preview: the picture and up to three phrases.
+const MAX_IMAGE: u64 = 256 * 1024;
+const MAX_SAMPLE: u64 = 64 * 1024;
+const MAX_SAMPLES: usize = 3;
+/// A preview that did not come (no network, a timeout, a full disk) is asked again at a later read of its feed, not
+/// sooner than this: «check now» pressed again and again does not ask it each time.
+const PREVIEW_AGAIN: Duration = Duration::from_secs(15 * 60);
+const ARCHIVE_TIMEOUT: Duration = Duration::from_secs(120);
+/// The extra feeds the main one may name.
+const MAX_FEEDS: usize = 4;
+/// An extra feed's title for people, at most.
+const MAX_FEED_TITLE: usize = 40;
+/// The extra feeds' folders, in the catalog's own: `feeds/<name by the address>/`.
+const FEEDS_DIR: &str = "feeds";
+/// The own sources the admin added here: `[{url, addedAt}]`.
+const SOURCES_FILE: &str = "sources.json";
+/// Own sources, at most.
+pub const MAX_SOURCES: usize = 4;
+
+/// Where the feed is, as the configuration and the build say.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FeedSource {
+    /// PACKAGES_FEED_URL=off.
+    Off,
+    /// Neither the environment nor the build names one.
+    Missing,
+    Url(String),
+}
+
+impl FeedSource {
+    pub fn of(configured: Option<&str>, built_in: Option<&str>) -> FeedSource {
+        match configured.map(str::trim).filter(|url| !url.is_empty()) {
+            Some(url) if url.eq_ignore_ascii_case("off") => FeedSource::Off,
+            Some(url) => FeedSource::Url(url.to_string()),
+            None => match built_in.map(str::trim).filter(|url| !url.is_empty()) {
+                Some(url) => FeedSource::Url(url.to_string()),
+                None => FeedSource::Missing,
+            },
+        }
+    }
+}
+
+/// A feed's address the gateway may read: HTTPS, or HTTP on this computer (a catalog being tried).
+pub fn feed_url(text: &str) -> Result<url::Url, String> {
+    let url = url::Url::parse(text).map_err(|_| crate::tr!("адрес каталога «{text}» — не адрес", text = text))?;
+    let local = matches!(url.host_str(), Some("localhost" | "127.0.0.1"));
+    match url.scheme() {
+        "https" => Ok(url),
+        "http" if local => Ok(url),
+        _ => Err(crate::tr!("каталог — только по HTTPS (HTTP — только с localhost и 127.0.0.1)")),
+    }
+}
+
+/// A file the feed names, from the feed's own origin (scheme, host, port); None when it is anywhere else.
+pub fn same_origin(base: &url::Url, reference: &str) -> Option<url::Url> {
+    let url = base.join(reference).ok()?;
+    (url.origin() == base.origin()).then_some(url)
+}
+
+/// A package in the feed, checked.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Entry {
+    pub id: String,
+    pub kind: PackageKind,
+    pub version: semver::Version,
+    pub title: String,
+    pub description: Option<String>,
+    pub api: String,
+    pub runs: Vec<Placement>,
+    /// `prefer: home` from the feed: on a station with a Турбо, it runs there (docs/plans/home-and-devices.md, 5б).
+    pub prefer_home: bool,
+    pub min_gateway: Option<semver::Version>,
+    pub url: url::Url,
+    pub sha256: String,
+    pub size: u64,
+    pub image: Option<url::Url>,
+    pub samples: Vec<url::Url>,
+    /// What it will need (an engine, room): the same language as a voice's `needs`, as the feed gives it.
+    pub needs: Value,
+    pub license: Option<String>,
+    pub verified: bool,
+    /// Its `budget.memoryMb`, as the feed tells it: on the station, what does not fit is shown as not going here.
+    pub memory_mb: Option<u64>,
+    /// Code's engine as the feed says (`runtime`: js, wasm, mcp, process, node) and its rights (`permissions`): the
+    /// catalog's card shows them before the install (docs/plans/feed.md, stage 9).
+    pub runtime: Option<String>,
+    pub permissions: Vec<String>,
+    /// An app's archives by platform (`platforms`): the station takes `linux-aarch64`'s, a Mac `darwin-arm64`'s.
+    pub platforms: BTreeMap<String, Archive>,
+    /// Who puts it out: its own `publisher`; an extra feed's package — the one the main feed names for that feed,
+    /// whatever the package says.
+    pub publisher: Option<String>,
+    /// The extra feed it comes from; None — the main one.
+    pub extra: Option<ExtraFeed>,
+    /// The languages it speaks, its own first (`languages`), and its title and description in the others (`locales`):
+    /// the catalog shows it in the person's language (docs/plans/i18n.md).
+    pub languages: Vec<String>,
+    pub locales: BTreeMap<String, (Option<String>, Option<String>)>,
+    /// An app's faces (`faces`: widget, skill, window, schedule): MagicPlace filters by them
+    /// (docs/plans/magicplace.md). None for a character or a theme.
+    pub faces: Vec<String>,
+    /// The catalog recommends it (`recommended`): the main feed's word, or that of an extra feed it vouches for —
+    /// never an own source's.
+    pub recommended: bool,
+    /// When it came into the catalog (`addedAt`, RFC 3339): MagicPlace's «Новое».
+    pub added_at: Option<String>,
+    /// What it downloads by itself besides its archive (`downloads`): MagicPlace says it in words before the install.
+    pub downloads: Vec<Download>,
+    /// The feed keeps it out of sight (`unlisted`): a whole entry, installable, but not listed in MagicPlace, the
+    /// characters' catalog or by voice unless the admin turned on «Показывать скрытые пакеты» (packages.show_hidden,
+    /// the hidden developer options). Not `hidden`, the feed's kill switch, which takes a package away from everyone.
+    pub unlisted: bool,
+    /// The main feed pinned this very archive by its hash (`recommends`): we looked at its code. Code of an extra
+    /// feed or an own source installs only so, and only from a signed main feed (`code_allowed`).
+    pub pinned: bool,
+    /// An agent's card (`agent`, kind `agent` only): what to install, how to sign in, its terms — shown before the
+    /// install (docs/plans/router-and-works.md, 7б).
+    pub agent: Option<AgentCard>,
+    /// The packages that go with it (`companions`, the manifest's): installing one offers the other.
+    pub companions: Vec<crate::plugins::manifest::Companion>,
+    /// What its files take unpacked, bytes (`unpacked`): the room it needs, said before the install.
+    pub unpacked: Option<u64>,
+}
+
+/// Something a package downloads by itself besides its archive: Remotion and a browser for drawing, a model.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Download {
+    pub id: String,
+    pub title: String,
+    /// About how much, MB.
+    pub mb: u64,
+    /// `install` or `first-use`.
+    pub when: String,
+    /// Its title in the package's other languages (`locales.<code>.downloads.<id>`).
+    pub titles: BTreeMap<String, String>,
+}
+
+/// An app's faces as the feed may name them, in the order MagicPlace shows them.
+pub const FACES: [&str; 4] = ["widget", "skill", "window", "schedule"];
+/// The downloads a package may name, at most.
+const MAX_DOWNLOADS: usize = 8;
+/// Our Node's archive, about: what an app on Node downloads first when the gateway has no Node yet.
+pub const NODE_DOWNLOAD_MB: u64 = 50;
+
+/// An extra feed the main one names (`feeds`): read after it, its packages after the main's.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExtraFeed {
+    pub url: url::Url,
+    /// Who puts out its packages: lowercase Latin letters, digits and «-».
+    pub publisher: String,
+    /// What a person sees it called: its publisher when the main feed gives no title.
+    pub title: String,
+    /// Whether its packages' `verified` stands: without it they count as not checked by us, whatever it says.
+    pub verified: bool,
+    /// An own source the admin added here, not one the main feed names.
+    pub own: bool,
+}
+
+/// An archive of the feed: its address, its hash, its size.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Archive {
+    pub url: url::Url,
+    pub sha256: String,
+    pub size: u64,
+}
+
+impl Entry {
+    /// Its title and description in the first language of `preferences` it has them in; none — its own.
+    pub fn texts_in(&self, preferences: &[String]) -> (String, Option<String>) {
+        let own = self.languages.first().map(String::as_str).unwrap_or(crate::locale::SOURCE);
+        for code in preferences {
+            if code == own {
+                break;
+            }
+            if let Some((title, description)) = self.locales.get(code) {
+                return (
+                    title.clone().unwrap_or_else(|| self.title.clone()),
+                    description.clone().or_else(|| self.description.clone()),
+                );
+            }
+        }
+        (self.title.clone(), self.description.clone())
+    }
+
+    /// Its title and description in every language it has, its own first: MagicPlace searches them all. A language
+    /// whose translation lacks one takes its own.
+    pub fn all_texts(&self) -> Vec<(String, String, Option<String>)> {
+        let own = self.languages.first().map(String::as_str).unwrap_or(crate::locale::SOURCE).to_string();
+        let mut texts = vec![(own.clone(), self.title.clone(), self.description.clone())];
+        for (code, (title, description)) in &self.locales {
+            if *code == own {
+                continue;
+            }
+            texts.push((
+                code.clone(),
+                title.clone().unwrap_or_else(|| self.title.clone()),
+                description.clone().or_else(|| self.description.clone()),
+            ));
+        }
+        texts
+    }
+
+    /// A download's title in the first language of `preferences` it has one in; none — its own.
+    pub fn download_title(&self, download: &Download, preferences: &[String]) -> String {
+        let own = self.languages.first().map(String::as_str).unwrap_or(crate::locale::SOURCE);
+        for code in preferences {
+            if code == own {
+                break;
+            }
+            if let Some(title) = download.titles.get(code) {
+                return title.clone();
+            }
+        }
+        download.title.clone()
+    }
+
+    /// Where it works, in MagicPlace's words, whatever gateway asks — [`place_of`] without a gateway.
+    pub fn place(&self) -> Option<&'static str> {
+        place_of(self.kind, self.runtime.as_deref() == Some("mcp"), &self.runs, None)
+    }
+
+    /// Where it works for the gateway at `placement`: an app for both a station and a computer works where it is
+    /// installed — `station` on a station's gateway (DuoGram), `computer` on a computer's.
+    pub fn place_at(&self, placement: Placement) -> Option<&'static str> {
+        place_of(self.kind, self.runtime.as_deref() == Some("mcp"), &self.runs, Some(placement))
+    }
+
+    /// The archive for this machine: its platform's, else the one archive.
+    pub fn archive(&self) -> Archive {
+        self.platforms.get(&super::manifest::platform()).cloned().unwrap_or_else(|| Archive {
+            url: self.url.clone(),
+            sha256: self.sha256.clone(),
+            size: self.size,
+        })
+    }
+}
+
+/// The feed, checked: its packages, and what of it was left out and why.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Feed {
+    pub updated_at: Option<String>,
+    pub packages: Vec<Entry>,
+    pub skipped: Vec<String>,
+    /// Signed with the catalog's key (`catalog.json.minisig`): code may come from it (stage 8).
+    pub signed: bool,
+    /// The extra feeds it names: the main feed's are read, an extra one's are not followed.
+    pub feeds: Vec<ExtraFeed>,
+    /// The packages it says to hide (`hidden: true`): not in `packages`, and an installed one from this feed is hidden.
+    pub hidden: std::collections::BTreeSet<String>,
+    /// Packages of other feeds the catalog looked at and recommends, each by its archive's hash (`recommends`,
+    /// docs/plans/magicplace.md): taken from the main feed only.
+    pub recommends: Vec<Pin>,
+    /// Its characters' catchphrases (`phrases`, src/characters/catchphrases.rs): of the packages installed from it.
+    pub phrases: crate::characters::catchphrases::FeedPhrases,
+}
+
+/// A package of another feed the catalog looked at: that feed's address, the package's id, its archive's sha256.
+/// Without the address (`feed` left out) the pin is the archive alone, at whatever feed added here brings it: the
+/// catalog recommends a package of a feed whose address is kept from people — a demo shown to a few — without naming
+/// it. The archive is the same bytes we looked at wherever it comes from: the install checks its hash.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Pin {
+    pub feed: Option<url::Url>,
+    pub id: String,
+    pub sha256: String,
+}
+
+impl Pin {
+    /// This pin is this package of this feed: the very archive, at the feed it names — or at any, when it names none.
+    fn is(&self, feed: &url::Url, id: &str, sha256: &str) -> bool {
+        self.feed.as_ref().is_none_or(|pinned| pinned == feed)
+            && self.id == id
+            && self.sha256 == sha256.to_ascii_lowercase()
+    }
+}
+
+/// The packages of other feeds the main one may recommend, at most.
+const MAX_RECOMMENDS: usize = 32;
+
+/// A pin as the feed names it: the feed's address as a feed's (HTTPS) or none at all, an id, 64 hex digits; else None.
+fn pin(value: &Value) -> Option<Pin> {
+    let text = |key: &str| value.get(key).and_then(Value::as_str).map(str::trim).filter(|text| !text.is_empty());
+    let feed = match value.get("feed") {
+        None => None,
+        Some(_) => Some(feed_url(text("feed")?).ok()?),
+    };
+    let id = text("id").filter(|id| valid_id(id))?.to_string();
+    let sha256 = text("sha256").filter(|sha| sha.len() == 64 && sha.chars().all(|c| c.is_ascii_hexdigit()))?;
+    Some(Pin { feed, id, sha256: sha256.to_ascii_lowercase() })
+}
+
+/// The catalog's signature: the feed's own address and `.minisig`, from the same origin.
+pub const SIGNATURE_SUFFIX: &str = ".minisig";
+
+/// «Где что работает» beside the feed (src/egress/reach.rs) and its largest size.
+const REACH: &str = "reach.json";
+const MAX_REACH: u64 = 256 * 1024;
+const MAX_SIGNATURE: u64 = 8 * 1024;
+
+/// The keys the catalog is signed with, built into the program the way the updates' are, apart from them (a leaked
+/// catalog key gives no gateway release): minisign's `.pub` files one after another — the release key, then a reserve
+/// kept offline for the day the release key is lost or leaks (docs/plans/key-rotation.md, «Ключ каталога»). A feed
+/// signed by any of them is signed. PACKAGES_PUBKEY replaces them. Empty: no key — no code from the catalog.
+pub use crate::config::BUILT_IN_KEYS;
+
+impl Feed {
+    /// A catalog of nothing yet: own sources' packages go into it when the main feed has no copy here.
+    fn empty() -> Feed {
+        Feed {
+            updated_at: None,
+            packages: Vec::new(),
+            skipped: Vec::new(),
+            signed: false,
+            feeds: Vec::new(),
+            hidden: Default::default(),
+            recommends: Vec::new(),
+            phrases: Default::default(),
+        }
+    }
+
+    /// The newest version of each package, in the feed's order.
+    pub fn newest(&self) -> Vec<&Entry> {
+        let mut seen: Vec<&Entry> = Vec::new();
+        for entry in &self.packages {
+            match seen.iter_mut().find(|known| known.id == entry.id) {
+                Some(known) if known.version < entry.version => *known = entry,
+                Some(_) => {}
+                None => seen.push(entry),
+            }
+        }
+        seen
+    }
+
+    /// A package by id: the version asked for, or its newest.
+    pub fn find(&self, id: &str, version: Option<&str>) -> Option<&Entry> {
+        match version {
+            Some(version) => self.packages.iter().find(|entry| entry.id == id && entry.version.to_string() == version),
+            None => self.newest().into_iter().find(|entry| entry.id == id),
+        }
+    }
+
+    /// An extra feed's packages after these, marked as its own: its publisher, and `verified` only when its
+    /// declaration allows. An id these have already is not taken: what was left out, and whose the id is.
+    fn take(&mut self, extra: &ExtraFeed, copy: Feed) -> Vec<String> {
+        let mut known: BTreeMap<String, String> = BTreeMap::new();
+        for entry in &self.packages {
+            let whose = entry.extra.as_ref().map_or_else(|| "the main feed".to_string(), |extra| extra.url.to_string());
+            known.entry(entry.id.clone()).or_insert(whose);
+        }
+        let mut left = Vec::new();
+        for mut entry in copy.packages {
+            if let Some(whose) = known.get(&entry.id) {
+                let refused = format!("{} (in {whose} already)", entry.id);
+                if !left.contains(&refused) {
+                    left.push(refused);
+                }
+                continue;
+            }
+            entry.publisher = Some(extra.publisher.clone());
+            entry.verified &= extra.verified;
+            // We recommend only what we vouch for: never what an own source or an unvouched feed says of itself.
+            entry.recommended &= extra.verified && !extra.own;
+            // A package of it the main feed looked at and recommends — that very archive, by its hash: recommended and
+            // checked. Another archive under the same id is not what we looked at. An app built per platform: the
+            // archive this machine takes (its platform's), the one installed here.
+            let archive = entry.archive();
+            let pinned = self.recommends.iter().any(|pin| pin.is(&extra.url, &entry.id, &archive.sha256));
+            if pinned {
+                entry.recommended = true;
+                entry.verified = true;
+                entry.pinned = true;
+            }
+            entry.extra = Some(extra.clone());
+            self.packages.push(entry);
+        }
+        left
+    }
+}
+
+/// An extra feed as the main one declares it: HTTPS as the main, its publisher an id, a title for people.
+fn extra_feed(value: &Value) -> Result<ExtraFeed, String> {
+    let text = |key: &str| value.get(key).and_then(Value::as_str).map(str::trim).filter(|text| !text.is_empty());
+    let url = feed_url(text("url").ok_or_else(|| crate::tr!("feeds: нет url"))?)
+        .map_err(|problem| format!("feeds: {problem}"))?;
+    let publisher = text("publisher")
+        .filter(|publisher| valid_id(publisher))
+        .ok_or_else(|| crate::tr!("feeds: {url}: publisher — строчные латинские буквы, цифры и «-»", url = url))?
+        .to_string();
+    let title = text("title").map(|title| title.chars().take(MAX_FEED_TITLE).collect());
+    let verified = value.get("verified").and_then(Value::as_bool).unwrap_or(false);
+    Ok(ExtraFeed { url, title: title.unwrap_or_else(|| publisher.clone()), publisher, verified, own: false })
+}
+
+/// An own source as a feed: its host is its title and (in letters an id takes) its publisher; never vouched for.
+pub fn own_feed(url: &url::Url) -> ExtraFeed {
+    let host = url.host_str().unwrap_or("source").to_ascii_lowercase();
+    let letters: String = host.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
+    let mut publisher: String = letters.trim_matches('-').chars().take(32).collect();
+    publisher = publisher.trim_end_matches('-').to_string();
+    if !valid_id(&publisher) {
+        publisher = "own".into();
+    }
+    let title = match url.port() {
+        Some(port) => format!("{host}:{port}"),
+        None => host,
+    };
+    ExtraFeed {
+        url: url.clone(),
+        publisher,
+        title: title.chars().take(MAX_FEED_TITLE).collect(),
+        verified: false,
+        own: true,
+    }
+}
+
+/// An own source as `sources.json` keeps it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OwnSource {
+    url: String,
+    added_at: String,
+}
+
+/// An extra feed's folder name by its address: the host to read, and a hash of the whole address — never a version.
+fn feed_folder(url: &url::Url) -> String {
+    let host: String = url
+        .host_str()
+        .unwrap_or("feed")
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '-' { c.to_ascii_lowercase() } else { '_' })
+        .collect();
+    format!("{host}-{}", hex::encode(&sha2::Sha256::digest(url.as_str().as_bytes())[..4]))
+}
+
+fn entry(value: &Value, base: &url::Url) -> Result<Entry, String> {
+    let text = |key: &str| value.get(key).and_then(Value::as_str).map(str::trim).filter(|text| !text.is_empty());
+    let id = text("id")
+        .filter(|id| valid_id(id))
+        .ok_or_else(|| crate::tr!("id: строчные латинские буквы, цифры и «-»"))?
+        .to_string();
+    let at = |problem: &str| format!("{id}: {problem}");
+    let kind =
+        PackageKind::parse(text("kind").unwrap_or("plugin")).ok_or_else(|| at(&crate::tr!("kind: нет такого вида")))?;
+    let version = text("version").and_then(|v| semver::Version::parse(v).ok()).ok_or_else(|| at("version"))?;
+    let title: String = text("title").ok_or_else(|| at(&crate::tr!("нет title")))?.chars().take(80).collect();
+    let description = text("description").map(|text| text.chars().take(500).collect());
+    let languages: Vec<String> = value
+        .get("languages")
+        .and_then(Value::as_array)
+        .map(|codes| codes.iter().filter_map(Value::as_str).filter_map(crate::locale::normalize).take(40).collect())
+        .unwrap_or_default();
+    let locales: BTreeMap<String, (Option<String>, Option<String>)> = value
+        .get("locales")
+        .and_then(Value::as_object)
+        .map(|locales| {
+            locales
+                .iter()
+                .filter_map(|(code, texts)| {
+                    let code = crate::locale::normalize(code)?;
+                    let field = |key: &str, limit: usize| {
+                        texts
+                            .get(key)
+                            .and_then(Value::as_str)
+                            .map(str::trim)
+                            .filter(|text| !text.is_empty())
+                            .map(|text| text.chars().take(limit).collect::<String>())
+                    };
+                    Some((code, (field("title", 80), field("description", 500))))
+                })
+                .take(40)
+                .collect()
+        })
+        .unwrap_or_default();
+    let api = text("api").unwrap_or("^1").to_string();
+    semver::VersionReq::parse(&api).map_err(|_| at("api"))?;
+    let runs: Vec<Placement> = match value.get("runs").and_then(Value::as_array) {
+        Some(names) => names.iter().filter_map(|name| name.as_str().and_then(Placement::parse)).collect(),
+        None => Placement::ALL.to_vec(),
+    };
+    let min_gateway = match text("minGateway") {
+        Some(min) => Some(semver::Version::parse(min.trim_start_matches('v')).map_err(|_| at("minGateway"))?),
+        None => None,
+    };
+    let url = text("url")
+        .and_then(|url| same_origin(base, url))
+        .ok_or_else(|| at(&crate::tr!("url: архив с того же адреса")))?;
+    let sha256 = text("sha256")
+        .filter(|sha| sha.len() == 64 && sha.chars().all(|c| c.is_ascii_hexdigit()))
+        .ok_or_else(|| at(&crate::tr!("sha256: 64 шестнадцатеричных знака")))?
+        .to_ascii_lowercase();
+    let size = value.get("size").and_then(Value::as_u64).filter(|size| (1..=MAX_ARCHIVE).contains(size));
+    let size = size.ok_or_else(|| at(&crate::tr!("size: размер архива, до 16 МБ")))?;
+    let preview = value.get("preview");
+    let image = preview.and_then(|preview| preview.get("image")).and_then(Value::as_str);
+    let image = match image {
+        Some(image) => {
+            Some(same_origin(base, image).ok_or_else(|| at(&crate::tr!("preview.image: с того же адреса")))?)
+        }
+        None => None,
+    };
+    let mut samples = Vec::new();
+    for sample in preview.and_then(|preview| preview.get("samples")).and_then(Value::as_array).into_iter().flatten() {
+        let sample = sample.as_str().and_then(|sample| same_origin(base, sample));
+        samples.push(sample.ok_or_else(|| at(&crate::tr!("preview.samples: с того же адреса")))?);
+    }
+    samples.truncate(MAX_SAMPLES);
+    let needs = match value.get("needs") {
+        None => Value::Array(Vec::new()),
+        Some(Value::Array(needs)) if needs.iter().all(Value::is_object) => Value::Array(needs.clone()),
+        Some(_) => return Err(at(&crate::tr!("needs: список"))),
+    };
+    let license = text("license").map(|license| license.chars().take(MAX_LICENSE).collect());
+    let publisher = text("publisher").filter(|publisher| valid_id(publisher)).map(str::to_string);
+    let verified = value.get("verified").and_then(Value::as_bool).unwrap_or(false);
+    let memory_mb = value.pointer("/budget/memoryMb").and_then(Value::as_u64);
+    let runtime = text("runtime").filter(|runtime| runtime.len() <= 16).map(str::to_string);
+    let permissions = value
+        .get("permissions")
+        .and_then(Value::as_array)
+        .map(|rights| {
+            rights.iter().filter_map(Value::as_str).take(40).map(|right| right.chars().take(120).collect()).collect()
+        })
+        .unwrap_or_default();
+    let mut platforms = BTreeMap::new();
+    for (key, archive) in value.get("platforms").and_then(Value::as_object).into_iter().flatten() {
+        let url = archive.get("url").and_then(Value::as_str).and_then(|url| same_origin(base, url));
+        let sha256 = archive
+            .get("sha256")
+            .and_then(Value::as_str)
+            .filter(|sha| sha.len() == 64 && sha.chars().all(|c| c.is_ascii_hexdigit()));
+        let size = archive.get("size").and_then(Value::as_u64).filter(|size| (1..=MAX_ARCHIVE).contains(size));
+        match (url, sha256, size) {
+            (Some(url), Some(sha256), Some(size)) => {
+                platforms.insert(key.clone(), Archive { url, sha256: sha256.to_ascii_lowercase(), size });
+            }
+            _ => return Err(at(&crate::tr!("platforms.{key}: url с того же адреса, sha256 и size", key = key))),
+        }
+    }
+    // MagicPlace's fields (docs/plans/magicplace.md): optional, and one that does not read is left out, never the
+    // package.
+    let faces = value
+        .get("faces")
+        .and_then(Value::as_array)
+        .map(|named| {
+            FACES
+                .iter()
+                .filter(|face| named.iter().any(|item| item.as_str() == Some(**face)))
+                .map(|face| face.to_string())
+                .collect()
+        })
+        .unwrap_or_default();
+    let recommended = value.get("recommended").and_then(Value::as_bool).unwrap_or(false);
+    let added_at = text("addedAt").filter(|at| chrono::DateTime::parse_from_rfc3339(at).is_ok()).map(str::to_string);
+    let unlisted = value.get("unlisted").and_then(Value::as_bool).unwrap_or(false);
+    let downloads = downloads_of(value);
+    // The packages that go with it: each `{id, why?}`, another one's id; anything else is left out.
+    let companions = value
+        .get("companions")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|item| {
+            let other = item.get("id").and_then(Value::as_str)?.trim();
+            (valid_id(other) && other != id).then(|| crate::plugins::manifest::Companion {
+                id: other.to_string(),
+                why: item.get("why").and_then(Value::as_str).map(|why| why.trim().chars().take(200).collect()),
+            })
+        })
+        .take(crate::plugins::manifest::MAX_COMPANIONS)
+        .collect();
+    let unpacked = value.get("unpacked").and_then(Value::as_u64).filter(|bytes| *bytes > 0);
+    // An agent's card says what it is: one without a whole card is not listed.
+    let agent = match kind {
+        PackageKind::Agent => {
+            let card = value.get("agent").and_then(Value::as_object).ok_or_else(|| at("agent"))?;
+            let mut problems = Vec::new();
+            let card = agent_card(card, &mut problems);
+            if !problems.is_empty() {
+                return Err(at(&problems.join("; ")));
+            }
+            card
+        }
+        _ => None,
+    };
+    Ok(Entry {
+        id,
+        kind,
+        version,
+        title,
+        description,
+        api,
+        runs,
+        prefer_home: text("prefer") == Some("home"),
+        min_gateway,
+        url,
+        sha256,
+        size,
+        image,
+        samples,
+        needs,
+        license,
+        verified,
+        memory_mb,
+        runtime,
+        permissions,
+        platforms,
+        publisher,
+        extra: None,
+        languages,
+        locales,
+        faces,
+        recommended,
+        added_at,
+        downloads,
+        unlisted,
+        pinned: false,
+        agent,
+        companions,
+        unpacked,
+    })
+}
+
+/// A package's `downloads` as the feed names them, with their titles in other languages: each one whole — an id,
+/// a title, about how many MB, `install` or `first-use` — or left out.
+fn downloads_of(value: &Value) -> Vec<Download> {
+    let titles = |id: &str| -> BTreeMap<String, String> {
+        value
+            .get("locales")
+            .and_then(Value::as_object)
+            .into_iter()
+            .flatten()
+            .filter_map(|(code, texts)| {
+                let title = texts.pointer(&format!("/downloads/{id}")).and_then(Value::as_str)?.trim();
+                let code = crate::locale::normalize(code)?;
+                (!title.is_empty()).then(|| (code, title.chars().take(80).collect()))
+            })
+            .collect()
+    };
+    value
+        .get("downloads")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|item| {
+            let id = item.get("id").and_then(Value::as_str).filter(|id| valid_id(id))?;
+            let title = item.get("title").and_then(Value::as_str).map(str::trim).filter(|title| !title.is_empty())?;
+            let mb = item.get("mb").and_then(Value::as_u64).filter(|mb| (1..=100_000).contains(mb))?;
+            let when =
+                item.get("when").and_then(Value::as_str).filter(|when| matches!(*when, "install" | "first-use"))?;
+            Some(Download {
+                id: id.to_string(),
+                title: title.chars().take(80).collect(),
+                mb,
+                when: when.to_string(),
+                titles: titles(id),
+            })
+        })
+        .take(MAX_DOWNLOADS)
+        .collect()
+}
+
+/// Reads a feed by its schema: the whole of it must be one (format 1, a list of packages); a package in it that is
+/// not one is left out with its reason, and so is an extra feed it names (`feeds`) that is not one, or past the 4th.
+pub fn parse_feed(text: &str, base: &url::Url) -> Result<Feed, String> {
+    let value: Value = serde_json::from_str(text).map_err(|error| crate::tr!("не JSON: {error}", error = error))?;
+    match value.get("format").and_then(Value::as_u64) {
+        Some(FEED_FORMAT) => {}
+        Some(other) => {
+            return Err(crate::tr!(
+                "format {other}: эта версия DuoWave читает каталог версии {FEED_FORMAT}",
+                other = other,
+                FEED_FORMAT = FEED_FORMAT
+            ))
+        }
+        None => return Err(crate::tr!("нет format")),
+    }
+    let list = value.get("packages").and_then(Value::as_array).ok_or_else(|| crate::tr!("нет списка packages"))?;
+    let mut feed =
+        Feed { updated_at: value.get("updatedAt").and_then(Value::as_str).map(str::to_string), ..Feed::empty() };
+    for item in list {
+        // A package to hide needs its id alone: no archive, no previews.
+        if item.get("hidden").and_then(Value::as_bool) == Some(true) {
+            match item.get("id").and_then(Value::as_str).map(str::trim).filter(|id| valid_id(id)) {
+                Some(id) => {
+                    feed.hidden.insert(id.to_string());
+                }
+                None => feed.skipped.push(crate::tr!("hidden: нет id")),
+            }
+            continue;
+        }
+        match entry(item, base) {
+            Ok(entry) if feed.packages.iter().any(|known| known.id == entry.id && known.version == entry.version) => {
+                feed.skipped.push(crate::tr!("{id} {version}: дважды", id = entry.id, version = entry.version));
+            }
+            Ok(entry) => feed.packages.push(entry),
+            Err(problem) => feed.skipped.push(problem),
+        }
+    }
+    match value.get("feeds") {
+        None | Some(Value::Null) => {}
+        Some(Value::Array(feeds)) => {
+            for item in feeds {
+                match extra_feed(item) {
+                    Ok(extra) if extra.url == *base || feed.feeds.iter().any(|known| known.url == extra.url) => {
+                        feed.skipped.push(crate::tr!("feeds: {url}: эта лента уже читается", url = extra.url));
+                    }
+                    Ok(extra) if feed.feeds.len() == MAX_FEEDS => {
+                        feed.skipped.push(crate::tr!(
+                            "feeds: {url}: больше {MAX_FEEDS} лент",
+                            url = extra.url,
+                            MAX_FEEDS = MAX_FEEDS
+                        ));
+                    }
+                    Ok(extra) => feed.feeds.push(extra),
+                    Err(problem) => feed.skipped.push(problem),
+                }
+            }
+        }
+        Some(_) => feed.skipped.push(crate::tr!("feeds: список лент")),
+    }
+    // Packages of other feeds the catalog looked at and recommends: read at any feed, taken from the main one alone
+    // (`take` reads the merged main's).
+    for item in value.get("recommends").and_then(Value::as_array).into_iter().flatten().take(MAX_RECOMMENDS) {
+        match pin(item) {
+            Some(pin) => feed.recommends.push(pin),
+            None => feed.skipped.push(crate::tr!("recommends: id пакета, sha256 архива и адрес ленты (если есть)")),
+        }
+    }
+    // Its characters' catchphrases: said by the packages installed from this very feed.
+    let (phrases, left) = crate::characters::catchphrases::parse(value.get("phrases"));
+    feed.phrases = phrases;
+    feed.skipped.extend(left);
+    Ok(feed)
+}
+
+/// What the cache remembers of the last read.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Fetched {
+    url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    etag: Option<String>,
+    /// RFC 3339.
+    fetched_at: String,
+    /// An own source that answered 404 or 410: closed, its copy gone.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    closed: bool,
+}
+
+/// What a feed's folder remembers of its last read.
+fn fetched_in(dir: &Path) -> Option<Fetched> {
+    let text = std::fs::read_to_string(dir.join("state.json")).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
+/// A feed's last good copy as text, when the folder holds this address's.
+fn text_in(dir: &Path, url: &url::Url) -> Option<String> {
+    fetched_in(dir).filter(|fetched| fetched.url == url.as_str())?;
+    std::fs::read_to_string(dir.join("catalog.json")).ok()
+}
+
+/// How a feed's address answered.
+enum Answer {
+    /// The feed's text and its ETag.
+    Text(String, Option<String>),
+    /// 304: the copy here is the one.
+    Same,
+    /// No answer at all: the network.
+    Unreachable(String),
+    /// An answer that broke off midway.
+    Broken(String),
+    Status(reqwest::StatusCode),
+    /// More than a feed may be.
+    TooBig,
+}
+
+/// Asks a feed's address for it, with the ETag of the copy here. With `stall`, no byte for that long is a failure on
+/// the way (a mirror is asked next, `ask_through`).
+async fn ask(url: &url::Url, etag: Option<&str>, stall: Option<Duration>) -> Answer {
+    let client = match stall {
+        None => crate::utils::http::client(),
+        Some(stall) => match crate::utils::http::client_builder().read_timeout(stall).build() {
+            Ok(client) => client,
+            Err(error) => return Answer::Unreachable(error.to_string()),
+        },
+    };
+    let mut request = client.get(url.as_str()).timeout(FEED_TIMEOUT);
+    if let Some(etag) = etag {
+        request = request.header(reqwest::header::IF_NONE_MATCH, etag);
+    }
+    let mut response = match request.send().await {
+        Ok(response) => response,
+        Err(error) => return Answer::Unreachable(crate::utils::http::why_failed(&error)),
+    };
+    if response.status() == reqwest::StatusCode::NOT_MODIFIED {
+        return Answer::Same;
+    }
+    if !response.status().is_success() {
+        return Answer::Status(response.status());
+    }
+    let etag = response.headers().get(reqwest::header::ETAG).and_then(|value| value.to_str().ok()).map(str::to_string);
+    let mut body = Vec::new();
+    loop {
+        match response.chunk().await {
+            Ok(Some(chunk)) => {
+                body.extend_from_slice(&chunk);
+                if body.len() as u64 > MAX_FEED {
+                    return Answer::TooBig;
+                }
+            }
+            Ok(None) => break,
+            Err(error) => return Answer::Broken(crate::utils::http::why_failed(&error)),
+        }
+    }
+    Answer::Text(String::from_utf8_lossy(&body).into_owned(), etag)
+}
+
+/// Whether a package's manifest has a character whose voice is of no known origin (`voiceOrigin: unknown`).
+fn unknown_voice(dir: &Path) -> bool {
+    let Ok(text) = std::fs::read_to_string(dir.join("manifest.json")) else { return false };
+    let Ok(manifest) = serde_json::from_str::<Value>(&text) else { return false };
+    manifest
+        .pointer("/contributes/characters")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .any(|character| character.get("voiceOrigin").and_then(Value::as_str) == Some("unknown"))
+}
+
+/// A preview's kind by its first bytes: a picture (WebP, PNG — never SVG) or Opus in Ogg.
+fn preview_kind(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        Some("png")
+    } else if bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        Some("webp")
+    } else if bytes.starts_with(b"OggS") {
+        Some("ogg")
+    } else {
+        None
+    }
+}
+
+pub fn content_type(extension: &str) -> &'static str {
+    match extension {
+        "png" => "image/png",
+        "webp" => "image/webp",
+        "ogg" => "audio/ogg",
+        _ => "application/octet-stream",
+    }
+}
+
+/// How a package of the feed stands here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum EntryState {
+    Available,
+    Installed,
+    Update,
+    Incompatible,
+    /// A plugin or an app from a catalog without a signature: listed, never installed (stage 8).
+    NeedsSignature,
+}
+
+#[cfg(test)]
+pub const NEEDS_SIGNATURE: &str = "Плагины и приложения ставятся из каталога только с его подписью: у этой сборки нет ключа каталога (PACKAGES_PUBKEY) или подпись ленты не сошлась.";
+
+pub fn needs_signature() -> String {
+    crate::tr!("Плагины и приложения ставятся из каталога только с его подписью: у этой сборки нет ключа каталога (PACKAGES_PUBKEY) или подпись ленты не сошлась.")
+}
+
+/// Whether code — a plugin, an app — of this entry may be installed: from the signed main feed; from an extra feed or
+/// an own source only when the signed main feed pinned that very archive by its hash (`recommends`: we looked at the
+/// code) — for an app built per platform, the archive this machine takes.
+pub fn code_allowed(entry: &Entry, signed: bool) -> bool {
+    signed && (entry.extra.is_none() || entry.pinned)
+}
+
+/// Whether what needs the signature may come from where this entry comes: code as `code_allowed` says; an agent's card
+/// — it names a program to run on this computer — only from the signed main feed, never pinned from another; the rest
+/// from anywhere.
+fn signed_kind_allowed(entry: &Entry, signed: bool) -> bool {
+    match entry.kind {
+        PackageKind::Plugin | PackageKind::App => code_allowed(entry, signed),
+        PackageKind::Agent => signed && entry.extra.is_none(),
+        _ => true,
+    }
+}
+
+/// Whether a package of the feed can be installed here, and how it stands against the installed version. Code — a
+/// plugin, an app — only as `code_allowed` says; on the station, only what fits the plugins' free memory.
+pub fn entry_state(
+    entry: &Entry,
+    installed: Option<&semver::Version>,
+    placement: Placement,
+    signed: bool,
+    free_mb: Option<u64>,
+) -> (EntryState, Option<String>) {
+    entry_state_at(entry, installed, placement, signed, free_mb, false)
+}
+
+/// The same, with a Турбо of the home that gives the apps (`turbo_apps`, docs/plans/home-and-devices.md, stage 5б): on
+/// a station, the home's centre, an app for a computer is installed as its face — its phrases, window and widget here,
+/// its code on the Турбо, installed there over the link.
+pub fn entry_state_at(
+    entry: &Entry,
+    installed: Option<&semver::Version>,
+    placement: Placement,
+    signed: bool,
+    free_mb: Option<u64>,
+    turbo_apps: bool,
+) -> (EntryState, Option<String>) {
+    let face = is_face(entry, placement, turbo_apps);
+    if !signed_kind_allowed(entry, signed) {
+        // What is installed stays installed; a new version of code waits for a signed feed or our look at it.
+        let why = match &entry.extra {
+            Some(extra) if signed => {
+                crate::tr!(
+                    "Приложения из ленты «{extra}» ставятся, только когда каталог DuoWave проверил именно этот архив — этот пока не проверен.",
+                    extra = extra.title
+                )
+            }
+            _ => needs_signature(),
+        };
+        return match installed {
+            Some(installed) if *installed >= entry.version => (EntryState::Installed, None),
+            _ => (EntryState::NeedsSignature, Some(why)),
+        };
+    }
+    if entry.kind == PackageKind::App
+        && !face
+        && !entry.platforms.is_empty()
+        && !entry.platforms.contains_key(&super::manifest::platform())
+    {
+        return (
+            EntryState::Incompatible,
+            Some(crate::tr!("нет сборки под эту платформу ({platform})", platform = super::manifest::platform())),
+        );
+    }
+    if placement.on_station() && !face && matches!(entry.kind, PackageKind::Plugin | PackageKind::App) {
+        if let (Some(need), Some(free)) = (entry.memory_mb, free_mb) {
+            if need > free && installed.is_none() {
+                return (
+                    EntryState::Incompatible,
+                    Some(crate::tr!(
+                        "на колонке не хватит ОЗУ: нужно {need} МБ, свободно {free}",
+                        need = need,
+                        free = free
+                    )),
+                );
+            }
+        }
+    }
+    let gateway = semver::Version::parse(crate::VERSION).unwrap_or_else(|_| semver::Version::new(0, 0, 0));
+    // The Host API is code's: a character or a theme is data, any version of it reads.
+    let coded = matches!(entry.kind, PackageKind::Plugin | PackageKind::App);
+    let why =
+        if coded && !semver::VersionReq::parse(&entry.api).is_ok_and(|requirement| requirement.matches(&HOST_API)) {
+            Some(crate::tr!("нужен Host API {api}, а у DuoWave {HOST_API}", api = entry.api, HOST_API = HOST_API))
+        } else if !super::manifest::fits(&entry.runs, placement) && !face {
+            Some(crate::tr!("не работает здесь: размещение «{placement}»", placement = placement.title_text()))
+        } else {
+            entry.min_gateway.as_ref().filter(|min| **min > gateway).map(|min| {
+                crate::tr!("нужен DuoWave {min} или новее, а здесь — {gateway}", min = min, gateway = gateway)
+            })
+        };
+    if let Some(why) = why {
+        return (EntryState::Incompatible, Some(why));
+    }
+    match installed {
+        Some(installed) if *installed < entry.version => (EntryState::Update, None),
+        Some(_) => (EntryState::Installed, None),
+        None => (EntryState::Available, None),
+    }
+}
+
+/// Where a package works, in MagicPlace's words: `gateway` (a plugin: QuickJS, WASM), `computer` (an app, its own
+/// program beside the gateway on a computer), `station` (an app that runs on the station only: AirPlay; or an app
+/// for both installed on a station's gateway — it runs there, not on the Турбо), `network` (a plugin on MCP: a
+/// service out there). None for data. `here` — the gateway's placement, when known.
+pub fn place_of(kind: PackageKind, mcp: bool, runs: &[Placement], here: Option<Placement>) -> Option<&'static str> {
+    match kind {
+        PackageKind::Plugin if mcp => Some("network"),
+        PackageKind::Plugin => Some("gateway"),
+        PackageKind::App if !runs.is_empty() && !runs.contains(&Placement::Pc) => Some("station"),
+        PackageKind::App if here.is_some_and(|here| here.on_station() && super::manifest::fits(runs, here)) => {
+            Some("station")
+        }
+        PackageKind::App => Some("computer"),
+        _ => None,
+    }
+}
+
+/// An app installed here as its face only, its code on the home's Турбо (stage 5б): on a station with a Турбо that
+/// gives the apps, an app for a computer that does not run on the station itself.
+pub fn is_face(entry: &Entry, placement: Placement, turbo_apps: bool) -> bool {
+    turbo_apps
+        && placement.on_station()
+        && entry.kind == PackageKind::App
+        && !super::manifest::fits(&entry.runs, placement)
+        && entry.runs.contains(&Placement::Pc)
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct PreviewView {
+    /// `/api/v1/packages/catalog/{id}/preview/image?v={version}`, when the picture is here. The version makes a new
+    /// address for a new version: the panel keeps a preview by its address for an hour.
+    pub image: Option<String>,
+    /// `/api/v1/packages/catalog/{id}/preview/{n}?v={version}`, from 1.
+    pub samples: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CatalogEntryView {
+    pub id: String,
+    pub kind: PackageKind,
+    pub version: String,
+    pub title: String,
+    pub description: Option<String>,
+    pub license: Option<String>,
+    pub verified: bool,
+    pub runs: Vec<&'static str>,
+    pub min_gateway: Option<String>,
+    pub needs: Value,
+    pub preview: PreviewView,
+    /// The version installed here.
+    pub installed: Option<String>,
+    pub state: EntryState,
+    /// Why it cannot be installed here.
+    pub reason: Option<String>,
+    /// Who puts it out: an extra feed's declared publisher, else the package's own.
+    pub publisher: Option<String>,
+    /// The title of the extra feed it comes from; None — the main feed.
+    pub source: Option<String>,
+    /// It comes from an own source the admin added here.
+    pub own: bool,
+    /// Code's engine (js, wasm, mcp, process, node) and its rights, from the feed.
+    pub runtime: Option<String>,
+    pub permissions: Vec<String>,
+    /// Code from the main feed that the catalog's key signed: «Подписано DuoWave».
+    pub signed: bool,
+    /// MagicPlace (docs/plans/magicplace.md): an app's faces (widget, skill, window, schedule)…
+    pub faces: Vec<String>,
+    /// …where it works: `gateway`, `computer`, `network`; None for a character or a theme…
+    pub place: Option<&'static str>,
+    /// …and whether on a station with a Турбо it runs there (`prefer: home`)…
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub prefer_home: bool,
+    /// …the catalog recommends it…
+    pub recommended: bool,
+    /// …when it came into the catalog…
+    pub added_at: Option<String>,
+    /// …its title and description in every language it has, its own first — the search reads them all…
+    pub texts: Vec<TextsView>,
+    /// …what it will download, in the request's language, our Node first when an app on Node will need it…
+    pub downloads: Vec<DownloadView>,
+    /// …and, when its newer version needs a newer gateway than this one, that version: «после обновления DuoWave».
+    pub waits: Option<String>,
+    /// A plugin or an app installed here: whether it is switched on — one that is off gets «Включить», not «Открыть».
+    pub on: Option<bool>,
+    /// The feed keeps it out of sight (`unlisted`): listed only while «Показывать скрытые пакеты» is on, or when it is
+    /// installed here.
+    pub unlisted: bool,
+    /// An agent's card: its program and how to install it, its sign-in, its terms, whether it asks before commands.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent: Option<AgentCard>,
+    /// The packages that go with it: installing it offers them, its card shows them.
+    pub companions: Vec<crate::plugins::manifest::Companion>,
+    /// What it takes, said before the install: its budget of RAM (code's) and the room its files need, MB (the files
+    /// unpacked, else the archive this machine takes).
+    pub memory_mb: Option<u64>,
+    pub size_mb: Option<u64>,
+    /// Installed here, on, and asleep for want of RAM (it wakes by itself): «спит» on its pair's card.
+    pub asleep: bool,
+}
+
+/// A package's title and description in one language.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct TextsView {
+    pub lang: String,
+    pub title: String,
+    pub description: Option<String>,
+}
+
+/// Something a package will download: what, about how much, when (`install`, `first-use`).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct DownloadView {
+    pub id: String,
+    pub title: String,
+    pub mb: u64,
+    pub when: String,
+}
+
+/// The gateway's version that an installed package's newer version waits for: it is newer than this gateway and is
+/// the only reason the newer version does not go here.
+fn waits_for(entry: &Entry, installed: Option<&semver::Version>, state: EntryState) -> Option<String> {
+    let installed = installed?;
+    if state != EntryState::Incompatible || *installed >= entry.version {
+        return None;
+    }
+    let gateway = semver::Version::parse(crate::VERSION).ok()?;
+    entry.min_gateway.as_ref().filter(|min| **min > gateway).map(ToString::to_string)
+}
+
+/// An extra feed for the panel: whose it is, what it is called, how its last read went.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FeedView {
+    pub url: String,
+    pub publisher: String,
+    pub title: String,
+    pub fetched_at: Option<String>,
+    /// The last read did not reach it: its packages are from the copy before.
+    pub offline: bool,
+    pub problem: Option<String>,
+    /// Its packages taken into the catalog: an id an earlier feed has is not counted.
+    pub count: usize,
+    /// An own source the admin added here (removable), not one the main feed names.
+    pub own: bool,
+    /// An own source that answered 404 or 410: its packages are gone from the catalog, the installed ones hidden.
+    pub closed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CatalogView {
+    /// The feed is signed by the catalog's key: plugins and apps install from it.
+    pub signed: bool,
+    /// This gateway has the catalog's key at all.
+    pub keyed: bool,
+    /// A feed is named (the environment or the build), and not `off`.
+    pub configured: bool,
+    /// The owner's switch (setting packages_catalog).
+    pub enabled: bool,
+    /// The hidden developer option «Показывать скрытые пакеты» (setting packages.show_hidden).
+    pub show_hidden: bool,
+    pub url: Option<String>,
+    pub fetched_at: Option<String>,
+    /// The last read did not reach the feed: this is the copy before.
+    pub offline: bool,
+    pub problem: Option<String>,
+    pub packages: Vec<CatalogEntryView>,
+    /// The extra feeds the main one names, in its order, then the own sources added here.
+    pub feeds: Vec<FeedView>,
+}
+
+#[derive(Default)]
+struct Status {
+    offline: bool,
+    problem: Option<String>,
+    /// Updates told on the bus already: each version once.
+    announced: HashSet<String>,
+    /// The extra feeds' by their address: each one named since the gateway started, read or not.
+    extras: BTreeMap<String, FeedStatus>,
+    /// When the copy last came through the home server (`through_home`): a copy that came old (the computer could not
+    /// read its feed either) is asked again after `HOME_AGAIN`, not at every look.
+    through_home: Option<std::time::Instant>,
+}
+
+/// A preview that did not come: from which address, when, and whether it cannot come at all (no file there, larger
+/// than a preview may be, not WebP, PNG or Opus) — then it is not asked again before its version or address changes.
+struct Miss {
+    url: String,
+    at: std::time::Instant,
+    lasting: bool,
+}
+
+/// How an extra feed's last read went.
+#[derive(Debug, Clone, Default)]
+struct FeedStatus {
+    offline: bool,
+    problem: Option<String>,
+}
+
+/// How a read of the main feed went.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Read {
+    /// A new copy is here.
+    New,
+    /// The copy before stays: the feed is the same, or it failed.
+    Kept,
+    /// It came through the home server, and the extra feeds' copies with it.
+    Home,
+}
+
+pub struct CatalogDeps {
+    pub config: PluginsConfig,
+    pub host: Arc<PluginHost>,
+    pub db: Arc<Db>,
+    pub settings: Arc<SettingsService>,
+    pub events: EventBus,
+    pub placement: PlacementNow,
+    /// The home server, on the station with one: the catalog and its archives through it when the station has no
+    /// internet of its own (stage 9, «через Mac»). The station checks the feed's signature and the archives' hashes
+    /// itself.
+    pub home: Option<Arc<dyn super::controller::HomeLink>>,
+    /// The home's Турбо that gives the apps (docs/plans/home-and-devices.md, stage 5б): an app for a computer is
+    /// installed here as its face and its code there, over the link.
+    pub apps: Option<Arc<dyn super::controller::HomeLink>>,
+}
+
+pub struct PackageCatalog {
+    source: FeedSource,
+    home: Option<Arc<dyn super::controller::HomeLink>>,
+    apps: Option<Arc<dyn super::controller::HomeLink>>,
+    /// The catalog's signing keys: code installs only from a feed one of them signed; none, no code.
+    keys: Vec<minisign_verify::PublicKey>,
+    dir: PathBuf,
+    host: Arc<PluginHost>,
+    db: Arc<Db>,
+    settings: Arc<SettingsService>,
+    events: EventBus,
+    placement: PlacementNow,
+    status: Mutex<Status>,
+    /// One read of the feed at a time.
+    reading: tokio::sync::Mutex<()>,
+    /// The previews that did not come, by their feed's folder and their file without its extension. In memory only:
+    /// nothing written on a station's small disk, and a start asks each one again.
+    misses: Mutex<HashMap<(PathBuf, PathBuf), Miss>>,
+    /// One install, update or removal at a time.
+    installing: tokio::sync::Mutex<()>,
+    /// Where our Node lies, and a Node of one's own (DUOWAVE_NODE): whether an app on Node downloads it first.
+    node_dir: PathBuf,
+    own_node: Option<PathBuf>,
+    /// Where else the extra feeds and the own sources may be asked (utils/mirrors.rs).
+    mirrors: Mirrors,
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Writes a file whole: beside it first, then renamed over it.
+fn write_whole(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let temporary = path.with_extension("tmp");
+    std::fs::write(&temporary, bytes)?;
+    std::fs::rename(&temporary, path)
+}
+
+impl PackageCatalog {
+    pub fn new(deps: CatalogDeps) -> Arc<PackageCatalog> {
+        let source = FeedSource::of(deps.config.feed_url.as_deref(), BUILT_IN_FEED);
+        let catalog = PackageCatalog::with_source(deps, source);
+        catalog.seed_demo(BUILT_IN_DEMO);
+        catalog
+    }
+
+    /// The demo feed among the own sources, once (see the module's doc): not when it is there already, nor when the own
+    /// sources are full; the mark is left either way, so a removed one stays removed.
+    fn seed_demo(&self, demo: Option<&str>) {
+        let Some(link) = demo.map(str::trim).filter(|link| !link.is_empty()) else { return };
+        let mark = self.dir.join(DEMO_MARK);
+        if mark.exists() {
+            return;
+        }
+        let url = match feed_url(link) {
+            Ok(url) => url,
+            Err(problem) => {
+                tracing::warn!(target: "plugins", "packages catalog: the demo feed does not read as a link: {problem}");
+                return;
+            }
+        };
+        let mut sources = self.sources();
+        if !sources.iter().any(|source| feed_url(&source.url).ok().as_ref() == Some(&url))
+            && sources.len() < MAX_SOURCES
+        {
+            sources.push(OwnSource { url: url.to_string(), added_at: now_iso() });
+            if let Err(error) = self.write_sources(&sources) {
+                tracing::warn!(target: "plugins", "packages catalog: the demo feed not kept: {}", error.message);
+                return;
+            }
+            tracing::info!(target: "plugins", "packages catalog: the demo feed is among the own sources");
+        }
+        if let Err(error) = write_whole(&mark, now_iso().as_bytes()) {
+            tracing::warn!(target: "plugins", "packages catalog: the demo mark not kept: {error}");
+        }
+    }
+
+    /// The same, with the feed named here: tests.
+    pub fn with_source(deps: CatalogDeps, source: FeedSource) -> Arc<PackageCatalog> {
+        // A list, one key per line, read whole: a line that does not read leaves no key at all, never a shorter list.
+        let keys = match deps.config.catalog_key.as_deref().map(crate::utils::verify::public_keys) {
+            None => Vec::new(),
+            Some(Ok(keys)) => keys,
+            Some(Err(error)) => {
+                tracing::warn!(target: "plugins", "packages catalog: its keys do not read ({error}): no code from the catalog");
+                Vec::new()
+            }
+        };
+        Arc::new(PackageCatalog {
+            source,
+            home: deps.home.clone(),
+            apps: deps.apps.clone(),
+            keys,
+            dir: deps.config.catalog_dir.clone(),
+            host: deps.host,
+            db: deps.db,
+            settings: deps.settings,
+            events: deps.events,
+            placement: deps.placement,
+            status: Mutex::new(Status::default()),
+            reading: tokio::sync::Mutex::new(()),
+            misses: Mutex::new(HashMap::new()),
+            installing: tokio::sync::Mutex::new(()),
+            node_dir: deps.config.node_dir.clone(),
+            own_node: deps.config.own_node.clone(),
+            mirrors: Mirrors::new(deps.config.mirrors.as_deref(), Some(deps.config.catalog_dir.join(mirrors::MEMORY))),
+        })
+    }
+
+    pub fn enabled(&self) -> bool {
+        self.settings.get(&PACKAGES_CATALOG, None).unwrap_or(true)
+    }
+
+    /// The owner's switch.
+    pub fn set_enabled(&self, enabled: bool, actor: Option<Actor>) -> Result<(), ApiError> {
+        self.settings.set(&PACKAGES_CATALOG, &enabled, actor)
+    }
+
+    /// The hidden developer option «Показывать скрытые пакеты»: the feeds' unlisted packages are listed too. Off
+    /// unless the admin turns it on.
+    pub fn show_hidden(&self) -> bool {
+        self.settings.get(&PACKAGES_SHOW_HIDDEN, None).unwrap_or(false)
+    }
+
+    pub fn set_show_hidden(&self, show: bool, actor: Option<Actor>) -> Result<(), ApiError> {
+        self.settings.set(&PACKAGES_SHOW_HIDDEN, &show, actor)
+    }
+
+    /// The feed's address, checked; the reason when it cannot be read.
+    fn url(&self) -> Option<Result<url::Url, String>> {
+        match &self.source {
+            FeedSource::Url(url) => Some(feed_url(url)),
+            FeedSource::Off | FeedSource::Missing => None,
+        }
+    }
+
+    fn fetched(&self) -> Option<Fetched> {
+        fetched_in(&self.dir)
+    }
+
+    /// The last good copy of the main feed, read again, its signature checked again.
+    fn main_copy(&self, url: &url::Url) -> Option<Feed> {
+        let text = text_in(&self.dir, url)?;
+        let mut feed = parse_feed(&text, url).ok()?;
+        feed.signed = self.signed(text.as_bytes());
+        Some(feed)
+    }
+
+    /// The extra feeds the main feed's copy names.
+    fn declared(&self, url: &url::Url) -> Vec<ExtraFeed> {
+        text_in(&self.dir, url).and_then(|text| parse_feed(&text, url).ok()).map(|feed| feed.feeds).unwrap_or_default()
+    }
+
+    /// An extra feed's folder: its copy, its state, its previews.
+    fn extra_dir(&self, url: &url::Url) -> PathBuf {
+        self.dir.join(FEEDS_DIR).join(feed_folder(url))
+    }
+
+    /// The catalog as its copies here have it: the main feed's packages, then each extra feed's in the order the main
+    /// one names them, then the own sources' — an id an earlier feed has is not taken from a later one. With what was
+    /// left out so, by feed. Without a copy of the main feed, the own sources' alone.
+    fn merged(&self, url: &url::Url) -> Option<(Feed, Vec<String>)> {
+        let own = self.own_feeds(url);
+        let mut feed = match self.main_copy(url) {
+            Some(feed) => feed,
+            None if own.iter().any(|extra| text_in(&self.extra_dir(&extra.url), &extra.url).is_some()) => Feed::empty(),
+            None => return None,
+        };
+        let mut left = Vec::new();
+        for extra in feed.feeds.clone().into_iter().chain(own) {
+            let Some(text) = text_in(&self.extra_dir(&extra.url), &extra.url) else { continue };
+            let Ok(copy) = parse_feed(&text, &extra.url) else { continue };
+            let refused = feed.take(&extra, copy);
+            left.extend(refused.into_iter().map(|refused| format!("{}: {refused}", extra.url)));
+        }
+        Some((feed, left))
+    }
+
+    /// The own sources as `sources.json` keeps them.
+    fn sources(&self) -> Vec<OwnSource> {
+        std::fs::read_to_string(self.dir.join(SOURCES_FILE))
+            .ok()
+            .and_then(|text| serde_json::from_str(&text).ok())
+            .unwrap_or_default()
+    }
+
+    fn write_sources(&self, sources: &[OwnSource]) -> Result<(), ApiError> {
+        let text = serde_json::to_vec_pretty(sources).map_err(ApiError::internal)?;
+        write_whole(&self.dir.join(SOURCES_FILE), &text).map_err(ApiError::internal)
+    }
+
+    /// The own sources added here, as feeds: one the main feed is, or names already, is read as that one.
+    fn own_feeds(&self, main: &url::Url) -> Vec<ExtraFeed> {
+        let declared = self.declared(main);
+        self.sources()
+            .into_iter()
+            .filter_map(|source| feed_url(&source.url).ok())
+            .filter(|url| url != main && !declared.iter().any(|extra| extra.url == *url))
+            .map(|url| own_feed(&url))
+            .collect()
+    }
+
+    /// Every feed read after the main one: the ones it names, then the own sources.
+    fn extras(&self, main: &url::Url) -> Vec<ExtraFeed> {
+        let mut extras = self.declared(main);
+        extras.extend(self.own_feeds(main));
+        extras
+    }
+
+    /// The last good copies, read again: the main feed's (its signature checked again) and the extra feeds' after it.
+    fn copy(&self, url: &url::Url) -> Option<Feed> {
+        self.merged(url).map(|(feed, _)| feed)
+    }
+
+    /// A character's catchphrases as the feed its package came from gives them in its last good copy here
+    /// (`phrases`): none for a package put by hand or hidden, or when that feed has none for it — a feed adds, changes
+    /// or drops them without a new version of the package.
+    pub fn catchphrases(
+        &self,
+        package: &str,
+        character: &str,
+    ) -> Option<crate::characters::catchphrases::Catchphrases> {
+        let main = self.url()?.ok()?;
+        let choice = registry::choices(&self.db).remove(package)?;
+        if choice.source != registry::SOURCE_CATALOG || choice.hidden {
+            return None;
+        }
+        let feed = match choice.feed {
+            Some(feed) => feed_url(&feed).ok()?,
+            None => main.clone(),
+        };
+        let text = if feed == main { text_in(&self.dir, &main) } else { text_in(&self.extra_dir(&feed), &feed) }?;
+        parse_feed(&text, &feed).ok()?.phrases.remove(package)?.remove(character)
+    }
+
+    /// Whether the main feed's copy names an extra feed without a copy here that was not read since the gateway
+    /// started: one updated over a copy an older gateway wrote reads the catalog now, not in six hours.
+    fn untried(&self, url: &url::Url) -> bool {
+        let declared = self.extras(url);
+        let status = lock(&self.status);
+        declared.iter().any(|extra| {
+            !status.extras.contains_key(extra.url.as_str())
+                && text_in(&self.extra_dir(&extra.url), &extra.url).is_none()
+        })
+    }
+
+    /// Whether the feed's text is signed by one of the catalog's keys (`catalog.json.minisig` beside the copy): the
+    /// reserve's signature holds as well as the release key's, so the catalog moves to it without a gateway release.
+    fn signed(&self, text: &[u8]) -> bool {
+        if self.keys.is_empty() {
+            return false;
+        }
+        let Ok(signature) = std::fs::read_to_string(self.dir.join(format!("catalog.json{SIGNATURE_SUFFIX}"))) else {
+            return false;
+        };
+        crate::utils::verify::verify_any(&self.keys, text, &signature).is_ok()
+    }
+
+    /// The signature's address: the feed's path and `.minisig`, the same origin.
+    fn signature_url(url: &url::Url) -> url::Url {
+        let mut signature = url.clone();
+        signature.set_path(&format!("{}{SIGNATURE_SUFFIX}", url.path()));
+        signature.set_query(None);
+        signature
+    }
+
+    /// The feed as it stands: read again when there is no copy, the copy is older than 6 hours or `refresh` says
+    /// so — and only with the switch on; the copy otherwise, or when the network fails. The extra feeds the main one
+    /// names are read after it each time, and their packages come after its own.
+    pub async fn feed(&self, refresh: bool) -> Option<Feed> {
+        let url = match self.url()? {
+            Ok(url) => url,
+            Err(problem) => {
+                lock(&self.status).problem = Some(problem);
+                return None;
+            }
+        };
+        if self.enabled() {
+            let stale = |fetched: Option<Fetched>| match fetched.filter(|fetched| fetched.url == url.as_str()) {
+                None => true,
+                Some(fetched) => chrono::DateTime::parse_from_rfc3339(&fetched.fetched_at).map_or(true, |at| {
+                    chrono::Utc::now().signed_duration_since(at).to_std().is_ok_and(|age| age > FRESH)
+                }),
+            };
+            let rested = || lock(&self.status).through_home.is_some_and(|at| at.elapsed() < HOME_AGAIN);
+            let due = || {
+                refresh
+                    || (stale(self.fetched()) && !rested())
+                    || !self.dir.join("catalog.json").exists()
+                    || self.untried(&url)
+            };
+            if due() {
+                let _turn = self.reading.lock().await;
+                // Another reader may have read it while this one waited.
+                if due() {
+                    let read = self.read(&url, refresh).await;
+                    if read == Read::New || !self.dir.join(REACH).exists() {
+                        self.read_reach(&url).await;
+                    }
+                    self.read_extras(&url, read).await;
+                }
+            }
+        }
+        self.copy(&url)
+    }
+
+    /// «Где что работает» (docs/plans/own-server.md; src/egress/reach.rs): `reach.json` beside the feed, signed as the
+    /// feed is when the gateway has the catalog's keys, kept beside the copy. None there, or its signature does not
+    /// match — the copy before stays (and the gateway's built-in one under it).
+    async fn read_reach(&self, url: &url::Url) {
+        let Ok(address) = url.join(REACH) else { return };
+        let Ok(text) = install::download(address.as_str(), MAX_REACH, FEED_TIMEOUT).await else { return };
+        if serde_json::from_slice::<Value>(&text).is_err() {
+            tracing::warn!(target: "plugins", "packages catalog: {REACH} is not JSON; the copy before stays");
+            return;
+        }
+        if !self.keys.is_empty() {
+            let signature = install::download(&format!("{address}{SIGNATURE_SUFFIX}"), MAX_SIGNATURE, FEED_TIMEOUT)
+                .await
+                .ok()
+                .and_then(|bytes| String::from_utf8(bytes).ok());
+            let signed = signature
+                .is_some_and(|signature| crate::utils::verify::verify_any(&self.keys, &text, &signature).is_ok());
+            if !signed {
+                tracing::warn!(target: "plugins", "packages catalog: {REACH} unsigned or its signature does not match");
+                return;
+            }
+        }
+        if let Err(error) = write_whole(&self.dir.join(REACH), &text) {
+            tracing::warn!(target: "plugins", "packages catalog: {REACH} not kept: {error}");
+        }
+    }
+
+    /// Reads the main feed: a new copy with its previews, or the copy before and why. `refresh` — a person asked to
+    /// check now: through the home server too, its copy is read again first.
+    async fn read(&self, url: &url::Url, refresh: bool) -> Read {
+        let known = self.fetched().filter(|fetched| fetched.url == url.as_str());
+        let etag =
+            known.as_ref().and_then(|fetched| fetched.etag.clone()).filter(|_| self.dir.join("catalog.json").exists());
+        let failed = |problem: String| {
+            tracing::warn!(target: "plugins", "packages catalog: {problem}; the copy before stays");
+            let mut status = lock(&self.status);
+            status.offline = false;
+            status.problem = Some(problem);
+            Read::Kept
+        };
+        let offline = |error: String| {
+            tracing::warn!(target: "plugins", "packages catalog: {url}: {error}; the copy before stays");
+            let mut status = lock(&self.status);
+            status.offline = true;
+            status.problem = Some(crate::tr!("Каталог недоступен: {error}", error = error));
+            Read::Kept
+        };
+        let (text, new_etag) = match ask(url, etag.as_deref(), None).await {
+            Answer::Text(text, new_etag) => (text, new_etag),
+            Answer::Same => {
+                let fetched = Fetched { url: url.to_string(), etag, fetched_at: now_iso(), closed: false };
+                let _ = write_whole(&self.dir.join("state.json"), &serde_json::to_vec(&fetched).unwrap_or_default());
+                self.previews_again(&self.dir, url).await;
+                let mut status = lock(&self.status);
+                status.offline = false;
+                status.problem = None;
+                return Read::Kept;
+            }
+            // No internet of its own: the computer at home may have it.
+            Answer::Unreachable(error) => {
+                return if self.through_home(url, refresh).await { Read::Home } else { offline(error) };
+            }
+            Answer::Broken(error) => return offline(error),
+            Answer::Status(code) => {
+                if code.is_server_error() && self.through_home(url, refresh).await {
+                    return Read::Home;
+                }
+                return failed(crate::tr!("Каталог ответил HTTP {code}", code = code));
+            }
+            Answer::TooBig => return failed(crate::tr!("Каталог больше {max_feed} КБ", max_feed = MAX_FEED / 1024)),
+        };
+        let now = now_iso();
+        let feed = match parse_feed(&text, url) {
+            Ok(feed) => feed,
+            Err(problem) => return failed(crate::tr!("Каталог не разобрался: {problem}", problem = problem)),
+        };
+        for skipped in &feed.skipped {
+            tracing::warn!(target: "plugins", "packages catalog: left out — {skipped}");
+        }
+        self.previews(&self.dir, &feed).await;
+        // Its signature, when the gateway has the catalog's keys: code comes only from a feed one of them signed.
+        let signature = if self.keys.is_empty() {
+            None
+        } else {
+            install::download(Self::signature_url(url).as_str(), MAX_SIGNATURE, FEED_TIMEOUT).await.ok()
+        };
+        let fetched = Fetched { url: url.to_string(), etag: new_etag, fetched_at: now, closed: false };
+        let signature_file = self.dir.join(format!("catalog.json{SIGNATURE_SUFFIX}"));
+        let written = write_whole(&self.dir.join("catalog.json"), text.as_bytes())
+            .and_then(|()| match &signature {
+                Some(signature) => write_whole(&signature_file, signature),
+                None => match std::fs::remove_file(&signature_file) {
+                    Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error),
+                    _ => Ok(()),
+                },
+            })
+            .and_then(|()| {
+                write_whole(&self.dir.join("state.json"), &serde_json::to_vec(&fetched).unwrap_or_default())
+            });
+        if let Err(error) = written {
+            return failed(crate::tr!("Копия каталога не записалась: {error}", error = error));
+        }
+        if !self.keys.is_empty() && !self.signed(text.as_bytes()) {
+            tracing::warn!(target: "plugins", "packages catalog: its signature is missing or does not match: no code from it");
+            lock(&self.status).problem =
+                Some(crate::tr!("Подпись каталога не сошлась: приложения из него не ставятся."));
+            return Read::New;
+        }
+        {
+            let mut status = lock(&self.status);
+            status.offline = false;
+            status.problem = None;
+        }
+        tracing::info!(target: "plugins", "packages catalog: {} package(s) from {url}", feed.packages.len());
+        Read::New
+    }
+
+    /// After a read of the main feed: each extra feed its copy names is read in turn — unless they came through the
+    /// home server with it — and the folders of the ones it no longer names go. When anything new came, the ids a
+    /// later feed could not take are logged and the installed packages with newer versions told.
+    async fn read_extras(&self, url: &url::Url, main: Read) {
+        let declared = self.declared(url);
+        let own = self.own_feeds(url);
+        self.forget_extras(&declared.iter().chain(&own).cloned().collect::<Vec<_>>());
+        let mut new = main != Read::Kept;
+        if main != Read::Home {
+            for extra in &declared {
+                new |= self.read_extra(extra).await;
+            }
+        }
+        // The own sources: read here even when the main feed came through the home server — it does not bring them.
+        for extra in &own {
+            new |= self.read_extra(extra).await;
+        }
+        {
+            // Each one named counts as tried now, the ones a home server did not bring too.
+            let mut status = lock(&self.status);
+            for extra in declared.iter().chain(&own) {
+                status.extras.entry(extra.url.to_string()).or_default();
+            }
+        }
+        if !new {
+            return;
+        }
+        self.apply_hidden(url);
+        let Some((feed, left)) = self.merged(url) else { return };
+        for refused in left {
+            tracing::warn!(target: "plugins", "packages catalog: not taken from {refused}");
+        }
+        self.announce(&feed);
+    }
+
+    /// The installed packages each feed hides, by the copies here: one installed from a feed is hidden while that feed
+    /// says `hidden` for it, or is an own source that closed; shown again when it stops. A package from a feed with no
+    /// word here (no copy, not named any more) stays as it was. One from the catalog before 0.6.0 (no feed noted) is
+    /// the main feed's.
+    fn apply_hidden(&self, main: &url::Url) {
+        // By feed address: the ids it hides, or None — it closed and hides all.
+        let mut hides: BTreeMap<String, Option<std::collections::BTreeSet<String>>> = BTreeMap::new();
+        if let Some(copy) = self.main_copy(main) {
+            hides.insert(main.to_string(), Some(copy.hidden));
+        }
+        for extra in self.extras(main) {
+            let dir = self.extra_dir(&extra.url);
+            let closed = fetched_in(&dir).is_some_and(|fetched| fetched.closed && fetched.url == extra.url.as_str());
+            if extra.own && closed {
+                hides.insert(extra.url.to_string(), None);
+            } else if let Some(copy) = text_in(&dir, &extra.url).and_then(|text| parse_feed(&text, &extra.url).ok()) {
+                hides.insert(extra.url.to_string(), Some(copy.hidden));
+            }
+        }
+        let mut changed = Vec::new();
+        for (id, choice) in registry::choices(&self.db) {
+            if choice.source != registry::SOURCE_CATALOG {
+                continue;
+            }
+            let feed = choice.feed.clone().unwrap_or_else(|| main.to_string());
+            let Some(hides) = hides.get(&feed) else { continue };
+            let hidden = hides.as_ref().is_none_or(|ids| ids.contains(&id));
+            match registry::set_hidden(&self.db, &id, hidden) {
+                Ok(true) => changed.push((id, hidden)),
+                Ok(false) => {}
+                Err(error) => tracing::warn!(target: "plugins", "{id}: hidden is not noted: {error}"),
+            }
+        }
+        if changed.is_empty() {
+            return;
+        }
+        self.host.rescan();
+        for (id, hidden) in changed {
+            let change = if hidden { "hidden" } else { "shown" };
+            tracing::info!(target: "plugins", "{id}: {change} by its feed");
+            self.host.announce(&id, change, None, None);
+        }
+    }
+
+    /// Reads an extra feed into its folder: a new copy with its previews, or the copy before and why. Whether a new
+    /// copy came.
+    async fn read_extra(&self, extra: &ExtraFeed) -> bool {
+        let (url, title) = (&extra.url, &extra.title);
+        let dir = self.extra_dir(url);
+        let known = fetched_in(&dir).filter(|fetched| fetched.url == url.as_str());
+        let etag = known.and_then(|fetched| fetched.etag).filter(|_| dir.join("catalog.json").exists());
+        let mut answer = self.ask_through(url, etag.as_deref()).await;
+        // Closed to this gateway, open to the computer at home (a tester's Station Mini 2, 22.11: DuoWave Store and the
+        // demo feed did not answer it, the computer beside it read them): the computer's copy, when it reads that feed.
+        // As for the main feed, a server's error too (a proxy in front of the feed answers 5xx when it cannot pass).
+        let mut through_home: Option<Option<String>> = None;
+        let failed = match &answer {
+            Answer::Unreachable(error) | Answer::Broken(error) => Some(error.clone()),
+            Answer::Status(code) if code.is_server_error() => Some(format!("HTTP {code}")),
+            _ => None,
+        };
+        if let Some(error) = failed {
+            match self.extra_through_home(url).await {
+                Ok((text, fetched_at)) => {
+                    through_home = Some(fetched_at);
+                    answer = Answer::Text(text, None);
+                }
+                Err(Some(why)) => {
+                    answer = Answer::Unreachable(crate::tr!(
+                        "{error}. Через компьютер тоже нет: {why}",
+                        error = error,
+                        why = why
+                    ));
+                }
+                Err(None) => {}
+            }
+        }
+        // A new copy, or none: (offline, why).
+        let outcome = match answer {
+            Answer::Same => {
+                let fetched = Fetched { url: url.to_string(), etag, fetched_at: now_iso(), closed: false };
+                let _ = write_whole(&dir.join("state.json"), &serde_json::to_vec(&fetched).unwrap_or_default());
+                self.previews_again(&dir, url).await;
+                Ok(false)
+            }
+            Answer::Unreachable(error) | Answer::Broken(error) => {
+                Err((true, crate::tr!("Лента «{title}» недоступна: {error}", title = title, error = error)))
+            }
+            // An own source taken down: closed — its copy goes, and what came from it is hidden.
+            Answer::Status(code)
+                if extra.own && matches!(code, reqwest::StatusCode::NOT_FOUND | reqwest::StatusCode::GONE) =>
+            {
+                let was = fetched_in(&dir).is_some_and(|fetched| fetched.closed && fetched.url == url.as_str());
+                let _ = std::fs::remove_dir_all(&dir);
+                let fetched = Fetched { url: url.to_string(), etag: None, fetched_at: now_iso(), closed: true };
+                let _ = write_whole(&dir.join("state.json"), &serde_json::to_vec(&fetched).unwrap_or_default());
+                if !was {
+                    tracing::info!(target: "plugins", "packages catalog: {url}: HTTP {code} — the own source is closed");
+                }
+                let mut status = lock(&self.status);
+                status.extras.insert(
+                    url.to_string(),
+                    FeedStatus {
+                        offline: false,
+                        problem: Some(crate::tr!(
+                            "Источник «{title}» закрыт (HTTP {code}).",
+                            title = title,
+                            code = code
+                        )),
+                    },
+                );
+                return !was;
+            }
+            Answer::Status(code) => {
+                Err((false, crate::tr!("Лента «{title}» ответила HTTP {code}", title = title, code = code)))
+            }
+            Answer::TooBig => Err((
+                false,
+                crate::tr!("Лента «{title}» больше {max_feed} КБ", title = title, max_feed = MAX_FEED / 1024),
+            )),
+            Answer::Text(text, new_etag) => match parse_feed(&text, url) {
+                Err(problem) => Err((
+                    false,
+                    crate::tr!("Лента «{title}» не разобралась: {problem}", title = title, problem = problem),
+                )),
+                Ok(feed) => {
+                    for skipped in &feed.skipped {
+                        tracing::warn!(target: "plugins", "packages catalog: {url}: left out — {skipped}");
+                    }
+                    if !feed.feeds.is_empty() {
+                        tracing::info!(target: "plugins", "packages catalog: {url}: names feeds of its own — only the main feed's are read");
+                    }
+                    self.previews(&dir, &feed).await;
+                    // Through the computer: as old as it says its copy is.
+                    let fetched_at = through_home.clone().flatten().unwrap_or_else(now_iso);
+                    let fetched = Fetched { url: url.to_string(), etag: new_etag, fetched_at, closed: false };
+                    let written = write_whole(&dir.join("catalog.json"), text.as_bytes()).and_then(|()| {
+                        write_whole(&dir.join("state.json"), &serde_json::to_vec(&fetched).unwrap_or_default())
+                    });
+                    match written {
+                        Ok(()) => {
+                            let way = if through_home.is_some() { " through the home server" } else { "" };
+                            tracing::info!(target: "plugins", "packages catalog: {} package(s) from {url}{way} ({})", feed.packages.len(), extra.publisher);
+                            Ok(true)
+                        }
+                        Err(error) => Err((
+                            false,
+                            crate::tr!("Копия ленты «{title}» не записалась: {error}", title = title, error = error),
+                        )),
+                    }
+                }
+            },
+        };
+        let mut status = lock(&self.status);
+        let state = status.extras.entry(url.to_string()).or_default();
+        match outcome {
+            Ok(new) => {
+                *state = FeedStatus::default();
+                new
+            }
+            Err((offline, problem)) => {
+                tracing::warn!(target: "plugins", "packages catalog: {url}: {problem}; the copy before stays");
+                *state = FeedStatus { offline, problem: Some(problem) };
+                false
+            }
+        }
+    }
+
+    /// The extra feeds the main one no longer names (and the own sources no longer added): their folders go, and
+    /// what was known of them.
+    fn forget_extras(&self, declared: &[ExtraFeed]) {
+        let named: HashSet<String> = declared.iter().map(|extra| feed_folder(&extra.url)).collect();
+        for folder in std::fs::read_dir(self.dir.join(FEEDS_DIR)).into_iter().flatten().flatten() {
+            let name = folder.file_name().to_string_lossy().into_owned();
+            // A version's folder is the previews of a main feed's package that happens to be called `feeds`.
+            if named.contains(&name) || semver::Version::parse(&name).is_ok() {
+                continue;
+            }
+            tracing::info!(target: "plugins", "packages catalog: the feed {name} is no longer named — its copy goes");
+            let _ = std::fs::remove_dir_all(folder.path());
+        }
+        lock(&self.status).extras.retain(|url, _| declared.iter().any(|extra| extra.url.as_str() == url));
+    }
+
+    /// An extra feed through the home server (`/home/v1/catalog/feed`), when this gateway cannot read it itself: the
+    /// computer's copy and when it was read (`fetchedAt`). Err(None) — no computer at home to ask; Err(why) — it was
+    /// asked and has no copy (it does not read that feed, or it is older than this way: 404), or did not answer. Its
+    /// packages are taken as any extra feed's: code only by the main feed's pin of the very archive, which the
+    /// installer checks by its hash.
+    async fn extra_through_home(&self, url: &url::Url) -> Result<(String, Option<String>), Option<String>> {
+        let Some((home, key)) = self.home.as_ref().and_then(|home| home.up()) else { return Err(None) };
+        let answer = crate::utils::http::client_without_redirects()
+            .get(format!("{}/home/v1/catalog/feed", home.trim_end_matches('/')))
+            .query(&[("url", url.as_str())])
+            .bearer_auth(key)
+            .timeout(FEED_TIMEOUT * 2)
+            .send()
+            .await
+            .map_err(|error| Some(crate::utils::http::why_failed(&error)))?;
+        let status = answer.status();
+        if status == reqwest::StatusCode::NOT_FOUND {
+            return Err(Some(crate::tr!("у компьютера её нет")));
+        }
+        if !status.is_success() {
+            return Err(Some(format!("HTTP {status}")));
+        }
+        let body: Value = answer.json().await.map_err(|error| Some(crate::utils::http::why_failed(&error)))?;
+        let body = body.get("message").cloned().unwrap_or(body);
+        let text = body
+            .get("feed")
+            .and_then(Value::as_str)
+            .filter(|_| body.get("url").and_then(Value::as_str) == Some(url.as_str()))
+            .ok_or_else(|| Some(crate::tr!("у компьютера её нет")))?;
+        let fetched_at = body
+            .get("fetchedAt")
+            .and_then(Value::as_str)
+            .filter(|at| {
+                chrono::DateTime::parse_from_rfc3339(at)
+                    .is_ok_and(|at| at.with_timezone(&chrono::Utc) <= chrono::Utc::now())
+            })
+            .map(str::to_string);
+        tracing::info!(target: "plugins", "packages catalog: {url}: closed to this gateway, its copy through the home server");
+        Ok((text.to_string(), fetched_at))
+    }
+
+    /// The feed through the home server (`/home/v1/catalog`): its copy of the same feed and its signature, written here
+    /// as if read; the signature is checked here with this gateway's own key. The extra feeds' copies come with it
+    /// (`feeds`: none from a computer older than them — the main feed alone then). Whether it came. The copy is as old
+    /// as the computer says it is (`fetchedAt`), not as old as this moment: a copy six hours old is read again soon,
+    /// and the computer reads its feed again when it is that old (`fresh` — at once, a person here asked to check now).
+    async fn through_home(&self, url: &url::Url, fresh: bool) -> bool {
+        let Some((home, key)) = self.home.as_ref().and_then(|home| home.up()) else { return false };
+        let answer = crate::utils::http::client_without_redirects()
+            .get(format!("{}/home/v1/catalog{}", home.trim_end_matches('/'), if fresh { "?fresh=1" } else { "" }))
+            .bearer_auth(key)
+            // The computer may read its feed and the feeds it names before it answers.
+            .timeout(FEED_TIMEOUT * 3)
+            .send()
+            .await;
+        let Ok(answer) = answer else { return false };
+        let Ok(body) = answer.json::<Value>().await else { return false };
+        let body = body.get("message").cloned().unwrap_or(body);
+        if body.get("url").and_then(Value::as_str) != Some(url.as_str()) {
+            return false;
+        }
+        let Some(text) = body.get("feed").and_then(Value::as_str) else { return false };
+        let Ok(feed) = parse_feed(text, url) else { return false };
+        // When the computer read it (a computer before 20.11 does not say: now, as before).
+        let fetched_at = body
+            .get("fetchedAt")
+            .and_then(Value::as_str)
+            .filter(|at| {
+                chrono::DateTime::parse_from_rfc3339(at)
+                    .is_ok_and(|at| at.with_timezone(&chrono::Utc) <= chrono::Utc::now())
+            })
+            .map(str::to_string)
+            .unwrap_or_else(now_iso);
+        let fetched = Fetched { url: url.to_string(), etag: None, fetched_at: fetched_at.clone(), closed: false };
+        let signature_file = self.dir.join(format!("catalog.json{SIGNATURE_SUFFIX}"));
+        let written = write_whole(&self.dir.join("catalog.json"), text.as_bytes())
+            .and_then(|()| match body.get("signature").and_then(Value::as_str) {
+                Some(signature) => write_whole(&signature_file, signature.as_bytes()),
+                None => std::fs::remove_file(&signature_file).or(Ok(())),
+            })
+            .and_then(|()| {
+                write_whole(&self.dir.join("state.json"), &serde_json::to_vec(&fetched).unwrap_or_default())
+            });
+        if written.is_err() {
+            return false;
+        }
+        // The extra feeds' copies, of the feeds this main one names.
+        for copy in body.get("feeds").and_then(Value::as_array).into_iter().flatten() {
+            let address = copy.get("url").and_then(Value::as_str);
+            let Some(extra) = feed.feeds.iter().find(|extra| Some(extra.url.as_str()) == address) else { continue };
+            let Some(text) = copy.get("feed").and_then(Value::as_str) else { continue };
+            if parse_feed(text, &extra.url).is_err() {
+                continue;
+            }
+            let dir = self.extra_dir(&extra.url);
+            let fetched =
+                Fetched { url: extra.url.to_string(), etag: None, fetched_at: fetched_at.clone(), closed: false };
+            let written = write_whole(&dir.join("catalog.json"), text.as_bytes())
+                .and_then(|()| write_whole(&dir.join("state.json"), &serde_json::to_vec(&fetched).unwrap_or_default()));
+            if written.is_ok() {
+                lock(&self.status).extras.insert(extra.url.to_string(), FeedStatus::default());
+            }
+        }
+        {
+            let mut status = lock(&self.status);
+            status.offline = false;
+            status.problem = None;
+            status.through_home = Some(std::time::Instant::now());
+        }
+        tracing::info!(target: "plugins", "packages catalog: {} package(s) through the home server", feed.packages.len());
+        true
+    }
+
+    /// A file of the feed (an archive, a preview): straight or from its mirror, or through the home server when that
+    /// fails.
+    async fn download(&self, url: &url::Url, max: u64, timeout: Duration) -> Result<Vec<u8>, install::Failed> {
+        match self.fetch_through(url, max, timeout).await {
+            Ok(bytes) => Ok(bytes),
+            Err(failed) => {
+                let Some((home, key)) = self.home.as_ref().and_then(|home| home.up()) else { return Err(failed) };
+                let answer = crate::utils::http::client_without_redirects()
+                    .get(format!("{}/home/v1/catalog/file", home.trim_end_matches('/')))
+                    .query(&[("url", url.as_str())])
+                    .bearer_auth(key)
+                    .timeout(timeout)
+                    .send()
+                    .await
+                    .map_err(|_| failed.clone())?;
+                let status = answer.status();
+                if !status.is_success() {
+                    return Err(install::Failed {
+                        message: crate::tr!(
+                            "{error}; через компьютер — HTTP {status}",
+                            error = failed.message,
+                            status = status
+                        ),
+                        missing: failed.missing || matches!(status.as_u16(), 404 | 410),
+                        too_big: failed.too_big,
+                    });
+                }
+                let bytes = answer.bytes().await.map_err(|_| failed.clone())?;
+                if bytes.len() as u64 > max {
+                    return Err(install::Failed {
+                        message: crate::tr!("файл больше {max} КБ", max = max / 1024),
+                        missing: false,
+                        too_big: true,
+                    });
+                }
+                Ok(bytes.to_vec())
+            }
+        }
+    }
+
+    /// `ask` at the feed's own address, then at its mirror's (utils/mirrors.rs). A failure on the way or a server's
+    /// error moves on to the next source; so does a mirror's 404 (a mirror behind, or one without this feed), while its
+    /// 410 is taken as said: the feed was closed where the mirror copies from. The feed's own answer when none came.
+    async fn ask_through(&self, url: &url::Url, etag: Option<&str>) -> Answer {
+        let sources = self.mirrors.sources(url);
+        let (mut own, mut last) = (None, None);
+        for (n, source) in sources.iter().enumerate() {
+            // The last source is waited for to the end: there is nothing to move on to.
+            let stall = (n + 1 < sources.len()).then_some(mirrors::STALL);
+            let answer = ask(&source.url, etag, stall).await;
+            let next = match &answer {
+                Answer::Unreachable(_) | Answer::Broken(_) => true,
+                Answer::Status(code) => {
+                    code.is_server_error() || (source.mirror && *code == reqwest::StatusCode::NOT_FOUND)
+                }
+                _ => false,
+            };
+            if !next {
+                if sources.len() > 1 {
+                    self.mirrors.answered(source);
+                    if source.mirror {
+                        tracing::info!(target: "plugins", "packages catalog: {url}: from its mirror");
+                    }
+                }
+                return answer;
+            }
+            if source.mirror {
+                last = Some(answer);
+            } else {
+                own = Some(answer);
+            }
+        }
+        own.or(last).unwrap_or_else(|| Answer::Unreachable(String::new()))
+    }
+
+    /// A file at `url`, from the feed's own host or from its mirror (utils/mirrors.rs): a failure on the way, a
+    /// server's error or a stall moves on to the next source. The feed's own host saying the file is not there (404,
+    /// 410), or a file too big, is the answer. The feed's own failure when none came. Without a mirror: `install::fetch`.
+    async fn fetch_through(&self, url: &url::Url, max: u64, timeout: Duration) -> Result<Vec<u8>, install::Failed> {
+        let sources = self.mirrors.sources(url);
+        let (mut own, mut last) = (None, None);
+        for (n, source) in sources.iter().enumerate() {
+            // The last source is waited for to the end: there is nothing to move on to.
+            let stall = (n + 1 < sources.len()).then_some(mirrors::STALL);
+            match install::fetch_within(source.url.as_str(), max, timeout, stall).await {
+                Ok(bytes) => {
+                    if sources.len() > 1 {
+                        self.mirrors.answered(source);
+                        if source.mirror {
+                            tracing::info!(target: "plugins", "packages catalog: {url}: from its mirror");
+                        }
+                    }
+                    return Ok(bytes);
+                }
+                Err(failed) if failed.too_big || (failed.missing && !source.mirror) => return Err(failed),
+                Err(failed) if source.mirror => last = Some(failed),
+                Err(failed) => own = Some(failed),
+            }
+        }
+        Err(own.or(last).unwrap_or_else(|| install::Failed { message: String::new(), missing: false, too_big: false }))
+    }
+
+    /// Whether `export_for_station` has a copy to give, without reading the copy: the feed's address, its folder's
+    /// note that the copy there is of that address, and the file. The helper's contract asks it at every look of a
+    /// station (home_server/serve.rs, ability `catalog`); the whole feed is too much to read every 15 s.
+    pub fn has_copy_for_station(&self) -> bool {
+        let Some(Ok(url)) = self.url() else { return false };
+        fetched_in(&self.dir).is_some_and(|fetched| fetched.url == url.as_str())
+            && self.dir.join("catalog.json").is_file()
+    }
+
+    /// For the station's gateway that leans on this computer: the copy of the feed and its signature, and the copies
+    /// of the extra feeds it names (`feeds: [{url, feed}]`).
+    pub fn export_for_station(&self) -> Option<Value> {
+        let url = self.url().and_then(Result::ok)?;
+        let feed = text_in(&self.dir, &url)?;
+        let signature = std::fs::read_to_string(self.dir.join(format!("catalog.json{SIGNATURE_SUFFIX}"))).ok();
+        let feeds: Vec<Value> = self
+            .declared(&url)
+            .into_iter()
+            .filter_map(|extra| {
+                let copy = text_in(&self.extra_dir(&extra.url), &extra.url)?;
+                Some(serde_json::json!({ "url": extra.url.as_str(), "feed": copy }))
+            })
+            .collect();
+        // When this computer read it: the station keeps the copy as old as it is.
+        let fetched_at = self.fetched().filter(|fetched| fetched.url == url.as_str()).map(|fetched| fetched.fetched_at);
+        Some(serde_json::json!({
+            "url": url.as_str(), "feed": feed, "signature": signature, "feeds": feeds, "fetchedAt": fetched_at
+        }))
+    }
+
+    /// For the station's gateway that cannot read one of its extra feeds itself (a tester's Station Mini 2, 22.11:
+    /// DuoWave Store and the demo feed closed to it, open to the computer beside it): this computer's copy of that
+    /// feed, when it reads it too — one the main feed names or an own source added here — with when it was read. None
+    /// for a feed this computer does not read: it is no proxy for any address.
+    pub fn feed_for_station(&self, wanted: &str) -> Option<Value> {
+        let main = self.url().and_then(Result::ok)?;
+        let wanted = feed_url(wanted).ok()?;
+        let extra = self.extras(&main).into_iter().find(|extra| extra.url == wanted)?;
+        let dir = self.extra_dir(&extra.url);
+        let feed = text_in(&dir, &extra.url)?;
+        let fetched_at = fetched_in(&dir).map(|fetched| fetched.fetched_at);
+        Some(serde_json::json!({ "url": extra.url.as_str(), "feed": feed, "fetchedAt": fetched_at }))
+    }
+
+    /// A file for the station: only from the origin of a feed this computer reads — the main one, an extra one it
+    /// names, or an own source added here (the demo characters' archives, 22.11).
+    pub async fn fetch_for_station(&self, wanted: &str) -> Result<Vec<u8>, ApiError> {
+        let base = self
+            .url()
+            .and_then(Result::ok)
+            .ok_or_else(|| ApiError::conflict(crate::tr!("Каталог здесь не настроен.")))?;
+        let extras = self.extras(&base).into_iter().map(|extra| extra.url);
+        let url = std::iter::once(base).chain(extras).find_map(|base| same_origin(&base, wanted));
+        let url = url.ok_or_else(|| ApiError::forbidden(crate::tr!("Только файлы каталога.")))?;
+        self.fetch_through(&url, MAX_ARCHIVE, ARCHIVE_TIMEOUT)
+            .await
+            .map_err(|failed| ApiError::bad_gateway(failed.message))
+    }
+
+    /// After a read that found the feed the same (304): the previews its copy here names that did not come before —
+    /// a timeout at the first read, say — asked again, by the rules of `previews`.
+    async fn previews_again(&self, root: &Path, url: &url::Url) {
+        let Some(feed) = text_in(root, url).and_then(|text| parse_feed(&text, url).ok()) else { return };
+        self.previews(root, &feed).await;
+    }
+
+    /// The previews of a feed's packages that are not here yet, in its folder; the ones of versions it no longer
+    /// names go. One that did not come waits `PREVIEW_AGAIN`; one that cannot come waits for a new version or address.
+    async fn previews(&self, root: &Path, feed: &Feed) {
+        let mut kept: HashSet<PathBuf> = HashSet::new();
+        for entry in feed.newest() {
+            let dir = root.join(&entry.id).join(entry.version.to_string());
+            kept.insert(dir.clone());
+            let wanted =
+                entry.image.iter().map(|url| ("image".to_string(), url, MAX_IMAGE)).chain(
+                    entry.samples.iter().enumerate().map(|(n, url)| (format!("sample-{}", n + 1), url, MAX_SAMPLE)),
+                );
+            for (name, url, max) in wanted {
+                if self.preview_file(&dir, &name).is_some() {
+                    continue;
+                }
+                let key = (root.to_path_buf(), dir.join(&name));
+                let resting = lock(&self.misses).get(&key).is_some_and(|miss| {
+                    miss.url == url.as_str() && (miss.lasting || miss.at.elapsed() < PREVIEW_AGAIN)
+                });
+                if resting {
+                    continue;
+                }
+                let lasting = match self.fetch_through(url, max, FEED_TIMEOUT).await {
+                    Ok(bytes) => match preview_kind(&bytes) {
+                        Some(extension) if (name == "image") == (extension != "ogg") => {
+                            match write_whole(&dir.join(format!("{name}.{extension}")), &bytes) {
+                                Ok(()) => {
+                                    lock(&self.misses).remove(&key);
+                                    continue;
+                                }
+                                Err(error) => {
+                                    tracing::warn!(target: "plugins", "packages catalog: {}: {error}", dir.display());
+                                    false
+                                }
+                            }
+                        }
+                        _ => {
+                            tracing::warn!(target: "plugins", "packages catalog: {} {name}: not WebP, PNG or Opus", entry.id);
+                            true
+                        }
+                    },
+                    Err(failed) => {
+                        tracing::warn!(target: "plugins", "packages catalog: {} {name}: {}", entry.id, failed.message);
+                        failed.missing || failed.too_big
+                    }
+                };
+                let miss = Miss { url: url.to_string(), at: std::time::Instant::now(), lasting };
+                lock(&self.misses).insert(key, miss);
+            }
+        }
+        // What this feed no longer names is not remembered either.
+        lock(&self.misses)
+            .retain(|(feed, file), _| feed != root || file.parent().is_some_and(|dir| kept.contains(dir)));
+        // Folders of packages and versions the feed no longer has.
+        for package in std::fs::read_dir(root).into_iter().flatten().flatten() {
+            if !package.file_type().is_ok_and(|kind| kind.is_dir()) {
+                continue;
+            }
+            for version in std::fs::read_dir(package.path()).into_iter().flatten().flatten() {
+                // The extra feeds' folders are theirs (in `feeds`, beside a version of a package of that name).
+                let extra = package.file_name() == FEEDS_DIR
+                    && semver::Version::parse(&version.file_name().to_string_lossy()).is_err();
+                if !extra && !kept.contains(&version.path()) {
+                    let _ = std::fs::remove_dir_all(version.path());
+                }
+            }
+            let _ = std::fs::remove_dir(package.path());
+        }
+    }
+
+    /// A package's previews: in its feed's folder, by its id and version.
+    fn preview_dir(&self, entry: &Entry) -> PathBuf {
+        let feed = match &entry.extra {
+            Some(extra) => self.extra_dir(&extra.url),
+            None => self.dir.clone(),
+        };
+        feed.join(&entry.id).join(entry.version.to_string())
+    }
+
+    /// A preview's file in a version's folder: `image.webp`, `sample-1.ogg`.
+    fn preview_file(&self, dir: &Path, name: &str) -> Option<(PathBuf, &'static str)> {
+        ["webp", "png", "ogg"].into_iter().find_map(|extension| {
+            let file = dir.join(format!("{name}.{extension}"));
+            file.is_file().then(|| (file, content_type(extension)))
+        })
+    }
+
+    /// The installed packages the feed has newer versions of: told on the bus, each version once.
+    fn announce(&self, feed: &Feed) {
+        let mut fresh = Vec::new();
+        for package in self.host.installed_all() {
+            let Some(entry) = feed.find(&package.manifest.id, None) else { continue };
+            if entry.version > package.manifest.version {
+                let update = format!("{} {}", entry.id, entry.version);
+                if lock(&self.status).announced.insert(update.clone()) {
+                    fresh.push(update);
+                }
+            }
+        }
+        if !fresh.is_empty() {
+            tracing::info!(target: "plugins", "packages catalog: newer versions — {}", fresh.join(", "));
+            self.events.emit(GatewayEvent::PackagesCatalog { updates: fresh });
+        }
+    }
+
+    /// The catalog for the panel: every package of the feeds (its newest version) and how it stands here, and how each
+    /// extra feed stands.
+    pub async fn view(&self, refresh: bool) -> CatalogView {
+        self.host.rescan();
+        let feed = self.feed(refresh).await;
+        let fetched_at = self
+            .url()
+            .and_then(Result::ok)
+            .and_then(|url| self.fetched().filter(|fetched| fetched.url == url.as_str()))
+            .map(|fetched| fetched.fetched_at);
+        let placement = (self.placement)();
+        let signed = feed.as_ref().is_some_and(|feed| feed.signed);
+        let free_mb = self.host.free_memory_mb();
+        let turbo_apps = self.turbo_apps();
+        let installed: BTreeMap<String, semver::Version> = self
+            .host
+            .installed_all()
+            .into_iter()
+            .map(|package| (package.manifest.id.clone(), package.manifest.version.clone()))
+            .collect();
+        // The entries in the request's language, else English (docs/plans/i18n.md).
+        let languages = crate::locale::preferences(&self.settings);
+        // An app on Node downloads our Node first, once, when the gateway has none yet.
+        let node_missing = crate::apps::node::needs_download(&self.node_dir, self.own_node.as_deref());
+        let show_hidden = self.show_hidden();
+        let sleeping = self.host.sleeping();
+        let packages = feed
+            .as_ref()
+            .map(|feed| {
+                feed.newest()
+                    .into_iter()
+                    // An unlisted package shows while the hidden developer option is on, or once it is installed
+                    // here: its updates and its card are the household's.
+                    .filter(|entry| !entry.unlisted || show_hidden || installed.contains_key(&entry.id))
+                    .map(|entry| {
+                        let mine = installed.get(&entry.id);
+                        let (state, reason) = entry_state_at(entry, mine, placement, signed, free_mb, turbo_apps);
+                        let dir = self.preview_dir(entry);
+                        let base = format!("/api/v1/packages/catalog/{}/preview", entry.id);
+                        // The version in the address: a new version is a new address, the panel's cache can't
+                        // show the old picture or phrases.
+                        let version = format!("?v={}", entry.version);
+                        let (title, description) = entry.texts_in(&languages);
+                        let node =
+                            (entry.runtime.as_deref() == Some("node") && node_missing && mine.is_none()).then(|| {
+                                DownloadView {
+                                    id: "node".into(),
+                                    title: "Node".into(),
+                                    mb: NODE_DOWNLOAD_MB,
+                                    when: "install".into(),
+                                }
+                            });
+                        let downloads = node
+                            .into_iter()
+                            .chain(entry.downloads.iter().map(|download| DownloadView {
+                                id: download.id.clone(),
+                                title: entry.download_title(download, &languages),
+                                mb: download.mb,
+                                when: download.when.clone(),
+                            }))
+                            .collect();
+                        CatalogEntryView {
+                            id: entry.id.clone(),
+                            kind: entry.kind,
+                            version: entry.version.to_string(),
+                            title,
+                            description,
+                            license: entry.license.clone(),
+                            verified: entry.verified,
+                            runs: entry.runs.iter().map(|runs| runs.as_str()).collect(),
+                            min_gateway: entry.min_gateway.as_ref().map(ToString::to_string),
+                            needs: entry.needs.clone(),
+                            preview: PreviewView {
+                                image: self.preview_file(&dir, "image").map(|_| format!("{base}/image{version}")),
+                                samples: (1..=entry.samples.len())
+                                    .filter(|n| self.preview_file(&dir, &format!("sample-{n}")).is_some())
+                                    .map(|n| format!("{base}/{n}{version}"))
+                                    .collect(),
+                            },
+                            installed: mine.map(ToString::to_string),
+                            state,
+                            reason,
+                            publisher: entry.publisher.clone(),
+                            source: entry.extra.as_ref().map(|extra| extra.title.clone()),
+                            own: entry.extra.as_ref().is_some_and(|extra| extra.own),
+                            runtime: entry.runtime.clone(),
+                            permissions: entry.permissions.clone(),
+                            signed: code_allowed(entry, signed)
+                                && matches!(entry.kind, PackageKind::Plugin | PackageKind::App),
+                            faces: entry.faces.clone(),
+                            place: entry.place_at(placement),
+                            prefer_home: entry.prefer_home,
+                            recommended: entry.recommended,
+                            added_at: entry.added_at.clone(),
+                            texts: entry
+                                .all_texts()
+                                .into_iter()
+                                .map(|(lang, title, description)| TextsView { lang, title, description })
+                                .collect(),
+                            downloads,
+                            waits: waits_for(entry, mine, state),
+                            on: (mine.is_some() && matches!(entry.kind, PackageKind::Plugin | PackageKind::App))
+                                .then(|| self.host.is_switched_on(&entry.id)),
+                            unlisted: entry.unlisted,
+                            agent: entry.agent.clone(),
+                            companions: entry.companions.clone(),
+                            memory_mb: entry.memory_mb,
+                            size_mb: Some(entry.unpacked.unwrap_or_else(|| entry.archive().size).div_ceil(1024 * 1024)),
+                            asleep: mine.is_some() && sleeping.iter().any(|(id, _)| *id == entry.id),
+                        }
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        // The own sources are listed even without a copy: the admin removes them here.
+        let own = self.url().and_then(Result::ok).map(|url| self.own_feeds(&url)).unwrap_or_default();
+        let status = lock(&self.status);
+        let newest = feed.as_ref().map(|feed| feed.newest()).unwrap_or_default();
+        let feeds = feed
+            .as_ref()
+            .map(|feed| feed.feeds.clone())
+            .unwrap_or_default()
+            .into_iter()
+            .chain(own)
+            .map(|extra| {
+                let known = status.extras.get(extra.url.as_str());
+                let fetched =
+                    fetched_in(&self.extra_dir(&extra.url)).filter(|fetched| fetched.url == extra.url.as_str());
+                FeedView {
+                    url: extra.url.to_string(),
+                    publisher: extra.publisher.clone(),
+                    title: extra.title.clone(),
+                    fetched_at: fetched.as_ref().map(|fetched| fetched.fetched_at.clone()),
+                    offline: known.is_some_and(|known| known.offline),
+                    problem: known.and_then(|known| known.problem.clone()),
+                    count: newest
+                        .iter()
+                        .filter(|entry| entry.extra.as_ref().is_some_and(|from| from.url == extra.url))
+                        .count(),
+                    own: extra.own,
+                    closed: extra.own && fetched.is_some_and(|fetched| fetched.closed),
+                }
+            })
+            .collect();
+        let problem = match &self.source {
+            FeedSource::Off => Some(crate::tr!("Каталог выключен в .env (PACKAGES_FEED_URL=off).")),
+            FeedSource::Missing => {
+                Some(crate::tr!("Каталог не настроен: в этой сборке нет его адреса (PACKAGES_FEED_URL)."))
+            }
+            FeedSource::Url(_) => status.problem.clone(),
+        };
+        CatalogView {
+            signed,
+            keyed: !self.keys.is_empty(),
+            configured: matches!(self.source, FeedSource::Url(_)),
+            enabled: self.enabled(),
+            show_hidden,
+            url: match &self.source {
+                FeedSource::Url(url) => Some(url.clone()),
+                _ => None,
+            },
+            fetched_at,
+            offline: status.offline,
+            problem,
+            packages,
+            feeds,
+        }
+    }
+
+    /// A preview of a package in the feed: `image` or the n-th phrase (from 1). Only from the copy here.
+    pub async fn preview(&self, id: &str, which: &str) -> Result<(PathBuf, &'static str), ApiError> {
+        let missing = || ApiError::not_found(crate::tr!("Нет такого превью."));
+        let url = self.url().and_then(Result::ok).ok_or_else(missing)?;
+        let feed = self.copy(&url).ok_or_else(missing)?;
+        let entry = feed.find(id, None).ok_or_else(missing)?;
+        let name = match which {
+            "image" => "image".to_string(),
+            n => match n.parse::<usize>() {
+                Ok(n) if (1..=MAX_SAMPLES).contains(&n) => format!("sample-{n}"),
+                _ => return Err(missing()),
+            },
+        };
+        self.preview_file(&self.preview_dir(entry), &name).ok_or_else(missing)
+    }
+
+    /// The kind of a package as the feed lists it (its newest version), or as installed: who may install or remove
+    /// it depends on it.
+    pub async fn kind_of(&self, id: &str) -> Option<PackageKind> {
+        if let Some(package) = self.host.installed(id) {
+            return Some(package.manifest.kind);
+        }
+        let url = self.url().and_then(Result::ok)?;
+        self.copy(&url).and_then(|feed| feed.find(id, None).map(|entry| entry.kind))
+    }
+
+    /// The package of the catalog's copy here these words name — its title in any language it has, or its id — for
+    /// the voice (src/talk/store.rs): its id, and whether it is installed here. Every word said is a word of the title
+    /// and every word of the title is said, alike as «ленту» and «Лента» are; the longest title wins. `character` —
+    /// characters only («поставь персонажа …»). Reads the copy, never the network.
+    pub fn named(&self, words: &str, character: bool) -> Option<(String, bool)> {
+        use crate::skills::text::{alike, normalize};
+        let url = self.url()?.ok()?;
+        let (feed, _) = self.merged(&url)?;
+        let normalized = normalize(words);
+        let said: Vec<&str> = normalized.split(' ').filter(|word| !word.is_empty()).collect();
+        if said.is_empty() {
+            return None;
+        }
+        let mut best: Option<(usize, String)> = None;
+        let show_hidden = self.show_hidden();
+        for entry in feed.newest() {
+            if character && entry.kind != PackageKind::Character {
+                continue;
+            }
+            // Unlisted: the voice does not find it either, unless it is installed or the developer option is on.
+            if entry.unlisted && !show_hidden && self.host.installed(&entry.id).is_none() {
+                continue;
+            }
+            let names = entry.all_texts().into_iter().map(|(_, title, _)| title).chain([entry.id.replace('-', " ")]);
+            for name in names {
+                let name = normalize(&name);
+                let title: Vec<&str> = name.split(' ').filter(|word| word.chars().count() > 1).collect();
+                if title.is_empty() {
+                    continue;
+                }
+                let whole = title.iter().all(|word| said.iter().any(|said| alike(said, word)))
+                    && said.iter().all(|said| title.iter().any(|word| alike(said, word)));
+                if whole && best.as_ref().is_none_or(|(length, _)| title.len() > *length) {
+                    best = Some((title.len(), entry.id.clone()));
+                }
+            }
+        }
+        let (_, id) = best?;
+        let installed = self.host.installed(&id).is_some();
+        Some((id, installed))
+    }
+
+    /// A Турбо of the home gives the apps (on the line or not): an app for a computer is installed here as its face.
+    pub fn turbo_apps(&self) -> bool {
+        self.apps.as_ref().is_some_and(|apps| apps.offered())
+    }
+
+    /// The Турбо that gives the apps, on the line: its address and the key to it.
+    pub fn turbo_up(&self) -> Option<(String, String)> {
+        self.apps.as_ref().and_then(|apps| apps.up())
+    }
+
+    /// The feed a package was installed from when it is not the main one — an own source, a store (the registry keeps
+    /// where each came from): the Турбо is told it for a face's code (home/apps.rs).
+    pub fn extra_feed_of(&self, id: &str) -> Option<String> {
+        let from = registry::choices(&self.db).remove(id)?.feed?;
+        let main = self.url().and_then(Result::ok);
+        (main.as_ref().map(url::Url::as_str) != Some(from.as_str())).then_some(from)
+    }
+
+    /// The package from the feed: downloaded, checked against its size and hash, installed. `update` takes the newest
+    /// version over the installed one and removes the older ones once the new one is in place.
+    pub async fn install(
+        &self,
+        id: &str,
+        version: Option<&str>,
+        update: bool,
+        actor: Option<Actor>,
+    ) -> Result<PackageView, ApiError> {
+        if !matches!(self.source, FeedSource::Url(_)) {
+            return Err(ApiError::conflict(crate::tr!("Каталог не настроен — ставить неоткуда.")));
+        }
+        if !self.enabled() {
+            return Err(ApiError::conflict(crate::tr!(
+                "Каталог выключен в настройках: включите его, чтобы ставить приложения."
+            )));
+        }
+        self.host.rescan();
+        let installed = self.host.installed(id).map(|package| package.manifest.version.clone());
+        if update && installed.is_none() {
+            return Err(ApiError::not_found(crate::tr!("«{id}» не установлено — обновлять нечего.", id = id)));
+        }
+        let _turn = self.installing.lock().await;
+        // By the copy of the feed; read again, once, when the file it names is not on the site — or when the version
+        // asked for is not in the copy: the home's centre read its feed since and asks the Турбо for its face's newer
+        // version (before 20.11 «В каталоге нет …» until the copy here was six hours old).
+        let mut again = false;
+        let mut reread = false;
+        let (feed, entry, bytes) = loop {
+            let feed = self.feed(again || reread).await.ok_or_else(|| {
+                ApiError::unavailable(
+                    lock(&self.status).problem.clone().unwrap_or_else(|| crate::tr!("Каталог недоступен.")),
+                )
+            })?;
+            let not_found = || match version {
+                Some(version) => {
+                    ApiError::not_found(crate::tr!("В каталоге нет {id} {version}.", id = id, version = version))
+                }
+                None => ApiError::not_found(crate::tr!("В каталоге нет «{id}».", id = id)),
+            };
+            // Read again: the version asked for may have left the site with its file — the newest one then.
+            let entry = match feed.find(id, version) {
+                Some(entry) => entry.clone(),
+                None if again => feed.find(id, None).cloned().ok_or_else(not_found)?,
+                None if version.is_some() && !reread => {
+                    reread = true;
+                    continue;
+                }
+                None => return Err(not_found()),
+            };
+            let (state, reason) = entry_state_at(
+                &entry,
+                installed.as_ref(),
+                (self.placement)(),
+                feed.signed,
+                self.host.free_memory_mb(),
+                self.turbo_apps(),
+            );
+            match state {
+                EntryState::NeedsSignature | EntryState::Incompatible => {
+                    return Err(ApiError::conflict(reason.unwrap_or_default()));
+                }
+                EntryState::Installed if installed.as_ref() == Some(&entry.version) => {
+                    return Err(ApiError::conflict(crate::tr!(
+                        "{entry} {version} уже установлен.",
+                        entry = entry.title,
+                        version = entry.version
+                    )));
+                }
+                EntryState::Installed if update => {
+                    return Err(ApiError::conflict(crate::tr!(
+                        "Новее {version} в каталоге нет.",
+                        version = installed.unwrap_or(entry.version)
+                    )));
+                }
+                _ => {}
+            }
+            // Room on the disk (on the station), before the download, for what is sure to be needed: a new package
+            // at least its archive (its files are no smaller packed), an update only the reserve — most of it may be
+            // the same as the version installed. What it needs in truth is counted once the archive is here.
+            let least = if installed.is_some() { 0 } else { entry.archive().size / 1_048_576 };
+            if let Err(why) = self.host.room_for(least) {
+                return Err(ApiError::conflict(crate::tr!("Не поставить: {why}.", why = why)));
+            }
+            match self.download(&entry.archive().url, MAX_ARCHIVE, ARCHIVE_TIMEOUT).await {
+                Ok(bytes) => break (feed, entry, bytes),
+                // The copy names a file the site no longer has: the catalog moved on (a newer version out, the old
+                // archive gone) while the copy was still fresh enough to keep.
+                Err(failed) if failed.missing && !again => {
+                    tracing::info!(target: "plugins", "{id}: {} — the catalog is read again", failed.message);
+                    again = true;
+                }
+                Err(failed) if failed.missing => {
+                    return Err(ApiError::bad_gateway(crate::tr!(
+                        "Не скачалось: файла «{entry}» нет на сайте каталога, хотя каталог только что перечитан ({error}). Попробуйте позже.",
+                        entry = entry.title,
+                        error = failed.message
+                    )));
+                }
+                Err(failed) => {
+                    return Err(ApiError::bad_gateway(crate::tr!("Не скачалось: {error}", error = failed.message)));
+                }
+            }
+        };
+        self.place(feed.signed, entry, bytes, installed, actor).await
+    }
+
+    /// A feed's package whose archive is here, put in place: checked against its size and hash, its kind and its voice,
+    /// noted as the catalog's (vouched for as `signed` and the entry say), in the history, and a plugin that is on
+    /// moved to it. `installed` — the version that was here before. The caller holds `installing`.
+    async fn place(
+        &self,
+        signed: bool,
+        entry: Entry,
+        bytes: Vec<u8>,
+        installed: Option<semver::Version>,
+        actor: Option<Actor>,
+    ) -> Result<PackageView, ApiError> {
+        let id = entry.id.as_str();
+        let archive = entry.archive();
+        let root = self.host.packages_dir().to_path_buf();
+        let version = entry.version.to_string();
+        // The room on the disk, counted from the archive in memory: the files that are not the same as the installed
+        // version's (same path, size and bytes) — those it has are hard-linked, not written — and the reserve.
+        // An update of an app whose program did not change takes next to nothing (the clean-path check, 18.11).
+        let previous = installed.as_ref().map(|installed| root.join(id).join(installed.to_string()));
+        let previous = previous.filter(|dir| dir.is_dir());
+        let (bytes, beside) = {
+            let (sha256, size) = (archive.sha256.clone(), archive.size);
+            tokio::task::spawn_blocking(move || {
+                install::check_archive(&bytes, &sha256, size)?;
+                let beside = install::beside(&bytes, previous.as_deref())?;
+                Ok::<_, String>((bytes, beside))
+            })
+            .await
+            .map_err(ApiError::internal)?
+            .map_err(|error| ApiError::bad_request(crate::tr!("Не поставлено: {error}.", error = error)))?
+        };
+        if let Err(why) = self.host.room_for(beside.changed_mb()) {
+            return Err(ApiError::conflict(crate::tr!("Не поставить: {why}.", why = why)));
+        }
+        let placed = {
+            let (root, id, version, sha256) = (root.clone(), entry.id.clone(), version.clone(), archive.sha256.clone());
+            let size = archive.size;
+            tokio::task::spawn_blocking(move || {
+                let expected = Expected { id: &id, version: &version, sha256: &sha256, size };
+                install::install_archive_beside(&root, &bytes, expected, Some(&beside))
+            })
+            .await
+            .map_err(ApiError::internal)?
+        };
+        let placed =
+            placed.map_err(|error| ApiError::bad_request(crate::tr!("Не поставлено: {error}.", error = error)))?;
+        // A voice of no known origin comes only from an own source the admin added, never from the catalog.
+        let own = entry.extra.as_ref().is_some_and(|extra| extra.own);
+        if !own && unknown_voice(&placed.dir) {
+            let _ = std::fs::remove_dir_all(&placed.dir);
+            self.host.rescan();
+            return Err(ApiError::bad_request(crate::tr!("Не поставлено: у «{entry}» голос неизвестного происхождения (voiceOrigin unknown) — из каталога такое не ставится.", entry = entry.title)));
+        }
+        if placed.kind != entry.kind {
+            let _ = std::fs::remove_dir_all(&placed.dir);
+            self.host.rescan();
+            return Err(ApiError::bad_request(crate::tr!(
+                "Не поставлено: в каталоге это {kind}, а в архиве — {kind2}.",
+                kind = entry.kind.as_str(),
+                kind2 = placed.kind.as_str()
+            )));
+        }
+        // Vouched for: the feed says so (an extra one's only when the main allows), and code only from a signed main.
+        // Noted before the history: on the station a catalog's version is kept there without its big files.
+        let signed = match entry.kind {
+            PackageKind::Agent => signed && entry.extra.is_none(),
+            _ => code_allowed(&entry, signed),
+        };
+        let vouched = entry.verified
+            && (signed || !matches!(entry.kind, PackageKind::Plugin | PackageKind::App | PackageKind::Agent));
+        registry::set_installed(
+            &self.db,
+            id,
+            registry::SOURCE_CATALOG,
+            vouched,
+            actor.as_ref().map(|actor| actor.name.as_str()),
+        )?;
+        // The version in the app's history (docs/plans/package-history.md), with the plugin's data just before it;
+        // on the station with the archive it came from, where its big files are taken from again.
+        if let Some(history) = self.host.history() {
+            let record = history.note_install(
+                id,
+                &placed.dir,
+                &version,
+                super::history::RecordKind::Catalog,
+                super::history::Author {
+                    who: super::history::Who::Catalog,
+                    name: actor.as_ref().map(|actor| actor.name.clone()),
+                    via: None,
+                },
+                false,
+                false,
+                None,
+            );
+            if let Some(record) = record.filter(|_| self.host.on_station()) {
+                let archive = super::history::store::ArchiveRef {
+                    url: archive.url.to_string(),
+                    sha256: archive.sha256.clone(),
+                    size: archive.size,
+                };
+                history.remember_archive(&record, &archive);
+            }
+        }
+        // Only the feed it came from may hide it.
+        let from = entry.extra.as_ref().map(|extra| extra.url.clone());
+        if let Some(from) = from.or_else(|| self.url().and_then(Result::ok)) {
+            registry::set_feed(&self.db, id, from.as_str())?;
+        }
+        // A plugin that is on takes the new version: it starts beside the old one, which stays if it does not.
+        let mut started = true;
+        if installed.is_some() && self.host.is_active(id) {
+            if let Err(error) = self.host.reload(id, actor.clone()).await {
+                started = false;
+                tracing::warn!(target: "plugins", "{id}: the update does not start, the version before runs: {}", error.message);
+            }
+        }
+        // An update: on a computer the version before stays to fall back on (a rollback, a new one that does not
+        // start); older ones leave — they are in the history. On the station only the version in force stays once the
+        // new one has started (docs/plans/station-update-space.md, decision 5): the one before comes back from the
+        // computer or the catalog when it is wanted (history/restore.rs); a new one that does not start keeps it.
+        if installed.is_some() {
+            let keep = if self.host.on_station() && started { 1 } else { 2 };
+            if let Err(error) = install::keep_versions(&root, id, keep) {
+                tracing::warn!(target: "plugins", "{id}: the older versions are not removed: {error}");
+            }
+        }
+        self.host.rescan();
+        let change = if installed.is_some() { "updated" } else { "installed" };
+        tracing::info!(target: "plugins", "{id} {version}: {change} from the catalog");
+        self.host.announce(id, change, Some(version), actor);
+        self.host.view_one(id).await
+    }
+
+    /// An app the home's centre runs as a face, from a feed this computer does not read (clean-path check 19.11: YouTube
+    /// came to the station from a demo feed its admin added there; the Mac's catalog had no such entry, so its code was
+    /// never installed and every call failed). The centre names the feed (`feed`); this computer reads it once, takes
+    /// the entry of that version for its own platform, and installs it only when its own signed main feed pinned that
+    /// very archive by its hash (`recommends`) — what we looked at, whatever the centre says. Nothing else is taken this
+    /// way: an unpinned package of an own source stays the decision of this computer's administrator. A Турбо's
+    /// (crates/duowave-pc, home_server/serve.rs): the catalog's own rule of what it takes.
+    pub async fn install_pinned_from(
+        &self,
+        id: &str,
+        version: Option<&str>,
+        feed: &str,
+        actor: Option<Actor>,
+    ) -> Result<PackageView, ApiError> {
+        if !matches!(self.source, FeedSource::Url(_)) {
+            return Err(ApiError::conflict(crate::tr!("Каталог не настроен — ставить неоткуда.")));
+        }
+        if !self.enabled() {
+            return Err(ApiError::conflict(crate::tr!(
+                "Каталог выключен в настройках: включите его, чтобы ставить приложения."
+            )));
+        }
+        let url = feed_url(feed.trim()).map_err(ApiError::bad_request)?;
+        let main_feed = |refresh: bool| async move {
+            self.feed(refresh).await.ok_or_else(|| {
+                ApiError::unavailable(
+                    lock(&self.status).problem.clone().unwrap_or_else(|| crate::tr!("Каталог недоступен.")),
+                )
+            })
+        };
+        let mut main = main_feed(false).await?;
+        let mut reread = false;
+        let not_pinned = || {
+            ApiError::forbidden(crate::tr!(
+                "Не поставлено: каталог этого компьютера не проверял «{id}» из ленты хаба — код из неё здесь не ставится.",
+                id = id
+            ))
+        };
+        let pins_in = |main: &Feed| -> Vec<Pin> {
+            main.recommends
+                .iter()
+                .filter(|pin| pin.id == id && pin.feed.as_ref().is_none_or(|pinned| *pinned == url))
+                .cloned()
+                .collect()
+        };
+        // The copy of the main feed may be older than the pin of the version the centre asks for: read it again, once
+        // (before 20.11 «не проверял» until the copy was six hours old).
+        if !main.signed || pins_in(&main).is_empty() {
+            main = main_feed(true).await?;
+            reread = true;
+        }
+        let mut pins = pins_in(&main);
+        if !main.signed || pins.is_empty() {
+            return Err(not_pinned());
+        }
+        self.host.rescan();
+        let installed = self.host.installed(id).map(|package| package.manifest.version.clone());
+        let _turn = self.installing.lock().await;
+        let text = install::download(url.as_str(), MAX_FEED, FEED_TIMEOUT)
+            .await
+            .map_err(|error| ApiError::bad_gateway(crate::tr!("Лента хаба не прочиталась: {error}", error = error)))?;
+        let text = String::from_utf8(text)
+            .map_err(|_| ApiError::bad_gateway(crate::tr!("Лента хаба не прочиталась: не текст")))?;
+        let other = parse_feed(&text, &url).map_err(|problem| {
+            ApiError::bad_gateway(crate::tr!("Лента хаба не прочиталась: {problem}", problem = problem))
+        })?;
+        let mut entry = other.find(id, version).cloned().ok_or_else(|| match version {
+            Some(version) => {
+                ApiError::not_found(crate::tr!("В ленте хаба нет {id} {version}.", id = id, version = version))
+            }
+            None => ApiError::not_found(crate::tr!("В ленте хаба нет «{id}».", id = id)),
+        })?;
+        // As an extra feed's package the main one pinned (`Feed::take`): that very archive — this machine's — or none.
+        let archive = entry.archive();
+        if !pins.iter().any(|pin| pin.is(&url, &entry.id, &archive.sha256)) && !reread {
+            main = main_feed(true).await?;
+            pins = pins_in(&main);
+        }
+        if !main.signed || !pins.iter().any(|pin| pin.is(&url, &entry.id, &archive.sha256)) {
+            return Err(not_pinned());
+        }
+        let publisher = entry.publisher.clone().unwrap_or_else(|| "home".into());
+        entry.extra = Some(ExtraFeed { url, title: publisher.clone(), publisher, verified: true, own: false });
+        (entry.recommended, entry.verified, entry.pinned) = (true, true, true);
+        let (state, reason) = entry_state_at(
+            &entry,
+            installed.as_ref(),
+            (self.placement)(),
+            main.signed,
+            self.host.free_memory_mb(),
+            self.turbo_apps(),
+        );
+        match state {
+            EntryState::NeedsSignature | EntryState::Incompatible => {
+                return Err(ApiError::conflict(reason.unwrap_or_default()));
+            }
+            EntryState::Installed if installed.as_ref() == Some(&entry.version) => {
+                return self.host.view_one(id).await;
+            }
+            _ => {}
+        }
+        let least = if installed.is_some() { 0 } else { archive.size / 1_048_576 };
+        if let Err(why) = self.host.room_for(least) {
+            return Err(ApiError::conflict(crate::tr!("Не поставить: {why}.", why = why)));
+        }
+        let bytes = self
+            .download(&archive.url, MAX_ARCHIVE, ARCHIVE_TIMEOUT)
+            .await
+            .map_err(|failed| ApiError::bad_gateway(crate::tr!("Не скачалось: {error}", error = failed.message)))?;
+        tracing::info!(target: "plugins", "{id} {}: from the centre's feed, pinned by this catalog", entry.version);
+        self.place(main.signed, entry, bytes, installed, actor).await
+    }
+
+    /// A character's package as the home's centre has it (clean-path check 18.11, item 40): its archive at the address
+    /// the centre's signed feed gives, with that feed's hash — not this computer's feed, which may lack that version.
+    /// The hash must match, or nothing is installed. Only a character (data, no code) is taken this way. A voice of no
+    /// known origin (`voiceOrigin: unknown`) only when `vouched` — the computer's own home asked (items 41, 41б: over
+    /// its link, or the station's plain entry with the key made for it): the centre names only a character installed there, and it installs such a voice only from a source its
+    /// administrator added (the rule of `install` above), so the decision is the home's, made already. Anyone else —
+    /// a person at this computer, a script — gets the catalog's rule: refused.
+    pub async fn install_from_centre(
+        &self,
+        id: &str,
+        version: &str,
+        url: &str,
+        sha256: &str,
+        vouched: bool,
+        actor: Option<Actor>,
+    ) -> Result<PackageView, ApiError> {
+        let address = url::Url::parse(url)
+            .ok()
+            .filter(|address| matches!(address.scheme(), "http" | "https"))
+            .ok_or_else(|| ApiError::bad_request(crate::tr!("archive.url: адрес http(s) архива пакета")))?;
+        if semver::Version::parse(version).is_err() || !valid_id(id) {
+            return Err(ApiError::bad_request(format!("package: {id} {version}")));
+        }
+        self.host.rescan();
+        let installed = self.host.installed(id).map(|package| package.manifest.version.clone());
+        let _turn = self.installing.lock().await;
+        let bytes = install::fetch(address.as_str(), MAX_ARCHIVE, ARCHIVE_TIMEOUT)
+            .await
+            .map_err(|failed| ApiError::bad_gateway(crate::tr!("Не скачалось: {error}", error = failed.message)))?;
+        if !hex::encode(sha2::Sha256::digest(&bytes)).eq_ignore_ascii_case(sha256.trim()) {
+            return Err(ApiError::bad_request(crate::tr!(
+                "Не поставлено: архив «{id}» от хаба не совпал по sha256 — он подменён или испорчен.",
+                id = id
+            )));
+        }
+        let root = self.host.packages_dir().to_path_buf();
+        let previous = installed.as_ref().map(|installed| root.join(id).join(installed.to_string()));
+        let previous = previous.filter(|dir| dir.is_dir());
+        let placed = {
+            let (root, id, version, sha256) = (root.clone(), id.to_string(), version.to_string(), sha256.to_string());
+            tokio::task::spawn_blocking(move || {
+                let beside = install::beside(&bytes, previous.as_deref())?;
+                let expected = Expected { id: &id, version: &version, sha256: &sha256, size: bytes.len() as u64 };
+                install::install_archive_beside(&root, &bytes, expected, Some(&beside))
+            })
+            .await
+            .map_err(ApiError::internal)?
+            .map_err(|error| ApiError::bad_request(crate::tr!("Не поставлено: {error}.", error = error)))?
+        };
+        let refused = if placed.kind != PackageKind::Character {
+            Some(crate::tr!("Не поставлено: от хаба так ставятся только персонажи."))
+        } else if !vouched && unknown_voice(&placed.dir) {
+            Some(crate::tr!("Не поставлено: у «{id}» голос неизвестного происхождения (voiceOrigin unknown).", id = id))
+        } else {
+            None
+        };
+        if let Some(refused) = refused {
+            let _ = std::fs::remove_dir_all(&placed.dir);
+            self.host.rescan();
+            return Err(ApiError::bad_request(refused));
+        }
+        registry::set_installed(
+            &self.db,
+            id,
+            registry::SOURCE_CATALOG,
+            false,
+            actor.as_ref().map(|a| a.name.as_str()),
+        )?;
+        if installed.is_some() {
+            if let Err(error) = install::keep_versions(&root, id, 2) {
+                tracing::warn!(target: "plugins", "{id}: the older versions are not removed: {error}");
+            }
+        }
+        self.host.rescan();
+        let change = if installed.is_some() { "updated" } else { "installed" };
+        tracing::info!(target: "plugins", "{id} {version}: {change} from the centre's archive");
+        self.host.announce(id, change, Some(version.to_string()), actor);
+        self.host.view_one(id).await
+    }
+
+    /// From the store (MagicPlace: its button, its first run, a «да» to «поставь …»): installed and, a plugin or an
+    /// app, switched on at once — installing it there is wanting it to work, and its rights it asks for in its own
+    /// window. One that does not start stays installed and off, and the answer says why.
+    pub async fn install_and_switch_on(
+        &self,
+        id: &str,
+        version: Option<&str>,
+        actor: Option<Actor>,
+    ) -> Result<PackageView, ApiError> {
+        let view = self.install(id, version, false, actor.clone()).await?;
+        self.switch_on(id, view, actor).await
+    }
+
+    /// A package just put in place switched on, when it is a plugin or an app that is not on yet: the second half of
+    /// `install_and_switch_on`, for the install that does something in between (its rights approved before it runs).
+    pub async fn switch_on(&self, id: &str, view: PackageView, actor: Option<Actor>) -> Result<PackageView, ApiError> {
+        if view.enabled || !matches!(view.kind, Some(PackageKind::Plugin | PackageKind::App)) {
+            return Ok(view);
+        }
+        self.host.enable(id, actor).await.map_err(|error| {
+            tracing::warn!(target: "plugins", "{id}: installed, not switched on: {}", error.message);
+            ApiError::conflict(crate::tr!("Поставлено. {why}", why = error.message))
+        })
+    }
+
+    /// An own source added by its link (docs/plans/custom-feeds.md): it must read as a feed first; then it is kept,
+    /// its copy and previews taken, and its packages join the catalog after the others'.
+    pub async fn add_source(&self, link: &str, actor: Option<Actor>) -> Result<CatalogView, ApiError> {
+        let main = match self.url() {
+            Some(Ok(url)) => url,
+            _ => {
+                return Err(ApiError::conflict(crate::tr!(
+                    "Каталог не настроен: свои источники читаются вместе с ним."
+                )))
+            }
+        };
+        if !self.enabled() {
+            return Err(ApiError::conflict(crate::tr!(
+                "Каталог выключен в настройках: включите его, чтобы добавить источник."
+            )));
+        }
+        let url = feed_url(link.trim()).map_err(ApiError::bad_request)?;
+        if url == main || self.declared(&main).iter().any(|extra| extra.url == url) {
+            return Err(ApiError::conflict(crate::tr!("Эта лента уже читается: её пакеты и так в каталоге.")));
+        }
+        {
+            let sources = self.sources();
+            if sources.iter().any(|source| source.url == url.as_str()) {
+                return Err(ApiError::conflict(crate::tr!("Этот источник уже добавлен.")));
+            }
+            if sources.len() >= MAX_SOURCES {
+                return Err(ApiError::conflict(crate::tr!(
+                    "Своих источников — не больше {MAX_SOURCES}: сначала уберите ненужный.",
+                    MAX_SOURCES = MAX_SOURCES
+                )));
+            }
+        }
+        // It must answer as a feed: a link with a typo is not kept.
+        let problem = match ask(&url, None, None).await {
+            Answer::Text(text, _) => parse_feed(&text, &url)
+                .err()
+                .map(|problem| crate::tr!("это не лента пакетов: {problem}", problem = problem)),
+            Answer::Same => None,
+            Answer::Unreachable(error) | Answer::Broken(error) => {
+                Some(crate::tr!("не отвечает: {error}", error = error))
+            }
+            Answer::Status(code) => Some(crate::tr!("ответил HTTP {code}", code = code)),
+            Answer::TooBig => Some(crate::tr!("лента больше {max_feed} КБ", max_feed = MAX_FEED / 1024)),
+        };
+        if let Some(problem) = problem {
+            return Err(ApiError::bad_gateway(crate::tr!(
+                "Источник не добавлен: {url} {problem}.",
+                url = url,
+                problem = problem
+            )));
+        }
+        {
+            let _turn = self.reading.lock().await;
+            let mut sources = self.sources();
+            // Another add of the same link went first while this one checked the feed (two at once: a change from the
+            // home's queue and the panel's own, test 19.11): it is there and read — not wiped and read again, which on
+            // a station kept the catalog locked another minute.
+            if sources.iter().any(|source| source.url == url.as_str()) {
+                return Err(ApiError::conflict(crate::tr!("Этот источник уже добавлен.")));
+            }
+            sources.push(OwnSource { url: url.to_string(), added_at: now_iso() });
+            self.write_sources(&sources)?;
+            let who = actor.as_ref().map_or("—", |actor| actor.name.as_str());
+            tracing::info!(target: "plugins", "packages catalog: own source added — {url} (by {who})");
+            let extra = own_feed(&url);
+            let _ = std::fs::remove_dir_all(self.extra_dir(&url));
+            self.read_extra(&extra).await;
+            self.apply_hidden(&main);
+            if let Some((feed, _)) = self.merged(&main) {
+                self.announce(&feed);
+            }
+        }
+        // Its packages are in the catalog now: every open panel reads it again (magicplace/state.ts) — a panel that read
+        // the catalog while this add held it (a station's pass answers such a read with its last copy) is not left
+        // with the old one until «Проверить сейчас» (test 19.11, remark 8).
+        self.events.emit(GatewayEvent::PackagesCatalog { updates: Vec::new() });
+        Ok(self.view(false).await)
+    }
+
+    /// An own source removed: its copy goes, and its packages from the catalog. What was installed from it stays — as
+    /// it is, hidden or not.
+    pub async fn remove_source(&self, link: &str, actor: Option<Actor>) -> Result<CatalogView, ApiError> {
+        let url = feed_url(link.trim()).map_err(ApiError::bad_request)?;
+        {
+            let _turn = self.reading.lock().await;
+            let mut sources = self.sources();
+            let before = sources.len();
+            sources.retain(|source| feed_url(&source.url).ok().as_ref() != Some(&url));
+            if sources.len() == before {
+                return Err(ApiError::not_found(crate::tr!("Такого источника здесь нет.")));
+            }
+            self.write_sources(&sources)?;
+            let _ = std::fs::remove_dir_all(self.extra_dir(&url));
+            lock(&self.status).extras.remove(url.as_str());
+            let who = actor.as_ref().map_or("—", |actor| actor.name.as_str());
+            tracing::info!(target: "plugins", "packages catalog: own source removed — {url} (by {who})");
+        }
+        Ok(self.view(false).await)
+    }
+
+    /// A package removed, every version of it and its row; a plugin's code stops first.
+    pub async fn remove(&self, id: &str, actor: Option<Actor>) -> Result<(), ApiError> {
+        let _turn = self.installing.lock().await;
+        self.host.rescan();
+        let origin = self.host.origin_of(id);
+        if !origin.removable() {
+            return Err(ApiError::conflict(format!(
+                "{}{}",
+                crate::tr!(
+                    "«{id}» — {word} приложение: оно обновляется вместе с DuoWave и не удаляется.",
+                    id = id,
+                    word = origin.word()
+                ),
+                if origin.can_disable() {
+                    crate::tr!(" Его можно выключить или сделать свою копию.")
+                } else {
+                    String::new()
+                }
+            )));
+        }
+        let root = self.host.packages_dir().to_path_buf();
+        if !valid_id(id) || !root.join(id).is_dir() {
+            return Err(ApiError::not_found(crate::tr!("Нет приложения {id}.", id = id)));
+        }
+        self.host.forget(id).await?;
+        install::remove_package(&root, id).map_err(ApiError::internal)?;
+        self.host.rescan();
+        tracing::info!(target: "plugins", "{id}: removed");
+        self.host.announce(id, "removed", None, actor);
+        Ok(())
+    }
+}
+
+/// The store of the talk (src/talk/store.rs, a floor below) reads and installs through this: its own words of the view.
+impl crate::talk::store::StoreCatalog for PackageCatalog {
+    fn named(&self, words: &str, character: bool) -> Option<(String, bool)> {
+        PackageCatalog::named(self, words, character)
+    }
+
+    fn view(&self) -> futures::future::BoxFuture<'_, crate::talk::store::StoreView> {
+        Box::pin(async move {
+            use crate::talk::store::{StoreDownload, StoreEntry, StoreState, StoreView};
+            let view = PackageCatalog::view(self, false).await;
+            let packages = view
+                .packages
+                .iter()
+                .map(|entry| StoreEntry {
+                    id: entry.id.clone(),
+                    title: entry.title.clone(),
+                    version: entry.version.clone(),
+                    description: entry.description.clone(),
+                    state: match entry.state {
+                        EntryState::Available => StoreState::Available,
+                        EntryState::Installed => StoreState::Installed,
+                        EntryState::Update => StoreState::Update,
+                        EntryState::Incompatible => StoreState::Incompatible,
+                        EntryState::NeedsSignature => StoreState::NeedsSignature,
+                    },
+                    reason: entry.reason.clone(),
+                    waits: entry.waits.is_some(),
+                    added_at: entry.added_at.clone(),
+                    downloads: entry
+                        .downloads
+                        .iter()
+                        .map(|download| StoreDownload {
+                            title: download.title.clone(),
+                            mb: download.mb,
+                            when: download.when.clone(),
+                        })
+                        .collect(),
+                    asks_rights: entry.place.is_some() && !entry.permissions.is_empty(),
+                })
+                .collect();
+            StoreView { configured: view.configured, enabled: view.enabled, packages }
+        })
+    }
+
+    fn install<'a>(&'a self, id: &'a str, actor: Actor) -> futures::future::BoxFuture<'a, Result<(), String>> {
+        Box::pin(async move {
+            PackageCatalog::install(self, id, None, true, Some(actor)).await.map(|_| ()).map_err(|error| error.message)
+        })
+    }
+
+    fn install_and_switch_on<'a>(
+        &'a self,
+        id: &'a str,
+        version: &'a str,
+        actor: Actor,
+    ) -> futures::future::BoxFuture<'a, Result<(), String>> {
+        Box::pin(async move {
+            PackageCatalog::install_and_switch_on(self, id, Some(version), Some(actor))
+                .await
+                .map(|_| ())
+                .map_err(|error| error.message)
+        })
+    }
+}
+
+/// The tests, and the stand-ins the tests of the crates above take too (feature `testing`).
+#[cfg(any(test, feature = "testing"))]
+pub mod tests {
+    // Without `test` only the stand-ins are built.
+    #![cfg_attr(not(test), allow(dead_code, unused_imports))]
+    use super::*;
+    use crate::plugins::controller::PackagesView;
+    use crate::plugins::install::tests::{character_manifest, vgp};
+    use crate::plugins::quickjs::QuickJs;
+    use crate::plugins::PluginsDeps;
+    use crate::skills::media::sources::MediaSources;
+    use axum::extract::State;
+    use axum::http::{header, HeaderMap, StatusCode};
+    use axum::response::IntoResponse;
+    use axum::routing::get;
+    use axum::Router;
+    use serde_json::json;
+    use sha2::Digest;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    const WEBP: &[u8] = b"RIFF\x10\0\0\0WEBPVP8 \0\0\0\0";
+    const OPUS: &[u8] = b"OggS\0\x02\0\0\0\0\0\0\0\0";
+
+    /// The site: the feed and its files, the feed's text changeable and its reads counted.
+    #[derive(Clone)]
+    pub struct Site {
+        pub feed: Arc<Mutex<String>>,
+        pub files: Arc<Mutex<BTreeMap<String, Vec<u8>>>>,
+        pub reads: Arc<AtomicUsize>,
+        pub url: String,
+        pub down: Arc<std::sync::atomic::AtomicBool>,
+        /// Files to refuse, one request each: a station's own try, before the computer's.
+        pub refuse: Arc<AtomicUsize>,
+        /// Taken down: the feed answers 404.
+        pub gone: Arc<std::sync::atomic::AtomicBool>,
+        /// The feed's answers «the same» (304).
+        pub same: Arc<AtomicUsize>,
+        /// Each file's requests, by its path.
+        pub asked: Arc<Mutex<BTreeMap<String, usize>>>,
+        /// Every request for the feed, answered or not.
+        pub knocks: Arc<AtomicUsize>,
+        /// Closed where a mirror copies from: the feed answers 410.
+        pub closed: Arc<std::sync::atomic::AtomicBool>,
+        /// Files start and then stall: a kilobyte, and nothing more.
+        pub stall: Arc<std::sync::atomic::AtomicBool>,
+        /// The feed starts and then stalls, as files do with `stall`.
+        pub feed_stall: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    async fn feed(State(site): State<Site>, headers: HeaderMap) -> axum::response::Response {
+        site.knocks.fetch_add(1, Ordering::SeqCst);
+        if site.closed.load(Ordering::SeqCst) {
+            return StatusCode::GONE.into_response();
+        }
+        if site.down.load(Ordering::SeqCst) {
+            return StatusCode::SERVICE_UNAVAILABLE.into_response();
+        }
+        if site.gone.load(Ordering::SeqCst) {
+            return StatusCode::NOT_FOUND.into_response();
+        }
+        if site.feed_stall.load(Ordering::SeqCst) {
+            return stalled();
+        }
+        site.reads.fetch_add(1, Ordering::SeqCst);
+        let text = lock(&site.feed).clone();
+        let etag = format!("\"{}\"", hex::encode(&sha2::Sha256::digest(text.as_bytes())[..8]));
+        if headers.get(header::IF_NONE_MATCH).and_then(|value| value.to_str().ok()) == Some(etag.as_str()) {
+            site.same.fetch_add(1, Ordering::SeqCst);
+            return StatusCode::NOT_MODIFIED.into_response();
+        }
+        ([(header::ETAG, etag)], text).into_response()
+    }
+
+    async fn file(
+        State(site): State<Site>,
+        axum::extract::Path(path): axum::extract::Path<String>,
+    ) -> axum::response::Response {
+        *lock(&site.asked).entry(path.clone()).or_default() += 1;
+        if site.refuse.load(Ordering::SeqCst) > 0 {
+            site.refuse.fetch_sub(1, Ordering::SeqCst);
+            return StatusCode::SERVICE_UNAVAILABLE.into_response();
+        }
+        if site.stall.load(Ordering::SeqCst) {
+            return stalled();
+        }
+        match lock(&site.files).get(&path) {
+            Some(bytes) => bytes.clone().into_response(),
+            None => StatusCode::NOT_FOUND.into_response(),
+        }
+    }
+
+    /// An answer that starts and stalls: a kilobyte, and nothing more.
+    fn stalled() -> axum::response::Response {
+        use futures::StreamExt;
+        let start = futures::stream::once(async { Ok::<_, std::io::Error>(axum::body::Bytes::from(vec![b' '; 1024])) });
+        axum::body::Body::from_stream(start.chain(futures::stream::pending())).into_response()
+    }
+
+    pub async fn site() -> Site {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://127.0.0.1:{}/catalog.json", listener.local_addr().unwrap().port());
+        let site = Site {
+            feed: Arc::new(Mutex::new(String::new())),
+            files: Arc::new(Mutex::new(BTreeMap::new())),
+            reads: Arc::new(AtomicUsize::new(0)),
+            url,
+            down: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            refuse: Arc::new(AtomicUsize::new(0)),
+            gone: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            same: Arc::new(AtomicUsize::new(0)),
+            asked: Arc::new(Mutex::new(BTreeMap::new())),
+            knocks: Arc::new(AtomicUsize::new(0)),
+            closed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            stall: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            feed_stall: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        };
+        let router =
+            Router::new().route("/catalog.json", get(feed)).route("/{*path}", get(file)).with_state(site.clone());
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, router).await;
+        });
+        site
+    }
+
+    impl Site {
+        /// A package on the site and in its feed.
+        pub fn publish(&self, packages: &[(Value, Vec<u8>)]) {
+            let mut entries = Vec::new();
+            for (entry, archive) in packages {
+                let (id, version) = (entry["id"].as_str().unwrap(), entry["version"].as_str().unwrap());
+                let path = format!("packages/{id}-{version}.vgp");
+                lock(&self.files).insert(path.clone(), archive.clone());
+                let mut entry = entry.clone();
+                entry["url"] = json!(path);
+                entry["sha256"] = json!(hex::encode(sha2::Sha256::digest(archive)));
+                entry["size"] = json!(archive.len());
+                entries.push(entry);
+            }
+            lock(&self.files).insert("previews/arthur.webp".into(), WEBP.to_vec());
+            lock(&self.files).insert("previews/arthur-1.opus".into(), OPUS.to_vec());
+            *lock(&self.feed) =
+                json!({ "format": 1, "updatedAt": "2026-11-07T12:00:00Z", "packages": entries }).to_string();
+        }
+
+        /// The extra feeds its feed names (`feeds`).
+        pub fn name_feeds(&self, feeds: Value) {
+            let mut feed: Value = serde_json::from_str(&lock(&self.feed)).unwrap();
+            feed["feeds"] = feeds;
+            *lock(&self.feed) = feed.to_string();
+        }
+
+        /// A package added to its feed as it is: its addresses are not rewritten.
+        fn add(&self, entry: Value) {
+            let mut feed: Value = serde_json::from_str(&lock(&self.feed)).unwrap();
+            feed["packages"].as_array_mut().unwrap().push(entry);
+            *lock(&self.feed) = feed.to_string();
+        }
+
+        /// How many times a file was asked for.
+        fn asked(&self, path: &str) -> usize {
+            lock(&self.asked).get(path).copied().unwrap_or(0)
+        }
+
+        /// Its scheme, host and port.
+        fn origin(&self) -> &str {
+            self.url.trim_end_matches("/catalog.json")
+        }
+
+        fn address(&self) -> url::Url {
+            url::Url::parse(&self.url).unwrap()
+        }
+    }
+
+    /// A character with its archive, as Arthur is.
+    fn character(id: &str, version: &str) -> (Value, Vec<u8>) {
+        let mut entry = arthur(version);
+        entry["id"] = json!(id);
+        (entry, vgp(&character_manifest(id, version)))
+    }
+
+    /// The ids in the view, in its order.
+    fn ids(view: &CatalogView) -> Vec<&str> {
+        view.packages.iter().map(|entry| entry.id.as_str()).collect()
+    }
+
+    pub fn arthur(version: &str) -> Value {
+        json!({
+            "id": "arthur", "kind": "character", "version": version, "title": "Артур",
+            "description": "ИИ-дворецкий", "api": "^2", "runs": ["pc", "station", "stationServer"],
+            "minGateway": "0.0.1", "license": "CC BY-NC 4.0, некоммерчески", "verified": true,
+            "preview": { "image": "previews/arthur.webp", "samples": ["previews/arthur-1.opus"] },
+            "needs": [{ "kind": "engine", "id": "omnivoice", "optional": true }]
+        })
+    }
+
+    pub struct Fixture {
+        pub catalog: Arc<PackageCatalog>,
+        pub host: Arc<PluginHost>,
+        pub events: EventBus,
+        pub settings: Arc<SettingsService>,
+        pub root: PathBuf,
+        _dir: tempfile::TempDir,
+    }
+
+    pub fn fixture(source: FeedSource, placement: Placement) -> Fixture {
+        fixture_keyed(source, placement, None)
+    }
+
+    /// The same with the catalog's key: code installs from a feed it signed.
+    pub fn fixture_keyed(source: FeedSource, placement: Placement, key: Option<String>) -> Fixture {
+        fixture_with(source, placement, key, None)
+    }
+
+    /// The same with a home server: the station's way to the catalog without its own internet.
+    pub fn fixture_with(
+        source: FeedSource,
+        placement: Placement,
+        key: Option<String>,
+        home: Option<Arc<dyn crate::plugins::controller::HomeLink>>,
+    ) -> Fixture {
+        fixture_on(source, placement, key, home, crate::plugins::budget::fake::plenty())
+    }
+
+    /// The same on a machine of the test's own: its memory and the room on its disk as the test sets them.
+    pub fn fixture_on(
+        source: FeedSource,
+        placement: Placement,
+        key: Option<String>,
+        home: Option<Arc<dyn crate::plugins::controller::HomeLink>>,
+        memory: Arc<crate::plugins::budget::fake::FixedMemory>,
+    ) -> Fixture {
+        fixture_full(source, placement, key, home, memory, None)
+    }
+
+    /// The same with mirrors (MIRRORS, utils/mirrors.rs).
+    pub fn fixture_mirrored(source: FeedSource, placement: Placement, mirrors: &str) -> Fixture {
+        let memory = crate::plugins::budget::fake::plenty();
+        fixture_full(source, placement, None, None, memory, Some(mirrors.to_string()))
+    }
+
+    fn fixture_full(
+        source: FeedSource,
+        placement: Placement,
+        key: Option<String>,
+        home: Option<Arc<dyn crate::plugins::controller::HomeLink>>,
+        memory: Arc<crate::plugins::budget::fake::FixedMemory>,
+        mirrors: Option<String>,
+    ) -> Fixture {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Arc::new(Db::memory());
+        let events = EventBus::new();
+        let settings = Arc::new(SettingsService::new(db.clone(), events.clone()));
+        let config = PluginsConfig {
+            packages_dir: dir.path().join("packages"),
+            disabled: false,
+            idle_unload_s: 600,
+            feed_url: None,
+            catalog_dir: dir.path().join("packages-catalog"),
+            dev_dir: dir.path().join("packages-dev"),
+            catalog_key: key,
+            reserve_mb: Some(40),
+            storage_reserve_mb: Some(15),
+            pressure_action: crate::plugins::budget::PressureAction::Sleep,
+            bundled: false,
+            schedules: true,
+            node_dir: std::path::PathBuf::from("node"),
+            own_node: None,
+            node_mirror: None,
+            mirrors,
+        };
+        let host = PluginHost::new(PluginsDeps {
+            config: config.clone(),
+            db: db.clone(),
+            settings: settings.clone(),
+            events: events.clone(),
+            media: MediaSources::new(Vec::new()),
+            placement: Arc::new(move || placement),
+            runtime: Arc::new(QuickJs),
+            memory,
+            gauge: Default::default(),
+            bundled: Vec::new(),
+            player: None,
+            watch: None,
+            home: None,
+            gateway_url: "http://127.0.0.1:9".into(),
+            services: None,
+            secrets: Arc::new(
+                crate::secrets::SecretsService::new(Arc::new(crate::storage::Db::memory()), None).unwrap(),
+            ),
+        });
+        let catalog = PackageCatalog::with_source(
+            CatalogDeps {
+                config: config.clone(),
+                host: host.clone(),
+                db,
+                settings: settings.clone(),
+                events: events.clone(),
+                placement: Arc::new(move || placement),
+                home: home.clone(),
+                apps: home,
+            },
+            source,
+        );
+        Fixture { catalog, host, events, settings, root: config.packages_dir, _dir: dir }
+    }
+
+    #[test]
+    fn reads_the_feed_by_its_schema_and_only_files_of_its_own_origin() {
+        let base = url::Url::parse("https://duowave.app/packages/catalog.json").unwrap();
+        let mut good = arthur("1.2.0");
+        good["url"] = json!("packages/arthur-1.2.0.vgp");
+        good["sha256"] = json!("A".repeat(64));
+        good["size"] = json!(612_000);
+        let mut elsewhere = good.clone();
+        elsewhere["id"] = json!("palych");
+        elsewhere["url"] = json!("https://evil.example/palych.vgp");
+        let mut preview_elsewhere = good.clone();
+        preview_elsewhere["id"] = json!("bublik");
+        preview_elsewhere["preview"]["image"] = json!("//evil.example/x.webp");
+        let mut port = good.clone();
+        port["id"] = json!("kovcheg");
+        port["url"] = json!("https://duowave.app:8443/packages/kovcheg.vgp");
+        let mut big = good.clone();
+        big["id"] = json!("big");
+        big["size"] = json!(MAX_ARCHIVE + 1);
+        let text = json!({"format": 1, "packages": [good, elsewhere, preview_elsewhere, port, big, {"id": "Bad"}]})
+            .to_string();
+        let feed = parse_feed(&text, &base).unwrap();
+        assert_eq!(feed.packages.len(), 1);
+        let entry = &feed.packages[0];
+        assert_eq!(entry.url.as_str(), "https://duowave.app/packages/packages/arthur-1.2.0.vgp");
+        assert_eq!(entry.sha256, "a".repeat(64));
+        assert_eq!(entry.image.as_ref().unwrap().as_str(), "https://duowave.app/packages/previews/arthur.webp");
+        assert_eq!(feed.skipped.len(), 5, "{:?}", feed.skipped);
+        assert!(feed.skipped.iter().any(|why| why.starts_with("palych: url")));
+        assert!(feed.skipped.iter().any(|why| why.starts_with("bublik: preview.image")));
+        assert!(feed.skipped.iter().any(|why| why.starts_with("kovcheg: url")), "another port is another origin");
+        assert!(parse_feed("{\"format\": 2, \"packages\": []}", &base).unwrap_err().contains("format 2"));
+        assert!(parse_feed("<html>", &base).unwrap_err().starts_with("не JSON"));
+        assert!(feed_url("http://duowave.app/catalog.json").is_err());
+        assert!(feed_url("http://127.0.0.1:8080/catalog.json").is_ok() && feed_url("http://localhost/c.json").is_ok());
+        assert!(feed_url("https://duowave.app/packages/catalog.json").is_ok());
+        assert_eq!(FeedSource::of(Some("off"), Some("https://x")), FeedSource::Off);
+        assert_eq!(FeedSource::of(None, None), FeedSource::Missing);
+        assert_eq!(FeedSource::of(None, Some("https://x/c.json")), FeedSource::Url("https://x/c.json".into()));
+    }
+
+    /// An agent's card is listed with its card — what to install, how to sign in, its terms — and one without a whole
+    /// card, or naming a shell, is skipped.
+    #[test]
+    fn an_agents_card_comes_with_its_card_or_not_at_all() {
+        let base = url::Url::parse("https://duowave.app/catalog.json").unwrap();
+        let mut value = json!({
+            "id": "factory-droid", "kind": "agent", "version": "1.0.0", "title": "Factory Droid", "api": "^1",
+            "runs": ["pc"], "url": "a.vgp", "sha256": "a".repeat(64), "size": 10,
+            "agent": {
+                "terms": "https://factory.com/legal/terms-individual",
+                "program": { "name": "droid", "install": "curl -fsSL https://app.factory.ai/cli | sh", "check": ["--version"] },
+                "acp": { "command": ["exec", "--output-format", "acp"] },
+                "signin": { "hint": "Откройте droid в терминале и войдите." },
+                "resume": "droid --resume {session}"
+            }
+        });
+        let agent = entry(&value, &base).unwrap();
+        let card = agent.agent.unwrap();
+        assert_eq!(card.program.name, "droid");
+        assert_eq!(card.acp.command, ["exec", "--output-format", "acp"]);
+        assert_eq!((card.acp.protocol, card.asks, card.model.via.as_str()), (1, None, "agent"));
+        value["agent"]["program"]["name"] = json!("bash");
+        assert!(entry(&value, &base).is_err(), "a shell is no agent");
+        value["agent"] = Value::Null;
+        assert!(entry(&value, &base).is_err(), "no card");
+    }
+
+    #[test]
+    fn tells_how_a_package_stands_here_and_never_installs_code_from_an_unsigned_catalog() {
+        let base = url::Url::parse("https://duowave.app/catalog.json").unwrap();
+        let mut value = arthur("1.2.0");
+        value["url"] = json!("a.vgp");
+        value["sha256"] = json!("a".repeat(64));
+        value["size"] = json!(10);
+        let character = entry(&value, &base).unwrap();
+        let installed = semver::Version::new(1, 1, 0);
+        assert_eq!(entry_state(&character, None, Placement::Pc, false, None).0, EntryState::Available);
+        assert_eq!(entry_state(&character, Some(&installed), Placement::Pc, false, None).0, EntryState::Update);
+        assert_eq!(
+            entry_state(&character, Some(&character.version), Placement::Pc, false, None).0,
+            EntryState::Installed
+        );
+        let mut plugin = character.clone();
+        plugin.kind = PackageKind::Plugin;
+        assert_eq!(
+            entry_state(&plugin, None, Placement::Pc, false, None),
+            (EntryState::NeedsSignature, Some(needs_signature()))
+        );
+        let mut app = character.clone();
+        app.kind = PackageKind::App;
+        assert_eq!(entry_state(&app, None, Placement::Pc, false, None).0, EntryState::NeedsSignature);
+        // An agent's card names a program to run: only from the signed main feed, like code.
+        let mut agent = character.clone();
+        agent.kind = PackageKind::Agent;
+        assert_eq!(entry_state(&agent, None, Placement::Pc, false, None).0, EntryState::NeedsSignature);
+        assert_eq!(entry_state(&agent, None, Placement::Pc, true, None).0, EntryState::Available);
+        let mut newer = character.clone();
+        newer.min_gateway = Some(semver::Version::new(99, 0, 0));
+        let (state, why) = entry_state(&newer, None, Placement::Pc, false, None);
+        assert_eq!(state, EntryState::Incompatible);
+        assert!(why.unwrap().starts_with("нужен DuoWave 99.0.0"));
+        let mut pc_only = character.clone();
+        pc_only.runs = vec![Placement::Pc];
+        assert!(entry_state(&pc_only, None, Placement::Station, false, None).1.unwrap().contains("На колонке"));
+        // A plugin for another Host API cannot run here; a character is data, any Host API reads.
+        let mut api = plugin.clone();
+        api.api = "^3".into();
+        assert!(entry_state(&api, None, Placement::Pc, true, None).1.unwrap().contains("Host API ^3"));
+        let mut old_character = character;
+        old_character.api = "^1".into();
+        assert_eq!(entry_state(&old_character, None, Placement::Pc, false, None).0, EntryState::Available);
+    }
+
+    /// An app for the station only (`runs: ["station"]`: AirPlay, VPN) on a station with its Турбо (`stationServer`):
+    /// the station still — it installs there, with or without a Турбо that gives the apps, never as a face; the
+    /// station's memory is still asked; a computer still refuses it.
+    #[test]
+    fn an_app_for_the_station_installs_on_a_station_with_its_turbo() {
+        let base = url::Url::parse("https://duowave.app/catalog.json").unwrap();
+        let airplay = entry(
+            &json!({
+                "id": "airplay", "kind": "app", "version": "0.3.0", "title": "AirPlay", "api": "^2", "runs": ["station"],
+                "budget": { "memoryMb": 12 },
+                "url": "packages/airplay-0.3.0.vgp", "sha256": "a".repeat(64), "size": 10
+            }),
+            &base,
+        )
+        .unwrap();
+        assert_eq!(airplay.place(), Some("station"), "MagicPlace signs it «На колонке» whoever helps the station");
+        for turbo_apps in [false, true] {
+            assert!(!is_face(&airplay, Placement::StationServer, turbo_apps), "its code runs on the station itself");
+            let state = entry_state_at(&airplay, None, Placement::StationServer, true, Some(40), turbo_apps);
+            assert_eq!(state, (EntryState::Available, None), "turbo_apps: {turbo_apps}");
+            let installed = semver::Version::new(0, 2, 0);
+            let state =
+                entry_state_at(&airplay, Some(&installed), Placement::StationServer, true, Some(40), turbo_apps);
+            assert_eq!(state.0, EntryState::Update, "an installed one keeps its updates");
+        }
+        let (state, why) = entry_state(&airplay, None, Placement::StationServer, true, Some(8));
+        assert_eq!(state, EntryState::Incompatible);
+        assert!(why.unwrap().contains("не хватит ОЗУ"), "the station's memory is asked as on a plain station");
+        let (state, why) = entry_state(&airplay, None, Placement::Pc, true, None);
+        assert_eq!(state, EntryState::Incompatible);
+        assert!(why.unwrap().contains("На компьютере"), "a computer is not a station");
+    }
+
+    #[tokio::test]
+    async fn keeps_the_last_good_copy_with_its_previews_reads_it_again_only_when_stale_and_shows_it_offline() {
+        let site = site().await;
+        site.publish(&[(arthur("1.2.0"), vgp(&character_manifest("arthur", "1.2.0")))]);
+        let fixture = fixture(FeedSource::Url(site.url.clone()), Placement::Pc);
+        let catalog = &fixture.catalog;
+        let view = catalog.view(false).await;
+        assert!(view.configured && view.enabled && !view.offline, "{view:?}");
+        assert_eq!(view.problem, None);
+        let entry = &view.packages[0];
+        assert_eq!(
+            (entry.id.as_str(), entry.state, entry.installed.as_deref()),
+            ("arthur", EntryState::Available, None)
+        );
+        assert_eq!(entry.preview.image.as_deref(), Some("/api/v1/packages/catalog/arthur/preview/image?v=1.2.0"));
+        assert_eq!(entry.preview.samples, ["/api/v1/packages/catalog/arthur/preview/1?v=1.2.0"]);
+        assert_eq!(entry.needs[0]["id"], "omnivoice");
+        let (file, kind) = catalog.preview("arthur", "image").await.unwrap();
+        assert_eq!((std::fs::read(file).unwrap(), kind), (WEBP.to_vec(), "image/webp"));
+        assert_eq!(catalog.preview("arthur", "1").await.unwrap().1, "audio/ogg");
+        assert_eq!(catalog.preview("arthur", "2").await.unwrap_err().status, StatusCode::NOT_FOUND);
+        assert_eq!(site.reads.load(Ordering::SeqCst), 1);
+
+        // Fresh: no second read; asked to refresh — read with the ETag, unchanged.
+        catalog.view(false).await;
+        assert_eq!(site.reads.load(Ordering::SeqCst), 1);
+        catalog.view(true).await;
+        assert_eq!(site.reads.load(Ordering::SeqCst), 2);
+
+        // A feed that does not parse: the copy before, and why.
+        *lock(&site.feed) = "{ broken".into();
+        let view = catalog.view(true).await;
+        assert_eq!(view.packages.len(), 1, "the last good copy");
+        assert!(view.problem.as_deref().unwrap().starts_with("Каталог не разобрался"), "{:?}", view.problem);
+        assert!(!view.offline);
+
+        // No network: the copy, offline.
+        site.down.store(true, Ordering::SeqCst);
+        let view = catalog.view(true).await;
+        assert_eq!(view.packages.len(), 1);
+        assert!(view.problem.is_some());
+        // The owner's switch: no reading at all, the copy still shown.
+        site.down.store(false, Ordering::SeqCst);
+        catalog.set_enabled(false, None).unwrap();
+        let before = site.reads.load(Ordering::SeqCst);
+        let view = catalog.view(true).await;
+        assert!(!view.enabled && view.packages.len() == 1);
+        assert_eq!(site.reads.load(Ordering::SeqCst), before);
+        let refused = catalog.install("arthur", None, false, None).await.unwrap_err();
+        assert_eq!(refused.status, StatusCode::CONFLICT);
+    }
+
+    /// The previews that did not come, as if `PREVIEW_AGAIN` had passed.
+    fn rested(catalog: &PackageCatalog) {
+        let long_ago = std::time::Instant::now().checked_sub(PREVIEW_AGAIN).expect("a clock older than the wait");
+        for miss in lock(&catalog.misses).values_mut() {
+            miss.at = long_ago;
+        }
+    }
+
+    #[tokio::test]
+    async fn a_preview_that_did_not_come_comes_at_a_later_read_of_a_feed_that_did_not_change() {
+        let (main, own) = (site().await, site().await);
+        main.publish(&[character("arthur", "1.0.0")]);
+        own.publish(&[unknown_voice_character("jarvis-demo", "1.0.0")]);
+        // The first file each site is asked for — the picture — fails on the way.
+        main.refuse.store(1, Ordering::SeqCst);
+        own.refuse.store(1, Ordering::SeqCst);
+        let fixture = fixture(FeedSource::Url(main.url.clone()), Placement::Pc);
+        let catalog = &fixture.catalog;
+        catalog.view(false).await;
+        let view = catalog.add_source(&own.url, None).await.unwrap();
+        let image = |view: &CatalogView, id: &str| {
+            view.packages.iter().find(|entry| entry.id == id).unwrap().preview.image.is_some()
+        };
+        assert!(!image(&view, "arthur") && !image(&view, "jarvis-demo"), "no pictures yet");
+        assert_eq!(view.packages.iter().find(|entry| entry.id == "jarvis-demo").unwrap().preview.samples.len(), 1);
+
+        // «Check now» at once: both feeds the same, the pictures not asked again so soon.
+        let same = (main.same.load(Ordering::SeqCst), own.same.load(Ordering::SeqCst));
+        let view = catalog.view(true).await;
+        assert!(main.same.load(Ordering::SeqCst) > same.0 && own.same.load(Ordering::SeqCst) > same.1);
+        assert!(!image(&view, "arthur") && !image(&view, "jarvis-demo"));
+        assert_eq!((main.asked("previews/arthur.webp"), own.asked("previews/arthur.webp")), (1, 1));
+
+        // A later read, both feeds still the same: the pictures come.
+        rested(catalog);
+        let view = catalog.view(true).await;
+        assert!(main.same.load(Ordering::SeqCst) > same.0 + 1 && own.same.load(Ordering::SeqCst) > same.1 + 1);
+        assert!(image(&view, "arthur") && image(&view, "jarvis-demo"), "{view:?}");
+        catalog.preview("arthur", "image").await.expect("the main feed's picture");
+        catalog.preview("jarvis-demo", "image").await.expect("the own source's picture");
+        assert_eq!((main.asked("previews/arthur.webp"), own.asked("previews/arthur.webp")), (2, 2));
+        assert_eq!(main.asked("previews/arthur-1.opus"), 1, "a phrase that came is not asked again");
+        assert!(lock(&catalog.misses).is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_preview_that_cannot_come_is_not_asked_at_every_read_only_for_a_new_version() {
+        let site = site().await;
+        let mut bob = character("bob", "1.0.0");
+        bob.0["preview"] = json!({ "image": "previews/bob.webp" });
+        site.publish(&[character("arthur", "1.0.0"), bob.clone()]);
+        let break_files = || {
+            let mut files = lock(&site.files);
+            files.remove("previews/arthur.webp"); // no file there: 404
+            files.insert("previews/arthur-1.opus".into(), [OPUS, &vec![0; MAX_SAMPLE as usize]].concat()); // too big
+            files.insert("previews/bob.webp".into(), b"not a picture".to_vec());
+        };
+        break_files();
+        let fixture = fixture(FeedSource::Url(site.url.clone()), Placement::Pc);
+        let catalog = &fixture.catalog;
+        let view = catalog.view(false).await;
+        assert!(view.packages.iter().all(|entry| entry.preview.image.is_none() && entry.preview.samples.is_empty()));
+        for _ in 0..3 {
+            rested(catalog);
+            catalog.view(true).await;
+        }
+        assert!(site.same.load(Ordering::SeqCst) >= 3);
+        let asked = |site: &Site| {
+            ["previews/arthur.webp", "previews/arthur-1.opus", "previews/bob.webp"].map(|path| site.asked(path))
+        };
+        assert_eq!(asked(&site), [1, 1, 1], "each asked once, not at every read");
+
+        // A new version of arthur, its files fixed: asked at once; bob's stays as it was.
+        let mut feed: Value = serde_json::from_str(&lock(&site.feed)).unwrap();
+        feed["packages"][0]["version"] = json!("1.1.0");
+        *lock(&site.feed) = feed.to_string();
+        lock(&site.files).insert("previews/arthur.webp".into(), WEBP.to_vec());
+        lock(&site.files).insert("previews/arthur-1.opus".into(), OPUS.to_vec());
+        let view = catalog.view(true).await;
+        let arthur = view.packages.iter().find(|entry| entry.id == "arthur").unwrap();
+        assert_eq!(arthur.version, "1.1.0");
+        assert!(arthur.preview.image.is_some() && arthur.preview.samples.len() == 1, "{arthur:?}");
+        assert_eq!(asked(&site), [2, 2, 1]);
+        assert_eq!(lock(&catalog.misses).len(), 1, "only bob's picture is remembered; arthur 1.0.0's are forgotten");
+    }
+
+    #[tokio::test]
+    async fn says_offline_when_the_feed_cannot_be_reached() {
+        let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let fixture = fixture(FeedSource::Url(format!("http://127.0.0.1:{closed}/catalog.json")), Placement::Pc);
+        let view = fixture.catalog.view(false).await;
+        assert!(view.offline && view.packages.is_empty());
+        assert!(view.problem.unwrap().starts_with("Каталог недоступен"));
+        let off = self::fixture(FeedSource::Off, Placement::Pc).catalog.view(false).await;
+        assert!(!off.configured && off.problem.unwrap().contains("PACKAGES_FEED_URL=off"));
+        let http = self::fixture(FeedSource::Url("http://duowave.app/c.json".into()), Placement::Pc);
+        assert!(http.catalog.view(false).await.problem.unwrap().contains("только по HTTPS"));
+    }
+
+    #[tokio::test]
+    async fn on_the_station_one_version_stays_and_the_one_before_comes_back_from_the_catalog() {
+        use crate::plugins::history::{store, Author, History, RecordKind, What, Who};
+        use crate::plugins::install::tests::{archive, Item};
+        let site = site().await;
+        // A program of its own is the big file of an app: 400 KB here, 10 MB for AirPlay.
+        let big: Vec<u8> = (0..400_000u32).map(|n| (n % 251) as u8).collect();
+        let package = |version: &str| {
+            let text = character_manifest("arthur", version).to_string();
+            archive(&[
+                Item::File("manifest.json", text.as_bytes()),
+                Item::Dir("assets/"),
+                Item::File("assets/avatar.webp", b"RIFF\0\0\0\0WEBPVP8 "),
+                Item::File("assets/big.bin", &big),
+            ])
+        };
+        site.publish(&[(arthur("1.2.0"), package("1.2.0"))]);
+        let fixture = fixture(FeedSource::Url(site.url.clone()), Placement::Station);
+        let dir = tempfile::tempdir().unwrap();
+        let history =
+            History::open(dir.path().join("history"), dir.path().join("dev"), None, Arc::new(|| true)).unwrap();
+        history.set_host(&fixture.host);
+        fixture.host.set_history(history.clone());
+        fixture.catalog.install("arthur", None, false, None).await.unwrap();
+        site.publish(&[(arthur("1.2.0"), package("1.2.0")), (arthur("1.3.0"), package("1.3.0"))]);
+        fixture.catalog.view(true).await;
+        fixture.catalog.install("arthur", None, true, None).await.unwrap();
+        // Only the version in force stays on the station.
+        assert!(fixture.root.join("arthur/1.3.0").is_dir());
+        assert!(!fixture.root.join("arthur/1.2.0").exists(), "the one before is not kept on the station");
+        // Its history keeps the small files, not the big one: the catalog's archive has it.
+        let big_id = store::id_of(store::Kind::File, &big);
+        assert!(!history.store().has(&big_id));
+        let before = history
+            .line("arthur")
+            .into_iter()
+            .find(|(_, record)| record.kind == RecordKind::Catalog && record.version.as_deref() == Some("1.2.0"))
+            .map(|(id, _)| id)
+            .unwrap();
+        let tree = history.record(&before).unwrap().tree;
+        assert!(history.file_at(&tree, "manifest.json").is_some());
+
+        // The app's own data beside its versions: no version, it outlives them all.
+        std::fs::create_dir_all(fixture.root.join("arthur/.data")).unwrap();
+        std::fs::write(fixture.root.join("arthur/.data/connections.json"), b"{}").unwrap();
+
+        // A step back: the big file comes from the catalog's archive again, the version is put back, and only it stays.
+        history.ensure_local(&before).await;
+        assert!(history.store().has(&big_id));
+        let report = history
+            .restore_installed("arthur", &before, What::Code, false, Author::new(Who::Hand), None)
+            .await
+            .unwrap();
+        assert!(report.restored, "{}", report.message);
+        assert_eq!(std::fs::read(fixture.root.join("arthur/1.2.0/assets/big.bin")).unwrap(), big);
+        assert!(!fixture.root.join("arthur/1.3.0").exists(), "only the version in force on the station");
+        assert_eq!(
+            std::fs::read(fixture.root.join("arthur/.data/connections.json")).unwrap(),
+            b"{}",
+            "the app's data is no version: the step back keeps it"
+        );
+    }
+
+    /// An update whose program is the same as the installed one's (the VPN own-server 0.1.3 → 0.1.4 on a Lite 2,
+    /// the clean-path check 18.11: only the manifest changed) needs room on the disk for what changed alone: the same
+    /// file is a hard link to the installed version's, not written again. Packed twice over, as the check before the
+    /// download counted it, it would not fit. One that changed its program is refused on the same disk with the true
+    /// numbers, and nothing of it is left.
+    #[tokio::test]
+    async fn an_update_with_the_same_program_fits_on_a_tight_station_disk() {
+        use crate::plugins::budget::fake::FixedMemory;
+        use crate::plugins::install::tests::{archive, noise, Item};
+        let site = site().await;
+        let program = noise(2 * 1024 * 1024, 7);
+        let package = |version: &str, program: &[u8]| {
+            let text = character_manifest("arthur", version).to_string();
+            archive(&[
+                Item::File("manifest.json", text.as_bytes()),
+                Item::Dir("assets/"),
+                Item::File("assets/avatar.webp", b"RIFF\0\0\0\0WEBPVP8 "),
+                Item::File("assets/program", program),
+            ])
+        };
+        // 18 MB free, 15 of them the reserve: room for 3 MB, the first install's 2 MB and a little.
+        let now = *crate::plugins::budget::fake::plenty().now.lock().unwrap();
+        let memory = Arc::new(FixedMemory { now: Mutex::new(now), disk_mb: Some(18) });
+        let fixture = fixture_on(FeedSource::Url(site.url.clone()), Placement::Station, None, None, memory);
+        site.publish(&[(arthur("1.2.0"), package("1.2.0", &program[..]))]);
+        fixture.catalog.install("arthur", None, false, None).await.unwrap();
+        #[cfg(unix)]
+        let inode = {
+            use std::os::unix::fs::MetadataExt;
+            std::fs::metadata(fixture.root.join("arthur/1.2.0/assets/program")).unwrap().ino()
+        };
+
+        let same = package("1.3.0", &program[..]);
+        assert!(same.len() as u64 > 2 * 1024 * 1024, "packed twice over it is 6 MB: 21 with the reserve");
+        site.publish(&[(arthur("1.3.0"), same)]);
+        fixture.catalog.view(true).await;
+        let view = fixture.catalog.install("arthur", None, true, None).await.unwrap();
+        assert_eq!(view.version.as_deref(), Some("1.3.0"));
+        let new = fixture.root.join("arthur/1.3.0/assets/program");
+        assert_eq!(std::fs::read(&new).unwrap(), program);
+        assert!(!fixture.root.join("arthur/1.2.0").exists(), "only the version in force on the station");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            assert_eq!(std::fs::metadata(&new).unwrap().ino(), inode, "the installed version's file, linked");
+        }
+
+        // A new program of 3 MB: 4 MB to write with the manifest, 19 with the reserve — refused after the download.
+        let bigger = noise(3 * 1024 * 1024, 8);
+        site.publish(&[(arthur("1.4.0"), package("1.4.0", &bigger[..]))]);
+        fixture.catalog.view(true).await;
+        let refused = fixture.catalog.install("arthur", None, true, None).await.unwrap_err();
+        assert_eq!(refused.status, StatusCode::CONFLICT);
+        assert!(refused.message.contains("нужно 4 МБ и ещё 15 МБ"), "{}", refused.message);
+        assert!(refused.message.contains("свободно 18"), "{}", refused.message);
+        assert!(!fixture.root.join("arthur/1.4.0").exists());
+        assert_eq!(std::fs::read(&new).unwrap(), program, "the version in force stays as it was");
+        let hidden: Vec<_> = std::fs::read_dir(&fixture.root)
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.starts_with(".partial-") || name.starts_with(".old-"))
+            .collect();
+        assert!(hidden.is_empty(), "nothing unpacked aside: {hidden:?}");
+    }
+
+    #[tokio::test]
+    async fn installs_updates_and_removes_a_character_and_tells_the_bus() {
+        let site = site().await;
+        site.publish(&[(arthur("1.2.0"), vgp(&character_manifest("arthur", "1.2.0")))]);
+        let fixture = fixture(FeedSource::Url(site.url.clone()), Placement::Pc);
+        let (catalog, mut events) = (&fixture.catalog, fixture.events.subscribe());
+        let actor = Actor { kind: crate::core::identity::PrincipalKind::User, id: "u1".into(), name: "Аня".into() };
+        let view = catalog.install("arthur", None, false, Some(actor.clone())).await.unwrap();
+        assert_eq!((view.kind, view.version.as_deref()), (Some(PackageKind::Character), Some("1.2.0")));
+        assert_eq!((view.source.as_str(), view.verified), ("catalog", true));
+        assert_eq!(view.license.as_deref(), Some("CC BY-NC 4.0, некоммерчески"));
+        assert!(fixture.root.join("arthur/1.2.0/manifest.json").is_file());
+        assert_eq!(catalog.view(false).await.packages[0].state, EntryState::Installed);
+        assert_eq!(catalog.install("arthur", None, false, None).await.unwrap_err().status, StatusCode::CONFLICT);
+        assert_eq!(catalog.install("arthur", None, true, None).await.unwrap_err().status, StatusCode::CONFLICT);
+        assert!(fixture.host.media_assets("arthur").is_some(), "a character's files are served while installed");
+
+        // A newer version: told once, installed by the button; the one before stays to fall back on.
+        site.publish(&[
+            (arthur("1.2.0"), vgp(&character_manifest("arthur", "1.2.0"))),
+            (arthur("1.3.0"), vgp(&character_manifest("arthur", "1.3.0"))),
+        ]);
+        let view = catalog.view(true).await;
+        assert_eq!(
+            (view.packages[0].state, view.packages[0].installed.as_deref()),
+            (EntryState::Update, Some("1.2.0"))
+        );
+        catalog.view(true).await;
+        let view = catalog.install("arthur", None, true, Some(actor.clone())).await.unwrap();
+        assert_eq!(view.version.as_deref(), Some("1.3.0"));
+        assert!(fixture.root.join("arthur/1.2.0").exists(), "the version before stays for a rollback");
+        let back = fixture.host.rollback("arthur", None).await.unwrap();
+        assert_eq!(back.version.as_deref(), Some("1.2.0"));
+        assert!(!fixture.root.join("arthur/1.3.0").exists());
+        assert!(fixture.host.rollback("arthur", None).await.is_err(), "nothing before 1.2.0");
+
+        catalog.remove("arthur", Some(actor)).await.unwrap();
+        assert!(!fixture.root.join("arthur").exists());
+        assert!(fixture.host.installed("arthur").is_none());
+        assert_eq!(catalog.remove("arthur", None).await.unwrap_err().status, StatusCode::NOT_FOUND);
+        let mut seen = Vec::new();
+        while let Ok(event) = events.try_recv() {
+            match event.as_ref() {
+                GatewayEvent::PackagesChanged { change, .. } => seen.push(change.clone()),
+                GatewayEvent::PackagesCatalog { updates } => seen.push(format!("catalog: {}", updates.join(","))),
+                _ => {}
+            }
+        }
+        assert_eq!(seen, ["installed", "catalog: arthur 1.3.0", "updated", "rolledBack", "removed"]);
+    }
+
+    /// The voice names a package of the catalog's copy (src/talk/store.rs): by its title in any of its languages, in
+    /// another ending, or by its id — and learns whether it is installed here.
+    #[tokio::test]
+    async fn finds_a_package_by_the_name_said_in_any_of_its_languages() {
+        let site = site().await;
+        let mut butler = arthur("1.0.0");
+        butler["languages"] = json!(["ru", "en"]);
+        butler["locales"] = json!({ "en": { "title": "Arthur the Butler" } });
+        site.publish(&[(butler, vgp(&character_manifest("arthur", "1.0.0")))]);
+        let fixture = fixture(FeedSource::Url(site.url.clone()), Placement::Pc);
+        let catalog = &fixture.catalog;
+        assert_eq!(catalog.named("артура", false), None, "no copy yet: nothing to name");
+        catalog.view(false).await;
+        assert_eq!(catalog.named("артура", false), Some(("arthur".into(), false)));
+        assert_eq!(catalog.named("Arthur the Butler", true), Some(("arthur".into(), false)));
+        assert_eq!(catalog.named("артур дворецкий", false), None, "every word said is of the title");
+        assert_eq!(catalog.named("радио", false), None);
+        catalog.install("arthur", None, false, None).await.unwrap();
+        assert_eq!(catalog.named("Артур", false), Some(("arthur".into(), true)));
+    }
+
+    /// A package the feed keeps out of sight (`unlisted`) is not listed, nor found by voice, until the hidden developer
+    /// option «Показывать скрытые пакеты» is on; it installs all the same, and once installed it is listed as the
+    /// household's. Old gateways read the field as nothing and list it as before.
+    #[tokio::test]
+    async fn an_unlisted_package_shows_only_with_the_developer_option_or_once_installed() {
+        let site = site().await;
+        let mut freeman = arthur("1.0.0");
+        freeman["id"] = json!("freeman");
+        freeman["title"] = json!("Фримен");
+        freeman["url"] = json!("freeman-1.0.0.vgp");
+        freeman["unlisted"] = json!(true);
+        site.publish(&[
+            (arthur("1.0.0"), vgp(&character_manifest("arthur", "1.0.0"))),
+            (freeman, vgp(&character_manifest("freeman", "1.0.0"))),
+        ]);
+        let fixture = fixture(FeedSource::Url(site.url.clone()), Placement::Pc);
+        let catalog = &fixture.catalog;
+        let ids = |view: &CatalogView| view.packages.iter().map(|entry| entry.id.clone()).collect::<Vec<_>>();
+
+        let view = catalog.view(false).await;
+        assert_eq!(ids(&view), ["arthur"], "out of sight");
+        assert!(!view.show_hidden);
+        assert_eq!(catalog.named("фримен", false), None, "nor by voice");
+
+        catalog.set_show_hidden(true, None).unwrap();
+        let view = catalog.view(false).await;
+        assert!(view.show_hidden);
+        assert_eq!(ids(&view), ["arthur", "freeman"]);
+        let freeman = view.packages.iter().find(|entry| entry.id == "freeman").unwrap();
+        assert!(freeman.unlisted, "the panel marks it");
+        assert_eq!(catalog.named("фримен", false), Some(("freeman".into(), false)));
+
+        catalog.install("freeman", None, false, None).await.unwrap();
+        catalog.set_show_hidden(false, None).unwrap();
+        let view = catalog.view(false).await;
+        assert_eq!(ids(&view), ["arthur", "freeman"], "installed: its card and updates are the household's");
+        assert_eq!(catalog.named("фримен", false), Some(("freeman".into(), true)));
+    }
+
+    #[tokio::test]
+    async fn refuses_an_archive_the_site_changed_and_code_from_an_unsigned_catalog() {
+        let site = site().await;
+        let archive = vgp(&character_manifest("arthur", "1.2.0"));
+        let mut plugin = arthur("1.0.0");
+        plugin["id"] = json!("radio");
+        plugin["kind"] = json!("plugin");
+        site.publish(&[(arthur("1.2.0"), archive.clone()), (plugin, b"code".to_vec())]);
+        // The archive replaced on the site after the feed was written.
+        lock(&site.files)
+            .insert("packages/arthur-1.2.0.vgp".into(), vgp(&character_manifest("arthur", "1.2.0")).repeat(2));
+        let fixture = fixture(FeedSource::Url(site.url.clone()), Placement::Pc);
+        let refused = fixture.catalog.install("arthur", None, false, None).await.unwrap_err();
+        assert_eq!(refused.status, StatusCode::BAD_REQUEST);
+        assert!(refused.message.contains("размер") || refused.message.contains("хеш"), "{}", refused.message);
+        assert!(!fixture.root.join("arthur").exists());
+        let unsigned = fixture.catalog.install("radio", None, false, None).await.unwrap_err();
+        assert_eq!((unsigned.status, unsigned.message.as_str()), (StatusCode::CONFLICT, NEEDS_SIGNATURE));
+        let view = fixture.catalog.view(false).await;
+        let radio = view.packages.iter().find(|entry| entry.id == "radio").unwrap();
+        assert_eq!(radio.state, EntryState::NeedsSignature);
+        assert_eq!(
+            fixture.catalog.install("nobody", None, false, None).await.unwrap_err().status,
+            StatusCode::NOT_FOUND
+        );
+    }
+
+    #[test]
+    fn reads_an_apps_engine_and_rights_from_the_feed_for_its_card() {
+        let base = url::Url::parse("https://packages.example.org/catalog.json").unwrap();
+        let value = json!({
+            "id": "feed", "kind": "app", "version": "0.1.0", "title": "Лента", "api": "^2", "runs": ["pc"],
+            "url": "https://packages.example.org/packages/feed-0.1.0.vgp", "sha256": "a".repeat(64), "size": 1000,
+            "runtime": "node", "permissions": ["call:system/brain", "net:api.elevenlabs.io"],
+            "budget": { "memoryMb": 768 }
+        });
+        let parsed = entry(&value, &base).unwrap();
+        assert_eq!(parsed.runtime.as_deref(), Some("node"));
+        assert_eq!(parsed.permissions, ["call:system/brain", "net:api.elevenlabs.io"]);
+        assert_eq!(parsed.memory_mb, Some(768));
+        let bare = json!({ "id": "arthur", "kind": "character", "version": "1.0.0", "title": "Артур", "api": "^1",
+            "runs": ["pc"], "url": "https://packages.example.org/packages/arthur.vgp", "sha256": "b".repeat(64), "size": 10 });
+        let parsed = entry(&bare, &base).unwrap();
+        assert!(parsed.runtime.is_none() && parsed.permissions.is_empty(), "a character has neither");
+    }
+
+    /// MagicPlace's fields (docs/plans/magicplace.md): optional — a feed without them reads as before, one that does
+    /// not read is left out and never the package; texts in every language for the search; the place by kind and
+    /// engine; what waits for a newer gateway.
+    #[test]
+    fn reads_magicplaces_fields_of_a_package_and_leaves_out_what_does_not_read() {
+        let base = url::Url::parse("https://packages.example.org/catalog.json").unwrap();
+        let value = json!({
+            "id": "feed", "kind": "app", "version": "0.4.1", "title": "Лента", "description": "Мини-сериалы.",
+            "api": "^2", "runs": ["pc"], "url": "packages/feed-0.4.1.vgp", "sha256": "a".repeat(64), "size": 1000,
+            "runtime": "node", "languages": ["ru", "en"],
+            "locales": { "en": { "title": "Feed", "description": "Mini-series.", "downloads": { "render": "Remotion and a browser" } } },
+            "faces": ["window", "widget", "dance", "skill"], "recommended": true, "addedAt": "2026-11-13T20:42:34Z",
+            "downloads": [
+                { "id": "render", "title": "Remotion и браузер", "mb": 250, "when": "first-use" },
+                { "id": "broken", "title": "", "mb": 0, "when": "sometime" }
+            ]
+        });
+        let feed = entry(&value, &base).unwrap();
+        assert_eq!(feed.faces, ["widget", "skill", "window"], "known faces in their order, an unknown one left out");
+        assert!(feed.recommended);
+        assert_eq!(feed.added_at.as_deref(), Some("2026-11-13T20:42:34Z"));
+        assert_eq!(feed.downloads.len(), 1, "a download that does not read is left out");
+        assert_eq!(feed.download_title(&feed.downloads[0], &["en".into()]), "Remotion and a browser");
+        assert_eq!(feed.download_title(&feed.downloads[0], &["ru".into(), "en".into()]), "Remotion и браузер");
+        assert_eq!(feed.place(), Some("computer"));
+        let station = Entry { runs: vec![Placement::Station, Placement::StationServer], ..feed.clone() };
+        assert_eq!(station.place(), Some("station"), "an app for the station only works there, not on a computer");
+        // An app for both works where it is installed: on a station's gateway it is the station's, not the Турбо's.
+        let both = Entry { runs: vec![Placement::Station, Placement::Pc], ..feed.clone() };
+        assert_eq!(both.place(), Some("computer"));
+        assert_eq!(both.place_at(Placement::Pc), Some("computer"));
+        assert_eq!(both.place_at(Placement::Station), Some("station"));
+        assert_eq!(both.place_at(Placement::StationServer), Some("station"), "a station with a Турбо runs it itself");
+        assert_eq!(feed.place_at(Placement::StationServer), Some("computer"), "an app for a computer stays one");
+        let texts: Vec<(String, String)> = feed.all_texts().into_iter().map(|(lang, title, _)| (lang, title)).collect();
+        assert_eq!(texts, [("ru".to_string(), "Лента".to_string()), ("en".to_string(), "Feed".to_string())]);
+
+        let mut odd = value.clone();
+        odd["addedAt"] = json!("вчера");
+        odd["faces"] = json!("widget");
+        odd["downloads"] = json!({ "id": "render" });
+        let odd = entry(&odd, &base).unwrap();
+        assert!(odd.added_at.is_none() && odd.faces.is_empty() && odd.downloads.is_empty(), "the package stays");
+
+        let plain = json!({ "id": "arthur", "kind": "character", "version": "1.0.0", "title": "Артур", "api": "^1",
+            "runs": ["pc"], "url": "arthur.vgp", "sha256": "b".repeat(64), "size": 10 });
+        let plain = entry(&plain, &base).unwrap();
+        assert!(!plain.recommended && plain.faces.is_empty() && plain.added_at.is_none() && plain.place().is_none());
+        assert_eq!(plain.all_texts().len(), 1, "its own language only");
+        let mut mcp = plain.clone();
+        (mcp.kind, mcp.runtime) = (PackageKind::Plugin, Some("mcp".into()));
+        assert_eq!(mcp.place(), Some("network"));
+        mcp.runtime = Some("js".into());
+        assert_eq!(mcp.place(), Some("gateway"));
+
+        // A newer version that needs a newer gateway: what it waits for, only beside an installed one.
+        let mut newer = plain;
+        newer.min_gateway = Some(semver::Version::new(99, 0, 0));
+        let installed = semver::Version::new(0, 9, 0);
+        let (state, _) = entry_state(&newer, Some(&installed), Placement::Pc, false, None);
+        assert_eq!(waits_for(&newer, Some(&installed), state).as_deref(), Some("99.0.0"));
+        assert_eq!(waits_for(&newer, None, entry_state(&newer, None, Placement::Pc, false, None).0), None);
+    }
+
+    /// We recommend what we vouch for: an own source's word «recommended» does not count, nor an unvouched feed's.
+    #[test]
+    fn only_the_main_feed_and_a_vouched_one_recommend() {
+        let base = url::Url::parse("https://packages.example.org/catalog.json").unwrap();
+        let package = |id: &str| {
+            json!({ "id": id, "kind": "character", "version": "1.0.0", "title": id, "api": "^1", "runs": ["pc"],
+                "url": format!("{id}.vgp"), "sha256": "c".repeat(64), "size": 10, "recommended": true })
+        };
+        let mut main = parse_feed(&json!({"format": 1, "packages": [package("main")]}).to_string(), &base).unwrap();
+        let extra_url = url::Url::parse("https://store.example.org/catalog.json").unwrap();
+        let copy =
+            |id: &str| parse_feed(&json!({"format": 1, "packages": [package(id)]}).to_string(), &extra_url).unwrap();
+        let vouched = ExtraFeed {
+            url: extra_url.clone(),
+            publisher: "duowave".into(),
+            title: "DuoWave Store".into(),
+            verified: true,
+            own: false,
+        };
+        main.take(&vouched, copy("store"));
+        main.take(&ExtraFeed { verified: false, ..vouched.clone() }, copy("partner"));
+        main.take(&own_feed(&url::Url::parse("https://friend.example.net/catalog.json").unwrap()), copy("friend"));
+        let recommended: Vec<&str> =
+            main.packages.iter().filter(|entry| entry.recommended).map(|entry| entry.id.as_str()).collect();
+        assert_eq!(recommended, ["main", "store"]);
+    }
+
+    /// A package of another feed the main one looked at (`recommends`: that feed, the id, the archive's hash) is
+    /// recommended and checked where its feed is read — that very archive only; another feed's `recommends` is nothing.
+    #[test]
+    fn the_main_feed_recommends_a_package_of_another_feed_by_its_archives_hash() {
+        let base = url::Url::parse("https://packages.example.org/catalog.json").unwrap();
+        let friend = url::Url::parse("https://friend.example.net/catalog.json").unwrap();
+        let package = |id: &str, sha: char| {
+            json!({ "id": id, "kind": "character", "version": "1.0.0", "title": id, "api": "^1", "runs": ["pc"],
+                "url": format!("{id}.vgp"), "sha256": sha.to_string().repeat(64), "size": 10 })
+        };
+        let main_text = json!({
+            "format": 1, "packages": [],
+            "recommends": [
+                { "feed": friend.as_str(), "id": "jarvis", "sha256": "A".repeat(64) },
+                { "feed": friend.as_str(), "id": "changed", "sha256": "a".repeat(64) },
+                { "feed": "http://evil.example.org/catalog.json", "id": "x", "sha256": "a".repeat(64) },
+                { "feed": friend.as_str(), "id": "short", "sha256": "abc" }
+            ]
+        });
+        let mut main = parse_feed(&main_text.to_string(), &base).unwrap();
+        assert_eq!(main.recommends.len(), 2, "a feed not over HTTPS and a short hash are left out");
+        assert_eq!(main.recommends[0].sha256, "a".repeat(64), "the hash in lower case");
+        assert_eq!(main.skipped.len(), 2, "{:?}", main.skipped);
+        // The friend's feed recommends itself and pins another feed's package: neither counts.
+        let copy = json!({
+            "format": 1,
+            "packages": [package("jarvis", 'a'), package("changed", 'b'), package("other", 'c')],
+            "recommends": [{ "feed": friend.as_str(), "id": "other", "sha256": "c".repeat(64) }]
+        });
+        let copy = parse_feed(&copy.to_string(), &friend).unwrap();
+        main.take(&own_feed(&friend), copy);
+        let marks: Vec<(&str, bool, bool)> =
+            main.packages.iter().map(|entry| (entry.id.as_str(), entry.recommended, entry.verified)).collect();
+        assert_eq!(
+            marks,
+            [("jarvis", true, true), ("changed", false, false), ("other", false, false)],
+            "the pinned archive is recommended and checked; another archive under a pinned id is not"
+        );
+    }
+
+    /// A pin without the feed's address (no `feed`) is the archive alone: the catalog recommends a package of a feed
+    /// it does not name — a demo's, kept from people — at whatever feed added here brings that very archive; another
+    /// archive under the id is not it. An empty address is no address: that item is left out.
+    #[test]
+    fn a_pin_without_the_feeds_address_is_that_archive_at_any_feed() {
+        let base = url::Url::parse("https://packages.example.org/catalog.json").unwrap();
+        let demo = url::Url::parse("https://demo.example.net/d-0123456789/catalog.json").unwrap();
+        let package = |id: &str, sha: char| {
+            json!({ "id": id, "kind": "character", "version": "1.0.0", "title": id, "api": "^1", "runs": ["pc"],
+                "url": format!("{id}.vgp"), "sha256": sha.to_string().repeat(64), "size": 10 })
+        };
+        let main_text = json!({
+            "format": 1, "packages": [],
+            "recommends": [
+                { "id": "jarvis-demo", "sha256": "A".repeat(64) },
+                { "id": "rick-demo", "sha256": "c".repeat(64) },
+                { "feed": "", "id": "blank", "sha256": "a".repeat(64) },
+                { "id": "no-hash" }
+            ]
+        });
+        let mut main = parse_feed(&main_text.to_string(), &base).unwrap();
+        assert_eq!(
+            main.recommends.first(),
+            Some(&Pin { feed: None, id: "jarvis-demo".into(), sha256: "a".repeat(64) }),
+            "no address, the hash in lower case"
+        );
+        assert_eq!(main.recommends.len(), 2);
+        assert_eq!(main.skipped.len(), 2, "an empty address, no hash: {:?}", main.skipped);
+        let copy = json!({
+            "format": 1,
+            "packages": [package("jarvis-demo", 'a'), package("rick-demo", 'b'), package("glados-demo", 'c')]
+        });
+        main.take(&own_feed(&demo), parse_feed(&copy.to_string(), &demo).unwrap());
+        let marks: Vec<(&str, bool, bool)> =
+            main.packages.iter().map(|entry| (entry.id.as_str(), entry.recommended, entry.verified)).collect();
+        assert_eq!(
+            marks,
+            [("jarvis-demo", true, true), ("rick-demo", false, false), ("glados-demo", false, false)],
+            "the very archive under its id: another archive, or that hash under another id, is not pinned"
+        );
+    }
+
+    /// A plugin's `.vgp`: its manifest and its code.
+    pub fn plugin_vgp(manifest: &Value, code: &str) -> Vec<u8> {
+        let mut builder = tar::Builder::new(flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default()));
+        for (path, bytes) in
+            [("manifest.json", manifest.to_string().into_bytes()), ("backend.js", code.as_bytes().to_vec())]
+        {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(bytes.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            builder.append_data(&mut header, path, bytes.as_slice()).unwrap();
+        }
+        builder.into_inner().unwrap().finish().unwrap()
+    }
+
+    #[tokio::test]
+    async fn installs_code_only_from_a_feed_the_catalogs_key_signed() {
+        let keys = minisign::KeyPair::generate_unencrypted_keypair().unwrap();
+        let site = site().await;
+        let manifest = json!({
+            "schema": 1, "kind": "plugin", "id": "clock", "version": "1.0.0", "title": "Часы", "api": "^2",
+            "runs": ["pc", "station", "stationServer"], "permissions": [],
+            "contributes": { "intents": [{ "phrases": ["который час на луне"], "handler": "moon" }] }
+        });
+        let mut entry = arthur("1.0.0");
+        entry["id"] = json!("clock");
+        entry["kind"] = json!("plugin");
+        entry["budget"] = json!({ "memoryMb": 4 });
+        site.publish(&[(entry, plugin_vgp(&manifest, "export function moon() { return 'Полночь'; }"))]);
+        let sign = |text: &str| {
+            minisign::sign(Some(&keys.pk), &keys.sk, std::io::Cursor::new(text.as_bytes()), None, None)
+                .unwrap()
+                .to_string()
+        };
+        let feed = lock(&site.feed).clone();
+        lock(&site.files).insert("catalog.json.minisig".into(), sign(&feed).into_bytes());
+        let keyed = fixture_keyed(FeedSource::Url(site.url.clone()), Placement::Pc, Some(keys.pk.to_base64()));
+
+        let view = keyed.catalog.view(true).await;
+        assert!(view.signed && view.keyed, "{view:?}");
+        assert_eq!(view.packages[0].state, EntryState::Available);
+        let installed = keyed.catalog.install("clock", None, false, None).await.unwrap();
+        assert_eq!((installed.origin, installed.verified), (crate::plugins::registry::Origin::Catalog, true));
+
+        // The feed changed without a new signature: no code from it.
+        *lock(&site.feed) = format!("{feed} ");
+        let view = keyed.catalog.view(true).await;
+        assert!(!view.signed);
+        assert_eq!(view.problem.as_deref(), Some("Подпись каталога не сошлась: приложения из него не ставятся."));
+        assert_eq!(view.packages[0].state, EntryState::Installed, "what is installed stays");
+        // Without the key nothing of code installs at all.
+        let unkeyed = fixture(FeedSource::Url(site.url.clone()), Placement::Pc);
+        let refused = unkeyed.catalog.install("clock", None, false, None).await.unwrap_err();
+        assert_eq!(refused.message, NEEDS_SIGNATURE);
+    }
+
+    /// The packages that go with one come from the feed as they are, another one's ids only; so does its room.
+    #[test]
+    fn a_feeds_pairs_and_room_are_read() {
+        let base = url::Url::parse("https://own.example/catalog.json").unwrap();
+        let mut character = arthur("1.0.0");
+        character["url"] = json!("packages/arthur-1.0.0.vgp");
+        character["sha256"] = json!("a".repeat(64));
+        character["size"] = json!(3 * 1024 * 1024);
+        character["unpacked"] = json!(5 * 1024 * 1024 + 1);
+        character["companions"] =
+            json!([{ "id": "arthur-word", "why": "своё слово" }, { "id": "arthur" }, { "id": "Bad" }]);
+        let feed = parse_feed(&json!({ "format": 1, "packages": [character] }).to_string(), &base).unwrap();
+        let entry = &feed.packages[0];
+        assert_eq!(
+            entry.companions,
+            [crate::plugins::manifest::Companion { id: "arthur-word".into(), why: Some("своё слово".into()) }]
+        );
+        assert_eq!(entry.unpacked, Some(5 * 1024 * 1024 + 1));
+    }
+
+    /// An own source's app built per platform (src/activator's words on the station): code only by the pin of the
+    /// archive this machine takes — the pin of the archive with every build, or another platform's, is not that.
+    #[test]
+    fn an_own_sources_app_built_per_platform_is_code_by_the_pin_of_this_machines_archive() {
+        let base = url::Url::parse("https://own.example/catalog.json").unwrap();
+        let here = super::super::manifest::platform();
+        let (whole, mine, theirs) = ("a".repeat(64), "b".repeat(64), "c".repeat(64));
+        let mut app = arthur("1.0.0");
+        app["id"] = json!("words");
+        app["kind"] = json!("app");
+        app["budget"] = json!({ "memoryMb": 12 });
+        app["url"] = json!("packages/words-1.0.0.vgp");
+        app["sha256"] = json!(whole);
+        app["size"] = json!(100);
+        app["platforms"] = json!({
+            here.clone(): { "url": format!("packages/words-1.0.0-{here}.vgp"), "sha256": mine, "size": 90 },
+            "other-os": { "url": "packages/words-1.0.0-other-os.vgp", "sha256": theirs, "size": 90 }
+        });
+        let own = parse_feed(&json!({ "format": 1, "packages": [app] }).to_string(), &base).unwrap();
+        let extra =
+            ExtraFeed {
+                url: base.clone(), publisher: "own".into(), title: "Своя".into(), verified: false, own: true
+            };
+        let pinned_by = |sha256: &str| {
+            let main = json!({ "format": 1, "packages": [], "recommends": [{ "id": "words", "sha256": sha256 }] });
+            let mut main =
+                parse_feed(&main.to_string(), &url::Url::parse("https://main.example/catalog.json").unwrap()).unwrap();
+            main.take(&extra, own.clone());
+            main.packages.into_iter().find(|entry| entry.id == "words").unwrap()
+        };
+        for other in [&whole, &theirs] {
+            let entry = pinned_by(other);
+            assert!(!entry.pinned && !code_allowed(&entry, true), "{other}: not the archive this machine takes");
+        }
+        let entry = pinned_by(&mine);
+        assert!(entry.pinned && code_allowed(&entry, true));
+        assert!(!code_allowed(&entry, false), "only by a signed main feed's pin");
+    }
+
+    /// Code of an own source installs only when the signed main feed pinned that very archive by its hash (the
+    /// YouTube app of a separate feed): an unpinned plugin of the same source does not, nor a new archive of the
+    /// pinned one, nor the pinned one when the main feed's signature does not hold.
+    #[tokio::test]
+    async fn code_of_an_own_source_installs_only_when_the_signed_main_feed_pinned_that_archive() {
+        let keys = minisign::KeyPair::generate_unencrypted_keypair().unwrap();
+        let (main, own) = (site().await, site().await);
+        main.publish(&[character("arthur", "1.0.0")]);
+        let plugin = |id: &str, version: &str| {
+            let manifest = json!({
+                "schema": 1, "kind": "plugin", "id": id, "version": version, "title": id, "api": "^2",
+                "runs": ["pc", "station", "stationServer"], "permissions": [],
+                "contributes": { "intents": [{ "phrases": [format!("скажи {id}")], "handler": "say" }] }
+            });
+            let mut entry = arthur(version);
+            entry["id"] = json!(id);
+            entry["kind"] = json!("plugin");
+            entry["budget"] = json!({ "memoryMb": 4 });
+            (entry, plugin_vgp(&manifest, "export function say() { return 'да'; }"))
+        };
+        own.publish(&[plugin("tube", "1.0.0"), plugin("moon", "1.0.0")]);
+        let looked_at = {
+            let feed: Value = serde_json::from_str(&lock(&own.feed)).unwrap();
+            feed["packages"][0]["sha256"].as_str().unwrap().to_string()
+        };
+        let sign_main = || {
+            let mut feed: Value = serde_json::from_str(&lock(&main.feed)).unwrap();
+            // Pinned without the feed's address: the demo feed's way.
+            feed["recommends"] = json!([{ "id": "tube", "sha256": looked_at }]);
+            let text = feed.to_string();
+            let signature = minisign::sign(Some(&keys.pk), &keys.sk, std::io::Cursor::new(text.as_bytes()), None, None)
+                .unwrap()
+                .to_string();
+            *lock(&main.feed) = text;
+            lock(&main.files).insert("catalog.json.minisig".into(), signature.into_bytes());
+        };
+        sign_main();
+        let keyed = fixture_keyed(FeedSource::Url(main.url.clone()), Placement::Pc, Some(keys.pk.to_base64()));
+        let catalog = &keyed.catalog;
+        let view = catalog.add_source(&own.url, None).await.unwrap();
+        let of = |view: &CatalogView, id: &str| view.packages.iter().find(|entry| entry.id == id).cloned().unwrap();
+        let tube = of(&view, "tube");
+        assert_eq!(tube.state, EntryState::Available, "{tube:?}");
+        assert!(tube.verified && tube.own && tube.signed, "{tube:?}");
+        let moon = of(&view, "moon");
+        assert_eq!(moon.state, EntryState::NeedsSignature, "not pinned: never code");
+        assert!(moon.reason.as_deref().unwrap_or_default().contains("проверил именно этот архив"), "{moon:?}");
+        let installed = catalog.install("tube", None, false, None).await.unwrap();
+        assert_eq!((installed.origin, installed.verified), (crate::plugins::registry::Origin::Catalog, true));
+        assert_eq!(catalog.install("moon", None, false, None).await.unwrap_err().status, StatusCode::CONFLICT);
+
+        // A new archive under the pinned id is not what we looked at: the installed one stays, the new one waits.
+        own.publish(&[plugin("tube", "1.1.0"), plugin("moon", "1.0.0")]);
+        let tube = of(&catalog.view(true).await, "tube");
+        assert_eq!((tube.state, tube.installed.as_deref()), (EntryState::NeedsSignature, Some("1.0.0")), "{tube:?}");
+        assert_eq!(catalog.install("tube", None, true, None).await.unwrap_err().status, StatusCode::CONFLICT);
+
+        // The main feed's signature does not hold: its pins vouch for nothing.
+        own.publish(&[plugin("tube", "1.0.0"), plugin("moon", "1.0.0")]);
+        sign_main();
+        *lock(&main.feed) = format!("{} ", lock(&main.feed));
+        let unsigned = fixture_keyed(FeedSource::Url(main.url.clone()), Placement::Pc, Some(keys.pk.to_base64()));
+        let view = unsigned.catalog.add_source(&own.url, None).await.unwrap();
+        assert_eq!(of(&view, "tube").state, EntryState::NeedsSignature);
+    }
+
+    /// The clean-path check of 19.11: YouTube came to the station from a demo feed its admin added there; the Mac, its
+    /// Турбо, does not read that feed, so «поставь его код» found nothing and the app never ran. The centre now names
+    /// the feed; the Турбо reads it once and installs from it only what its own signed main feed pinned by hash — not
+    /// an unpinned package of the same feed, not another archive under the pinned id, nothing when its main feed's
+    /// signature does not hold.
+    #[tokio::test]
+    async fn the_turbo_installs_a_faces_code_from_the_centres_feed_only_as_its_own_catalog_pinned_it() {
+        let keys = minisign::KeyPair::generate_unencrypted_keypair().unwrap();
+        let (main, demo) = (site().await, site().await);
+        main.publish(&[character("arthur", "1.0.0")]);
+        let app = |id: &str, version: &str| {
+            let manifest = json!({
+                "schema": 1, "kind": "plugin", "id": id, "version": version, "title": id, "api": "^2",
+                "runs": ["pc"], "permissions": [],
+                "contributes": { "intents": [{ "phrases": [format!("скажи {id}")], "handler": "say" }] }
+            });
+            let mut entry = arthur(version);
+            entry["id"] = json!(id);
+            entry["kind"] = json!("plugin");
+            entry["runs"] = json!(["pc"]);
+            entry["budget"] = json!({ "memoryMb": 4 });
+            (entry, plugin_vgp(&manifest, "export function say() { return 'да'; }"))
+        };
+        demo.publish(&[app("tube", "1.0.0"), app("moon", "1.0.0")]);
+        let looked_at = {
+            let feed: Value = serde_json::from_str(&lock(&demo.feed)).unwrap();
+            feed["packages"][0]["sha256"].as_str().unwrap().to_string()
+        };
+        let sign_main = || {
+            let mut feed: Value = serde_json::from_str(&lock(&main.feed)).unwrap();
+            feed["recommends"] = json!([{ "id": "tube", "sha256": looked_at }]);
+            let text = feed.to_string();
+            let signature = minisign::sign(Some(&keys.pk), &keys.sk, std::io::Cursor::new(text.as_bytes()), None, None)
+                .unwrap()
+                .to_string();
+            *lock(&main.feed) = text;
+            lock(&main.files).insert("catalog.json.minisig".into(), signature.into_bytes());
+        };
+        sign_main();
+        let turbo = fixture_keyed(FeedSource::Url(main.url.clone()), Placement::Pc, Some(keys.pk.to_base64()));
+        let catalog = &turbo.catalog;
+        // Its own catalog has no such package: what the Турбо answered the centre before.
+        assert_eq!(
+            catalog.install("tube", Some("1.0.0"), false, None).await.unwrap_err().status,
+            StatusCode::NOT_FOUND
+        );
+
+        let installed = catalog.install_pinned_from("tube", Some("1.0.0"), &demo.url, None).await.unwrap();
+        assert_eq!((installed.origin, installed.verified), (crate::plugins::registry::Origin::Catalog, true));
+        assert_eq!(turbo.host.installed("tube").unwrap().manifest.version.to_string(), "1.0.0");
+        // Asked again for the version it has: nothing to do, no error.
+        assert!(catalog.install_pinned_from("tube", Some("1.0.0"), &demo.url, None).await.is_ok());
+
+        // Not pinned: never code, whatever the centre says.
+        let moon = catalog.install_pinned_from("moon", Some("1.0.0"), &demo.url, None).await.unwrap_err();
+        assert_eq!(moon.status, StatusCode::FORBIDDEN, "{}", moon.message);
+        assert!(moon.message.contains("не проверял «moon»"), "{}", moon.message);
+        assert!(turbo.host.installed("moon").is_none());
+
+        // Another archive under the pinned id is not what we looked at.
+        demo.publish(&[app("tube", "1.1.0"), app("moon", "1.0.0")]);
+        let newer = catalog.install_pinned_from("tube", Some("1.1.0"), &demo.url, None).await.unwrap_err();
+        assert_eq!(newer.status, StatusCode::FORBIDDEN);
+        assert_eq!(turbo.host.installed("tube").unwrap().manifest.version.to_string(), "1.0.0");
+
+        // The main feed's signature does not hold: its pins vouch for nothing.
+        demo.publish(&[app("tube", "1.0.0")]);
+        sign_main();
+        *lock(&main.feed) = format!("{} ", lock(&main.feed));
+        let unsigned = fixture_keyed(FeedSource::Url(main.url.clone()), Placement::Pc, Some(keys.pk.to_base64()));
+        let refused = unsigned.catalog.install_pinned_from("tube", Some("1.0.0"), &demo.url, None).await.unwrap_err();
+        assert_eq!(refused.status, StatusCode::FORBIDDEN);
+        assert!(unsigned.host.installed("tube").is_none());
+    }
+
+    /// The centre updated a face whose code comes from another feed, and the catalog pinned the new archive after this
+    /// computer read its copy (20.11): the Турбо reads its main feed again, once, and installs the new version —
+    /// before, «не проверял» until its copy was six hours old.
+    #[tokio::test]
+    async fn the_turbo_reads_its_catalog_again_for_a_pin_newer_than_its_copy() {
+        let keys = minisign::KeyPair::generate_unencrypted_keypair().unwrap();
+        let (main, demo) = (site().await, site().await);
+        main.publish(&[character("arthur", "1.0.0")]);
+        let app = |version: &str| {
+            let manifest = json!({
+                "schema": 1, "kind": "plugin", "id": "tube", "version": version, "title": "tube", "api": "^2",
+                "runs": ["pc"], "permissions": [],
+                "contributes": { "intents": [{ "phrases": ["скажи tube"], "handler": "say" }] }
+            });
+            let mut entry = arthur(version);
+            (entry["id"], entry["kind"], entry["runs"]) = (json!("tube"), json!("plugin"), json!(["pc"]));
+            entry["budget"] = json!({ "memoryMb": 4 });
+            (entry, plugin_vgp(&manifest, "export function say() { return 'да'; }"))
+        };
+        let pin_demo = || {
+            let demo_feed: Value = serde_json::from_str(&lock(&demo.feed)).unwrap();
+            let mut feed: Value = serde_json::from_str(&lock(&main.feed)).unwrap();
+            feed["recommends"] = json!([{ "id": "tube", "sha256": demo_feed["packages"][0]["sha256"] }]);
+            let text = feed.to_string();
+            let signature = minisign::sign(Some(&keys.pk), &keys.sk, std::io::Cursor::new(text.as_bytes()), None, None)
+                .unwrap()
+                .to_string();
+            *lock(&main.feed) = text;
+            lock(&main.files).insert("catalog.json.minisig".into(), signature.into_bytes());
+        };
+        demo.publish(&[app("1.0.0")]);
+        pin_demo();
+        let turbo = fixture_keyed(FeedSource::Url(main.url.clone()), Placement::Pc, Some(keys.pk.to_base64()));
+        turbo.catalog.install_pinned_from("tube", Some("1.0.0"), &demo.url, None).await.unwrap();
+
+        // The demo feed moves on, and the catalog pins its new archive.
+        demo.publish(&[app("1.1.0")]);
+        pin_demo();
+        let reads = main.reads.load(Ordering::SeqCst);
+        let updated = turbo.catalog.install_pinned_from("tube", Some("1.1.0"), &demo.url, None).await.unwrap();
+        assert_eq!(updated.version.as_deref(), Some("1.1.0"));
+        assert_eq!(main.reads.load(Ordering::SeqCst), reads + 1, "its main feed read again once");
+    }
+
+    #[tokio::test]
+    async fn a_plugin_from_the_store_is_installed_switched_on_and_one_off_is_told_apart() {
+        let keys = minisign::KeyPair::generate_unencrypted_keypair().unwrap();
+        let site = site().await;
+        let manifest = json!({
+            "schema": 1, "kind": "plugin", "id": "clock", "version": "1.0.0", "title": "Часы", "api": "^2",
+            "runs": ["pc", "station", "stationServer"], "permissions": [],
+            "contributes": { "intents": [{ "phrases": ["который час на луне"], "handler": "moon" }] }
+        });
+        let mut entry = arthur("1.0.0");
+        entry["id"] = json!("clock");
+        entry["kind"] = json!("plugin");
+        entry["budget"] = json!({ "memoryMb": 4 });
+        site.publish(&[(entry, plugin_vgp(&manifest, "export function moon() { return 'Полночь'; }"))]);
+        let feed = lock(&site.feed).clone();
+        let signature = minisign::sign(Some(&keys.pk), &keys.sk, std::io::Cursor::new(feed.as_bytes()), None, None)
+            .unwrap()
+            .to_string();
+        lock(&site.files).insert("catalog.json.minisig".into(), signature.into_bytes());
+        let keyed = fixture_keyed(FeedSource::Url(site.url.clone()), Placement::Pc, Some(keys.pk.to_base64()));
+        assert_eq!(keyed.catalog.view(true).await.packages[0].on, None, "not installed: neither on nor off");
+
+        let view = keyed.catalog.install_and_switch_on("clock", None, None).await.unwrap();
+        assert!(view.enabled, "{view:?}");
+        assert_eq!(keyed.catalog.view(false).await.packages[0].on, Some(true));
+        keyed.host.disable("clock", None).await.unwrap();
+        assert_eq!(keyed.catalog.view(false).await.packages[0].on, Some(false), "off: «Включить» in the store");
+    }
+
+    #[tokio::test]
+    async fn an_archive_gone_from_the_site_reads_the_catalog_again_and_takes_what_it_names_now() {
+        let site = site().await;
+        site.publish(&[character("arthur", "1.0.0")]);
+        let fixture = fixture(FeedSource::Url(site.url.clone()), Placement::Pc);
+        assert_eq!(fixture.catalog.view(true).await.packages[0].version, "1.0.0");
+        // The catalog moved on — 1.1.0 out, the old archive gone — while the copy here, fresh enough, names 1.0.0.
+        site.publish(&[character("arthur", "1.1.0")]);
+        lock(&site.files).remove("packages/arthur-1.0.0.vgp");
+        let installed = fixture.catalog.install("arthur", Some("1.0.0"), false, None).await.unwrap();
+        assert_eq!(installed.version.as_deref(), Some("1.1.0"), "what the feed names now");
+
+        // Not on the site though the feed was just read again: said in words, and read again only once.
+        site.publish(&[character("arthur", "1.1.0"), character("bublik", "1.0.0")]);
+        fixture.catalog.view(true).await;
+        lock(&site.files).remove("packages/bublik-1.0.0.vgp");
+        let reads = site.reads.load(Ordering::SeqCst);
+        let refused = fixture.catalog.install("bublik", None, false, None).await.unwrap_err();
+        assert!(refused.message.contains("нет на сайте каталога"), "{}", refused.message);
+        assert_eq!(site.reads.load(Ordering::SeqCst), reads + 1);
+    }
+
+    #[test]
+    fn the_built_in_keys_are_the_release_one_and_the_reserve() {
+        // A change here is a rotation, made on purpose (docs/plans/key-rotation.md, «Ключ каталога пакетов»).
+        let keys = crate::utils::verify::public_keys(BUILT_IN_KEYS).expect("packages.pub reads");
+        assert_eq!(keys.len(), 2, "the release key and the reserve");
+        // Apart from the update keys: a leaked catalog key signs no gateway release, and the other way round.
+        use base64::Engine as _;
+        let updates: String = crate::utils::verify::BUILT_IN_KEY
+            .lines()
+            .filter_map(|line| base64::engine::general_purpose::STANDARD.decode(line.trim()).ok())
+            .map(|text| String::from_utf8_lossy(&text).into_owned())
+            .collect();
+        assert!(updates.contains("minisign public key"), "updates.pub decodes: {updates}");
+        for key in BUILT_IN_KEYS.lines().filter(|line| !line.is_empty() && !line.starts_with("untrusted comment:")) {
+            assert!(!updates.contains(key.trim()), "{key} is an update key too");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_feed_signed_by_any_key_of_the_list_is_signed_and_by_no_other() {
+        let release = minisign::KeyPair::generate_unencrypted_keypair().unwrap();
+        let reserve = minisign::KeyPair::generate_unencrypted_keypair().unwrap();
+        let stranger = minisign::KeyPair::generate_unencrypted_keypair().unwrap();
+        let site = site().await;
+        site.publish(&[(arthur("1.0.0"), vgp(&character_manifest("arthur", "1.0.0")))]);
+        let feed = lock(&site.feed).clone();
+        // packages.pub's form: minisign's .pub files one after another, each with its comment line.
+        let list = format!("{}\n{}\n", release.pk.to_box().unwrap(), reserve.pk.to_box().unwrap());
+        let view_signed_by = |signer: &minisign::KeyPair, keys: &str| {
+            let signature = minisign::sign(Some(&signer.pk), &signer.sk, feed.as_bytes(), None, None).unwrap();
+            lock(&site.files).insert("catalog.json.minisig".into(), signature.to_string().into_bytes());
+            let fixture = fixture_keyed(FeedSource::Url(site.url.clone()), Placement::Pc, Some(keys.to_string()));
+            async move { fixture.catalog.view(true).await }
+        };
+
+        let by_release = view_signed_by(&release, &list).await;
+        assert!(by_release.keyed && by_release.signed, "{by_release:?}");
+        let by_reserve = view_signed_by(&reserve, &list).await;
+        assert!(by_reserve.signed, "the reserve signs without a gateway release: {by_reserve:?}");
+        let by_stranger = view_signed_by(&stranger, &list).await;
+        assert!(by_stranger.keyed && !by_stranger.signed, "{by_stranger:?}");
+        assert_eq!(
+            by_stranger.problem.as_deref(),
+            Some("Подпись каталога не сошлась: приложения из него не ставятся.")
+        );
+        // PACKAGES_PUBKEY's bare lines do as well; a line that does not read leaves no key at all.
+        let bare = format!("{}\n{}", release.pk.to_base64(), reserve.pk.to_base64());
+        assert!(view_signed_by(&reserve, &bare).await.signed);
+        let broken = view_signed_by(&release, &format!("{list}nonsense\n")).await;
+        assert!(!broken.keyed && !broken.signed, "{broken:?}");
+    }
+
+    #[test]
+    fn shows_a_plugin_that_does_not_fit_the_stations_memory_as_not_going_here() {
+        let base = url::Url::parse("https://catalog.example/catalog.json").unwrap();
+        let mut entry = arthur("1.0.0");
+        entry["kind"] = json!("plugin");
+        entry["budget"] = json!({ "memoryMb": 30 });
+        entry["url"] = json!("packages/a.vgp");
+        entry["sha256"] = json!("0".repeat(64));
+        entry["size"] = json!(10);
+        let feed = parse_feed(&json!({ "format": 1, "packages": [entry] }).to_string(), &base).unwrap();
+        let entry = &feed.packages[0];
+        let (state, why) = entry_state(entry, None, Placement::Station, true, Some(20));
+        assert_eq!(state, EntryState::Incompatible);
+        assert!(why.unwrap().contains("нужно 30 МБ, свободно 20"));
+        assert_eq!(entry_state(entry, None, Placement::Pc, true, Some(20)).0, EntryState::Available);
+    }
+
+    #[tokio::test]
+    async fn reads_the_catalog_and_its_archives_through_the_computer_when_the_station_has_no_internet() {
+        struct Computer(String);
+        impl crate::plugins::controller::HomeLink for Computer {
+            fn up(&self) -> Option<(String, String)> {
+                Some((self.0.clone(), "pair-key".into()))
+            }
+        }
+        let site = site().await;
+        site.publish(&[(arthur("1.0.0"), vgp(&character_manifest("arthur", "1.0.0")))]);
+        let feed = lock(&site.feed).clone();
+        let archive = lock(&site.files).get("packages/arthur-1.0.0.vgp").cloned().unwrap();
+        // The computer: its copy of the feed, and the archive from the catalog's own origin.
+        let catalog_url = site.url.clone();
+        let computer = Router::new()
+            .route(
+                "/home/v1/catalog",
+                get(move || {
+                    let (url, feed) = (catalog_url.clone(), feed.clone());
+                    async move { axum::Json(json!({ "url": url, "feed": feed, "signature": null })) }
+                }),
+            )
+            .route(
+                "/home/v1/catalog/file",
+                get(move || {
+                    let archive = archive.clone();
+                    async move { archive }
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let home = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, computer).await.unwrap() });
+        // The station: the catalog's site is out of its reach.
+        let fixture = fixture_with(
+            FeedSource::Url(site.url.clone()),
+            Placement::StationServer,
+            None,
+            Some(Arc::new(Computer(home))),
+        );
+        site.down.store(true, Ordering::SeqCst);
+        let view = fixture.catalog.view(true).await;
+        assert_eq!(view.packages.len(), 1, "{view:?}");
+        assert!(!view.offline);
+        // The archive too goes the computer's way; its hash is checked here against the feed.
+        *lock(&site.files) = BTreeMap::new();
+        let installed = fixture.catalog.install("arthur", None, false, None).await.unwrap();
+        assert_eq!(installed.version.as_deref(), Some("1.0.0"));
+    }
+
+    /// A station without internet of its own (20.11): the copy through the computer is as old as the computer says —
+    /// not «read just now», which hid an update for hours — «Проверить сейчас» asks the computer to read its feed first
+    /// (`fresh`), and an old copy is not asked for again at every look.
+    #[tokio::test]
+    async fn a_copy_through_the_computer_keeps_its_age_and_a_check_now_asks_the_computer_to_read_again() {
+        struct Computer(String);
+        impl crate::plugins::controller::HomeLink for Computer {
+            fn up(&self) -> Option<(String, String)> {
+                Some((self.0.clone(), "pair-key".into()))
+            }
+        }
+        let site = site().await;
+        site.publish(&[(arthur("1.0.0"), vgp(&character_manifest("arthur", "1.0.0")))]);
+        let feed = lock(&site.feed).clone();
+        let read_at =
+            (chrono::Utc::now() - chrono::Duration::hours(7)).to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        let asked: Arc<Mutex<Vec<Option<String>>>> = Arc::default();
+        let (catalog_url, answer_at, noted) = (site.url.clone(), read_at.clone(), asked.clone());
+        let computer = Router::new().route(
+            "/home/v1/catalog",
+            get(move |axum::extract::Query(query): axum::extract::Query<std::collections::HashMap<String, String>>| {
+                lock(&noted).push(query.get("fresh").cloned());
+                let (url, feed, at) = (catalog_url.clone(), feed.clone(), answer_at.clone());
+                async move { axum::Json(json!({ "url": url, "feed": feed, "signature": null, "fetchedAt": at })) }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let home = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, computer).await.unwrap() });
+        let fixture = fixture_with(
+            FeedSource::Url(site.url.clone()),
+            Placement::StationServer,
+            None,
+            Some(Arc::new(Computer(home))),
+        );
+        site.down.store(true, Ordering::SeqCst);
+
+        let view = fixture.catalog.view(true).await;
+        assert_eq!(view.packages.len(), 1, "{view:?}");
+        assert_eq!(lock(&asked).clone(), [Some("1".to_string())], "«check now»: the computer reads its feed first");
+        assert_eq!(view.fetched_at.as_deref(), Some(read_at.as_str()), "the copy as old as the computer read it");
+        // Seven hours old: older than six, yet not asked for again at every look — the computer just said it is all
+        // it has.
+        fixture.catalog.view(false).await;
+        assert_eq!(lock(&asked).len(), 1);
+    }
+
+    /// The Турбо is asked for a face's version its copy of the feed does not name yet — the centre read the feed since
+    /// (20.11): it reads the feed again, once, and installs that version. Before, «В каталоге нет …» until its copy was
+    /// six hours old. A version the feed does not have even now: «нет», read again only once.
+    #[tokio::test]
+    async fn a_version_newer_than_the_copy_reads_the_catalog_again_once() {
+        let site = site().await;
+        site.publish(&[character("arthur", "1.0.0")]);
+        let fixture = fixture(FeedSource::Url(site.url.clone()), Placement::Pc);
+        assert_eq!(fixture.catalog.view(true).await.packages[0].version, "1.0.0");
+        site.publish(&[character("arthur", "1.0.0"), character("arthur", "1.1.0")]);
+        let reads = site.reads.load(Ordering::SeqCst);
+        let installed = fixture.catalog.install("arthur", Some("1.1.0"), false, None).await.unwrap();
+        assert_eq!(installed.version.as_deref(), Some("1.1.0"));
+        assert_eq!(site.reads.load(Ordering::SeqCst), reads + 1, "read again once");
+
+        let reads = site.reads.load(Ordering::SeqCst);
+        let missing = fixture.catalog.install("arthur", Some("9.9.9"), true, None).await.unwrap_err();
+        assert_eq!(missing.status, StatusCode::NOT_FOUND, "{}", missing.message);
+        assert_eq!(site.reads.load(Ordering::SeqCst), reads + 1, "and only once");
+    }
+
+    #[test]
+    fn reads_the_extra_feeds_the_main_one_names_by_their_rules() {
+        let base = url::Url::parse("https://packages.duowave.app/catalog.json").unwrap();
+        let feeds = json!([
+            { "url": "https://store.duowave.app/catalog.json", "publisher": "duowave", "title": "DuoWave Store",
+              "verified": true },
+            { "url": "http://partner.example/catalog.json", "publisher": "partner" },
+            { "url": "https://partner.example/catalog.json", "publisher": "Partner" },
+            { "url": "https://partner.example/catalog.json", "publisher": "partner", "title": "П".repeat(60) },
+            { "url": "https://store.duowave.app/catalog.json", "publisher": "again" },
+            { "url": "https://packages.duowave.app/catalog.json", "publisher": "itself" },
+            { "url": "https://a.example/catalog.json", "publisher": "a" },
+            { "url": "http://127.0.0.1:8080/catalog.json", "publisher": "local" },
+            { "url": "https://b.example/catalog.json", "publisher": "b" }
+        ]);
+        let feed = parse_feed(&json!({ "format": 1, "packages": [], "feeds": feeds }).to_string(), &base).unwrap();
+        let urls: Vec<&str> = feed.feeds.iter().map(|extra| extra.url.as_str()).collect();
+        assert_eq!(
+            urls,
+            [
+                "https://store.duowave.app/catalog.json",
+                "https://partner.example/catalog.json",
+                "https://a.example/catalog.json",
+                "http://127.0.0.1:8080/catalog.json"
+            ]
+        );
+        let store = &feed.feeds[0];
+        assert_eq!(
+            (store.publisher.as_str(), store.title.as_str(), store.verified),
+            ("duowave", "DuoWave Store", true)
+        );
+        assert_eq!((feed.feeds[1].title.chars().count(), feed.feeds[1].verified), (MAX_FEED_TITLE, false));
+        assert_eq!(feed.feeds[2].title, "a", "without a title — its publisher");
+        // HTTP elsewhere, a publisher that is no id, the store twice, the main itself, a fifth feed.
+        assert_eq!(feed.skipped.len(), 5, "{:?}", feed.skipped);
+        assert!(feed.skipped.iter().any(|why| why.contains("только по HTTPS")));
+        assert!(feed.skipped.iter().any(|why| why.contains("больше 4 лент")));
+        let odd = parse_feed(&json!({ "format": 1, "packages": [], "feeds": {} }).to_string(), &base).unwrap();
+        assert_eq!(odd.skipped, ["feeds: список лент"]);
+        let older = parse_feed(&json!({ "format": 1, "packages": [] }).to_string(), &base).unwrap();
+        assert!(older.feeds.is_empty() && older.skipped.is_empty());
+        // Each address its own folder, never one a package's version could take.
+        let folder = feed_folder(&store.url);
+        assert!(folder.starts_with("store.duowave.app-") && semver::Version::parse(&folder).is_err());
+        let path = |path: &str| url::Url::parse(&format!("https://store.duowave.app/{path}")).unwrap();
+        assert_ne!(feed_folder(&path("a/catalog.json")), feed_folder(&path("b/catalog.json")));
+        // A package's own publisher, when it is an id.
+        let mut value = arthur("1.0.0");
+        value["url"] = json!("a.vgp");
+        value["sha256"] = json!("a".repeat(64));
+        value["size"] = json!(10);
+        value["publisher"] = json!("duowave");
+        assert_eq!(entry(&value, &base).unwrap().publisher.as_deref(), Some("duowave"));
+        value["publisher"] = json!("Duo Wave");
+        assert_eq!(entry(&value, &base).unwrap().publisher, None);
+    }
+
+    #[tokio::test]
+    async fn shows_the_extra_feeds_packages_after_the_main_ones_each_from_its_own_site() {
+        let (main, store) = (site().await, site().await);
+        let (mut butler, archive) = character("arthur", "1.2.0");
+        butler["publisher"] = json!("duowave");
+        main.publish(&[(butler, archive)]);
+        let (mut bublik, archive) = character("bublik", "1.0.0");
+        bublik["publisher"] = json!("impostor");
+        store.publish(&[(bublik, archive), character("arthur", "9.0.0")]);
+        // A package of the store whose archive is on the main site: only files of its own feed's origin.
+        let mut stray = arthur("1.0.0");
+        stray["id"] = json!("stray");
+        stray["url"] = json!(format!("{}/packages/arthur-1.2.0.vgp", main.origin()));
+        stray["sha256"] = json!("a".repeat(64));
+        stray["size"] = json!(10);
+        store.add(stray);
+        let declared = json!({ "url": store.url, "publisher": "duowave", "title": "DuoWave Store" });
+        main.name_feeds(json!([declared]));
+        let fixture = fixture(FeedSource::Url(main.url.clone()), Placement::Pc);
+        let catalog = &fixture.catalog;
+
+        let view = catalog.view(false).await;
+        assert_eq!(ids(&view), ["arthur", "bublik"], "the main's first; its id is not the store's; no stray");
+        let (arthur, bublik) = (&view.packages[0], &view.packages[1]);
+        assert_eq!(
+            (arthur.version.as_str(), arthur.publisher.as_deref(), arthur.source.as_deref()),
+            ("1.2.0", Some("duowave"), None)
+        );
+        assert_eq!((bublik.publisher.as_deref(), bublik.source.as_deref()), (Some("duowave"), Some("DuoWave Store")));
+        assert!(arthur.verified && !bublik.verified, "the store's `verified` stands only when the main allows it");
+        assert_eq!(bublik.preview.image.as_deref(), Some("/api/v1/packages/catalog/bublik/preview/image?v=1.0.0"));
+        let (image, _) = catalog.preview("bublik", "image").await.unwrap();
+        assert!(image.starts_with(catalog.extra_dir(&store.address())), "{}", image.display());
+        let feed = &view.feeds[0];
+        assert_eq!(
+            (feed.url.as_str(), feed.title.as_str(), feed.publisher.as_str()),
+            (store.url.as_str(), "DuoWave Store", "duowave")
+        );
+        assert_eq!((feed.count, feed.offline, feed.problem.as_deref()), (1, false, None));
+        assert!(feed.fetched_at.is_some());
+        assert_eq!(catalog.install("stray", None, false, None).await.unwrap_err().status, StatusCode::NOT_FOUND);
+
+        // Installed from its own site, and not vouched for.
+        let installed = catalog.install("bublik", None, false, None).await.unwrap();
+        assert_eq!((installed.source.as_str(), installed.verified), ("catalog", false));
+        assert_eq!(catalog.kind_of("bublik").await, Some(PackageKind::Character));
+        catalog.remove("bublik", None).await.unwrap();
+        // The main allows its `verified`: so it is, and vouched for.
+        let mut declared = declared;
+        declared["verified"] = json!(true);
+        main.name_feeds(json!([declared]));
+        let view = catalog.view(true).await;
+        assert!(view.packages[1].verified);
+        let installed = catalog.install("bublik", None, false, None).await.unwrap();
+        assert!(installed.verified);
+        assert_eq!(catalog.view(false).await.packages[1].state, EntryState::Installed);
+    }
+
+    #[tokio::test]
+    async fn never_installs_code_from_an_extra_feed_even_beside_a_signed_main_one() {
+        let keys = minisign::KeyPair::generate_unencrypted_keypair().unwrap();
+        let (main, store) = (site().await, site().await);
+        let plugin = |id: &str, phrase: &str| {
+            let manifest = json!({
+                "schema": 1, "kind": "plugin", "id": id, "version": "1.0.0", "title": "Часы", "api": "^2",
+                "runs": ["pc", "station", "stationServer"], "permissions": [],
+                "contributes": { "intents": [{ "phrases": [phrase], "handler": "say" }] }
+            });
+            let mut entry = arthur("1.0.0");
+            entry["id"] = json!(id);
+            entry["kind"] = json!("plugin");
+            (entry, plugin_vgp(&manifest, "export function say() { return 'Полночь'; }"))
+        };
+        main.publish(&[plugin("clock", "который час на луне")]);
+        store.publish(&[plugin("moon", "какая сейчас луна")]);
+        // The store vouched for, and the main feed signed: still no code from the store.
+        main.name_feeds(json!([{ "url": store.url, "publisher": "duowave", "verified": true }]));
+        let text = lock(&main.feed).clone();
+        let signature = minisign::sign(Some(&keys.pk), &keys.sk, std::io::Cursor::new(text.as_bytes()), None, None);
+        lock(&main.files).insert("catalog.json.minisig".into(), signature.unwrap().to_string().into_bytes());
+        let keyed = fixture_keyed(FeedSource::Url(main.url.clone()), Placement::Pc, Some(keys.pk.to_base64()));
+
+        let view = keyed.catalog.view(false).await;
+        assert!(view.signed, "{view:?}");
+        assert_eq!(view.packages[0].state, EntryState::Available);
+        let moon = &view.packages[1];
+        assert_eq!((moon.id.as_str(), moon.state), ("moon", EntryState::NeedsSignature));
+        let why = moon.reason.clone().unwrap();
+        assert!(why.contains("из ленты «duowave»"), "without a title — its publisher: {why}");
+        let refused = keyed.catalog.install("moon", None, false, None).await.unwrap_err();
+        assert_eq!((refused.status, refused.message), (StatusCode::CONFLICT, why));
+        assert!(!keyed.root.join("moon").exists());
+        let installed = keyed.catalog.install("clock", None, false, None).await.unwrap();
+        assert!(installed.verified, "code from the signed main feed");
+    }
+
+    #[tokio::test]
+    async fn an_extra_feed_that_fails_leaves_the_others_and_one_no_longer_named_goes_with_its_copy() {
+        let (main, store, partner) = (site().await, site().await, site().await);
+        main.publish(&[character("arthur", "1.0.0")]);
+        store.publish(&[character("bublik", "1.0.0")]);
+        partner.publish(&[character("palych", "1.0.0")]);
+        let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let named = |feeds: &[(&str, &str)]| {
+            let feeds: Vec<Value> = feeds
+                .iter()
+                .map(|(url, title)| json!({ "url": url, "publisher": "someone", "title": title }))
+                .collect();
+            main.name_feeds(json!(feeds));
+        };
+        let nowhere = format!("http://127.0.0.1:{closed}/catalog.json");
+        named(&[
+            (store.url.as_str(), "DuoWave Store"),
+            (nowhere.as_str(), "Nowhere"),
+            (partner.url.as_str(), "Partner"),
+        ]);
+        let fixture = fixture(FeedSource::Url(main.url.clone()), Placement::Pc);
+        let catalog = &fixture.catalog;
+
+        let view = catalog.view(false).await;
+        assert_eq!(ids(&view), ["arthur", "bublik", "palych"]);
+        assert!(!view.offline && view.problem.is_none(), "the main feed stands: {view:?}");
+        let nowhere = &view.feeds[1];
+        assert!(nowhere.offline && nowhere.count == 0 && nowhere.fetched_at.is_none(), "{nowhere:?}");
+        assert!(nowhere.problem.as_deref().unwrap().starts_with("Лента «Nowhere» недоступна"));
+        // Not read again at every look: with the main feed, in six hours or when asked.
+        let reads = main.reads.load(Ordering::SeqCst);
+        catalog.view(false).await;
+        assert_eq!(main.reads.load(Ordering::SeqCst), reads);
+
+        // The store fails now: its copy before stays, the others as they were.
+        store.down.store(true, Ordering::SeqCst);
+        let view = catalog.view(true).await;
+        assert_eq!(ids(&view), ["arthur", "bublik", "palych"]);
+        let failed = &view.feeds[0];
+        assert_eq!(failed.problem.as_deref(), Some("Лента «DuoWave Store» ответила HTTP 503 Service Unavailable"));
+        assert!(!failed.offline && failed.count == 1);
+        assert!(view.feeds[2].problem.is_none() && view.feeds[2].count == 1);
+        assert!(view.problem.is_none());
+
+        // The main names the store no more: it goes, its copy too. The partner, down meanwhile, keeps its copy and
+        // previews — a new copy of the main feed clears only its own folders.
+        let gone = catalog.extra_dir(&store.address());
+        assert!(gone.join("catalog.json").is_file() && gone.join("bublik/1.0.0").is_dir());
+        named(&[(partner.url.as_str(), "Partner")]);
+        partner.down.store(true, Ordering::SeqCst);
+        let view = catalog.view(true).await;
+        assert_eq!(ids(&view), ["arthur", "palych"]);
+        assert_eq!(view.feeds.len(), 1);
+        assert!(view.feeds[0].problem.as_deref().unwrap().starts_with("Лента «Partner» ответила HTTP 503"));
+        assert!(!gone.exists(), "{}", gone.display());
+        let kept = catalog.extra_dir(&partner.address());
+        assert!(kept.join("catalog.json").is_file() && kept.join("palych/1.0.0/image.webp").is_file());
+        assert!(catalog.dir.join("arthur/1.0.0/image.webp").is_file(), "the main feed's previews stay");
+        partner.down.store(false, Ordering::SeqCst);
+        // The owner's switch covers every feed.
+        catalog.set_enabled(false, None).unwrap();
+        let before = partner.reads.load(Ordering::SeqCst);
+        assert_eq!(ids(&catalog.view(true).await), ["arthur", "palych"], "the copies still shown");
+        assert_eq!(partner.reads.load(Ordering::SeqCst), before);
+    }
+
+    /// A character whose voice is of no known origin, with its archive.
+    fn unknown_voice_character(id: &str, version: &str) -> (Value, Vec<u8>) {
+        let mut manifest = character_manifest(id, version);
+        manifest["contributes"]["characters"][0]["voiceOrigin"] = json!("unknown");
+        let mut entry = arthur(version);
+        entry["id"] = json!(id);
+        (entry, vgp(&manifest))
+    }
+
+    /// The changes told on the bus so far.
+    fn changes(events: &mut tokio::sync::broadcast::Receiver<Arc<GatewayEvent>>) -> Vec<String> {
+        let mut seen = Vec::new();
+        while let Ok(event) = events.try_recv() {
+            if let GatewayEvent::PackagesChanged { package_id: id, change, .. } = event.as_ref() {
+                seen.push(format!("{id} {change}"));
+            }
+        }
+        seen
+    }
+
+    #[test]
+    fn a_package_to_hide_needs_its_id_alone() {
+        let base = url::Url::parse("https://demo.example/catalog.json").unwrap();
+        let text = json!({ "format": 1, "packages": [
+            { "id": "jarvis-demo", "hidden": true },
+            { "hidden": true },
+            { "id": "palych", "hidden": false }
+        ]})
+        .to_string();
+        let feed = parse_feed(&text, &base).unwrap();
+        assert_eq!(feed.hidden.iter().collect::<Vec<_>>(), ["jarvis-demo"]);
+        assert!(feed.packages.is_empty());
+        assert_eq!(feed.skipped.len(), 2, "no id, and an ordinary package without its archive: {:?}", feed.skipped);
+        assert!(feed.skipped[0].starts_with("hidden: нет id"));
+        // An own source: its host is its title and, in letters an id takes, its publisher; never vouched for.
+        let own = own_feed(&url::Url::parse("https://Demo.Duowave.dev/d/x7/catalog.json").unwrap());
+        assert_eq!(
+            (own.title.as_str(), own.publisher.as_str(), own.verified, own.own),
+            ("demo.duowave.dev", "demo-duowave-dev", false, true)
+        );
+        let local = own_feed(&url::Url::parse("http://127.0.0.1:8781/catalog.json").unwrap());
+        assert_eq!((local.title.as_str(), local.publisher.as_str()), ("127.0.0.1:8781", "own"));
+    }
+
+    /// The main feed recommends a package of an own source the admin added (`recommends`, docs/plans/magicplace.md):
+    /// the panel sees it recommended and checked, the install notes it vouched for — that very archive; a new archive
+    /// under the same id loses both until the catalog looks at it again.
+    #[tokio::test]
+    async fn the_main_feed_recommends_an_own_sources_package_by_its_archives_hash() {
+        let (main, own) = (site().await, site().await);
+        main.publish(&[character("arthur", "1.0.0")]);
+        own.publish(&[character("jarvis", "1.0.0"), character("friday", "1.0.0")]);
+        let looked_at = {
+            let feed: Value = serde_json::from_str(&lock(&own.feed)).unwrap();
+            feed["packages"][0]["sha256"].as_str().unwrap().to_string()
+        };
+        {
+            let mut feed: Value = serde_json::from_str(&lock(&main.feed)).unwrap();
+            feed["recommends"] = json!([{ "feed": own.url, "id": "jarvis", "sha256": looked_at }]);
+            *lock(&main.feed) = feed.to_string();
+        }
+        let fixture = fixture(FeedSource::Url(main.url.clone()), Placement::Pc);
+        let catalog = &fixture.catalog;
+        let view = catalog.add_source(&own.url, None).await.unwrap();
+        let of = |view: &CatalogView, id: &str| view.packages.iter().find(|entry| entry.id == id).cloned().unwrap();
+        let jarvis = of(&view, "jarvis");
+        assert!(jarvis.recommended && jarvis.verified && jarvis.own, "{jarvis:?}");
+        let friday = of(&view, "friday");
+        assert!(!friday.recommended && !friday.verified, "{friday:?}");
+        let installed = catalog.install("jarvis", None, false, None).await.unwrap();
+        assert!(installed.verified, "vouched for: we looked at this very archive");
+
+        // A new archive under the same id is not what we looked at.
+        own.publish(&[character("jarvis", "1.1.0"), character("friday", "1.0.0")]);
+        let jarvis = of(&catalog.view(true).await, "jarvis");
+        assert!(!jarvis.recommended && !jarvis.verified, "{jarvis:?}");
+    }
+
+    /// A character's catchphrases come from the feed its package was installed from, as its copy here has them now:
+    /// that feed changes or drops them without a new version; another feed's phrases for the package are not its.
+    #[tokio::test]
+    async fn a_characters_catchphrases_come_from_the_feed_it_was_installed_from_as_it_has_them_now() {
+        use crate::characters::catchphrases::PhraseAt;
+        let (main, own) = (site().await, site().await);
+        main.publish(&[character("arthur", "1.0.0")]);
+        own.publish(&[character("jarvis", "1.0.0")]);
+        let with_phrases = |site: &Site, phrases: Value| {
+            let mut feed: Value = serde_json::from_str(&lock(&site.feed)).unwrap();
+            feed["phrases"] = phrases;
+            *lock(&site.feed) = feed.to_string();
+        };
+        with_phrases(&own, json!({ "jarvis": { "jarvis": { "every": 2, "lines": ["Как пожелаете, сэр."] } } }));
+        with_phrases(
+            &main,
+            json!({
+                "jarvis": { "jarvis": { "lines": ["Чужая фраза."] } },
+                "arthur": { "arthur": { "lines": [{ "text": "Слушаю.", "at": "start" }] } }
+            }),
+        );
+        let fixture = fixture(FeedSource::Url(main.url.clone()), Placement::Pc);
+        let catalog = &fixture.catalog;
+        catalog.add_source(&own.url, None).await.unwrap();
+        assert_eq!(catalog.catchphrases("jarvis", "jarvis"), None, "not installed");
+        catalog.install("jarvis", None, false, None).await.unwrap();
+        catalog.install("arthur", None, false, None).await.unwrap();
+        let jarvis = catalog.catchphrases("jarvis", "jarvis").unwrap();
+        assert_eq!(
+            (jarvis.every, jarvis.lines),
+            (2, vec![("Как пожелаете, сэр.".to_string(), PhraseAt::End)]),
+            "its own source's, not the main feed's"
+        );
+        assert_eq!(catalog.catchphrases("arthur", "arthur").unwrap().lines, [("Слушаю.".to_string(), PhraseAt::Start)]);
+        assert_eq!(catalog.catchphrases("jarvis", "friday"), None);
+
+        // The feed drops them: gone once it is read again, the package's version the same.
+        with_phrases(&own, json!({}));
+        catalog.view(true).await;
+        assert_eq!(catalog.catchphrases("jarvis", "jarvis"), None);
+    }
+
+    /// Item 44: an own source's character shows its face and its phrases — the view names them and the route
+    /// serves them, at once after the source is added and on a later read.
+    #[tokio::test]
+    async fn an_own_sources_previews_are_listed_and_served() {
+        let (main, own) = (site().await, site().await);
+        main.publish(&[character("arthur", "1.0.0")]);
+        own.publish(&[unknown_voice_character("jarvis-demo", "1.0.0")]);
+        let fixture = fixture(FeedSource::Url(main.url.clone()), Placement::Pc);
+        let catalog = &fixture.catalog;
+        catalog.view(false).await;
+        let view = catalog.add_source(&own.url, None).await.unwrap();
+        let demo = view.packages.iter().find(|entry| entry.id == "jarvis-demo").unwrap();
+        assert_eq!(demo.preview.image.as_deref(), Some("/api/v1/packages/catalog/jarvis-demo/preview/image?v=1.0.0"));
+        assert_eq!(demo.preview.samples.len(), 1);
+        catalog.preview("jarvis-demo", "image").await.expect("its face");
+        catalog.preview("jarvis-demo", "1").await.expect("its phrase");
+        let again = catalog.view(true).await;
+        assert!(again.packages.iter().any(|entry| entry.id == "jarvis-demo" && entry.preview.image.is_some()));
+        catalog.preview("jarvis-demo", "image").await.expect("its face on a later read");
+    }
+
+    #[tokio::test]
+    async fn the_demo_feed_joins_the_own_sources_once_and_a_removed_one_stays_removed() {
+        let main = site().await;
+        let fixture = fixture(FeedSource::Url(main.url.clone()), Placement::Pc);
+        let catalog = &fixture.catalog;
+        let demo = "https://demo.example/catalog.json";
+        catalog.seed_demo(None);
+        catalog.seed_demo(Some("  "));
+        assert!(catalog.sources().is_empty(), "a build without the secret puts nothing");
+
+        catalog.seed_demo(Some(demo));
+        assert_eq!(catalog.sources().iter().map(|source| source.url.as_str()).collect::<Vec<_>>(), [demo]);
+        catalog.seed_demo(Some(demo));
+        assert_eq!(catalog.sources().len(), 1, "once");
+
+        catalog.remove_source(demo, None).await.unwrap();
+        catalog.seed_demo(Some(demo));
+        assert!(catalog.sources().is_empty(), "removed — not put again");
+    }
+
+    #[tokio::test]
+    async fn an_own_source_added_by_its_link_brings_characters_never_code_and_never_an_id_taken() {
+        let (main, own) = (site().await, site().await);
+        main.publish(&[character("arthur", "1.0.0"), unknown_voice_character("vague", "1.0.0")]);
+        let plugin = {
+            let manifest = json!({
+                "schema": 1, "kind": "plugin", "id": "moon", "version": "1.0.0", "title": "Луна", "api": "^2",
+                "runs": ["pc", "station", "stationServer"], "permissions": [],
+                "contributes": { "intents": [{ "phrases": ["какая луна"], "handler": "say" }] }
+            });
+            let mut entry = arthur("1.0.0");
+            entry["id"] = json!("moon");
+            entry["kind"] = json!("plugin");
+            (entry, plugin_vgp(&manifest, "export function say() { return 'Полная'; }"))
+        };
+        own.publish(&[unknown_voice_character("jarvis-demo", "1.0.0"), character("arthur", "9.0.0"), plugin]);
+        let fixture = fixture(FeedSource::Url(main.url.clone()), Placement::Pc);
+        let catalog = &fixture.catalog;
+        assert_eq!(ids(&catalog.view(false).await), ["arthur", "vague"]);
+
+        // A link that is no feed is not kept.
+        let nowhere = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let refused = catalog.add_source(&format!("http://127.0.0.1:{nowhere}/catalog.json"), None).await.unwrap_err();
+        assert_eq!(refused.status, StatusCode::BAD_GATEWAY);
+        assert!(refused.message.starts_with("Источник не добавлен"), "{}", refused.message);
+        assert!(catalog.sources().is_empty());
+        assert_eq!(catalog.add_source(&main.url, None).await.unwrap_err().status, StatusCode::CONFLICT);
+        assert_eq!(catalog.add_source("ftp://x/catalog.json", None).await.unwrap_err().status, StatusCode::BAD_REQUEST);
+
+        let view = catalog.add_source(&own.url, None).await.unwrap();
+        assert_eq!(
+            ids(&view),
+            ["arthur", "vague", "jarvis-demo", "moon"],
+            "the own source's after; its arthur is not taken"
+        );
+        let demo = &view.packages[2];
+        assert!(demo.own && !demo.verified, "{demo:?}");
+        assert_eq!(demo.source.as_deref(), Some(own_feed(&own.address()).title.as_str()));
+        assert_eq!(view.packages[3].state, EntryState::NeedsSignature, "never code from an own source");
+        let listed = view.feeds.last().unwrap();
+        assert!(listed.own && !listed.closed && listed.count == 2, "{listed:?}");
+        assert_eq!(catalog.add_source(&own.url, None).await.unwrap_err().status, StatusCode::CONFLICT, "once");
+        assert!(catalog.dir.join(SOURCES_FILE).is_file());
+
+        // A voice of no known origin: from the own source, yes; from the catalog, no.
+        let installed = catalog.install("jarvis-demo", None, false, None).await.unwrap();
+        assert_eq!((installed.source.as_str(), installed.verified), ("catalog", false));
+        let noted = registry::choices(&catalog.db)["jarvis-demo"].clone();
+        assert_eq!(noted.feed.as_deref(), Some(own.url.as_str()));
+        let vague = catalog.install("vague", None, false, None).await.unwrap_err();
+        assert_eq!(vague.status, StatusCode::BAD_REQUEST);
+        assert!(vague.message.contains("voiceOrigin unknown"), "{}", vague.message);
+        assert!(fixture.host.installed("vague").is_none() && !fixture.root.join("vague/1.0.0").exists());
+        catalog.install("arthur", None, false, None).await.unwrap();
+        assert_eq!(registry::choices(&catalog.db)["arthur"].feed.as_deref(), Some(main.url.as_str()));
+
+        // Up to four.
+        let mut sources = catalog.sources();
+        for n in 0..3 {
+            sources.push(OwnSource { url: format!("https://feed{n}.example/catalog.json"), added_at: now_iso() });
+        }
+        catalog.write_sources(&sources).unwrap();
+        let full = catalog.add_source("https://feed9.example/catalog.json", None).await.unwrap_err();
+        assert!(full.message.contains("не больше 4"), "{}", full.message);
+    }
+
+    /// A mirror of `site`: the same feed and files, on a site of its own.
+    async fn mirror_of(site: &Site) -> Site {
+        let mirror = super::tests::site().await;
+        *lock(&mirror.feed) = lock(&site.feed).clone();
+        *lock(&mirror.files) = lock(&site.files).clone();
+        mirror
+    }
+
+    /// MIRRORS that sends `site`'s files to `mirror`.
+    fn map(site: &Site, mirror: &Site) -> String {
+        format!("{}/catalog.json {}/catalog.json", site.origin(), mirror.origin())
+    }
+
+    #[tokio::test]
+    async fn an_own_source_whose_host_is_down_comes_from_its_mirror_which_is_then_asked_first() {
+        let (main, own) = (site().await, site().await);
+        main.publish(&[character("arthur", "1.0.0")]);
+        own.publish(&[character("jarvis-demo", "1.0.0")]);
+        let mirror = mirror_of(&own).await;
+        let fixture = fixture_mirrored(FeedSource::Url(main.url.clone()), Placement::Pc, &map(&own, &mirror));
+        let catalog = &fixture.catalog;
+        catalog.add_source(&own.url, None).await.unwrap();
+        catalog.view(true).await;
+        assert_eq!(mirror.knocks.load(Ordering::SeqCst), 0, "the feed's own host answered: the mirror is not asked");
+
+        // Its host down, for the feed and its files: both come from the mirror.
+        own.down.store(true, Ordering::SeqCst);
+        own.refuse.store(usize::MAX / 2, Ordering::SeqCst);
+        let view = catalog.view(true).await;
+        assert_eq!(ids(&view), ["arthur", "jarvis-demo"]);
+        let feed = view.feeds.last().unwrap();
+        assert!(feed.own && !feed.offline && !feed.closed && feed.problem.is_none(), "{feed:?}");
+        assert_eq!(mirror.knocks.load(Ordering::SeqCst), 1);
+        catalog.install("jarvis-demo", None, false, None).await.unwrap();
+        assert_eq!(mirror.asked("packages/jarvis-demo-1.0.0.vgp"), 1);
+        assert!(fixture.host.installed("jarvis-demo").is_some());
+        // The address stays the feed's own: what was installed came from it.
+        assert_eq!(catalog.extra_feed_of("jarvis-demo").as_deref(), Some(own.url.as_str()));
+
+        // The mirror answered: it is asked first now, and the feed's own host is not asked at all.
+        let knocks = own.knocks.load(Ordering::SeqCst);
+        catalog.view(true).await;
+        assert_eq!(own.knocks.load(Ordering::SeqCst), knocks, "the mirror first");
+        assert_eq!(mirror.knocks.load(Ordering::SeqCst), 2);
+        assert!(fixture.root.parent().unwrap().join("packages-catalog").join(mirrors::MEMORY).is_file());
+    }
+
+    #[tokio::test]
+    async fn a_stalled_archive_comes_from_the_mirror_and_one_its_host_says_is_gone_does_not() {
+        let (main, own) = (site().await, site().await);
+        main.publish(&[character("arthur", "1.0.0")]);
+        own.publish(&[character("jarvis-demo", "1.0.0"), character("palych", "1.0.0")]);
+        let mirror = mirror_of(&own).await;
+        let fixture = fixture_mirrored(FeedSource::Url(main.url.clone()), Placement::Pc, &map(&own, &mirror));
+        let catalog = &fixture.catalog;
+        catalog.add_source(&own.url, None).await.unwrap();
+        catalog.view(true).await;
+
+        // The feed's own host says the file is not there: that is the answer, the mirror is not asked.
+        lock(&own.files).remove("packages/palych-1.0.0.vgp");
+        catalog.install("palych", None, false, None).await.unwrap_err();
+        assert_eq!(mirror.asked("packages/palych-1.0.0.vgp"), 0);
+
+        // The archive starts and stalls: after the stall, not after the archive's two minutes, the mirror's.
+        own.stall.store(true, Ordering::SeqCst);
+        let started = std::time::Instant::now();
+        catalog.install("jarvis-demo", None, false, None).await.unwrap();
+        assert!(started.elapsed() < Duration::from_secs(20), "{:?}", started.elapsed());
+        assert_eq!(
+            (own.asked("packages/jarvis-demo-1.0.0.vgp"), mirror.asked("packages/jarvis-demo-1.0.0.vgp")),
+            (1, 1)
+        );
+        assert!(fixture.host.installed("jarvis-demo").is_some());
+    }
+
+    #[tokio::test]
+    async fn a_stalled_feed_list_comes_from_the_mirror_after_the_stall_not_after_its_whole_time() {
+        let (main, own) = (site().await, site().await);
+        main.publish(&[character("arthur", "1.0.0")]);
+        own.publish(&[character("jarvis-demo", "1.0.0")]);
+        let mirror = mirror_of(&own).await;
+        let fixture = fixture_mirrored(FeedSource::Url(main.url.clone()), Placement::Pc, &map(&own, &mirror));
+        let catalog = &fixture.catalog;
+        catalog.add_source(&own.url, None).await.unwrap();
+        catalog.view(true).await;
+        assert_eq!(mirror.knocks.load(Ordering::SeqCst), 0);
+
+        // The list starts and stalls, the way a cut connection does past its first kilobytes: the mirror's list after
+        // the stall, not after the list's twenty seconds.
+        own.feed_stall.store(true, Ordering::SeqCst);
+        let started = std::time::Instant::now();
+        let view = catalog.view(true).await;
+        assert!(started.elapsed() < FEED_TIMEOUT / 2, "{:?}", started.elapsed());
+        assert_eq!(ids(&view), ["arthur", "jarvis-demo"]);
+        let feed = view.feeds.last().unwrap();
+        assert!(!feed.offline && !feed.closed && feed.problem.is_none(), "{feed:?}");
+        assert_eq!(mirror.knocks.load(Ordering::SeqCst), 1);
+
+        // The mirror is asked first now: the next read does not wait for the stall, its own host is not asked.
+        let knocks = own.knocks.load(Ordering::SeqCst);
+        catalog.view(true).await;
+        assert_eq!(own.knocks.load(Ordering::SeqCst), knocks);
+        assert_eq!(mirror.knocks.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn only_the_feeds_own_host_or_the_mirrors_410_closes_an_own_source() {
+        let (main, own) = (site().await, site().await);
+        main.publish(&[character("arthur", "1.0.0")]);
+        own.publish(&[character("jarvis-demo", "1.0.0")]);
+        let mirror = mirror_of(&own).await;
+        let fixture = fixture_mirrored(FeedSource::Url(main.url.clone()), Placement::Pc, &map(&own, &mirror));
+        let catalog = &fixture.catalog;
+        catalog.add_source(&own.url, None).await.unwrap();
+        catalog.view(true).await;
+
+        // Its host down and the mirror without the feed (404, a mirror behind): not closed, the copy before stays.
+        own.down.store(true, Ordering::SeqCst);
+        mirror.gone.store(true, Ordering::SeqCst);
+        let view = catalog.view(true).await;
+        let feed = view.feeds.last().unwrap();
+        assert!(!feed.closed && feed.problem.is_some(), "{feed:?}");
+        assert_eq!(ids(&view), ["arthur", "jarvis-demo"]);
+
+        // Its own host's 404 closes it, and the mirror is not asked.
+        own.down.store(false, Ordering::SeqCst);
+        own.gone.store(true, Ordering::SeqCst);
+        let knocks = mirror.knocks.load(Ordering::SeqCst);
+        let view = catalog.view(true).await;
+        assert!(view.feeds.last().unwrap().closed);
+        assert_eq!(mirror.knocks.load(Ordering::SeqCst), knocks);
+
+        // Open again; then its host down and the mirror saying 410: closed where the mirror copies from.
+        own.gone.store(false, Ordering::SeqCst);
+        assert_eq!(ids(&catalog.view(true).await), ["arthur", "jarvis-demo"]);
+        own.down.store(true, Ordering::SeqCst);
+        mirror.gone.store(false, Ordering::SeqCst);
+        mirror.closed.store(true, Ordering::SeqCst);
+        let view = catalog.view(true).await;
+        assert!(view.feeds.last().unwrap().closed);
+        assert_eq!(ids(&view), ["arthur"]);
+    }
+
+    #[tokio::test]
+    async fn a_feed_hides_what_was_installed_from_it_and_a_closed_own_source_hides_all_it_gave() {
+        let (main, own) = (site().await, site().await);
+        main.publish(&[character("arthur", "1.0.0")]);
+        own.publish(&[character("jarvis-demo", "1.0.0"), character("palych", "1.0.0")]);
+        let fixture = fixture(FeedSource::Url(main.url.clone()), Placement::Pc);
+        let (catalog, host) = (&fixture.catalog, &fixture.host);
+        catalog.add_source(&own.url, None).await.unwrap();
+        for id in ["arthur", "jarvis-demo", "palych"] {
+            catalog.install(id, None, false, None).await.unwrap();
+        }
+        let mut events = fixture.events.subscribe();
+        let listed = |view: PackagesView| view.packages.into_iter().map(|package| package.id).collect::<Vec<_>>();
+
+        // The own source hides one: not in the catalog, not listed here, its files kept.
+        let mut entries: Value = serde_json::from_str(&lock(&own.feed)).unwrap();
+        entries["packages"].as_array_mut().unwrap()[0] = json!({ "id": "jarvis-demo", "hidden": true });
+        *lock(&own.feed) = entries.to_string();
+        let view = catalog.view(true).await;
+        assert_eq!(ids(&view), ["arthur", "palych"]);
+        assert!(host.is_hidden("jarvis-demo") && !host.is_hidden("palych"));
+        assert_eq!(listed(host.view().await), ["arthur", "palych"]);
+        assert!(host.installed("jarvis-demo").is_some(), "its files stay");
+        assert_eq!(host.visible_all().len(), 2);
+        assert_eq!(changes(&mut events), ["jarvis-demo hidden"]);
+        catalog.view(true).await;
+        assert!(changes(&mut events).is_empty(), "told once");
+
+        // The main feed cannot hide what came from the own source; it hides its own.
+        main.name_feeds(json!([]));
+        let mut feed: Value = serde_json::from_str(&lock(&main.feed)).unwrap();
+        feed["packages"].as_array_mut().unwrap().push(json!({ "id": "palych", "hidden": true }));
+        feed["packages"].as_array_mut().unwrap()[0] = json!({ "id": "arthur", "hidden": true });
+        *lock(&main.feed) = feed.to_string();
+        catalog.view(true).await;
+        assert!(!host.is_hidden("palych"), "not its feed");
+        assert!(host.is_hidden("arthur"));
+        main.publish(&[character("arthur", "1.0.0")]);
+
+        // The own source says so no more: shown again.
+        own.publish(&[character("jarvis-demo", "1.0.0"), character("palych", "1.0.0")]);
+        catalog.view(true).await;
+        assert!(!host.is_hidden("jarvis-demo") && !host.is_hidden("arthur"));
+        assert_eq!(listed(host.view().await), ["arthur", "jarvis-demo", "palych"]);
+        changes(&mut events);
+
+        // Taken down (404): closed — its copy gone, all it gave hidden; told once.
+        own.gone.store(true, Ordering::SeqCst);
+        let view = catalog.view(true).await;
+        assert_eq!(ids(&view), ["arthur"]);
+        let closed = view.feeds.last().unwrap();
+        assert!(closed.own && closed.closed && closed.count == 0, "{closed:?}");
+        assert!(closed.problem.as_deref().unwrap().contains("закрыт"), "{closed:?}");
+        assert!(host.is_hidden("jarvis-demo") && host.is_hidden("palych"));
+        assert!(!catalog.extra_dir(&own.address()).join("catalog.json").exists());
+        let mut told = changes(&mut events);
+        told.sort();
+        assert_eq!(told, ["jarvis-demo hidden", "palych hidden"]);
+        catalog.view(true).await;
+        assert!(changes(&mut events).is_empty());
+        // Down for a while (5xx, no network) is not closed: only 404 and 410.
+        own.gone.store(false, Ordering::SeqCst);
+        catalog.view(true).await;
+        assert!(!host.is_hidden("palych"), "back up: shown again");
+        own.down.store(true, Ordering::SeqCst);
+        let view = catalog.view(true).await;
+        assert!(!view.feeds.last().unwrap().closed && !host.is_hidden("palych"));
+        assert_eq!(ids(&view), ["arthur", "jarvis-demo", "palych"], "the copy before stays");
+
+        // Removed: its packages leave the catalog; what came from it stays as it was.
+        own.gone.store(true, Ordering::SeqCst);
+        own.down.store(false, Ordering::SeqCst);
+        catalog.view(true).await;
+        let view = catalog.remove_source(&own.url, None).await.unwrap();
+        assert!(view.feeds.iter().all(|feed| !feed.own));
+        assert!(host.is_hidden("palych"), "still hidden");
+        assert!(!catalog.extra_dir(&own.address()).exists());
+        assert_eq!(catalog.remove_source(&own.url, None).await.unwrap_err().status, StatusCode::NOT_FOUND);
+        // A package put in anew is shown.
+        catalog.remove("palych", None).await.unwrap();
+        assert!(!host.is_hidden("palych"));
+    }
+
+    #[tokio::test]
+    async fn a_package_called_feeds_keeps_its_previews_beside_the_extra_feeds_folders() {
+        let (main, store) = (site().await, site().await);
+        store.publish(&[character("bublik", "1.0.0")]);
+        let named = json!([{ "url": store.url, "publisher": "duowave" }]);
+        main.publish(&[character("feeds", "1.0.0")]);
+        main.name_feeds(named.clone());
+        let fixture = fixture(FeedSource::Url(main.url.clone()), Placement::Pc);
+        assert_eq!(ids(&fixture.catalog.view(false).await), ["feeds", "bublik"]);
+        // Its newer version: the folder of the one before goes, the store's copy stays while the store is down.
+        main.publish(&[character("feeds", "1.1.0")]);
+        main.name_feeds(named);
+        store.down.store(true, Ordering::SeqCst);
+        let view = fixture.catalog.view(true).await;
+        assert_eq!((ids(&view), view.packages[0].version.as_str()), (vec!["feeds", "bublik"], "1.1.0"));
+        assert!(fixture.catalog.preview("feeds", "image").await.is_ok());
+        assert!(fixture.catalog.preview("bublik", "image").await.is_ok());
+        assert!(!fixture.catalog.dir.join("feeds/1.0.0").exists());
+    }
+
+    #[tokio::test]
+    async fn reads_an_extra_feed_at_once_when_the_copy_of_the_main_one_is_fresh_but_older_than_it() {
+        let (main, store) = (site().await, site().await);
+        main.publish(&[character("arthur", "1.0.0")]);
+        store.publish(&[character("bublik", "1.0.0")]);
+        let fixture = fixture(FeedSource::Url(main.url.clone()), Placement::Pc);
+        assert_eq!(ids(&fixture.catalog.view(false).await), ["arthur"]);
+        // A copy that names the store, written by a gateway that did not read extra feeds — still fresh.
+        main.name_feeds(json!([{ "url": store.url, "publisher": "duowave" }]));
+        std::fs::write(fixture.catalog.dir.join("catalog.json"), lock(&main.feed).as_bytes()).unwrap();
+        assert_eq!(ids(&fixture.catalog.view(false).await), ["arthur", "bublik"]);
+        let reads = (main.reads.load(Ordering::SeqCst), store.reads.load(Ordering::SeqCst));
+        fixture.catalog.view(false).await;
+        assert_eq!((main.reads.load(Ordering::SeqCst), store.reads.load(Ordering::SeqCst)), reads);
+    }
+
+    #[tokio::test]
+    async fn the_station_sees_the_extra_feeds_through_the_computer() {
+        struct Computer(String);
+        impl crate::plugins::controller::HomeLink for Computer {
+            fn up(&self) -> Option<(String, String)> {
+                Some((self.0.clone(), "pair-key".into()))
+            }
+        }
+        async fn serve(router: Router) -> String {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = format!("http://{}", listener.local_addr().unwrap());
+            tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+            address
+        }
+        let (main, store) = (site().await, site().await);
+        main.publish(&[character("arthur", "1.0.0")]);
+        store.publish(&[character("bublik", "1.0.0")]);
+        main.name_feeds(json!([{ "url": store.url, "publisher": "duowave", "title": "DuoWave Store" }]));
+        // The computer reads both feeds, and hands them on as its home server does.
+        let computer = fixture(FeedSource::Url(main.url.clone()), Placement::Pc);
+        assert_eq!(ids(&computer.catalog.view(false).await), ["arthur", "bublik"]);
+        let copy = computer.catalog.export_for_station().unwrap();
+        assert_eq!(
+            (copy["feeds"][0]["url"].as_str(), copy["feeds"].as_array().map(Vec::len)),
+            (Some(store.url.as_str()), Some(1))
+        );
+        let archive = format!("{}/packages/bublik-1.0.0.vgp", store.origin());
+        assert!(computer.catalog.fetch_for_station(&archive).await.is_ok());
+        let elsewhere = computer.catalog.fetch_for_station("http://127.0.0.1:9/packages/x.vgp").await.unwrap_err();
+        assert_eq!(elsewhere.status, StatusCode::FORBIDDEN);
+        let (export, files) = (computer.catalog.clone(), computer.catalog.clone());
+        let home = serve(
+            Router::new()
+                .route(
+                    "/home/v1/catalog",
+                    get(move || {
+                        let catalog = export.clone();
+                        async move { axum::Json(catalog.export_for_station().unwrap()) }
+                    }),
+                )
+                .route(
+                    "/home/v1/catalog/file",
+                    get(move |axum::extract::Query(query): axum::extract::Query<BTreeMap<String, String>>| {
+                        let catalog = files.clone();
+                        async move { catalog.fetch_for_station(&query["url"]).await }
+                    }),
+                ),
+        )
+        .await;
+
+        // The station: neither site in its reach.
+        let station = fixture_with(
+            FeedSource::Url(main.url.clone()),
+            Placement::StationServer,
+            None,
+            Some(Arc::new(Computer(home))),
+        );
+        main.down.store(true, Ordering::SeqCst);
+        store.down.store(true, Ordering::SeqCst);
+        let view = station.catalog.view(true).await;
+        assert_eq!(ids(&view), ["arthur", "bublik"], "{view:?}");
+        assert_eq!(view.packages[1].source.as_deref(), Some("DuoWave Store"));
+        assert!(!view.offline && !view.feeds[0].offline && view.feeds[0].count == 1, "{view:?}");
+        // The store's archive the computer's way: the station's own try is refused.
+        store.refuse.store(1, Ordering::SeqCst);
+        let installed = station.catalog.install("bublik", None, false, None).await.unwrap();
+        assert_eq!(installed.version.as_deref(), Some("1.0.0"));
+
+        // A computer older than extra feeds sends the main one alone: so the station sees it.
+        let text = lock(&main.feed).clone();
+        let url = main.url.clone();
+        let older = serve(Router::new().route(
+            "/home/v1/catalog",
+            get(move || {
+                let (url, text) = (url.clone(), text.clone());
+                async move { axum::Json(json!({ "url": url, "feed": text, "signature": null })) }
+            }),
+        ))
+        .await;
+        let station = fixture_with(
+            FeedSource::Url(main.url.clone()),
+            Placement::StationServer,
+            None,
+            Some(Arc::new(Computer(older))),
+        );
+        let view = station.catalog.view(true).await;
+        assert_eq!(ids(&view), ["arthur"]);
+        assert!(view.feeds[0].count == 0 && !view.feeds[0].offline && view.feeds[0].problem.is_none());
+    }
+
+    /// A tester's Station Mini 2 (22.11): its main feed open to it, DuoWave Store and the demo feed (an own source)
+    /// closed to it and open to the computer beside it. The station takes both feeds' copies from the computer, and the
+    /// demo character's archive through it; a computer that does not read a feed has none to give, and says so.
+    #[tokio::test]
+    async fn the_station_takes_a_feed_closed_to_it_from_the_computer_its_own_sources_too() {
+        struct Computer(String);
+        impl crate::plugins::controller::HomeLink for Computer {
+            fn up(&self) -> Option<(String, String)> {
+                Some((self.0.clone(), "pair-key".into()))
+            }
+        }
+        async fn serve(router: Router) -> String {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = format!("http://{}", listener.local_addr().unwrap());
+            tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+            address
+        }
+        let (main, store, demo) = (site().await, site().await, site().await);
+        main.publish(&[character("arthur", "1.0.0")]);
+        store.publish(&[character("bublik", "1.0.0")]);
+        demo.publish(&[character("glados", "1.0.0")]);
+        main.name_feeds(json!([{ "url": store.url, "publisher": "duowave", "title": "DuoWave Store" }]));
+        let computer = fixture(FeedSource::Url(main.url.clone()), Placement::Pc);
+        computer.catalog.add_source(&demo.url, None).await.unwrap();
+        assert_eq!(ids(&computer.catalog.view(true).await), ["arthur", "bublik", "glados"]);
+        // Its copy of each feed it reads, the own source too; none of a feed it does not read.
+        for site in [&store, &demo] {
+            let copy = computer.catalog.feed_for_station(&site.url).expect("a feed it reads");
+            assert_eq!(copy["url"].as_str(), Some(site.url.as_str()));
+            assert!(copy["feed"].as_str().is_some() && copy["fetchedAt"].as_str().is_some(), "{copy}");
+        }
+        assert!(computer.catalog.feed_for_station("http://127.0.0.1:9/catalog.json").is_none());
+        // The own source's archive is a file of a feed it reads: given.
+        let glados = format!("{}/packages/glados-1.0.0.vgp", demo.origin());
+        assert!(computer.catalog.fetch_for_station(&glados).await.is_ok());
+        let (feeds, files) = (computer.catalog.clone(), computer.catalog.clone());
+        let home = serve(
+            Router::new()
+                .route(
+                    "/home/v1/catalog/feed",
+                    get(move |axum::extract::Query(query): axum::extract::Query<BTreeMap<String, String>>| {
+                        let catalog = feeds.clone();
+                        async move {
+                            match catalog.feed_for_station(&query["url"]) {
+                                Some(copy) => axum::Json(copy).into_response(),
+                                None => StatusCode::NOT_FOUND.into_response(),
+                            }
+                        }
+                    }),
+                )
+                .route(
+                    "/home/v1/catalog/file",
+                    get(move |axum::extract::Query(query): axum::extract::Query<BTreeMap<String, String>>| {
+                        let catalog = files.clone();
+                        async move { catalog.fetch_for_station(&query["url"]).await }
+                    }),
+                ),
+        )
+        .await;
+
+        // The station: the main feed in its reach, the demo feed added while it was, then both others closed to it.
+        let station = fixture_with(
+            FeedSource::Url(main.url.clone()),
+            Placement::StationServer,
+            None,
+            Some(Arc::new(Computer(home.clone()))),
+        );
+        station.catalog.add_source(&demo.url, None).await.unwrap();
+        store.down.store(true, Ordering::SeqCst);
+        demo.down.store(true, Ordering::SeqCst);
+        let view = station.catalog.view(true).await;
+        assert_eq!(ids(&view), ["arthur", "bublik", "glados"], "{view:?}");
+        assert!(view.feeds.iter().all(|feed| !feed.offline && feed.problem.is_none() && feed.count == 1), "{view:?}");
+        // The demo character's archive the computer's way: the station's own try is refused.
+        demo.refuse.store(1, Ordering::SeqCst);
+        let installed = station.catalog.install("glados", None, false, None).await.unwrap();
+        assert_eq!(installed.version.as_deref(), Some("1.0.0"));
+
+        // A computer that does not read the demo feed has no copy of it: the station says so beside its own failure.
+        let blind = fixture(FeedSource::Url(main.url.clone()), Placement::Pc);
+        main.down.store(false, Ordering::SeqCst);
+        store.down.store(false, Ordering::SeqCst);
+        blind.catalog.view(true).await;
+        store.down.store(true, Ordering::SeqCst);
+        let feeds = blind.catalog.clone();
+        let blind_home = serve(Router::new().route(
+            "/home/v1/catalog/feed",
+            get(move |axum::extract::Query(query): axum::extract::Query<BTreeMap<String, String>>| {
+                let catalog = feeds.clone();
+                async move {
+                    match catalog.feed_for_station(&query["url"]) {
+                        Some(copy) => axum::Json(copy).into_response(),
+                        None => StatusCode::NOT_FOUND.into_response(),
+                    }
+                }
+            }),
+        ))
+        .await;
+        let lonely = fixture_with(
+            FeedSource::Url(main.url.clone()),
+            Placement::StationServer,
+            None,
+            Some(Arc::new(Computer(blind_home))),
+        );
+        demo.down.store(false, Ordering::SeqCst);
+        lonely.catalog.add_source(&demo.url, None).await.unwrap();
+        demo.down.store(true, Ordering::SeqCst);
+        let view = lonely.catalog.view(true).await;
+        let of_demo = view.feeds.iter().find(|feed| feed.url == demo.url).unwrap();
+        let said = of_demo.problem.clone().unwrap_or_default();
+        assert!(of_demo.offline && said.contains("HTTP 503") && said.contains("Через компьютер тоже нет"), "{said}");
+        // The store came from the blind computer, which reads it.
+        assert!(view.feeds.iter().any(|feed| feed.url == store.url && !feed.offline && feed.count == 1), "{view:?}");
+    }
+
+    /// The helper's contract declares the catalog by this: it must say what `export_for_station` would give.
+    #[tokio::test]
+    async fn the_computer_has_a_copy_for_the_station_once_it_read_its_own_feed() {
+        let main = site().await;
+        main.publish(&[character("arthur", "1.0.0")]);
+        let computer = fixture(FeedSource::Url(main.url.clone()), Placement::Pc);
+        assert!(!computer.catalog.has_copy_for_station(), "not read yet");
+        assert_eq!(ids(&computer.catalog.view(false).await), ["arthur"]);
+        assert!(computer.catalog.has_copy_for_station() && computer.catalog.export_for_station().is_some());
+
+        // The folder still holds the copy of the feed it read before its address changed: none of the new one yet.
+        let moved = fixture(FeedSource::Url("https://packages.example.org/catalog.json".into()), Placement::Pc);
+        std::fs::create_dir_all(&moved.catalog.dir).unwrap();
+        for file in ["catalog.json", "state.json"] {
+            std::fs::copy(computer.catalog.dir.join(file), moved.catalog.dir.join(file)).unwrap();
+        }
+        assert!(!moved.catalog.has_copy_for_station() && moved.catalog.export_for_station().is_none());
+        // No feed at all.
+        assert!(!fixture(FeedSource::Missing, Placement::Pc).catalog.has_copy_for_station());
+    }
+}

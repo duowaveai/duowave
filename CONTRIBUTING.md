@@ -9,8 +9,8 @@ the same licences (Apache-2.0, section 5) — no separate agreement to sign.*
 - **Ошибку** — issue: что делали, что ждали, что вышло, модель колонки и прошивка, кусок журнала без
   идентификаторов (ниже).
 - **Новую модель колонки** — issue по образцу вики hackalice: модель, прошивка, что работает, что нет.
-- **Исправление или возможность** — PR: небольшой, с тестами; `cargo test -p duowave` проходит,
-  `cargo clippy -p duowave --all-targets` — без предупреждений, `cargo fmt` применён; пульт собирается
+- **Исправление или возможность** — PR: небольшой, с тестами; `cargo test --workspace` проходит,
+  `cargo clippy --workspace --all-targets` — без предупреждений, `cargo fmt` применён; пульт собирается
   (`pnpm --filter panel build`). Шлюз — на Rust (`gateway/`), правила кода — `gateway/PORTING.md`. Большое лучше
   сначала обсудить в issue.
 - **Документацию** — PR в `docs/`.

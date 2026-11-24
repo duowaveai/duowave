@@ -1,7 +1,7 @@
 # The voice gateway in Rust (gateway/) and, once it runs the Rust engine inside, the desktop app.
 [workspace]
 resolver = "2"
-members = ["gateway"]
+members = ["gateway", "crates/duowave-base", "crates/duowave-rights", "crates/duowave-voice", "crates/duowave-brain", "crates/duowave-ears", "crates/duowave-apps", "crates/duowave-home", "crates/duowave-pc"]
 # yam: YAM's own repository, checked out there by the release to pack the station's package (release.yml,
 # yam-registry.yml) — a package of its own, not a member. apps/own-server: the «VPN» app's program with shoes inside,
 # a project of its own so that shoes' dependencies never reach the gateway's builds; apps/youtube-lite: «YouTube
@@ -9,16 +9,63 @@ members = ["gateway"]
 exclude = ["desktop/src-tauri", "yam", "apps/own-server", "apps/youtube-lite"]
 
 [workspace.package]
-version = "0.18.6"
+version = "0.19.0"
 edition = "2021"
 license = "Apache-2.0"
 publish = false
 
-# A computer's build: thin LTO over the default codegen units, most of fat LTO's speed for much less build time (the
-# release builds it on five platforms). The station's build keeps fat LTO and one unit (below).
-# Panics unwind here: a task that panics ends alone (tokio catches it, the voice lab's catch_unwind reports it, a
-# plugin's thread dies by itself), and the gateway goes on serving every station and can still update itself. With
-# abort one panic anywhere ended the whole process, and a panic at every start kept it from ever reaching the update.
+# The dependencies more than one crate of the workspace takes: their versions and features, once. Each crate names
+# the ones it uses (`name.workspace = true`) and says why in its own Cargo.toml.
+[workspace.dependencies]
+aes-gcm = "0.11.1"
+anyhow = "1.0.104"
+async-trait = "0.1.92"
+axum = { version = "0.8.9", features = ["ws", "macros"] }
+base64 = "0.23.1"
+bytes = "1.12.1"
+chrono = { version = "0.4.45", features = ["serde"] }
+chrono-tz = "0.10.4"
+dotenvy = "0.15.7"
+flate2 = "1.1.10"
+futures = "0.3.34"
+hex = "0.4.3"
+hmac = "0.13.0"
+http-body-util = "0.1.5"
+image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp", "gif"] }
+libc = "0.2.191"
+minisign = "0.9.1"
+minisign-verify = "0.3.0"
+rand = "0.10.3"
+regex = "1.13.1"
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls-no-provider", "json", "stream", "multipart", "charset", "query", "form"] }
+rpassword = "7.5.4"
+rusqlite = { version = "0.41.1", features = ["bundled", "serde_json"] }
+ring = "0.17.14"
+rust-embed = { version = "8.13.0", features = ["mime-guess"] }
+rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+scrypt = "0.12.0"
+semver = "1.0.28"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+serde_path_to_error = "0.1.20"
+sha2 = "0.11.1"
+subtle = "2.6.1"
+tar = "0.4.46"
+tempfile = "3.27.0"
+thiserror = "2.0.21"
+tokio = { version = "1.54.1", features = ["full"] }
+tokio-stream = { version = "0.1.19", features = ["sync"] }
+tokio-tungstenite = { version = "0.29", features = ["rustls-tls-webpki-roots"] }
+tokio-rustls = { version = "0.26.6", default-features = false, features = ["ring", "tls12", "logging"] }
+tokio-util = { version = "0.7.20", features = ["rt"] }
+tower = { version = "0.5.3", features = ["util"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
+url = "2.5.8"
+uuid = { version = "1.29.0", features = ["v4", "serde"] }
+webpki-roots = "1.0.11"
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_ProcessStatus", "Win32_System_SystemInformation", "Win32_System_Threading"] }
+
 [profile.release]
 lto = "thin"
 strip = true

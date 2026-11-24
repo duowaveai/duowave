@@ -1,0 +1,73 @@
+[package]
+name = "duowave-home"
+description = "DuoWave's floor «Дом»: where the gateway stands and its stations (placement), the helpers and the link between computers, the home's devices and its centre, the home server a station leans on, the way out to the internet, the updates and the health page"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+build = "build.rs"
+
+[features]
+# The gateway's own switches, passed down (gateway/Cargo.toml).
+station = ["yandex-station", "duowave-base/station", "duowave-rights/station", "duowave-voice/station", "duowave-brain/station", "duowave-ears/station", "duowave-apps/station"]
+yandex-station = ["duowave-ears/yandex-station", "duowave-apps/yandex-station"]
+# What the tests of the crates above take from this one (a helper's `/home/v1` and a station, an update's archive).
+testing = ["duowave-base/testing", "duowave-rights/testing", "duowave-voice/testing", "duowave-brain/testing", "duowave-ears/testing", "duowave-apps/testing", "dep:tempfile", "dep:minisign"]
+
+[dependencies]
+duowave-base = { path = "../duowave-base" }
+duowave-rights = { path = "../duowave-rights" }
+duowave-voice = { path = "../duowave-voice" }
+duowave-brain = { path = "../duowave-brain" }
+duowave-ears = { path = "../duowave-ears" }
+duowave-apps = { path = "../duowave-apps" }
+aes-gcm.workspace = true
+anyhow.workspace = true
+axum.workspace = true
+base64.workspace = true
+chrono.workspace = true
+flate2.workspace = true
+futures.workspace = true
+hex.workspace = true
+hmac.workspace = true
+minisign-verify.workspace = true
+# The updates' tests' own signing key (updates/testing.rs), for the computer's floor's tests too (feature testing).
+minisign = { workspace = true, optional = true }
+rand.workspace = true
+reqwest.workspace = true
+rusqlite.workspace = true
+rustls.workspace = true
+semver.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+subtle.workspace = true
+tar.workspace = true
+tempfile = { workspace = true, optional = true }
+tokio.workspace = true
+# The link's TLS on both ends (helpers/link.rs, link_serve.rs): already in both builds through tokio-tungstenite;
+# without its default features, which would bring aws-lc-rs.
+tokio-rustls.workspace = true
+tokio-stream.workspace = true
+tokio-tungstenite.workspace = true
+tokio-util.workspace = true
+tower.workspace = true
+tracing.workspace = true
+url.workspace = true
+webpki-roots.workspace = true
+
+[dev-dependencies]
+duowave-base = { path = "../duowave-base", features = ["testing"] }
+duowave-rights = { path = "../duowave-rights", features = ["testing"] }
+duowave-voice = { path = "../duowave-voice", features = ["testing"] }
+duowave-brain = { path = "../duowave-brain", features = ["testing"] }
+duowave-ears = { path = "../duowave-ears", features = ["testing"] }
+duowave-apps = { path = "../duowave-apps", features = ["testing"] }
+http-body-util.workspace = true
+minisign.workspace = true
+regex.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
+
+[target."cfg(unix)".dependencies]
+libc.workspace = true

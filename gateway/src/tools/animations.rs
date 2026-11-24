@@ -211,11 +211,12 @@ mod tests {
         let mut names = vec![stop_name.clone(), weather_name, "thinking".to_string()];
         names.sort();
         assert_eq!(led.names(), names);
-        let directive = led.animation(&stop_name).unwrap();
-        assert_eq!(directive.name, "draw_animation_directive");
+        let command = led.animation(&stop_name).unwrap();
         assert_eq!(
-            directive.typed_payload.as_deref(),
-            Some(&base64::Engine::decode(&base64::engine::general_purpose::STANDARD, stop).unwrap()[..])
+            command,
+            crate::ear::Command::LightAnimation(
+                base64::Engine::decode(&base64::engine::general_purpose::STANDARD, stop).unwrap()
+            )
         );
 
         // Nothing new the second time.

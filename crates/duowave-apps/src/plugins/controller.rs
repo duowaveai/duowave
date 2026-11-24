@@ -1,0 +1,4929 @@
+//! The plugin host: the packages in PACKAGES_DIR (of every kind; it runs the plugins), the admin's choices, and the
+//! code of the plugins that are on.
+//!
+//! - A plugin's code is loaded at its first call (a phrase, a tool, a source) and unloaded after
+//!   `PLUGINS_IDLE_UNLOAD_S` without one: a plugin nobody uses costs nothing but its place on disk — and nothing of
+//!   the station's memory: a context takes its declared budget only while it is loaded (budget.rs).
+//! - On the station a context loads only when its budget fits what is free; if it does not, idle contexts unload
+//!   first, the longest idle first, one in a call never; if it still does not, the call fails and says why.
+//! - Switching one on starts its code first: what does not start stays off, and the admin reads why. Memory never
+//!   keeps a plugin off: one that has no room to start now is on, and loads at its first call.
+//! - A reload starts the newest version on disk beside the one running. It starts — it takes over; it does not —
+//!   the one running stays, and its error is in the log and the panel. After a restart the same: a version that
+//!   does not start gives way to the one that last did (kept in the database).
+//! - What the plugins that are on give is rebuilt on every change: their phrases (the router asks `matched`), their
+//!   tools (`tool_contributions`), their media sources.
+//! - An app that says `resident` runs the whole time it is switched on: started at once and on every tick it is not,
+//!   never unloaded for idling (a receiver a phone finds by itself, AirPlay).
+//! - The safe mode (PLUGINS_DISABLED=1) runs none of it, whatever is switched on.
+use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, OnceLock, RwLock, Weak};
+use std::time::{Duration, Instant};
+
+use serde::Serialize;
+use serde_json::{json, Map, Value};
+
+use super::budget::{self, Idle, MemoryGauge, MemoryNow, MemoryProbe, PluginShare, PressureAction, ResourcesView};
+use super::bundled::{self, BundledPackage};
+use super::host_api::{storage_used, DataNews, PluginHostApi};
+use super::manifest::{self, AgentCard, Budget, Manifest, PackageKind, Permission, Runtime, SettingSpec, ToolSpec};
+use super::media::PluginMediaSource;
+use super::phrases::Phrase;
+use super::registry::{self, Candidate, Origin, Package};
+use super::runtime::{CallKind, MemoryStats, PluginError, PluginInstance, PluginRuntime};
+use crate::config::PluginsConfig;
+use crate::core::availability::Placement;
+use crate::core::events::{Actor, EventBus, GatewayEvent};
+use crate::core::identity::permissions::use_of;
+use crate::dialog::connectors::{ToolContext, ToolContribution};
+use crate::dialog::llm::LlmTool;
+use crate::operations::system_memory::Pressure;
+use crate::platform::http::ApiError;
+use crate::secrets::SecretsService;
+use crate::settings::definitions::PACKAGE_SETTINGS;
+use crate::settings::SettingsService;
+use crate::skills::capabilities::{CapabilityName, Intent};
+use crate::skills::media::playback::{PlaybackNews, PlaybackReport, PlaybackWatch};
+use crate::skills::media::player::MediaPlayer;
+use crate::skills::media::sources::MediaSources;
+use crate::skills::quick_commands::QuickMatch;
+use crate::skills::router::{ExtraRules, EXECUTOR};
+use crate::storage::Db;
+use crate::utils::time::now_iso;
+
+/// What the model reads of a tool's answer at most.
+const TOOL_ANSWER: usize = 16 * 1024;
+/// Lines of a plugin's own journal kept in memory.
+const JOURNAL_LINES: usize = 300;
+
+/// A line of a plugin's own journal (for the panel and the workshop): its console, its calls, its loads, and what the
+/// station said of its items.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct JournalLine {
+    pub at: String,
+    /// info, warn, error — its console; call, load, player — the host's.
+    pub level: String,
+    pub message: String,
+}
+
+/// Where the gateway runs now: a plugin runs only where its `runs` says.
+pub type PlacementNow = Arc<dyn Fn() -> Placement + Send + Sync>;
+
+/// The helper that gives the station an ability (src/helpers: the apps, the history, the catalog), as the plugins see
+/// it: its address and key while it is up — a plugin with `prefer: home` runs there then.
+pub trait HomeLink: Send + Sync {
+    fn up(&self) -> Option<(String, String)>;
+    /// A helper would give it, on the line or not: an app that prefers home is then «away» while it is not.
+    fn offered(&self) -> bool {
+        self.up().is_some()
+    }
+    /// The name of the helper that gives it now, as people see it («Mac»).
+    fn name(&self) -> Option<String> {
+        None
+    }
+    /// Why no helper gives it now, for people («Mac не на связи — спит, выключен или без сети»); None — one gives it,
+    /// or nothing is known.
+    fn why_not(&self) -> Option<String> {
+        None
+    }
+}
+
+/// A face whose code the Турбо refused is asked for again no sooner than this after the refusal.
+const TURBO_ASK_AGAIN_MS: u64 = 5 * 60_000;
+
+/// A call to the Турбо that failed: its HTTP status when it answered, and why in words.
+#[derive(Debug, Clone, PartialEq)]
+struct HomeFailed {
+    status: Option<u16>,
+    message: String,
+}
+
+impl std::fmt::Display for HomeFailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+/// A call to the home server's copy of a plugin: `POST <url>/home/v1/plugins/<id>/call`.
+async fn call_home(
+    url: &str,
+    key: &str,
+    id: &str,
+    function: &str,
+    input: &Value,
+    kind: CallKind,
+) -> Result<Value, HomeFailed> {
+    let kind_name = match kind {
+        CallKind::Voice => "voice",
+        CallKind::Tool => "tool",
+        CallKind::Background => "background",
+        CallKind::Agent => "agent",
+    };
+    let response = crate::utils::http::client_without_redirects()
+        .post(format!("{}/home/v1/plugins/{id}/call", url.trim_end_matches('/')))
+        .bearer_auth(key)
+        .timeout(kind.limit())
+        .json(&json!({ "function": function, "input": input, "kind": kind_name }))
+        .send()
+        .await
+        .map_err(|error| HomeFailed {
+            status: None,
+            message: crate::tr!("компьютер не ответил: {error}", error = error.without_url()),
+        })?;
+    let status = response.status();
+    let failed = |message: String| HomeFailed { status: Some(status.as_u16()), message };
+    let body: Value = response
+        .json()
+        .await
+        .map_err(|_| failed(crate::tr!("компьютер ответил не JSON (HTTP {status})", status = status)))?;
+    if !status.is_success() {
+        let message =
+            body.get("message").and_then(Value::as_str).map(str::to_string).unwrap_or_else(|| crate::tr!("отказ"));
+        return Err(failed(crate::tr!("компьютер: {message}", message = message)));
+    }
+    Ok(body.pointer("/message/result").cloned().or_else(|| body.get("result").cloned()).unwrap_or(Value::Null))
+}
+
+pub struct PluginsDeps {
+    pub config: PluginsConfig,
+    pub db: Arc<Db>,
+    pub settings: Arc<SettingsService>,
+    pub events: EventBus,
+    /// The media sources the media skills read: the plugins' join and leave here.
+    pub media: Arc<MediaSources>,
+    pub placement: PlacementNow,
+    /// The engine; QuickJS unless a test gives its own.
+    pub runtime: Arc<dyn PluginRuntime>,
+    /// The machine's memory and disk: the plugins' budget (budget.rs).
+    pub memory: Arc<dyn MemoryProbe>,
+    /// The plugins' free memory for the availability registry (`Need::Memory`).
+    pub gauge: Arc<MemoryGauge>,
+    /// The packages built into the gateway (bundled.rs), laid out at the start; none in tests.
+    pub bundled: Vec<BundledPackage>,
+    /// Our player and its watch: a tool that acts plays through the player; a plugin answers a silent station with
+    /// what to play instead through the watch (stage 5а). None in tests that do not play.
+    pub player: Option<Arc<MediaPlayer>>,
+    pub watch: Option<Arc<PlaybackWatch>>,
+    /// The helper that gives the apps (src/helpers), on a station: where a plugin with `prefer: home` runs while it
+    /// is up.
+    pub home: Option<Arc<dyn HomeLink>>,
+    /// Where an app's program reaches the gateway's Host API: `http://127.0.0.1:<port>` (src/apps).
+    pub gateway_url: String,
+    /// The gateway's services behind `host.call` (content, tools, smart home…); none in tests that need none.
+    pub services: Option<Arc<dyn super::host_api::HostServices>>,
+    /// The gateway's safe: the plugins' private settings (`"secret": true`) live there, `plugin:<package>:<key>`.
+    pub secrets: Arc<SecretsService>,
+}
+
+/// The last thing that went wrong with a plugin.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct LastError {
+    pub at: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Default)]
+struct Stats {
+    calls: u64,
+    errors: u64,
+    last_error: Option<LastError>,
+    last_call_at: Option<String>,
+}
+
+#[derive(Default)]
+struct State {
+    /// Every version on disk, newest first.
+    found: Vec<Candidate>,
+    enabled: bool,
+    /// The version that last started well.
+    good: Option<String>,
+    /// The version in force while it is on: its manifest gives the phrases, the tools and the sources.
+    active: Option<Arc<Package>>,
+    /// Why it does not run, or why the newest version does not: for the panel.
+    problem: Option<String>,
+    /// Where its package came from (catalog, local) and whether the catalog vouched for it.
+    source: String,
+    verified: bool,
+    /// Its feed hides it (docs/plans/custom-feeds.md): not listed, its code does not run, its characters not offered.
+    hidden: bool,
+}
+
+struct Loaded {
+    version: String,
+    instance: Arc<dyn PluginInstance>,
+    /// What it takes of the plugins' memory budget while loaded (`share_of`).
+    share_mb: u64,
+}
+
+/// A package that runs as a program of its own (an app under the supervisor, an MCP server): what a pause for the
+/// gateway's trial stops.
+fn is_program(manifest: &Manifest) -> bool {
+    matches!(manifest.runtime, Runtime::Process | Runtime::Node | Runtime::Mcp)
+}
+
+/// What a package's context takes of the plugins' memory budget while it is loaded: a plugin's declared
+/// `budget.memoryMb`, its engine's own hard limit. An app's program is a process of its own, counted by what it holds
+/// (budget.rs): it takes no share.
+fn share_of(manifest: &Manifest) -> u64 {
+    if manifest.kind == PackageKind::Plugin {
+        manifest.budget.memory_mb
+    } else {
+        0
+    }
+}
+
+struct Plugin {
+    id: String,
+    state: Mutex<State>,
+    /// Its code, while loaded; held while it loads, so two first calls load it once.
+    slot: tokio::sync::Mutex<Option<Loaded>>,
+    stats: Mutex<Stats>,
+    /// Milliseconds since the host began, at its last call.
+    used: AtomicU64,
+    /// Its calls running now: a context in a call is never unloaded to make room.
+    busy: AtomicUsize,
+    /// What its loaded context takes of the budget (`Loaded::share_mb`); none while nothing is loaded.
+    taken_mb: AtomicU64,
+    /// What a context of it that is loading now took of the budget until it is in its slot (`Loading`).
+    loading_mb: AtomicU64,
+    /// What its engine held at the last look, KB: kept so a load's count asks no engine (a busy one answers late). An
+    /// idle context is charged by it (`budget::charge_mb`), widgets hold a fraction of a megabyte.
+    held_kb: AtomicU64,
+}
+
+impl Plugin {
+    fn state(&self) -> std::sync::MutexGuard<'_, State> {
+        self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn stats(&self) -> std::sync::MutexGuard<'_, Stats> {
+        self.stats.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// The version in force, while it is on (and not hidden by its feed: then it is never in force).
+    fn active(&self) -> Option<Arc<Package>> {
+        let state = self.state();
+        state.active.clone().filter(|_| state.enabled && !state.hidden)
+    }
+
+    /// Its context into the slot: its share of the budget is taken while it is there. The one it replaces, if any.
+    fn hold(&self, slot: &mut Option<Loaded>, loaded: Loaded) -> Option<Loaded> {
+        self.taken_mb.store(loaded.share_mb, Ordering::Relaxed);
+        self.held_kb.store(0, Ordering::Relaxed);
+        slot.replace(loaded)
+    }
+
+    /// Its context out of the slot (to stop it): its share of the budget is free again.
+    fn release(&self, slot: &mut Option<Loaded>) -> Option<Loaded> {
+        self.taken_mb.store(0, Ordering::Relaxed);
+        self.held_kb.store(0, Ordering::Relaxed);
+        slot.take()
+    }
+}
+
+/// A call of a plugin under way: while it lasts its context is not unloaded to make room for another's.
+struct Busy<'a>(&'a Plugin);
+
+impl<'a> Busy<'a> {
+    fn new(plugin: &'a Plugin) -> Busy<'a> {
+        plugin.busy.fetch_add(1, Ordering::Relaxed);
+        Busy(plugin)
+    }
+}
+
+impl Drop for Busy<'_> {
+    fn drop(&mut self) {
+        self.0.busy.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+/// The room a context took while it loads: counted with the loaded ones, so two loads at once do not count on the same
+/// megabytes; given back once the context is in its slot (`Plugin::hold` takes it there) or did not load.
+struct Loading<'a> {
+    plugin: &'a Plugin,
+    mb: u64,
+}
+
+impl<'a> Loading<'a> {
+    fn take(plugin: &'a Plugin, mb: u64) -> Loading<'a> {
+        plugin.loading_mb.fetch_add(mb, Ordering::Relaxed);
+        Loading { plugin, mb }
+    }
+}
+
+impl Drop for Loading<'_> {
+    fn drop(&mut self) {
+        self.plugin.loading_mb.fetch_sub(self.mb, Ordering::Relaxed);
+    }
+}
+
+/// A phrase of a plugin that is on.
+struct Rule {
+    plugin: String,
+    /// `plugin:<id>`, as the journal names the rule.
+    name: &'static str,
+    phrase: Phrase,
+    handler: String,
+    capability: CapabilityName,
+}
+
+/// A tool of a plugin that is on.
+struct Offered {
+    plugin: String,
+    title: String,
+    spec: ToolSpec,
+    outside: bool,
+}
+
+/// «Мозг»'s tool that reads an app's cards (`card_tool`).
+pub const CARD_TOOL: &str = "app_card";
+/// The cards of one app read at most in one call.
+const MAX_CARDS_READ: usize = 3;
+
+/// An app that is on and shows cards: its id and title, its cards' titles and functions, whether it reads from
+/// outside the house.
+struct CardApp {
+    id: String,
+    title: String,
+    cards: Vec<(String, String)>,
+    outside: bool,
+}
+
+/// A rule's name for the journal, made once per plugin: the router's rule names live as long as the program.
+fn rule_name(plugin: &str) -> &'static str {
+    static NAMES: OnceLock<Mutex<HashMap<String, &'static str>>> = OnceLock::new();
+    let mut names = NAMES.get_or_init(Default::default).lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    names.entry(plugin.to_string()).or_insert_with(|| Box::leak(format!("plugin:{plugin}").into_boxed_str()))
+}
+
+/// The newest version on disk that runs here, and why a newer one does not (or why none does).
+fn choose(found: &[Candidate], placement: Placement) -> (Option<Arc<Package>>, Option<String>) {
+    let mut problem = None;
+    for candidate in found {
+        match candidate {
+            Candidate::Ready(package) => {
+                let why = package.manifest.kind.not_a_plugin();
+                match why.or_else(|| package.manifest.incompatible_with(placement)) {
+                    None => return (Some(package.clone()), problem),
+                    Some(why) => {
+                        problem.get_or_insert_with(|| format!("{}: {why}", package.version()));
+                    }
+                }
+            }
+            Candidate::Broken { version, problems } => {
+                problem.get_or_insert_with(|| format!("{version}: {}", problems.join("; ")));
+            }
+        }
+    }
+    (None, Some(problem.unwrap_or_else(|| crate::tr!("нет ни одной версии в папке"))))
+}
+
+pub struct PluginHost {
+    config: PluginsConfig,
+    db: Arc<Db>,
+    settings: Arc<SettingsService>,
+    events: EventBus,
+    runtime: Arc<dyn PluginRuntime>,
+    placement: PlacementNow,
+    /// The gateway's runtime: the plugins' requests run there.
+    handle: Option<tokio::runtime::Handle>,
+    media: Arc<MediaSources>,
+    me: Weak<PluginHost>,
+    player: Option<Arc<MediaPlayer>>,
+    watch: Option<Arc<PlaybackWatch>>,
+    home: Option<Arc<dyn HomeLink>>,
+    /// The apps' engine (src/apps): their programs under the supervisor, and the tokens they reach the Host API with.
+    apps: Arc<dyn PluginRuntime>,
+    apps_engine: Arc<crate::apps::ProcessRuntime>,
+    services: Option<Arc<dyn super::host_api::HostServices>>,
+    app_tokens: Arc<crate::apps::AppTokens>,
+    began: Instant,
+    plugins: RwLock<BTreeMap<String, Arc<Plugin>>>,
+    rules: RwLock<Arc<Vec<Rule>>>,
+    tools: RwLock<Arc<Vec<Offered>>>,
+    tasks: Mutex<Vec<tokio::task::JoinHandle<()>>>,
+    memory: Arc<dyn MemoryProbe>,
+    gauge: Arc<MemoryGauge>,
+    /// Held while a load's room is counted and taken: two loads at once do not count on the same megabytes.
+    admitting: Mutex<()>,
+    /// Whether loaded contexts are measured and the idle ones charged by what they hold (`budget::charge_mb`); tests of
+    /// the declared count turn it off.
+    measure: AtomicBool,
+    /// Under pressure: the plugins' work in the background waits (`deferred`) until it eases.
+    deferring: AtomicBool,
+    /// The apps' programs held off while the gateway is updated on the station (src/updates/trial.rs): switched off
+    /// for the trial's memory, not as the owner's choice.
+    apps_held: AtomicBool,
+    /// The gateway stops (`close`): no code is loaded any more.
+    closing: AtomicBool,
+    deferred: Mutex<VecDeque<(String, String, Value)>>,
+    /// The last count told on the bus: free MB and the pressure.
+    told: Mutex<Option<(u64, Pressure)>>,
+    /// What fell asleep for want of memory (`relieve`), in that order, with the MB it needs: kept on, not started
+    /// again until the memory is back with room to spare (`wake_one`).
+    asleep: Mutex<Vec<(String, u64)>>,
+    /// Each plugin's own journal, the last lines.
+    journals: Mutex<HashMap<String, VecDeque<JournalLine>>>,
+    /// The plugins' writes to their `kv`, told the panel (`packages.data`): its widgets read their data again.
+    data_news: Arc<DataNews>,
+    /// The apps' history (src/plugins/history): set once it stands.
+    history: std::sync::OnceLock<Arc<super::history::History>>,
+    /// The apps' long tasks (src/tasks): set once they stand.
+    long_tasks: std::sync::OnceLock<Arc<crate::tasks::Tasks>>,
+    /// The gateway's safe: the plugins' private settings.
+    secrets: Arc<SecretsService>,
+    /// The bus's word on an app reaching a participant outside a letter (its speech by schedule, the model's answer
+    /// in its words, its page hearing the keyboard): set once the bus stands.
+    gate: std::sync::OnceLock<Gate>,
+    /// Whether the model of «Мозг» is in the cloud: its calls of the apps' tools carry that in their chain, and a
+    /// folder without «Модель может читать» gives such a chain nothing (docs/plans/shared-folders.md).
+    cloud_model: std::sync::OnceLock<Arc<dyn Fn() -> bool + Send + Sync>>,
+    /// The faces whose code the Турбо did not install (home/apps.rs): why in its words, and when (ms) — said when
+    /// the face is called, and the install not asked again for a while.
+    turbo_notes: Mutex<HashMap<String, (String, u64)>>,
+    /// «Разбудить Mac?» for a device whose face's Турбо sleeps (docs/plans/turbo-devices.md): set once the talk stands.
+    wake_offer: std::sync::OnceLock<WakeOffer>,
+}
+
+/// The gateway's own packages of an earlier build that are not among `kept` go whole (`bundled::retire`): folder, row,
+/// `kv`, rules, long tasks — and here their keys and settings too. The ids gone.
+fn retire_built_ins(
+    root: &std::path::Path,
+    db: &crate::storage::Db,
+    settings: &SettingsService,
+    secrets: &SecretsService,
+    kept: &std::collections::BTreeSet<String>,
+) -> Vec<String> {
+    let gone = bundled::retire(root, db, kept);
+    for id in &gone {
+        if let Err(error) = secrets.delete_all(&crate::secrets::plugin_secrets(id)) {
+            tracing::warn!(target: "plugins", "built-in package {id} of an earlier build: its keys stay: {}", error.message);
+        }
+    }
+    if !gone.is_empty() {
+        let mut stored = settings.get(&PACKAGE_SETTINGS, None).unwrap_or_default();
+        let before = stored.len();
+        stored.retain(|id, _| !gone.contains(id));
+        if stored.len() != before {
+            if let Err(error) = settings.set(&PACKAGE_SETTINGS, &stored, None) {
+                tracing::warn!(target: "plugins", "built-ins of an earlier build: their settings stay: {}", error.message);
+            }
+        }
+    }
+    gone
+}
+
+/// May the app `app` reach `to`'s `handle` now (src/bus): its links, the owner's «да» — the reason in words when not.
+pub type Gate = Arc<dyn Fn(&str, &str, &str) -> Result<(), String> + Send + Sync>;
+
+/// A device's question «Разбудить …?» when a sleeping Турбо can be woken: its words, or none.
+pub type WakeOffer = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
+
+impl PluginHost {
+    /// The host with what is on disk and in the database; no code is loaded until it is called.
+    pub fn new(deps: PluginsDeps) -> Arc<PluginHost> {
+        let PluginsDeps {
+            config,
+            db,
+            settings,
+            events,
+            media,
+            placement,
+            runtime,
+            memory,
+            gauge,
+            bundled,
+            player,
+            watch,
+            home,
+            gateway_url,
+            services,
+            secrets,
+        } = deps;
+        let app_tokens = Arc::new(crate::apps::AppTokens::default());
+        let give_up_to = std::sync::Arc::new(std::sync::OnceLock::<Weak<PluginHost>>::new());
+        let apps_engine = {
+            let give_up_to = give_up_to.clone();
+            let node = crate::apps::node::NodeHome::new(
+                config.node_dir.clone(),
+                config.own_node.clone(),
+                config.node_mirror.clone(),
+            );
+            let engine = crate::apps::ProcessRuntime::new(
+                gateway_url,
+                app_tokens.clone(),
+                Arc::new(move |id: &str, why: &str| {
+                    if let Some(host) = give_up_to.get().and_then(Weak::upgrade) {
+                        host.give_up(id, why);
+                    }
+                }),
+                Arc::new(node),
+            );
+            // A program that says it uses something heavier (budget.memoryMbFor) is given more within what is free.
+            engine.set_room(gauge.clone());
+            Arc::new(engine)
+        };
+        bundled::lay_out(&config.packages_dir, &db, &bundled);
+        // A built-in of an earlier build this one has not (dropped, or renamed to a random id) goes whole: no twin
+        // stays that the panel cannot remove. Only when this build brings its own: none — nobody's goes.
+        if !bundled.is_empty() {
+            let kept = bundled.iter().map(|package| package.id.clone()).chain(bundled::named()).collect();
+            retire_built_ins(&config.packages_dir, &db, &settings, &secrets, &kept);
+        }
+        let handle = tokio::runtime::Handle::try_current().ok();
+        let data_news = DataNews::new(events.clone(), handle.clone());
+        let host = Arc::new_cyclic(|me| PluginHost {
+            gate: std::sync::OnceLock::new(),
+            cloud_model: std::sync::OnceLock::new(),
+            turbo_notes: Mutex::new(HashMap::new()),
+            wake_offer: std::sync::OnceLock::new(),
+            config,
+            db,
+            settings,
+            events,
+            runtime,
+            placement,
+            handle,
+            media,
+            me: me.clone(),
+            player,
+            watch,
+            home,
+            apps: apps_engine.clone(),
+            apps_engine,
+            services,
+            app_tokens,
+            began: Instant::now(),
+            plugins: RwLock::new(BTreeMap::new()),
+            rules: RwLock::new(Arc::new(Vec::new())),
+            tools: RwLock::new(Arc::new(Vec::new())),
+            tasks: Mutex::new(Vec::new()),
+            memory,
+            gauge,
+            admitting: Mutex::new(()),
+            measure: AtomicBool::new(true),
+            deferring: AtomicBool::new(false),
+            apps_held: AtomicBool::new(false),
+            closing: AtomicBool::new(false),
+            deferred: Mutex::new(VecDeque::new()),
+            told: Mutex::new(None),
+            asleep: Mutex::new(Vec::new()),
+            journals: Mutex::new(HashMap::new()),
+            data_news,
+            history: std::sync::OnceLock::new(),
+            long_tasks: std::sync::OnceLock::new(),
+            secrets,
+        });
+        let _ = give_up_to.set(Arc::downgrade(&host));
+        host.rescan();
+        if host.config.disabled {
+            tracing::warn!(target: "plugins", "safe mode (PLUGINS_DISABLED): no plugin runs");
+        } else {
+            let on: Vec<String> =
+                host.list().iter().filter(|plugin| plugin.active().is_some()).map(|p| p.id.clone()).collect();
+            tracing::info!(target: "plugins", "{}: {} found, on: {}", host.config.packages_dir.display(), host.list().len(), if on.is_empty() { "none".into() } else { on.join(", ") });
+        }
+        host
+    }
+
+    /// The idle unloading and the events the plugins follow. Inside the runtime.
+    pub fn start(self: &Arc<Self>) {
+        let mut tasks = self.tasks.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let me = Arc::downgrade(self);
+        let every = Duration::from_secs((self.config.idle_unload_s / 4).clamp(1, 30));
+        tasks.push(tokio::spawn(async move {
+            let mut ticks = tokio::time::interval(every);
+            loop {
+                ticks.tick().await;
+                let Some(host) = me.upgrade() else { return };
+                host.unload_idle();
+                host.keep_residents();
+            }
+        }));
+        let me = Arc::downgrade(self);
+        tasks.push(self.events.on("plugins.events", move |event| {
+            if let Some(host) = me.upgrade() {
+                host.deliver(&event);
+            }
+        }));
+        // The memory watch: often on the station, where memory is short; now and then on a computer.
+        let me = Arc::downgrade(self);
+        let every = Duration::from_secs(if (self.placement)().on_station() { 10 } else { 30 });
+        tasks.push(tokio::spawn(async move {
+            let mut ticks = tokio::time::interval(every);
+            loop {
+                ticks.tick().await;
+                let Some(host) = me.upgrade() else { return };
+                host.watch_memory().await;
+            }
+        }));
+    }
+
+    /// The gateway begins to stop: no plugin's code and no app's program is started from now on, whatever asks for it
+    /// — an event of the stop itself (a station offline) loaded the radio on the station on 20.11.2026, in the middle
+    /// of a stop that then never ended. What is loaded answers on until `shutdown`.
+    pub fn close(&self) {
+        self.closing.store(true, Ordering::SeqCst);
+    }
+
+    /// Every plugin's code unloaded, the tasks stopped: at shutdown.
+    pub fn shutdown(&self) {
+        self.close();
+        for task in self.tasks.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).drain(..) {
+            task.abort();
+        }
+        for plugin in self.list() {
+            if let Ok(mut slot) = plugin.slot.try_lock() {
+                if let Some(loaded) = plugin.release(&mut slot) {
+                    loaded.instance.stop();
+                }
+            }
+        }
+    }
+
+    /// The apps' programs, asked to stop by `shutdown`: waited for up to `within`, then those left are killed.
+    pub async fn programs_ended(&self, within: Duration) {
+        self.apps_engine.programs_ended(within).await;
+    }
+
+    /// Every app's program still running, killed at once: the gateway ends now.
+    pub fn kill_programs_now(&self) {
+        self.apps_engine.kill_all_now();
+    }
+
+    pub fn safe_mode(&self) -> bool {
+        self.config.disabled
+    }
+
+    fn now_ms(&self) -> u64 {
+        self.began.elapsed().as_millis() as u64
+    }
+
+    fn list(&self) -> Vec<Arc<Plugin>> {
+        self.plugins.read().unwrap_or_else(|poisoned| poisoned.into_inner()).values().cloned().collect()
+    }
+
+    fn plugin(&self, id: &str) -> Option<Arc<Plugin>> {
+        self.plugins.read().unwrap_or_else(|poisoned| poisoned.into_inner()).get(id).cloned()
+    }
+
+    /// This gateway runs on the station: its limits for pictures, the workshop's warnings.
+    pub fn on_station(&self) -> bool {
+        (self.placement)().on_station()
+    }
+
+    /// The ids of the plugins installed (on or off): the scheduler drops the jobs of the ones gone.
+    pub fn ids(&self) -> Vec<String> {
+        self.list()
+            .into_iter()
+            .filter(|plugin| self.installed(&plugin.id).is_some())
+            .map(|plugin| plugin.id.clone())
+            .collect()
+    }
+
+    /// Memory is short and work in the background waits (budget.rs): so do the schedules.
+    pub fn deferring(&self) -> bool {
+        self.deferring.load(Ordering::Relaxed)
+    }
+
+    /// A plugin's schedule changed (set, ran, paused): the panel reads it again (`packages.changed`, `schedule`).
+    pub fn schedule_changed(&self, id: &str) {
+        self.changed(id, "schedule", None, None, None);
+    }
+
+    /// A plugin's settings as its code reads them (a secret one as it is): the time a person set for a rhythm.
+    pub fn settings_of(&self, id: &str) -> serde_json::Map<String, Value> {
+        let Some(package) = self.package(id) else { return serde_json::Map::new() };
+        let stored = self.settings.get(&PACKAGE_SETTINGS, None).unwrap_or_default();
+        package.manifest.settings_values(Some(&package.manifest.stored_with_secrets(stored.get(id), &self.secrets)))
+    }
+
+    /// The gateway's safe: the workshop hides the plugins' keys in what its agent reads.
+    pub fn secrets(&self) -> &Arc<SecretsService> {
+        &self.secrets
+    }
+
+    /// The private settings (`secret`) still stored among the plugins' settings — written before the safe kept them, or
+    /// brought by a package of settings from an older gateway — moved into the safe. Each start and each rescan: what
+    /// is moved once is not there the next time.
+    fn keep_secrets_in_the_safe(&self) {
+        let Some(mut stored) = self.settings.get(&PACKAGE_SETTINGS, None) else { return };
+        let mut moved = 0;
+        for plugin in self.list() {
+            let package = {
+                let state = plugin.state();
+                state.active.clone().or_else(|| registry::newest_ready(&state.found))
+            };
+            let (Some(package), Some(own)) = (package, stored.get_mut(&plugin.id)) else { continue };
+            for setting in package.manifest.settings.iter().filter(|setting| setting.secret) {
+                let Some(value) = own.get(&setting.key).cloned() else { continue };
+                let id = crate::secrets::plugin_secret(&plugin.id, &setting.key);
+                // A value already in the safe is the newer one: the panel wrote it there.
+                if let Some(text) = value.as_str().filter(|text| !text.is_empty() && !self.secrets.has(&id)) {
+                    if let Err(error) = self.secrets.set(&id, Some(text)) {
+                        tracing::warn!(target: "plugins", "{}: {} stays among the settings: {}", plugin.id, setting.key, error.message);
+                        continue;
+                    }
+                }
+                own.remove(&setting.key);
+                moved += 1;
+            }
+        }
+        if moved > 0 {
+            match self.settings.set(&PACKAGE_SETTINGS, &stored, None) {
+                Ok(()) => tracing::info!(target: "plugins", "{moved} private setting(s) moved into the gateway's safe"),
+                Err(error) => {
+                    tracing::warn!(target: "plugins", "private settings not moved into the safe: {}", error.message)
+                }
+            }
+        }
+    }
+
+    /// Reads the folder again: new packages appear, new versions are seen (they take over at a reload), a plugin
+    /// whose package is gone stops. The version in force of a plugin that is on stays while it is on disk.
+    pub fn rescan(&self) {
+        let found = registry::scan(&self.config.packages_dir);
+        let choices = registry::choices(&self.db);
+        let placement = (self.placement)();
+        let ids: Vec<String> = found.keys().chain(choices.keys()).cloned().collect();
+        {
+            let mut plugins = self.plugins.write().unwrap_or_else(|poisoned| poisoned.into_inner());
+            for id in ids {
+                let plugin = plugins.entry(id.clone()).or_insert_with(|| {
+                    Arc::new(Plugin {
+                        id: id.clone(),
+                        state: Mutex::new(State::default()),
+                        slot: tokio::sync::Mutex::new(None),
+                        stats: Mutex::new(Stats::default()),
+                        used: AtomicU64::new(0),
+                        busy: AtomicUsize::new(0),
+                        taken_mb: AtomicU64::new(0),
+                        loading_mb: AtomicU64::new(0),
+                        held_kb: AtomicU64::new(0),
+                    })
+                });
+                let choice = choices.get(&id).cloned().unwrap_or_default();
+                let mut state = plugin.state();
+                state.found = found.get(&id).cloned().unwrap_or_default();
+                state.enabled = choice.enabled;
+                state.good = choice.good;
+                state.source = choice.source;
+                state.verified = choice.verified;
+                state.hidden = choice.hidden;
+                let (newest, problem) = choose(&state.found, placement);
+                let kept = state.active.as_ref().and_then(|active| {
+                    state.found.iter().find_map(|candidate| match candidate {
+                        Candidate::Ready(package) if package.version() == active.version() => Some(package.clone()),
+                        _ => None,
+                    })
+                });
+                state.active = if state.enabled && !state.hidden { kept.or(newest) } else { None };
+                state.problem = problem;
+            }
+            // A package gone from the folder and from the database (removed) is forgotten here too.
+            plugins.retain(|id, plugin| {
+                let mut state = plugin.state();
+                if !found.contains_key(id) && !choices.contains_key(id) {
+                    state.found.clear();
+                    state.enabled = false;
+                    state.active = None;
+                }
+                !state.found.is_empty() || state.enabled
+            });
+        }
+        self.keep_secrets_in_the_safe();
+        self.rebuild();
+    }
+
+    /// The phrases, the tools and the media sources of the plugins that are on, anew.
+    fn rebuild(&self) {
+        let mut rules = Vec::new();
+        let mut tools: Vec<Offered> = Vec::new();
+        let mut sources = Vec::new();
+        if !self.config.disabled {
+            for plugin in self.list() {
+                let Some(package) = plugin.active() else { continue };
+                let manifest = &package.manifest;
+                for intent in &manifest.contributes.intents {
+                    for phrase in &intent.phrases {
+                        rules.push(Rule {
+                            plugin: plugin.id.clone(),
+                            name: rule_name(&plugin.id),
+                            phrase: phrase.clone(),
+                            handler: intent.handler.clone(),
+                            capability: intent.capability,
+                        });
+                    }
+                }
+                for spec in &manifest.contributes.tools {
+                    if let Some(taken) = tools.iter().find(|offered| offered.spec.name == spec.name) {
+                        tracing::warn!(target: "plugins", "{}: tool {} is {}'s already, left out", plugin.id, spec.name, taken.plugin);
+                        continue;
+                    }
+                    tools.push(Offered {
+                        plugin: plugin.id.clone(),
+                        title: manifest.title.clone(),
+                        spec: spec.clone(),
+                        // Text from the internet, or from the household's folders: what follows it changes nothing.
+                        outside: !manifest.hosts().is_empty() || manifest.reads_household(),
+                    });
+                }
+                for spec in &manifest.contributes.media {
+                    sources.push(PluginMediaSource::new(self.me.clone(), &plugin.id, spec.clone()));
+                }
+            }
+        }
+        *self.rules.write().unwrap_or_else(|poisoned| poisoned.into_inner()) = Arc::new(rules);
+        *self.tools.write().unwrap_or_else(|poisoned| poisoned.into_inner()) = Arc::new(tools);
+        self.media.remove_prefixed("plugin:");
+        for source in sources {
+            self.media.add(Arc::new(source));
+        }
+    }
+
+    /// Whether a plugin is on and runs here (no code loaded to tell).
+    pub fn is_active(&self, id: &str) -> bool {
+        !self.config.disabled && self.plugin(id).is_some_and(|plugin| plugin.active().is_some())
+    }
+
+    /// Whether a plugin is switched on, running or not: MagicPlace offers «Включить» to one that is off.
+    pub fn is_switched_on(&self, id: &str) -> bool {
+        self.plugin(id).is_some_and(|plugin| plugin.state().enabled)
+    }
+
+    /// Whether any plugin that is on takes phrases.
+    pub fn has_phrases(&self) -> bool {
+        !self.rules.read().unwrap_or_else(|poisoned| poisoned.into_inner()).is_empty()
+    }
+
+    /// The package in force of a plugin that is on.
+    pub fn package(&self, id: &str) -> Option<Arc<Package>> {
+        self.plugin(id).and_then(|plugin| plugin.active()).filter(|_| !self.config.disabled)
+    }
+
+    /// The installed version of a package of any kind: the newest on disk that reads as one (as of the last scan).
+    pub fn installed(&self, id: &str) -> Option<Arc<Package>> {
+        self.plugin(id).and_then(|plugin| registry::newest_ready(&plugin.state().found))
+    }
+
+    /// Every installed package, by id: the newest version of each that reads as one — the hidden ones too.
+    pub fn installed_all(&self) -> Vec<Arc<Package>> {
+        self.list().iter().filter_map(|plugin| registry::newest_ready(&plugin.state().found)).collect()
+    }
+
+    /// The installed packages a person sees: the ones their feeds hide left out.
+    pub fn visible_all(&self) -> Vec<Arc<Package>> {
+        self.list()
+            .iter()
+            .filter(|plugin| !plugin.state().hidden)
+            .filter_map(|plugin| registry::newest_ready(&plugin.state().found))
+            .collect()
+    }
+
+    /// The installed packages their feeds hide.
+    pub fn hidden_all(&self) -> Vec<Arc<Package>> {
+        self.list()
+            .iter()
+            .filter(|plugin| plugin.state().hidden)
+            .filter_map(|plugin| registry::newest_ready(&plugin.state().found))
+            .collect()
+    }
+
+    /// Whether its feed hides the package (as of the last scan).
+    pub fn is_hidden(&self, id: &str) -> bool {
+        self.plugin(id).is_some_and(|plugin| plugin.state().hidden)
+    }
+
+    /// Where a package came from (catalog, local) and whether the catalog vouched for it.
+    pub fn origin(&self, id: &str) -> (String, bool) {
+        match self.plugin(id) {
+            Some(plugin) => {
+                let state = plugin.state();
+                (state.source.clone(), state.verified)
+            }
+            None => (registry::SOURCE_LOCAL.into(), false),
+        }
+    }
+
+    /// A package's kind by where it came from; one the host does not know is one's own.
+    pub fn origin_of(&self, id: &str) -> Origin {
+        self.plugin(id).map(|plugin| Origin::of(&plugin.state().source)).unwrap_or(Origin::User)
+    }
+
+    /// The same, for a package being installed now too: its row is written before the host has seen its folder.
+    pub fn origin_noted(&self, id: &str) -> Origin {
+        match self.plugin(id) {
+            Some(plugin) => Origin::of(&plugin.state().source),
+            None => {
+                registry::choices(&self.db).get(id).map(|choice| Origin::of(&choice.source)).unwrap_or(Origin::User)
+            }
+        }
+    }
+
+    /// `panel.js` or `panel.css` of a plugin that is on, of the version in force: what the panel loads.
+    pub fn panel_file(&self, id: &str, version: &str, file: &str) -> Option<std::path::PathBuf> {
+        if !matches!(file, "panel.js" | "panel.css") {
+            return None;
+        }
+        let package = self.package(id).filter(|package| package.version() == version)?;
+        package.manifest.contributes.panel.as_ref()?;
+        let path = package.dir.join(file);
+        path.is_file().then_some(path)
+    }
+
+    /// The panel parts of the plugins that are on: what every panel loads (its module and styles), with the settings
+    /// as the panel sees them — a secret one only as «••••••» (whoever sees the station loads these).
+    pub fn panel_parts(&self) -> Vec<PanelPart> {
+        if self.config.disabled {
+            return Vec::new();
+        }
+        let stored = self.settings.get(&PACKAGE_SETTINGS, None).unwrap_or_default();
+        let languages = crate::locale::preferences(&self.settings);
+        self.list()
+            .iter()
+            .filter_map(|plugin| {
+                let package = plugin.active()?;
+                package.manifest.contributes.panel.as_ref()?;
+                let part = |file: &str| {
+                    package
+                        .dir
+                        .join(file)
+                        .is_file()
+                        .then(|| format!("/panel-plugins/{}/{}/{file}", plugin.id, package.version()))
+                };
+                let module = part("panel.js");
+                let styles = part("panel.css");
+                let cards = package.manifest.cards_in(&languages);
+                let settings = package
+                    .manifest
+                    .settings_shown(Some(&package.manifest.stored_with_secrets(stored.get(&plugin.id), &self.secrets)));
+                let waits = package
+                    .manifest
+                    .settings_in(&languages)
+                    .into_iter()
+                    .filter(|spec| spec.waited(settings.contains_key(&spec.key)))
+                    .map(|spec| spec.title)
+                    .collect();
+                (module.is_some() || styles.is_some() || !cards.is_empty()).then(|| PanelPart {
+                    id: plugin.id.clone(),
+                    title: package.manifest.title_in(&languages),
+                    languages: package.manifest.languages.clone(),
+                    version: package.version(),
+                    module,
+                    styles,
+                    settings,
+                    cards,
+                    waits,
+                })
+            })
+            .collect()
+    }
+
+    /// A call of a plugin's panel part to its own backend (the SDK's `useApi`): only the functions its manifest lists
+    /// in `contributes.panel.calls`, as a tool would be called.
+    pub async fn panel_call(&self, id: &str, function: &str, input: Value) -> Result<Value, ApiError> {
+        self.writable()?;
+        let package =
+            self.package(id).ok_or_else(|| ApiError::conflict(crate::tr!("Приложение {id} выключено.", id = id)))?;
+        let allowed = package
+            .manifest
+            .contributes
+            .panel
+            .as_ref()
+            .and_then(|panel| panel.get("calls"))
+            .and_then(Value::as_array)
+            .is_some_and(|calls| calls.iter().any(|call| call.as_str() == Some(function)));
+        if !allowed {
+            return Err(ApiError::forbidden(crate::tr!(
+                "Пульт плагина зовёт только функции из contributes.panel.calls, а {function} там нет.",
+                function = function
+            )));
+        }
+        self.call(id, function, input, CallKind::Tool)
+            .await
+            .map_err(|error| ApiError::bad_request(crate::tr!("Приложение не ответило: {error}.", error = error)))
+    }
+
+    /// The agents' cards installed here from the catalog (docs/plans/router-and-works.md, 7б): a card names a program
+    /// to run, so one written in the workshop or put in by hand is not taken. By id: its title, description and card.
+    pub fn agent_cards(&self) -> Vec<(String, String, Option<String>, AgentCard)> {
+        let mut cards = Vec::new();
+        for plugin in self.list() {
+            let (package, source) = {
+                let state = plugin.state();
+                if state.hidden {
+                    continue;
+                }
+                (registry::newest_ready(&state.found), state.source.clone())
+            };
+            let Some(package) = package else { continue };
+            if package.manifest.kind != PackageKind::Agent || Origin::of(&source) != Origin::Catalog {
+                continue;
+            }
+            if let Some(card) = package.manifest.agent.clone() {
+                cards.push((
+                    plugin.id.clone(),
+                    package.manifest.title.clone(),
+                    package.manifest.description.clone(),
+                    card,
+                ));
+            }
+        }
+        cards
+    }
+
+    /// The themes of the packages installed here (a theme package's, a plugin's that is on), for the panel's choice:
+    /// each checked to be a theme in form; the panel fills the tokens a theme leaves out from «Стекло».
+    pub fn themes(&self) -> Vec<ThemeView> {
+        let mut themes = Vec::new();
+        for plugin in self.list() {
+            let package = {
+                let state = plugin.state();
+                // A theme its feed hides is not offered.
+                if state.hidden {
+                    continue;
+                }
+                registry::newest_ready(&state.found)
+            };
+            let Some(package) = package else { continue };
+            let usable = match package.manifest.kind {
+                PackageKind::Theme => true,
+                PackageKind::Plugin => self.is_active(&plugin.id),
+                _ => false,
+            };
+            if !usable {
+                continue;
+            }
+            for theme in package
+                .manifest
+                .contributes
+                .themes
+                .iter()
+                .flat_map(|themes| themes.as_array().cloned().unwrap_or_default())
+            {
+                match theme_form(&theme) {
+                    Ok(()) => themes.push(ThemeView {
+                        package: plugin.id.clone(),
+                        version: package.version(),
+                        origin: Origin::of(&plugin.state().source),
+                        theme,
+                    }),
+                    Err(why) => tracing::warn!(target: "plugins", "{}: a theme left out: {why}", plugin.id),
+                }
+            }
+        }
+        themes
+    }
+
+    /// The files /media/packages/<id>/ serves: a plugin's while it is on; a character's or a theme's while it is
+    /// installed (they are data, nothing of them runs).
+    pub fn media_assets(&self, id: &str) -> Option<std::path::PathBuf> {
+        if let Some(package) = self.package(id) {
+            return Some(package.assets());
+        }
+        let package = self.installed(id)?;
+        package.manifest.kind.is_data().then(|| package.assets())
+    }
+
+    /// The folder of the packages.
+    /// The gateway's settings: the workshop keeps its agent's model there.
+    pub fn settings(&self) -> &Arc<SettingsService> {
+        &self.settings
+    }
+
+    pub fn packages_dir(&self) -> &std::path::Path {
+        &self.config.packages_dir
+    }
+
+    /// What is free of the plugins' memory, as the last look counted it (on the station).
+    pub fn free_memory_mb(&self) -> Option<u64> {
+        self.gauge.get()
+    }
+
+    /// The memory kept for the system and Alice: PLUGINS_RESERVE_MB, else a sixth of this machine's memory between 24
+    /// and 40 MB (budget.rs, `reserve_mb`).
+    fn reserve_mb(&self, memory: Option<MemoryNow>) -> u64 {
+        budget::reserve_mb(memory.map(|memory| memory.total_mb).unwrap_or(0), self.config.reserve_mb)
+    }
+
+    /// Where the gateway runs now.
+    pub fn placement_now(&self) -> Placement {
+        (self.placement)()
+    }
+
+    /// A package put in by the workshop or by hand: where it came from noted, the folder read again.
+    pub fn note_installed(&self, id: &str, source: &str, actor: Option<Actor>) -> Result<(), ApiError> {
+        registry::set_installed(&self.db, id, source, false, actor.as_ref().map(|actor| actor.name.as_str()))?;
+        self.rescan();
+        Ok(())
+    }
+
+    /// A package's code stopped and its choice forgotten, before its folder goes: the installer's removal.
+    pub async fn forget(&self, id: &str) -> Result<(), ApiError> {
+        if let Some(plugin) = self.plugin(id) {
+            {
+                let mut state = plugin.state();
+                state.enabled = false;
+                state.active = None;
+            }
+            self.rebuild();
+            let loaded = plugin.release(&mut *plugin.slot.lock().await);
+            if let Some(loaded) = loaded {
+                loaded.instance.stop();
+            }
+        }
+        registry::forget(&self.db, id)?;
+        // Its long tasks go with it.
+        if let Some(tasks) = self.long_tasks.get() {
+            tasks.forget_app(id);
+        }
+        // Its keys go with it.
+        self.secrets.delete_all(&crate::secrets::plugin_secrets(id))?;
+        Ok(())
+    }
+
+    /// The installer's news on the bus: installed, updated, removed.
+    pub fn announce(&self, id: &str, change: &str, version: Option<String>, actor: Option<Actor>) {
+        self.changed(id, change, version, None, actor);
+    }
+
+    /// Where the apps' own folders are (`files/app/<id>`, plugins/files.rs): a starting app is told its own.
+    pub fn set_app_files_root(&self, root: std::path::PathBuf) {
+        self.apps_engine.set_files_root(root);
+    }
+
+    /// Where a starting app learns the station's name (`DUOWAVE_STATION_NAME`): a receiver shows itself by it.
+    pub fn set_station_name(&self, name: crate::apps::supervisor::StationName) {
+        self.apps_engine.set_station_name(name);
+    }
+
+    /// The address the gateway's server listens on: what a starting app is told (src/apps).
+    pub fn set_gateway_url(&self, url: String) {
+        self.apps_engine.set_gateway_url(url);
+    }
+
+    /// What a package that is on may play besides links and its own files: the household's folders of its `content:`
+    /// rights, and an app's own sound.
+    pub fn play_rights(&self, id: &str) -> super::media::PlayRights {
+        let Some(package) = self.package(id) else { return super::media::PlayRights::default() };
+        super::media::PlayRights {
+            // `call:system/content`: the household's music and tales.
+            content: if package.manifest.asks("system/content") >= crate::bus::Level::Call {
+                vec!["music".into(), "tales".into()]
+            } else {
+                Vec::new()
+            },
+            streams: package.manifest.kind == PackageKind::App,
+        }
+    }
+
+    /// Where the app's own sound at `path` is now (its `/stream/<path>` on localhost), while it is on and runs here:
+    /// our /media gives it on to the station at `/media/apps/<id>/<path>` (docs/plans/plugins.md, «Звук приложения на
+    /// колонку»). Nothing else of the app's server is reachable that way.
+    pub async fn app_stream(&self, id: &str, path: &str) -> Option<String> {
+        self.package(id).filter(|package| package.manifest.kind == PackageKind::App)?;
+        let parts: Vec<&str> = path.split('/').filter(|part| !part.is_empty()).collect();
+        if parts.is_empty() || parts.iter().any(|part| part.starts_with('.')) {
+            return None;
+        }
+        let plugin = self.plugin(id)?;
+        let base = plugin.slot.lock().await.as_ref().and_then(|loaded| loaded.instance.streams())?;
+        let path: Vec<String> = parts.iter().map(|part| crate::skills::js::encode_uri_component(part)).collect();
+        Some(format!("{base}{}", path.join("/")))
+    }
+
+    /// The watch over our player (stage 5а), when the gateway has one: a plugin's long speech plays before its music.
+    pub fn playback_watch(&self) -> Option<Arc<PlaybackWatch>> {
+        self.watch.clone()
+    }
+
+    /// The apps' long tasks (src/tasks): an app at a task is not unloaded as idle, a task of an app whose program is
+    /// gone is interrupted, a removed app's tasks go with it.
+    pub fn set_tasks(&self, tasks: Arc<crate::tasks::Tasks>) {
+        let heard = Arc::downgrade(&tasks);
+        self.apps_engine.set_gone(Arc::new(move |id: &str, why: &str| {
+            if let Some(tasks) = heard.upgrade() {
+                tasks.interrupt_app(id, why);
+            }
+        }));
+        let _ = self.long_tasks.set(tasks);
+    }
+
+    /// How many long tasks an app may run at once: its manifest's `budget.tasks`.
+    pub fn tasks_at_once(&self, id: &str) -> u32 {
+        self.package(id).map(|package| package.manifest.budget.tasks).unwrap_or(crate::tasks::DEFAULT_AT_ONCE)
+    }
+
+    /// The Host API of a running app, by its token (src/apps/host_http.rs).
+    pub fn app_host(&self, token: &str) -> Option<crate::apps::supervisor::AppHost> {
+        if token.is_empty() || self.config.disabled {
+            return None;
+        }
+        self.app_tokens.host(token)
+    }
+
+    /// An app that fell five times in a row: switched off with the reason, for the panel.
+    fn give_up(&self, id: &str, why: &str) {
+        let (me, id, why) = (self.me.clone(), id.to_string(), why.to_string());
+        tokio::spawn(async move {
+            let Some(host) = me.upgrade() else { return };
+            if host.disable(&id, None).await.is_ok() {
+                if let Some(plugin) = host.plugin(&id) {
+                    plugin.state().problem = Some(why.clone());
+                    host.note_error(&plugin, &why);
+                }
+                host.changed(&id, "failed", None, Some(why), None);
+            }
+        });
+    }
+
+    /// The bus's word on apps reaching what they reach outside a letter.
+    pub fn set_gate(&self, gate: Gate) {
+        let _ = self.gate.set(gate);
+    }
+
+    /// How the apps' tools learn whether the model calling them is in the cloud.
+    pub fn set_cloud_model(&self, cloud: Arc<dyn Fn() -> bool + Send + Sync>) {
+        let _ = self.cloud_model.set(cloud);
+    }
+
+    fn model_in_cloud(&self) -> bool {
+        self.cloud_model.get().is_some_and(|cloud| cloud())
+    }
+
+    /// May the app `app`, on here, reach `to`'s `handle` now: the bus's word (its links, the owner's «да»); without a
+    /// bus, what its manifest asked for.
+    pub fn may(&self, app: &str, to: &str, handle: &str) -> Result<(), String> {
+        let package = self
+            .package(app)
+            .ok_or_else(|| crate::tr!("приложение «{app}» выключено или не стоит здесь", app = app))?;
+        match self.gate.get() {
+            Some(gate) => gate(app, to, handle),
+            None if package.manifest.asks(to) > crate::bus::Level::None => Ok(()),
+            None => Err(crate::tr!("приложение не просило связь с {to}", to = to)),
+        }
+    }
+
+    /// How a device is asked «Разбудить …?» (src/talk).
+    pub fn set_wake_offer(&self, offer: WakeOffer) {
+        let _ = self.wake_offer.set(offer);
+    }
+
+    /// «…Разбудить Mac?»: when an app's face is here and no Турбо is on the line to run its code, and a sleeping one
+    /// can be woken — the device's question and its words, said after why the app is not there
+    /// (docs/plans/turbo-devices.md, owner 20.11, 5).
+    pub fn offer_wake(&self, id: &str, device: &str) -> Option<String> {
+        let here = (self.placement)();
+        let face = self.plugin(id)?.active().is_some_and(|package| package.manifest.face_at(here));
+        if !face || self.home.as_ref().is_some_and(|home| home.up().is_some()) {
+            return None;
+        }
+        self.wake_offer.get().and_then(|offer| offer(device))
+    }
+
+    /// May a page of this app hear the MIDI keyboard (docs/plans/midi.md): it is on here, and the bus lets it hear
+    /// `device/midi` (`listen:device/midi`, the owner's «да»). Asked when the page takes its ticket and every few
+    /// seconds after.
+    pub fn may_hear_midi(&self, id: &str) -> Result<(), String> {
+        self.may(id, "device/midi", "notes")
+    }
+
+    /// A line in a plugin's own journal.
+    pub fn note_line(&self, id: &str, level: &str, message: &str) {
+        let mut journals = self.journals.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let journal = journals.entry(id.to_string()).or_default();
+        if journal.len() >= JOURNAL_LINES {
+            journal.pop_front();
+        }
+        journal.push_back(JournalLine {
+            at: now_iso(),
+            level: level.to_string(),
+            message: message.chars().take(1000).collect(),
+        });
+    }
+
+    /// A plugin's own journal, oldest first: its console, its calls, what the station said of its items. Every
+    /// key the safe knows is hidden («•••»), one set after the line was written too: the workshop's agent reads this.
+    pub fn journal(&self, id: &str) -> Vec<JournalLine> {
+        let journals = self.journals.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        journals
+            .get(id)
+            .map(|journal| {
+                journal
+                    .iter()
+                    .map(|line| JournalLine { message: self.secrets.redact(&line.message), ..line.clone() })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    // Calls.
+
+    /// Calls a plugin's function, its code loaded first if it is not — on the station only when there is room for it
+    /// (`admit`). A failure is noted (the panel's last error); one after which its context is not to be trusted (time,
+    /// memory) unloads it.
+    pub async fn call(&self, id: &str, function: &str, input: Value, kind: CallKind) -> Result<Value, PluginError> {
+        if self.config.disabled {
+            return Err(PluginError::Unavailable(crate::tr!(
+                "безопасный режим: приложения не работают (PLUGINS_DISABLED)"
+            )));
+        }
+        // The trail (src/bus/trail.rs): the chain this call is part of, or the app's own when nobody started one; a
+        // step further into this app — refused past the hops or back into an app that waits in the chain.
+        let trail = crate::bus::trail::current().unwrap_or_else(|| crate::bus::Trail::app(id));
+        let trail = trail.entering(id).map_err(|error| PluginError::Unavailable(error.to_string()))?;
+        trail.scope(self.call_in(id, function, input, kind)).await
+    }
+
+    /// The call itself, inside its trail.
+    async fn call_in(&self, id: &str, function: &str, input: Value, kind: CallKind) -> Result<Value, PluginError> {
+        let plugin =
+            self.plugin(id).ok_or_else(|| PluginError::Unavailable(crate::tr!("нет приложения {id}", id = id)))?;
+        let _busy = Busy::new(&plugin);
+        plugin.used.store(self.now_ms(), Ordering::Relaxed);
+        let began = Instant::now();
+        // On a station a plugin that prefers home runs at the helper that gives the apps (src/helpers: the pair's
+        // computer or another) while one is up; with none up, here if it fits.
+        let here = (self.placement)();
+        // An app whose face is here and code on the home's Турбо (docs/plans/home-and-devices.md, stage 5б): its every
+        // call goes there, never here.
+        let face = plugin.active().is_some_and(|package| package.manifest.face_at(here));
+        let home = self.home.as_ref().filter(|_| {
+            here.on_station() && plugin.active().is_some_and(|package| package.manifest.prefer_home || face)
+        });
+        let away = home.is_some_and(|home| home.offered());
+        let mut failed_there = None;
+        if let Some(home) = home {
+            if let Some((url, key)) = home.up() {
+                match call_home(&url, &key, id, function, &input, kind).await {
+                    Ok(answer) => {
+                        self.note_line(
+                            id,
+                            "call",
+                            &crate::tr!(
+                                "{function}: на компьютере, {elapsed} мс",
+                                function = function,
+                                elapsed = began.elapsed().as_millis()
+                            ),
+                        );
+                        let mut stats = plugin.stats();
+                        stats.calls += 1;
+                        stats.last_call_at = Some(now_iso());
+                        drop(stats);
+                        // What it plays from the computer — an app's sound, the household's files — is played from
+                        // the computer's /media.
+                        return Ok(super::media::from_home(answer, &url, id, &self.play_rights(id)));
+                    }
+                    Err(why) => {
+                        let line = match face {
+                            true => crate::tr!("{function}: {why}", function = function, why = why),
+                            false => {
+                                crate::tr!("{function}: {why} — работает на колонке", function = function, why = why)
+                            }
+                        };
+                        self.note_line(id, "warn", &line);
+                        failed_there = Some(why);
+                    }
+                }
+            }
+        }
+        if face {
+            let title = plugin.active().map(|package| package.manifest.title.clone()).unwrap_or_else(|| id.to_string());
+            return Err(PluginError::Unavailable(self.face_trouble(id, &title, home, failed_there)));
+        }
+        let result = match self.instance(&plugin).await {
+            Ok(instance) => instance.call(function, input, kind).await,
+            Err(PluginError::NoRoom(why)) if away => {
+                Err(PluginError::NoRoom(crate::tr!("недоступно, пока компьютер не на связи: {why}", why = why)))
+            }
+            Err(error) => Err(error),
+        };
+        let how = match kind {
+            CallKind::Voice => crate::tr!("фраза"),
+            CallKind::Tool => crate::tr!("инструмент"),
+            CallKind::Background => crate::tr!("в фоне"),
+            CallKind::Agent => crate::tr!("агентом"),
+        };
+        match &result {
+            Ok(_) => self.note_line(
+                id,
+                "call",
+                &crate::tr!(
+                    "{function} ({how}): ответил за {elapsed} мс",
+                    function = function,
+                    how = how,
+                    elapsed = began.elapsed().as_millis()
+                ),
+            ),
+            Err(error) => self.note_line(id, "error", &format!("{function} ({how}): {error}")),
+        }
+        plugin.used.store(self.now_ms(), Ordering::Relaxed);
+        {
+            let mut stats = plugin.stats();
+            stats.calls += 1;
+            stats.last_call_at = Some(now_iso());
+        }
+        if let Err(error) = &result {
+            let message = format!("{function}: {error}");
+            tracing::warn!(target: "plugins", "{id}: {message}");
+            self.note_error(&plugin, &message);
+            if error.poisons() {
+                self.unload(&plugin).await;
+            }
+        }
+        result
+    }
+
+    /// Why a face's call got no answer, in words the person hears through «Мозг» (clean-path check 19.11: the Mac was
+    /// on the line, the app's code was not on it, and the model said the Турбо was off). Three cases, each honest:
+    /// no Турбо to ask now — which and why (asleep, off, kept out, none); the Турбо on the line without the app's code —
+    /// what it said when asked to install it, else that it is being installed now; the Турбо refused or the app there
+    /// failed — its own words.
+    fn face_trouble(
+        &self,
+        id: &str,
+        title: &str,
+        home: Option<&Arc<dyn HomeLink>>,
+        failed: Option<HomeFailed>,
+    ) -> String {
+        let Some(failed) = failed else {
+            let why = home
+                .and_then(|home| home.why_not())
+                .unwrap_or_else(|| crate::tr!("в доме нет Турбо, который это даёт"));
+            return crate::tr!(
+                "«{title}» работает на Турбо (компьютере дома), а его сейчас не позвать: {why}.",
+                title = title,
+                why = why
+            );
+        };
+        let name = home.and_then(|home| home.name()).unwrap_or_else(|| crate::tr!("Турбо"));
+        // 409 — the Турбо has no such app switched on: its code is not there (home_server/serve.rs, `plugin_call`).
+        if failed.status == Some(409) {
+            let note = self.turbo_note(id);
+            if note.as_ref().is_none_or(|(_, at)| self.now_ms().saturating_sub(*at) > TURBO_ASK_AGAIN_MS) {
+                // Asked again: the home's watch installs the faces' code (home/apps.rs, `watch`).
+                self.changed(id, "turbo", None, Some(failed.message.clone()), None);
+            }
+            return match note {
+                Some((why, _)) => crate::tr!(
+                    "«{title}» не стоит на Турбо «{name}» (он на связи): {why}",
+                    title = title,
+                    name = name,
+                    why = why
+                ),
+                None => crate::tr!(
+                    "«{title}» ещё не стоит на Турбо «{name}» (он на связи): ставлю его туда — попробуйте через минуту.",
+                    title = title,
+                    name = name
+                ),
+            };
+        }
+        crate::tr!(
+            "Турбо «{name}» на связи, но «{title}» там не ответило: {why}",
+            name = name,
+            title = title,
+            why = failed.message
+        )
+    }
+
+    /// What the Турбо said when asked to install a face's code: why it did not (None — it did, the note goes).
+    pub fn note_turbo(&self, id: &str, refused: Option<String>) {
+        let news = {
+            let mut notes = self.turbo_notes.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            match refused {
+                Some(why) => {
+                    let again = notes.get(id).is_some_and(|(before, _)| *before == why);
+                    notes.insert(id.to_string(), (why.clone(), self.now_ms()));
+                    (!again).then_some(why)
+                }
+                None => {
+                    notes.remove(id);
+                    None
+                }
+            }
+        };
+        // The card and the journal hear it at once (before 20.11 only a call that failed said it): «failed» moves
+        // nothing — the home's watch does not sync the faces on it (home/apps.rs).
+        if let Some(why) = news {
+            self.changed(
+                id,
+                "failed",
+                None,
+                Some(crate::tr!("Турбо не поставил код этой версии: {why}", why = why)),
+                None,
+            );
+        }
+    }
+
+    fn turbo_note(&self, id: &str) -> Option<(String, u64)> {
+        self.turbo_notes.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).get(id).cloned()
+    }
+
+    fn note_error(&self, plugin: &Plugin, message: &str) {
+        let mut stats = plugin.stats();
+        stats.errors += 1;
+        stats.last_error = Some(LastError { at: now_iso(), message: message.chars().take(500).collect() });
+    }
+
+    /// The code of a version, started.
+    async fn start_package(&self, package: &Package) -> Result<Arc<dyn PluginInstance>, PluginError> {
+        let manifest = package.manifest.clone();
+        let (runtime, code) = super::runtime::engine_for(&manifest, package, &self.runtime, &self.apps)?;
+        let me = self.me.clone();
+        let host = Arc::new(
+            PluginHostApi::new(manifest, self.db.clone(), self.settings.clone(), self.handle.clone())
+                .with_services(self.services.clone())
+                .with_secrets(Some(self.secrets.clone()))
+                .with_data_news(self.data_news.clone())
+                .with_sink(Arc::new(move |id: &str, level: &str, message: &str| {
+                    if let Some(host) = me.upgrade() {
+                        host.note_line(id, level, message);
+                    }
+                })),
+        );
+        let started = Instant::now();
+        let instance = runtime.start(code, host).await?;
+        tracing::info!(target: "plugins", "{} {}: loaded in {} ms", package.manifest.id, package.version(), started.elapsed().as_millis());
+        Ok(instance)
+    }
+
+    /// The plugin's code, loaded now if it is not and there is room for it (`admit`). A version that does not start
+    /// gives way to the one that last did, when there is one.
+    async fn instance(&self, plugin: &Arc<Plugin>) -> Result<Arc<dyn PluginInstance>, PluginError> {
+        let mut slot = plugin.slot.lock().await;
+        let (package, good) = {
+            let state = plugin.state();
+            (state.active.clone().filter(|_| state.enabled), state.good.clone())
+        };
+        let package = package.ok_or_else(|| PluginError::Unavailable(crate::tr!("приложение выключено")))?;
+        // A face: its code never starts here (docs/plans/home-and-devices.md, stage 5б).
+        if package.manifest.face_at((self.placement)()) {
+            return Err(PluginError::Unavailable(crate::tr!("приложение работает на Турбо дома")));
+        }
+        if self.apps_held.load(Ordering::Relaxed) && is_program(&package.manifest) {
+            return Err(PluginError::Unavailable(crate::tr!("приложение на паузе, пока DuoWave пробует новую версию")));
+        }
+        let version = package.version();
+        if let Some(loaded) = slot.as_ref() {
+            if loaded.version == version {
+                return Ok(loaded.instance.clone());
+            }
+        }
+        if self.closing.load(Ordering::SeqCst) {
+            return Err(PluginError::Unavailable(crate::tr!("DuoWave останавливается")));
+        }
+        if let Some(loaded) = plugin.release(&mut slot) {
+            loaded.instance.stop();
+        }
+        let loading = self.admit(plugin, &package.manifest).await?;
+        match self.start_package(&package).await {
+            Ok(instance) => {
+                let share_mb = share_of(&package.manifest);
+                plugin.hold(&mut slot, Loaded { version: version.clone(), instance: instance.clone(), share_mb });
+                drop((slot, loading));
+                if good.as_deref() != Some(version.as_str()) {
+                    let _ = registry::set_good(&self.db, &plugin.id, &version);
+                    plugin.state().good = Some(version.clone());
+                }
+                self.changed(&plugin.id, "loaded", Some(version), None, None);
+                Ok(instance)
+            }
+            Err(error) => {
+                drop(loading);
+                let previous = good.filter(|good| *good != version).and_then(|good| {
+                    plugin.state().found.iter().find_map(|candidate| match candidate {
+                        Candidate::Ready(package) if package.version() == good => Some(package.clone()),
+                        _ => None,
+                    })
+                });
+                let message = crate::tr!("версия {version} не поднялась: {error}", version = version, error = error);
+                if let Some(previous) =
+                    previous.filter(|previous| previous.manifest.incompatible_with((self.placement)()).is_none())
+                {
+                    // Room for it as for any load: without room the failure stands.
+                    let loading = self.admit(plugin, &previous.manifest).await.ok();
+                    let started = if loading.is_some() { self.start_package(&previous).await.ok() } else { None };
+                    if let Some(instance) = started {
+                        let message = crate::tr!(
+                            "{message}; работает прежняя {version}",
+                            message = message,
+                            version = previous.version()
+                        );
+                        let share_mb = share_of(&previous.manifest);
+                        plugin.hold(
+                            &mut slot,
+                            Loaded { version: previous.version(), instance: instance.clone(), share_mb },
+                        );
+                        drop((slot, loading));
+                        {
+                            let mut state = plugin.state();
+                            state.active = Some(previous.clone());
+                            state.problem = Some(message.clone());
+                        }
+                        tracing::warn!(target: "plugins", "{}: {message}", plugin.id);
+                        self.note_error(plugin, &message);
+                        self.rebuild();
+                        self.changed(&plugin.id, "failed", Some(previous.version()), Some(message), None);
+                        return Ok(instance);
+                    }
+                }
+                tracing::warn!(target: "plugins", "{}: {message}", plugin.id);
+                self.changed(&plugin.id, "failed", Some(version), Some(message), None);
+                Err(error)
+            }
+        }
+    }
+
+    async fn unload(&self, plugin: &Plugin) {
+        let loaded = plugin.release(&mut *plugin.slot.lock().await);
+        if let Some(loaded) = loaded {
+            loaded.instance.stop();
+            self.changed(&plugin.id, "unloaded", Some(loaded.version), None, None);
+        }
+    }
+
+    /// The apps that say `resident`, switched on and made for this placement, whose program is not loaded: started in
+    /// the background — at the gateway's start (the first tick), after a reload or an unload. One the supervisor gave
+    /// up on is switched off and stays so.
+    fn keep_residents(&self) {
+        if self.config.disabled || self.apps_held.load(Ordering::Relaxed) {
+            return;
+        }
+        let here = self.placement_now();
+        let asleep: Vec<String> = self.sleeping().into_iter().map(|(id, _)| id).collect();
+        for plugin in self.list() {
+            let Some(package) = plugin.active() else { continue };
+            if !package.manifest.resident || !package.manifest.runs_at(here) || asleep.contains(&plugin.id) {
+                continue;
+            }
+            // Loaded, or loading now (its slot is held).
+            match plugin.slot.try_lock() {
+                Ok(slot) if slot.is_none() => {}
+                _ => continue,
+            }
+            let me = self.me.clone();
+            tokio::spawn(async move {
+                let Some(host) = me.upgrade() else { return };
+                if let Err(error) = host.instance(&plugin).await {
+                    tracing::warn!(target: "plugins", "{}: not started — {error}", plugin.id);
+                }
+            });
+        }
+    }
+
+    /// Unloads the code of plugins idle longer than PLUGINS_IDLE_UNLOAD_S; one in a call is not idle.
+    fn unload_idle(&self) {
+        self.unload_idle_for(self.config.idle_unload_s * 1000);
+    }
+
+    /// Unloads the code of plugins idle longer than `idle` ms; one in a call stays.
+    fn unload_idle_for(&self, idle: u64) {
+        let now = self.now_ms();
+        for plugin in self.list() {
+            let idle_for = now.saturating_sub(plugin.used.load(Ordering::Relaxed));
+            if idle_for < idle || plugin.busy.load(Ordering::Relaxed) > 0 {
+                continue;
+            }
+            // An app that runs the whole time it is on: no call is its usual life.
+            if plugin.active().is_some_and(|package| package.manifest.resident) {
+                continue;
+            }
+            // An app at a long task is at work, though nobody calls it (src/tasks).
+            if self.long_tasks.get().is_some_and(|tasks| tasks.running(&plugin.id) > 0) {
+                continue;
+            }
+            let Ok(mut slot) = plugin.slot.try_lock() else { continue };
+            if let Some(loaded) = plugin.release(&mut slot) {
+                drop(slot);
+                loaded.instance.stop();
+                tracing::info!(target: "plugins", "{}: unloaded after {} s without a call", plugin.id, idle / 1000);
+                self.changed(&plugin.id, "unloaded", Some(loaded.version), None, None);
+            }
+        }
+    }
+
+    /// An event of the bus to the plugins that follow it: each in the background, not waited for.
+    fn deliver(&self, event: &GatewayEvent) {
+        if self.config.disabled {
+            return;
+        }
+        let name = event.name();
+        for plugin in self.list() {
+            let Some(package) = plugin.active() else { continue };
+            for spec in package.manifest.contributes.events.iter().filter(|spec| spec.name == name) {
+                let payload = json!({ "name": name, "payload": event.payload() });
+                self.background(&plugin.id, &spec.handler, payload);
+            }
+        }
+    }
+
+    /// What the station said of a plugin's own item (stage 5а), to that plugin when it follows the event; a silence
+    /// or a failure it may answer with what to play instead (`{play: […]}`), which plays at once if the person has not
+    /// gone on meanwhile.
+    pub fn player_news(&self, report: &PlaybackReport) {
+        if self.config.disabled {
+            return;
+        }
+        let Some((plugin, own)) = report.item.id.split_once('/') else { return };
+        let Some(package) = self.package(plugin) else { return };
+        self.note_line(plugin, "player", &report.news.note(&report.item.title, report.via_gateway));
+        let name = report.news.event();
+        let Some(spec) = package.manifest.contributes.events.iter().find(|spec| spec.name == name) else { return };
+        let (seconds, retrying) = match report.news {
+            PlaybackNews::Silent { seconds, retrying } => (Some(seconds), retrying),
+            _ => (None, false),
+        };
+        let payload = json!({
+            "name": name,
+            "payload": {
+                "device": report.device,
+                "item": { "id": own, "title": report.item.title, "url": report.item.url },
+                "viaGateway": report.via_gateway,
+                "seconds": seconds,
+                // The gateway tries its own way next: nothing to answer yet.
+                "retrying": retrying,
+            }
+        });
+        let answerable = matches!(report.news, PlaybackNews::Failed | PlaybackNews::Silent { retrying: false, .. });
+        let kind = package.manifest.contributes.media.first().map(|media| media.kind).unwrap_or_else(|| {
+            super::media::kind_for(
+                package.manifest.contributes.intents.first().map(|i| i.capability).unwrap_or(CapabilityName::Plugins),
+            )
+        });
+        let (me, id, handler) = (self.me.clone(), plugin.to_string(), spec.handler.clone());
+        let (device, play_id) = (report.device.clone(), report.play_id.clone());
+        tokio::spawn(async move {
+            let Some(host) = me.upgrade() else { return };
+            let answer = host.call(&id, &handler, payload, CallKind::Background).await;
+            let (Ok(Value::Object(answer)), true) = (answer, answerable) else { return };
+            let Some(play) = answer.get("play") else { return };
+            let base = host.player.as_ref().and_then(|player| player.media_base(&device));
+            let items = super::media::media_items_with(&id, kind, play, base.as_deref(), &host.play_rights(&id));
+            if let (Some(watch), false) = (host.watch.as_ref(), items.is_empty()) {
+                if watch.replace(&device, &play_id, items) {
+                    tracing::info!(target: "plugins", "{id}: the station was silent, the plugin chose what to play instead");
+                }
+            }
+        });
+    }
+
+    /// A call in the background: now, or once the pressure eases.
+    fn background(&self, id: &str, handler: &str, payload: Value) {
+        if self.deferring.load(Ordering::Relaxed) {
+            let mut deferred = self.deferred.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            if deferred.len() >= budget::DEFERRED_MAX {
+                deferred.pop_front();
+            }
+            deferred.push_back((id.to_string(), handler.to_string(), payload));
+            return;
+        }
+        let (me, id, handler) = (self.me.clone(), id.to_string(), handler.to_string());
+        tokio::spawn(async move {
+            if let Some(host) = me.upgrade() {
+                let _ = host.call(&id, &handler, payload, CallKind::Background).await;
+            }
+        });
+    }
+
+    // Memory.
+
+    /// The machine's memory now, read off the runtime's threads (a Mac asks `sysctl`).
+    async fn memory_now(&self) -> Option<MemoryNow> {
+        let probe = self.memory.clone();
+        tokio::task::spawn_blocking(move || probe.now()).await.ok().flatten()
+    }
+
+    /// A plugin's share now, from what the host keeps — no engine is asked: what it declared, what it takes of the
+    /// budget (while its context is loaded or loading), whether it is in a call, what its engine held at the last
+    /// look. None for a package of another kind: an app is counted by what its process holds, the rest run nothing.
+    fn share_now(&self, plugin: &Plugin) -> Option<PluginShare> {
+        let (enabled, manifest) = {
+            let state = plugin.state();
+            let shown = state.active.clone().or_else(|| registry::newest_ready(&state.found));
+            (state.enabled && state.active.is_some(), shown.map(|package| package.manifest.clone()))
+        };
+        let manifest = manifest.filter(|manifest| manifest.kind == PackageKind::Plugin)?;
+        let loading_mb = plugin.loading_mb.load(Ordering::Relaxed);
+        let declared_mb = plugin.taken_mb.load(Ordering::Relaxed);
+        let busy = loading_mb > 0 || plugin.busy.load(Ordering::Relaxed) > 0;
+        // Measured only when the host measures (tests that keep the declared count turn it off).
+        let held_kb = if self.measure.load(Ordering::Relaxed) { plugin.held_kb.load(Ordering::Relaxed) } else { 0 };
+        // A loaded context takes what it holds with a margin while idle, all it declared while busy (budget.rs).
+        let taken_mb = budget::charge_mb(declared_mb, held_kb, busy) + loading_mb;
+        Some(PluginShare {
+            id: plugin.id.clone(),
+            title: manifest.title_in(&crate::locale::preferences(&self.settings)),
+            enabled: enabled && !self.config.disabled,
+            loaded: declared_mb + loading_mb > 0,
+            busy,
+            budget_mb: manifest.budget.memory_mb,
+            taken_mb,
+            actual_mb: (declared_mb > 0 && held_kb > 0).then(|| held_kb.div_ceil(1024)),
+        })
+    }
+
+    /// Each plugin's share, its engine asked first what it holds now (for the panel and the memory watch).
+    async fn shares(&self) -> Vec<PluginShare> {
+        self.measure_loaded(false).await;
+        self.list().iter().filter_map(|plugin| self.share_now(plugin)).collect()
+    }
+
+    /// What each loaded context's engine holds now, asked of all at once. `idle_only`: before a load's count — a context
+    /// in a call answers only after it, and is charged all it declared anyway; each answer within a moment.
+    async fn measure_loaded(&self, idle_only: bool) {
+        if !self.measure.load(Ordering::Relaxed) {
+            return;
+        }
+        let plugins = self.list();
+        let mut asks = Vec::new();
+        for plugin in &plugins {
+            if idle_only && plugin.busy.load(Ordering::Relaxed) > 0 {
+                continue;
+            }
+            let Ok(slot) = plugin.slot.try_lock() else { continue };
+            let Some(instance) = slot.as_ref().map(|loaded| loaded.instance.clone()) else { continue };
+            drop(slot);
+            let plugin = plugin.clone();
+            asks.push(async move {
+                let wait = if idle_only { Duration::from_millis(300) } else { Duration::from_secs(2) };
+                if let Ok(Some(memory)) = tokio::time::timeout(wait, instance.memory()).await {
+                    plugin.held_kb.store(memory.allocated.div_ceil(1024).max(1), Ordering::Relaxed);
+                }
+            });
+        }
+        futures::future::join_all(asks).await;
+    }
+
+    /// The plugins' memory and room, for the panel.
+    pub async fn resources(&self) -> ResourcesView {
+        let memory = self.memory_now().await;
+        let plugins = self.shares().await;
+        let count = budget::count(memory, self.reserve_mb(memory), &plugins);
+        let placement = (self.placement)();
+        let pressure = memory.map(|memory| memory.pressure).unwrap_or(Pressure::Normal);
+        self.gauge.set(memory.map(|_| count.room_mb));
+        let dir = self.config.packages_dir.clone();
+        let probe = self.memory.clone();
+        let (free_disk, packages_mb) = tokio::task::spawn_blocking(move || {
+            (probe.free_disk_mb(&dir), crate::operations::system_memory::folder_mb(&dir))
+        })
+        .await
+        .unwrap_or((None, 0));
+        ResourcesView {
+            placement,
+            enforced: placement.on_station(),
+            measured: memory.is_some(),
+            total_mb: memory.map(|memory| memory.total_mb).unwrap_or(0),
+            available_mb: memory.map(|memory| memory.available_mb).unwrap_or(0),
+            reserve_mb: self.reserve_mb(memory),
+            gateway_mb: memory.and_then(|memory| memory.gateway_mb),
+            plugins_mb: count.plugins_mb,
+            budget_mb: count.budget_mb,
+            committed_mb: count.committed_mb,
+            free_mb: count.free_mb,
+            room_mb: count.room_mb,
+            loaded: count.loaded,
+            pressure,
+            deferring: self.deferring.load(Ordering::Relaxed),
+            action: self.config.pressure_action,
+            disk: budget::DiskView { free_mb: free_disk, reserve_mb: self.storage_reserve_mb(), packages_mb },
+            note: budget::note(&count, memory.is_some(), pressure),
+            plugins,
+        }
+    }
+
+    /// Room for a context about to load (budget.rs): on the station its declared budget must fit what is free now. If
+    /// it does not, idle contexts unload first, the longest idle first, one in a call never; if it still does not, the
+    /// load is refused with what it needs and what is free. On a computer, or while the machine does not tell its
+    /// memory, nothing is refused. The room is taken until the context is in its slot (`Loading`); the context's own
+    /// share, if an older version of it is loaded, is left out — the new one takes its place.
+    async fn admit<'a>(&self, plugin: &'a Plugin, manifest: &Manifest) -> Result<Loading<'a>, PluginError> {
+        let memory = if (self.placement)().on_station() { self.memory_now().await } else { None };
+        // The idle contexts are charged by what they hold: asked now, so the count is fresh.
+        if memory.is_some() {
+            self.measure_loaded(true).await;
+        }
+        // Counted and taken at once, nothing awaited meanwhile.
+        let _admitting = self.admitting.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(memory) = memory {
+            // An app's program: the budget for what it said it uses last time (the VPN's protocols, budget.memoryMbFor);
+            // its supervisor starts it with that cap.
+            let (need, what) = if manifest.kind == PackageKind::App && is_program(manifest) {
+                let file = self.config.packages_dir.join(&plugin.id).join(crate::apps::supervisor::USES_FILE);
+                manifest.budget.memory_for_uses(&crate::apps::supervisor::read_uses(&file))
+            } else {
+                (manifest.budget.memory_mb, None)
+            };
+            self.make_room(plugin, need, memory).map_err(|error| match (error, what) {
+                (PluginError::NoRoom(why), Some(what)) => PluginError::NoRoom(crate::tr!(
+                    "{why} Столько нужно для {what} — выберите в приложении другое, и ему хватит {base} МБ.",
+                    why = why,
+                    what = what,
+                    base = manifest.budget.memory_mb
+                )),
+                (error, _) => error,
+            })?;
+        }
+        Ok(Loading::take(plugin, share_of(manifest)))
+    }
+
+    /// The count for a load of `need_mb` and the idle contexts it unloads, if it must; why not when there is no room.
+    fn make_room(&self, plugin: &Plugin, need_mb: u64, memory: MemoryNow) -> Result<(), PluginError> {
+        let others: Vec<Arc<Plugin>> = self.list().into_iter().filter(|other| other.id != plugin.id).collect();
+        let mut shares: Vec<PluginShare> = others.iter().filter_map(|other| self.share_now(other)).collect();
+        // What its own loaded version holds comes back to the budget, as any loaded context's does; its share is not
+        // counted twice.
+        if let Some(own) = self.share_now(plugin) {
+            shares.push(PluginShare { taken_mb: 0, busy: false, ..own });
+        }
+        let reserve_mb = self.reserve_mb(Some(memory));
+        let count = budget::count(Some(memory), reserve_mb, &shares);
+        let now = self.now_ms();
+        let idle: Vec<Idle> = others
+            .iter()
+            .filter_map(|other| {
+                let share = shares.iter().find(|share| share.id == other.id)?;
+                (share.loaded && !share.busy).then(|| Idle {
+                    id: other.id.clone(),
+                    taken_mb: share.taken_mb,
+                    idle_ms: now.saturating_sub(other.used.load(Ordering::Relaxed)),
+                })
+            })
+            .collect();
+        let taking: Vec<(String, u64)> = shares
+            .iter()
+            .filter(|share| share.taken_mb > 0)
+            .map(|share| (share.title.clone(), share.taken_mb))
+            .collect();
+        let refused = |free_mb: u64| {
+            let why = budget::does_not_fit(need_mb, free_mb, &count, reserve_mb, &taking).unwrap_or_default();
+            tracing::warn!(target: "plugins", "{}: not loaded, no room — {need_mb} MB needed, {free_mb} MB free (the budget {} MB, {} MB taken by the loaded)", plugin.id, count.budget_mb, count.committed_mb);
+            PluginError::NoRoom(why)
+        };
+        let chosen = budget::to_unload(need_mb, count.free_mb, &idle).map_err(refused)?;
+        let mut free_mb = count.free_mb;
+        for other in chosen.iter().filter_map(|id| others.iter().find(|other| other.id == *id)) {
+            free_mb += self.unload_for(other, &plugin.id).unwrap_or(0);
+        }
+        // One that went into a call meanwhile stayed loaded.
+        if need_mb > free_mb {
+            return Err(refused(free_mb));
+        }
+        Ok(())
+    }
+
+    /// An idle context unloaded to make room for `for_id`'s: the share it gave back, or none when it went into a call
+    /// (or is loading) meanwhile.
+    fn unload_for(&self, plugin: &Plugin, for_id: &str) -> Option<u64> {
+        let Ok(mut slot) = plugin.slot.try_lock() else { return None };
+        if plugin.busy.load(Ordering::Relaxed) > 0 {
+            return None;
+        }
+        let loaded = plugin.release(&mut slot)?;
+        drop(slot);
+        loaded.instance.stop();
+        tracing::info!(target: "plugins", "{}: unloaded to make room for {for_id}", plugin.id);
+        self.note_line(&plugin.id, "load", &crate::tr!("выгружен: ОЗУ понадобилось плагину {for_id}", for_id = for_id));
+        self.changed(&plugin.id, "unloaded", Some(loaded.version), None, None);
+        Some(loaded.share_mb)
+    }
+
+    /// Whether a package of `need_mb` fits on the disk, with the reserve for the gateway's update; on the station only.
+    pub fn room_for(&self, need_mb: u64) -> Result<(), String> {
+        if !(self.placement)().on_station() {
+            return Ok(());
+        }
+        let free = self.memory.free_disk_mb(&self.config.packages_dir);
+        match budget::no_room(need_mb, free, self.storage_reserve_mb()) {
+            Some(why) => Err(why),
+            None => Ok(()),
+        }
+    }
+
+    /// The room on the disk kept for the gateway's own next update: PLUGINS_STORAGE_RESERVE_MB when it is set, else
+    /// counted from the gateway's program (`updates::install::update_reserve_kb`: its growth and the floor — the new
+    /// version is tried from memory and takes the old one's place).
+    pub fn storage_reserve_mb(&self) -> u64 {
+        if let Some(reserve) = self.config.storage_reserve_mb {
+            return reserve;
+        }
+        let program = if (self.placement)().on_station() {
+            crate::core::build::station_program().unwrap_or_default()
+        } else {
+            std::env::current_exe().unwrap_or_default()
+        };
+        let size = std::fs::metadata(&program).map(|meta| meta.len()).unwrap_or(20 * 1024 * 1024);
+        crate::core::build::update_reserve_kb(size).div_ceil(1024)
+    }
+
+    /// The apps' programs held off (or let start again): a trial of the gateway's new version for which they were
+    /// switched off starts with them held.
+    pub fn hold_apps(&self, held: bool) {
+        self.apps_held.store(held, Ordering::Relaxed);
+        if held {
+            tracing::info!(target: "plugins", "the apps' programs wait: the gateway tries its new version from memory");
+        }
+    }
+
+    /// The apps' programs switched off for a while, not as the owner's choice (src/updates/trial.rs: the memory a
+    /// trial of the gateway's new version needs), and the idle plugins unloaded: the ids of the apps stopped. They
+    /// start again at `hold_apps(false)`, or with the gateway's next start.
+    pub async fn pause_apps(&self) -> Vec<String> {
+        self.hold_apps(true);
+        let mut stopped = Vec::new();
+        for id in registry::enabled_order(&self.db).into_iter().rev() {
+            let Some(plugin) = self.plugin(&id) else { continue };
+            if !plugin.active().is_some_and(|package| is_program(&package.manifest)) {
+                continue;
+            }
+            let mut slot = plugin.slot.lock().await;
+            if let Some(loaded) = plugin.release(&mut slot) {
+                drop(slot);
+                let instance = loaded.instance.clone();
+                // The program is asked to stop and given its seconds: off the async threads.
+                let _ = tokio::task::spawn_blocking(move || instance.stop()).await;
+                self.changed(&id, "unloaded", Some(loaded.version), None, None);
+                stopped.push(id);
+            }
+        }
+        self.unload_idle_for(0);
+        stopped
+    }
+
+    /// One look at the memory: under pressure the idle plugins give their memory back and their background work
+    /// waits; at «critical» on the station the app, else the plugin, switched on last among those loaded falls asleep
+    /// (or the panel is told, if the owner chose `warn`), and once the memory is back what sleeps wakes. The built-in
+    /// skills and the voice path are never touched.
+    async fn watch_memory(&self) {
+        let Some(memory) = self.memory_now().await else {
+            self.gauge.set(None);
+            return;
+        };
+        let reserve_mb = self.reserve_mb(Some(memory));
+        let low = memory.available_mb < reserve_mb || memory.pressure >= Pressure::Warn;
+        if low {
+            self.unload_idle_for(budget::PRESSED_IDLE_MS);
+        }
+        let was = self.deferring.swap(low, Ordering::Relaxed);
+        if was && !low {
+            let waiting: Vec<(String, String, Value)> =
+                self.deferred.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).drain(..).collect();
+            if !waiting.is_empty() {
+                tracing::info!(target: "plugins", "the memory pressure eased: {} background call(s) go now", waiting.len());
+            }
+            for (id, handler, payload) in waiting {
+                self.background(&id, &handler, payload);
+            }
+        } else if low && !was {
+            tracing::warn!(target: "plugins", "memory is short ({} MB available, the reserve {} MB, pressure {}): idle plugins unload, background work waits", memory.available_mb, reserve_mb, memory.pressure.as_str());
+        }
+        let critical = memory.pressure == Pressure::Critical || memory.available_mb < reserve_mb / 2;
+        if critical && (self.placement)().on_station() && !self.config.disabled {
+            self.relieve(memory).await;
+        } else if !low {
+            self.wake_one(memory);
+        }
+        let plugins = self.shares().await;
+        let count = budget::count(Some(memory), self.reserve_mb(Some(memory)), &plugins);
+        // What a plugin could get, the idle contexts unloaded: what «would it go here» is asked against.
+        self.gauge.set(Some(count.room_mb));
+        let now = (count.free_mb, memory.pressure);
+        let told = {
+            let mut told = self.told.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let changed = told.is_none_or(|(free, pressure)| pressure != now.1 || free.abs_diff(now.0) >= 2);
+            if changed {
+                *told = Some(now);
+            }
+            changed
+        };
+        if told {
+            self.events.emit(GatewayEvent::PluginsResources {
+                free_mb: count.free_mb,
+                pressure: memory.pressure.as_str().into(),
+            });
+        }
+    }
+
+    /// At «critical» on the station: the app switched on last falls asleep — an app weighs more than a plugin and starts
+    /// again as easily (docs/plans/plugins.md, «Надзор за приложениями») — else the plugin switched on last; or the
+    /// log and the panel are told. Only one that is loaded: one that holds nothing frees nothing by sleeping. It stays
+    /// on and wakes by itself (`wake_one`).
+    async fn relieve(&self, memory: MemoryNow) {
+        let mut order: Vec<String> = Vec::new();
+        for id in registry::enabled_order(&self.db) {
+            if !(self.is_active(&id) && self.may_switch_off(&id)) {
+                continue;
+            }
+            if self.lock_asleep().iter().any(|(asleep, _)| *asleep == id) {
+                continue;
+            }
+            let Some(plugin) = self.plugin(&id) else { continue };
+            if plugin.slot.lock().await.is_some() {
+                order.push(id);
+            }
+        }
+        let is_app = |id: &&String| self.package(id).is_some_and(|package| package.manifest.kind == PackageKind::App);
+        let Some(id) = order.iter().find(is_app).or_else(|| order.first()).cloned() else { return };
+        let why = crate::tr!(
+            "колонке не хватало ОЗУ: свободно {available_mb} МБ при запасе {reserve_mb} МБ, давление {pressure}",
+            available_mb = memory.available_mb,
+            reserve_mb = self.reserve_mb(Some(memory)),
+            pressure = memory.pressure.as_str()
+        );
+        match self.config.pressure_action {
+            PressureAction::Warn => {
+                tracing::warn!(target: "plugins", "{id}: {why}; PLUGINS_PRESSURE_ACTION=warn, it stays on");
+                self.changed(&id, "pressure", None, Some(why), None);
+            }
+            PressureAction::Sleep => {
+                tracing::warn!(target: "plugins", "{id}: asleep — {why}");
+                let Some(plugin) = self.plugin(&id) else { return };
+                let mut slot = plugin.slot.lock().await;
+                let released = plugin.release(&mut slot);
+                drop(slot);
+                if let Some(loaded) = released {
+                    let instance = loaded.instance.clone();
+                    // The program is asked to stop and given its seconds: off the async threads.
+                    let _ = tokio::task::spawn_blocking(move || instance.stop()).await;
+                }
+                let need = self.package(&id).map_or(0, |package| package.manifest.budget.memory_mb);
+                self.lock_asleep().push((id.clone(), need));
+                let asleep = crate::tr!("спит: {why} — проснётся само, когда ОЗУ освободится", why = why);
+                plugin.state().problem = Some(asleep.clone());
+                self.note_error(&plugin, &asleep);
+                self.changed(&id, "asleep", None, Some(asleep), None);
+            }
+        }
+    }
+
+    /// What fell asleep for want of memory and still sleeps, with the MB it needs.
+    pub fn sleeping(&self) -> Vec<(String, u64)> {
+        self.lock_asleep().clone()
+    }
+
+    fn lock_asleep(&self) -> std::sync::MutexGuard<'_, Vec<(String, u64)>> {
+        self.asleep.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// The memory is back: the first that fell asleep wakes once its budget fits with room to spare (WAKE_MARGIN_MB
+    /// over the reserve) — one a look, so they do not wake into the same want. A resident app is started again by the
+    /// next tick; a plugin loads at its next call.
+    fn wake_one(&self, memory: MemoryNow) {
+        let woken = {
+            let mut asleep = self.lock_asleep();
+            let Some((_, need)) = asleep.first() else { return };
+            if memory.available_mb < self.reserve_mb(Some(memory)) + need + budget::WAKE_MARGIN_MB {
+                return;
+            }
+            asleep.remove(0).0
+        };
+        tracing::info!(target: "plugins", "{woken}: awake — {} MB available", memory.available_mb);
+        if let Some(plugin) = self.plugin(&woken) {
+            plugin.state().problem = None;
+        }
+        self.changed(&woken, "awake", None, None, None);
+    }
+
+    /// Whether a plugin's calls go to a helper now: it prefers home, this is a station, and a helper that gives the
+    /// apps is up.
+    fn runs_at_home(&self, package: &Package) -> bool {
+        // A face here: its code is the Турбо's, whether it is up or not (docs/plans/home-and-devices.md, stage 5б).
+        if package.manifest.face_at((self.placement)()) {
+            return true;
+        }
+        package.manifest.prefer_home
+            && (self.placement)().on_station()
+            && self.home.as_ref().and_then(|home| home.up()).is_some()
+    }
+
+    /// Whether the host may switch a plugin off by itself: not a system package.
+    fn may_switch_off(&self, id: &str) -> bool {
+        self.origin_of(id).can_disable()
+    }
+
+    /// «Сделать свою копию»: a built-in's or a catalog's package copied under an id of one's own (`radio` → `my-radio`),
+    /// the original switched off, the copy on in its place when the original was. The copy is one's own: it changes in
+    /// the workshop, and an update of the gateway or the catalog leaves it as it is. Its settings come along.
+    pub async fn fork(&self, id: &str, new_id: Option<&str>, actor: Option<Actor>) -> Result<PackageView, ApiError> {
+        self.writable()?;
+        self.rescan();
+        let plugin = self.known(id)?;
+        let origin = Origin::of(&plugin.state().source);
+        if origin == Origin::System {
+            return Err(ApiError::conflict(crate::tr!("Системное приложение не копируют: оно часть DuoWave.")));
+        }
+        let package = registry::newest_ready(&plugin.state().found)
+            .ok_or_else(|| ApiError::bad_request(crate::tr!("У {id} нет версии, которая читается.", id = id)))?;
+        let copy_id = match new_id.map(str::trim).filter(|new_id| !new_id.is_empty()) {
+            Some(new_id) => new_id.to_string(),
+            None => format!("my-{id}").chars().take(32).collect::<String>().trim_end_matches('-').to_string(),
+        };
+        if !manifest::valid_id(&copy_id) {
+            return Err(ApiError::field(
+                "id",
+                crate::tr!("строчные латинские буквы, цифры и «-», с буквы, до 32 знаков"),
+            ));
+        }
+        if self.config.packages_dir.join(&copy_id).exists() || self.plugin(&copy_id).is_some() {
+            return Err(ApiError::conflict(crate::tr!(
+                "«{copy_id}» уже есть — назовите копию иначе.",
+                copy_id = copy_id
+            )));
+        }
+        let version = package.version();
+        let target = self.config.packages_dir.join(&copy_id).join(&version);
+        let title = crate::tr!("{manifest} (моя копия)", manifest = package.manifest.title)
+            .chars()
+            .take(80)
+            .collect::<String>();
+        let (from, to, new) = (package.dir.clone(), target.clone(), copy_id.clone());
+        tokio::task::spawn_blocking(move || copy_package(&from, &to, &new, &title))
+            .await
+            .map_err(ApiError::internal)?
+            .map_err(|error| ApiError::internal(crate::tr!("копия не записалась: {error}", error = error)))?;
+        registry::set_installed(
+            &self.db,
+            &copy_id,
+            registry::SOURCE_LOCAL,
+            false,
+            actor.as_ref().map(|a| a.name.as_str()),
+        )?;
+        // Its settings come along, its keys too.
+        let mut stored = self.settings.get(&PACKAGE_SETTINGS, None).unwrap_or_default();
+        if let Some(own) = stored.get(id).cloned() {
+            stored.insert(copy_id.clone(), own);
+            self.settings.set(&PACKAGE_SETTINGS, &stored, actor.clone())?;
+        }
+        let from = crate::secrets::plugin_secrets(id);
+        for secret in self.secrets.ids(&from) {
+            if let Some(value) = self.secrets.get(&secret) {
+                let key = &secret[from.len()..];
+                self.secrets.set(&crate::secrets::plugin_secret(&copy_id, key), Some(&value))?;
+            }
+        }
+        let was_on = plugin.state().enabled;
+        if was_on && origin.can_disable() {
+            self.disable(id, actor.clone()).await?;
+        }
+        self.rescan();
+        // The copy's history starts from the version it was made of (docs/plans/package-history.md): a newer one of
+        // the source can be merged into it later.
+        if let Some(history) = self.history() {
+            let source = history.ensure_recorded(id, &package.dir, &version);
+            history.note_install(
+                &copy_id,
+                &target,
+                &version,
+                super::history::RecordKind::Copy,
+                super::history::Author::of(actor.as_ref(), super::history::Who::System),
+                false,
+                false,
+                source,
+            );
+        }
+        tracing::info!(target: "plugins", "{id}: copied as {copy_id} {version}");
+        self.changed(&copy_id, "installed", Some(version), None, actor.clone());
+        if was_on {
+            if let Err(error) = self.enable(&copy_id, actor).await {
+                tracing::warn!(target: "plugins", "{copy_id}: the copy stays off: {}", error.message);
+            }
+        }
+        self.view_one(&copy_id).await
+    }
+
+    fn changed(&self, id: &str, change: &str, version: Option<String>, error: Option<String>, actor: Option<Actor>) {
+        self.events.emit(GatewayEvent::PackagesChanged {
+            change: change.into(),
+            package_id: id.into(),
+            version,
+            error,
+            actor,
+        });
+    }
+
+    // The admin's actions.
+
+    fn writable(&self) -> Result<(), ApiError> {
+        if self.config.disabled {
+            return Err(ApiError::conflict(crate::tr!("Безопасный режим: приложения выключены (PLUGINS_DISABLED).")));
+        }
+        Ok(())
+    }
+
+    fn known(&self, id: &str) -> Result<Arc<Plugin>, ApiError> {
+        self.plugin(id).ok_or_else(|| ApiError::not_found(crate::tr!("Нет приложения {id}.", id = id)))
+    }
+
+    /// A tool of this package already given by another plugin that is on.
+    fn tool_taken(&self, id: &str, package: &Package) -> Option<String> {
+        let tools = self.tools.read().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
+        package.manifest.contributes.tools.iter().find_map(|spec| {
+            tools.iter().find(|offered| offered.spec.name == spec.name && offered.plugin != id).map(|offered| {
+                crate::tr!("инструмент {name} уже даёт приложение {plugin}", name = spec.name, plugin = offered.plugin)
+            })
+        })
+    }
+
+    /// Switches a plugin on: its newest version that runs here starts first; what does not start stays off. Memory
+    /// never keeps it off: with no room to start it now (budget.rs) it is on unstarted, and loads at its first call.
+    pub async fn enable(&self, id: &str, actor: Option<Actor>) -> Result<PackageView, ApiError> {
+        self.writable()?;
+        self.rescan();
+        let plugin = self.known(id)?;
+        let (package, problem) = choose(&plugin.state().found, (self.placement)());
+        let Some(package) = package else {
+            return Err(ApiError::bad_request(crate::tr!(
+                "Приложение не включить: {problem}.",
+                problem = problem.unwrap_or_default()
+            )));
+        };
+        if let Some(taken) = self.tool_taken(id, &package) {
+            return Err(ApiError::conflict(crate::tr!("Приложение не включить: {taken}.", taken = taken)));
+        }
+        // «Колонка + сервер»: a plugin that prefers home runs on the computer while it is up — nothing of it starts
+        // on the station, and the station's memory is not asked.
+        let at_home = self.runs_at_home(&package);
+        let version = package.version();
+        // Whether it is known to start: it started now, or it runs on the computer.
+        let mut started = at_home;
+        if !at_home {
+            let mut slot = plugin.slot.lock().await;
+            if let Some(loaded) = plugin.release(&mut slot) {
+                loaded.instance.stop();
+            }
+            match self.admit(&plugin, &package.manifest).await {
+                Ok(loading) => {
+                    let instance = self.start_package(&package).await.map_err(|error| {
+                        self.note_error(&plugin, &crate::tr!("не запустился: {error}", error = error));
+                        ApiError::bad_request(crate::tr!(
+                            "Приложение не запустилось, оно остаётся выключенным: {error}.",
+                            error = error
+                        ))
+                    })?;
+                    let share_mb = share_of(&package.manifest);
+                    plugin.hold(&mut slot, Loaded { version: version.clone(), instance, share_mb });
+                    drop(loading);
+                    started = true;
+                }
+                Err(why) => {
+                    tracing::info!(target: "plugins", "{id} {version}: on, not started — {why}");
+                    self.note_line(
+                        id,
+                        "load",
+                        &crate::tr!(
+                            "включён, но пока не загружен: {why}. Загрузится при первом вызове, когда хватит ОЗУ",
+                            why = why
+                        ),
+                    );
+                }
+            }
+        }
+        plugin.used.store(self.now_ms(), Ordering::Relaxed);
+        let good = started.then_some(version.as_str());
+        registry::set_enabled(&self.db, id, true, good, actor.as_ref().map(|actor| actor.name.as_str()))?;
+        {
+            let mut state = plugin.state();
+            state.enabled = true;
+            if started {
+                state.good = Some(version.clone());
+            }
+            state.active = Some(package);
+            state.problem = problem;
+        }
+        self.rebuild();
+        tracing::info!(target: "plugins", "{id} {version}: switched on");
+        self.changed(id, "enabled", Some(version), None, actor);
+        Ok(self.view_of(&plugin).await)
+    }
+
+    pub async fn disable(&self, id: &str, actor: Option<Actor>) -> Result<PackageView, ApiError> {
+        self.writable()?;
+        let plugin = self.known(id)?;
+        if !Origin::of(&plugin.state().source).can_disable() {
+            return Err(ApiError::conflict(crate::tr!(
+                "«{id}» — системное приложение: без него колонка не работает как надо, его не выключить.",
+                id = id
+            )));
+        }
+        registry::set_enabled(&self.db, id, false, None, actor.as_ref().map(|actor| actor.name.as_str()))?;
+        {
+            let mut state = plugin.state();
+            state.enabled = false;
+            state.active = None;
+        }
+        self.rebuild();
+        let loaded = plugin.release(&mut *plugin.slot.lock().await);
+        if let Some(loaded) = loaded {
+            loaded.instance.stop();
+        }
+        tracing::info!(target: "plugins", "{id}: switched off");
+        self.changed(id, "disabled", None, None, actor);
+        Ok(self.view_of(&plugin).await)
+    }
+
+    /// Starts the newest version on disk beside the running one: it takes over if it starts; if not, the running
+    /// one stays and the answer says why.
+    pub async fn reload(&self, id: &str, actor: Option<Actor>) -> Result<PackageView, ApiError> {
+        self.writable()?;
+        self.rescan();
+        let plugin = self.known(id)?;
+        let (enabled, running, found) = {
+            let state = plugin.state();
+            (state.enabled, state.active.as_ref().map(|active| active.version()), state.found.clone())
+        };
+        if !enabled {
+            // Nothing runs: the folder was read again, which is all a reload of a plugin that is off does.
+            return Ok(self.view_of(&plugin).await);
+        }
+        let (package, problem) = choose(&found, (self.placement)());
+        let Some(package) = package else {
+            let message = crate::tr!("Новой версии нет: {problem}.", problem = problem.unwrap_or_default());
+            return Err(ApiError::bad_request(message));
+        };
+        if let Some(taken) = self.tool_taken(id, &package) {
+            return Err(ApiError::conflict(crate::tr!("Новая версия не включена: {taken}.", taken = taken)));
+        }
+        let version = package.version();
+        // A face (docs/plans/home-and-devices.md, stage 5б), or a plugin that prefers home while the computer is up: its
+        // code never starts here — as `enable` has it. The new version is in force at once (its phrases, tools,
+        // window), and the Турбо installs its code (home/apps.rs, `sync_faces`). Before 20.11 an update of a face
+        // started the Mac's code on the station: its memory asked of the station, its apps unloaded for room.
+        if self.runs_at_home(&package) {
+            if let Some(old) = plugin.release(&mut *plugin.slot.lock().await) {
+                old.instance.stop();
+            }
+            let _ = registry::set_good(&self.db, id, &version);
+            {
+                let mut state = plugin.state();
+                state.good = Some(version.clone());
+                state.active = Some(package);
+                state.problem = problem;
+            }
+            self.rebuild();
+            tracing::info!(target: "plugins", "{id}: {version} in force, its code runs at home");
+            self.changed(id, "reloaded", Some(version), None, actor);
+            return Ok(self.view_of(&plugin).await);
+        }
+        let running = running.unwrap_or_else(|| "—".into());
+        let loading = self.admit(&plugin, &package.manifest).await.map_err(|why| {
+            ApiError::conflict(crate::tr!(
+                "Новая версия {version} не загрузилась: {why}. Работает прежняя {running}.",
+                version = version,
+                why = why,
+                running = running
+            ))
+        })?;
+        match self.start_package(&package).await {
+            Ok(instance) => {
+                let loaded = Loaded { version: version.clone(), instance, share_mb: share_of(&package.manifest) };
+                let old = plugin.hold(&mut *plugin.slot.lock().await, loaded);
+                drop(loading);
+                if let Some(old) = old {
+                    old.instance.stop();
+                }
+                plugin.used.store(self.now_ms(), Ordering::Relaxed);
+                let _ = registry::set_good(&self.db, id, &version);
+                {
+                    let mut state = plugin.state();
+                    state.good = Some(version.clone());
+                    state.active = Some(package);
+                    state.problem = problem;
+                }
+                self.rebuild();
+                tracing::info!(target: "plugins", "{id}: reloaded, {version} runs");
+                self.changed(id, "reloaded", Some(version), None, actor);
+                Ok(self.view_of(&plugin).await)
+            }
+            Err(error) => {
+                let message = crate::tr!(
+                    "версия {version} не поднялась: {error}; работает прежняя {running}",
+                    version = version,
+                    error = error,
+                    running = running
+                );
+                tracing::warn!(target: "plugins", "{id}: {message}");
+                self.note_error(&plugin, &message);
+                self.changed(id, "failed", Some(version.clone()), Some(message.clone()), actor);
+                Err(ApiError::bad_request(crate::tr!(
+                    "Новая версия {version} не поднялась: {error}. Работает прежняя {running}.",
+                    version = version,
+                    error = error,
+                    running = running
+                )))
+            }
+        }
+    }
+
+    /// Back to the version before (a catalog's update or one's own install that did not go well): the newest version's
+    /// folder goes, the one before takes over. Only what may be removed: a built-in goes with the gateway's version.
+    pub async fn rollback(&self, id: &str, actor: Option<Actor>) -> Result<PackageView, ApiError> {
+        self.writable()?;
+        self.rescan();
+        let plugin = self.known(id)?;
+        let origin = Origin::of(&plugin.state().source);
+        if !origin.removable() {
+            return Err(ApiError::conflict(crate::tr!(
+                "«{id}» — {word} приложение: его версия — версия DuoWave.",
+                id = id,
+                word = origin.word()
+            )));
+        }
+        let ready: Vec<Arc<Package>> = plugin
+            .state()
+            .found
+            .iter()
+            .filter_map(|candidate| match candidate {
+                Candidate::Ready(package) => Some(package.clone()),
+                Candidate::Broken { .. } => None,
+            })
+            .collect();
+        let [newest, before, ..] = ready.as_slice() else {
+            return Err(ApiError::conflict(if (self.placement)().on_station() && origin == Origin::Catalog {
+                crate::tr!("На колонке хранится только текущая версия: прежнюю вернёт «История» — с компьютера или из каталога.")
+            } else {
+                crate::tr!("Откатываться не на что: версия одна.")
+            }));
+        };
+        let (gone, back) = (newest.version(), before.version());
+        let dir = newest.dir.clone();
+        let back_dir = before.dir.clone();
+        // The version that goes stays in the history (docs/plans/package-history.md): it can come back.
+        let history = self.history();
+        if let Some(history) = &history {
+            history.ensure_recorded(id, &dir, &gone);
+        }
+        tokio::task::spawn_blocking(move || std::fs::remove_dir_all(dir))
+            .await
+            .map_err(ApiError::internal)?
+            .map_err(ApiError::internal)?;
+        if plugin.state().good.as_deref() == Some(gone.as_str()) {
+            let _ = registry::set_good(&self.db, id, &back);
+            plugin.state().good = Some(back.clone());
+        }
+        {
+            let mut state = plugin.state();
+            if state.active.as_ref().is_some_and(|active| active.version() == gone) {
+                state.active = None;
+            }
+        }
+        self.rescan();
+        if plugin.state().enabled {
+            self.reload(id, actor.clone()).await?;
+        }
+        tracing::info!(target: "plugins", "{id}: rolled back from {gone} to {back}");
+        if let Some(history) = &history {
+            history.note_rollback(id, &back_dir, &back, actor.as_ref());
+        }
+        self.note_line(id, "load", &crate::tr!("откат: {gone} → {back}", gone = gone, back = back));
+        self.changed(id, "rolledBack", Some(back), None, actor);
+        self.view_one(id).await
+    }
+
+    /// The history's step back (history/restore.rs): the version `version` on disk — the newest there now — is the one
+    /// in force: the good one, and it runs now if the plugin is on.
+    pub async fn take_version(&self, id: &str, version: &str, actor: Option<Actor>) -> Result<PackageView, ApiError> {
+        self.writable()?;
+        self.rescan();
+        let plugin = self.known(id)?;
+        let _ = registry::set_good(&self.db, id, version);
+        {
+            let mut state = plugin.state();
+            state.good = Some(version.to_string());
+            if state.active.as_ref().is_some_and(|active| active.version() != version) {
+                state.active = None;
+            }
+        }
+        self.rescan();
+        if plugin.state().enabled {
+            self.reload(id, actor).await?;
+        }
+        self.view_one(id).await
+    }
+
+    /// A plugin's code out of memory now — the history brings back its data under it; it loads again at its next
+    /// call.
+    pub async fn unload_now(&self, id: &str) {
+        if let Some(plugin) = self.plugin(id) {
+            self.unload(&plugin).await;
+        }
+    }
+
+    /// The history of the apps (src/plugins/history), once it stands.
+    pub fn history(&self) -> Option<Arc<super::history::History>> {
+        self.history.get().cloned()
+    }
+
+    pub fn set_history(&self, history: Arc<super::history::History>) {
+        let _ = self.history.set(history);
+    }
+
+    /// The admin's values for the plugin's settings: each must be one its manifest declares, of its type. A secret one
+    /// that comes back as the panel was shown it («••••••») stays as it is stored; a new one goes into the gateway's
+    /// safe, never among the settings.
+    pub async fn set_settings(
+        &self,
+        id: &str,
+        values: &Map<String, Value>,
+        actor: Option<Actor>,
+    ) -> Result<PackageView, ApiError> {
+        let plugin = self.known(id)?;
+        let package = {
+            let state = plugin.state();
+            state.active.clone().or_else(|| choose(&state.found, (self.placement)()).0)
+        };
+        let package = package
+            .ok_or_else(|| ApiError::bad_request(crate::tr!("У приложения нет версии, которая работает здесь.")))?;
+        let checked = check_settings(&package.manifest.settings, values)?;
+        self.keep_settings(id, &checked, actor.clone())?;
+        self.changed(id, "settings", Some(package.version()), None, actor);
+        Ok(self.view_of(&plugin).await)
+    }
+
+    /// Writes settings checked against a manifest (`check_settings`): the plain ones among the plugins' settings, the
+    /// private ones into the gateway's safe. Also before the package is known: the workshop writes a new plugin's
+    /// settings before its first start (docs/plans/voice-creation.md, stage 4).
+    pub fn keep_settings(&self, id: &str, checked: &CheckedSettings, actor: Option<Actor>) -> Result<(), ApiError> {
+        if checked.plain.is_empty() && checked.private.is_empty() {
+            return Ok(());
+        }
+        for (key, value) in &checked.private {
+            self.secrets.set(&crate::secrets::plugin_secret(id, key), value.as_deref())?;
+        }
+        let mut stored = self.settings.get(&PACKAGE_SETTINGS, None).unwrap_or_default();
+        let mut own = stored.remove(id).unwrap_or_default();
+        for (key, value) in &checked.plain {
+            match value {
+                Some(value) => own.insert(key.clone(), value.clone()),
+                None => own.remove(key),
+            };
+        }
+        for key in checked.private.iter().map(|(key, _)| key) {
+            own.remove(key);
+        }
+        stored.insert(id.to_string(), own);
+        self.settings.set(&PACKAGE_SETTINGS, &stored, actor)?;
+        Ok(())
+    }
+
+    /// Runs a plugin's tool as «Мозг» would, for the panel's check: its answer as the model reads it.
+    pub async fn try_tool(&self, id: &str, name: &str, input: Value) -> Result<String, ApiError> {
+        self.writable()?;
+        let package =
+            self.package(id).ok_or_else(|| ApiError::conflict(crate::tr!("Приложение {id} выключено.", id = id)))?;
+        let spec = package
+            .manifest
+            .contributes
+            .tools
+            .iter()
+            .find(|spec| spec.name == name)
+            .ok_or_else(|| ApiError::not_found(crate::tr!("Нет инструмента {name}.", name = name)))?;
+        let answer = self
+            .call(id, &spec.handler, input, CallKind::Tool)
+            .await
+            .map_err(|error| ApiError::bad_request(crate::tr!("Инструмент не ответил: {error}.", error = error)))?;
+        Ok(tool_text(answer))
+    }
+
+    // What the plugins give the core.
+
+    /// The plugin whose tool this is, among those that are on (src/bus: `host.tools.call` goes to it as a letter).
+    pub fn tool_owner(&self, name: &str) -> Option<String> {
+        let tools = self.tools.read().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
+        tools.iter().find(|offered| offered.spec.name == name).map(|offered| offered.plugin.clone())
+    }
+
+    /// The plugins' tools for «Мозг», in MCP's form, with the right each needs (`use:<capability>`); and the card
+    /// reader (`app_card`) while an app that is on shows cards.
+    pub fn tool_contributions(&self) -> Vec<ToolContribution> {
+        if self.config.disabled {
+            return Vec::new();
+        }
+        let tools = self.tools.read().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
+        let mut contributions = self.app_tool_contributions(&tools);
+        if !tools.iter().any(|offered| offered.spec.name == CARD_TOOL) {
+            contributions.extend(self.card_tool());
+        }
+        contributions
+    }
+
+    /// The tool that reads an app's cards (docs/plugins/cards.md: one card on the desk, a phone, a chat and by voice):
+    /// «Мозг» answers a question about an app's data with the data (clean-path check 19.11: «какие новинки?» about an
+    /// app with a card was answered «виджет у вас на столе», and nobody saw it there). None while no app that is on
+    /// shows a card.
+    fn card_tool(&self) -> Option<ToolContribution> {
+        let apps = self.card_apps();
+        if apps.is_empty() {
+            return None;
+        }
+        let ids: Vec<&str> = apps.iter().map(|app| app.id.as_str()).collect();
+        // The titles beside the ids: a question names the app («Fresh Hip-Hop & Rap»), and an id may say nothing
+        // (`p-…`, a random id); «Сейчас» is empty while nothing goes on.
+        let named: Vec<String> = apps.iter().map(|app| format!("{} [{}]", app.title, app.id)).collect();
+        let mut which = format!("The app's id. The apps with cards: {}.", named.join(", "));
+        if which.chars().count() > 900 {
+            which = which.chars().take(899).collect::<String>() + "…";
+        }
+        let me = self.me.clone();
+        Some(ToolContribution {
+            app: None,
+            tool: LlmTool {
+                name: CARD_TOOL.into(),
+                // Few words: every one goes with every question (docs/plans/fast-tools.md).
+                description: "Read the data an app's widget shows (numbers, lists, news, prices) when asked what the \
+                              app knows («какие новинки», «что там в …»), and answer with it. Never send the person \
+                              to look at the desk instead."
+                    .into(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "app": { "type": "string", "enum": ids, "description": which }
+                    },
+                    "required": ["app"],
+                    "additionalProperties": false
+                }),
+            },
+            permission: use_of(CapabilityName::Plugins),
+            run: Arc::new(move |input: Map<String, Value>, context: ToolContext| {
+                let me = me.clone();
+                Box::pin(async move {
+                    let host = me.upgrade().ok_or_else(|| anyhow::anyhow!("plugins are gone"))?;
+                    let app = input.get("app").and_then(Value::as_str).unwrap_or_default().to_string();
+                    let trail = crate::bus::Trail::principal(&context.principal).through_model(host.model_in_cloud());
+                    Ok(trail.scope(host.read_cards(&app)).await?)
+                })
+            }),
+            read_only: true,
+            // Cards fill from the internet or the household's folders as the apps' tools do.
+            outside: apps.iter().any(|app| app.outside),
+            spoken: false,
+            kept: None,
+        })
+    }
+
+    /// The apps that are on and show cards (`contributes.panel.cards`), with their cards' titles and functions.
+    fn card_apps(&self) -> Vec<CardApp> {
+        self.list()
+            .iter()
+            .filter_map(|plugin| {
+                let package = plugin.active()?;
+                let manifest = &package.manifest;
+                let cards: Vec<(String, String)> = manifest
+                    .contributes
+                    .panel
+                    .as_ref()
+                    .and_then(|panel| panel.get("cards"))
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|card| {
+                        let function = card.get("function").and_then(Value::as_str)?.to_string();
+                        let title = card.get("title").and_then(Value::as_str).unwrap_or(&manifest.title).to_string();
+                        Some((title, function))
+                    })
+                    .collect();
+                (!cards.is_empty()).then(|| CardApp {
+                    id: plugin.id.clone(),
+                    title: manifest.title.clone(),
+                    cards,
+                    outside: !manifest.hosts().is_empty() || manifest.reads_household(),
+                })
+            })
+            .collect()
+    }
+
+    /// An app's cards for «Мозг»: each card's function called as the desk calls it (`{}`), its answer in words
+    /// (`cards::for_model`). A face's go to its Турбо; a card that fails says why, and when all fail the first failure
+    /// is the answer.
+    pub async fn read_cards(&self, id: &str) -> Result<String, PluginError> {
+        let app = self.card_apps().into_iter().find(|app| app.id == id).ok_or_else(|| {
+            PluginError::Unavailable(crate::tr!("нет включённого приложения с карточкой «{id}»", id = id))
+        })?;
+        let (mut read, mut answered, mut failed) = (Vec::new(), 0, None);
+        for (title, function) in app.cards.iter().take(MAX_CARDS_READ) {
+            match self.call(id, function, json!({}), CallKind::Tool).await {
+                Ok(answer) => {
+                    let title = if *title == app.title { title.clone() } else { format!("{}: {title}", app.title) };
+                    read.push(crate::bus::cards::for_model(&title, &crate::bus::cards::unwrap(answer)));
+                    answered += 1;
+                }
+                Err(error) => {
+                    read.push(format!("{title}: {error}"));
+                    failed.get_or_insert(error);
+                }
+            }
+        }
+        match failed {
+            Some(error) if answered == 0 => Err(error),
+            _ => Ok(read.join("\n")),
+        }
+    }
+
+    /// The plugins' own tools as contributions.
+    fn app_tool_contributions(&self, tools: &Arc<Vec<Offered>>) -> Vec<ToolContribution> {
+        tools
+            .iter()
+            .map(|offered| {
+                let (me, plugin, handler) = (self.me.clone(), offered.plugin.clone(), offered.spec.handler.clone());
+                let capability = offered.spec.capability;
+                ToolContribution {
+                    app: Some(offered.plugin.clone()),
+                    tool: LlmTool {
+                        name: offered.spec.name.clone(),
+                        description: format!("[{}] {}", offered.title, offered.spec.description)
+                            .chars()
+                            .take(1024)
+                            .collect(),
+                        parameters: offered.spec.input.clone(),
+                    },
+                    permission: use_of(offered.spec.capability),
+                    run: Arc::new(move |mut input: Map<String, Value>, context: ToolContext| {
+                        let (me, plugin, handler) = (me.clone(), plugin.clone(), handler.clone());
+                        Box::pin(async move {
+                            let host = me.upgrade().ok_or_else(|| anyhow::anyhow!("plugins are gone"))?;
+                            // Where the words came from, as a phrase's `request` says it: inside a station's answer
+                            // the tool may play on it (`play`, `player`); in the panel it shows on the screen instead.
+                            input.insert("request".into(), json!({ "station": context.ear.is_some() }));
+                            // The chain is the speaker's: whatever the tool reaches on the bus, it reaches as them —
+                            // through the model, which may be in the cloud.
+                            let trail =
+                                crate::bus::Trail::principal(&context.principal).through_model(host.model_in_cloud());
+                            // A long task the app begins while it answers is this conversation's: its «Готово» is
+                            // said where the phrase was (docs/plans/long-tools.md, point 4).
+                            let _calling = context
+                                .origin
+                                .clone()
+                                .and_then(|origin| host.long_tasks.get().map(|tasks| tasks.calling(&plugin, origin)));
+                            let answer =
+                                trail.scope(host.call(&plugin, &handler, Value::Object(input), CallKind::Tool)).await?;
+                            Ok(host.act(&plugin, capability, answer, context.ear.as_ref()))
+                        })
+                    }),
+                    read_only: offered.spec.read_only,
+                    outside: offered.outside,
+                    spoken: false,
+                    kept: None,
+                }
+            })
+            .collect()
+    }
+
+    /// A tool's answer that acts (docs/plans/plugins.md: «Инструмент плагина не только находит, но и делает»): an
+    /// answer of a phrase's form — `{say, play, index}` — plays at once in the station's answer, and the model reads
+    /// what was done; anything else the model reads as it is. Outside a station's answer (the panel's check) nothing
+    /// plays and the model reads that.
+    fn act(
+        &self,
+        plugin: &str,
+        capability: CapabilityName,
+        answer: Value,
+        station: Option<&crate::ear::EarAct>,
+    ) -> String {
+        let Value::Object(object) = &answer else { return tool_text(answer) };
+        let say = object.get("say").and_then(Value::as_str).map(str::trim).filter(|say| !say.is_empty());
+        // `player`: what plays on the station now — «pause», «resume», «stop» (the agent's «поставь на паузу»).
+        if let Some(word) = object.get("player").and_then(Value::as_str) {
+            let directives = match word {
+                "pause" => vec![crate::ear::Command::PausePlayer],
+                "resume" => vec![crate::ear::Command::ContinuePlayer],
+                "stop" => vec![crate::ear::Command::StopPlayer],
+                _ => return tool_text(answer),
+            };
+            let Some(station) = station else {
+                return "No station here: nothing on its player was changed.".into();
+            };
+            if !(station.add)(directives) {
+                return "error: the answer went out already; ask the user to say it again".into();
+            }
+            tracing::info!(target: "plugins", "{plugin}: its tool tells the player «{word}»");
+            return match say {
+                Some(say) => format!("Done: the station's player — {word}. Tell the user: {say}"),
+                None => format!("Done: the station's player — {word}."),
+            };
+        }
+        let kind = super::media::kind_for(capability);
+        let base = station.and_then(|station| station.media_base_url.clone());
+        if let (None, Some(add)) = (object.get("play"), object.get("add")) {
+            let items = super::media::media_items_with(plugin, kind, add, base.as_deref(), &self.play_rights(plugin));
+            let Some(first) = items.first().cloned() else {
+                return "Nothing to add: the tool found nothing playable.".into();
+            };
+            let (Some(station), Some(player)) = (station, self.player.as_ref()) else {
+                return format!("Would add «{}» (no station here: nothing changed).", first.title);
+            };
+            if player.add(&station.device, items.clone()) {
+                tracing::info!(target: "plugins", "{plugin}: its tool adds «{}» to the queue", first.title);
+                return match say {
+                    Some(say) => format!("Added «{}» to the queue. Tell the user: {say}", first.title),
+                    None => format!("Added «{}» to the queue: it plays after the current track.", first.title),
+                };
+            }
+            let directives = player.play(&station.device, items, 0, 0);
+            if !(station.add)(directives) && !self.push_play(&station.device) {
+                return "error: the answer went out already; ask the user to say it again".into();
+            }
+            return format!("Nothing played, so «{}» plays now. Tell the user briefly what is on.", first.title);
+        }
+        let Some(play) = object.get("play") else { return tool_text(answer) };
+        let items = super::media::media_items_with(plugin, kind, play, base.as_deref(), &self.play_rights(plugin));
+        let Some(first) = items.first().cloned() else {
+            return "Nothing to play: the tool found nothing playable.".into();
+        };
+        let (Some(station), Some(player)) = (station, self.player.as_ref()) else {
+            return format!("Would play «{}» (no station here: nothing played).", first.title);
+        };
+        let index = object.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
+        let directives = player.play(&station.device, items, index, 0);
+        if !(station.add)(directives) && !self.push_play(&station.device) {
+            return "error: the answer went out already; ask the user to say it again".into();
+        }
+        tracing::info!(target: "plugins", "{plugin}: its tool plays «{}»", first.title);
+        match say {
+            Some(say) => format!("Playing «{}» now. Tell the user: {say}", first.title),
+            None => format!("Playing «{}» now. Tell the user briefly what is on.", first.title),
+        }
+    }
+
+    /// The answer went out before the tool was done (a search on the Турбо took longer than the station waits, and it
+    /// said «Сейчас посмотрю»): the play is the player's already, so it is pushed — the station calls back for it as
+    /// for a retry (stage 5а). Without this the tool told the model «ask the user to say it again», and the model did,
+    /// while the music started anyway on the silence retry (test 19.11, remark 9). False when no station can be asked.
+    fn push_play(&self, device: &str) -> bool {
+        let (Some(player), Some(watch)) = (self.player.as_ref(), self.watch.as_ref()) else { return false };
+        let Some((item, state)) = player.current(device) else { return false };
+        let pushed = watch.retry(device, &state.play_id);
+        if pushed {
+            tracing::info!(target: "plugins", "{device}: the answer went out already — «{}» is pushed", item.title);
+        }
+        pushed
+    }
+
+    // For the panel.
+
+    async fn view_of(&self, plugin: &Plugin) -> PackageView {
+        let (package, newest, enabled, problem, versions) = {
+            let state = plugin.state();
+            let newest = state.found.iter().find_map(|candidate| match candidate {
+                Candidate::Ready(package) => Some(package.clone()),
+                Candidate::Broken { .. } => None,
+            });
+            let versions = state
+                .found
+                .iter()
+                .map(|candidate| VersionView {
+                    version: candidate.version(),
+                    problems: match candidate {
+                        Candidate::Ready(package) => {
+                            let why = package.manifest.kind.not_a_plugin();
+                            why.or_else(|| package.manifest.incompatible_with((self.placement)())).into_iter().collect()
+                        }
+                        Candidate::Broken { problems, .. } => problems.clone(),
+                    },
+                })
+                .collect::<Vec<_>>();
+            (state.active.clone().filter(|_| state.enabled), newest, state.enabled, state.problem.clone(), versions)
+        };
+        let loaded = {
+            let slot = plugin.slot.lock().await;
+            slot.as_ref().map(|loaded| (loaded.version.clone(), loaded.instance.clone()))
+        };
+        let memory = match &loaded {
+            Some((_, instance)) => instance.memory().await,
+            None => None,
+        };
+        let stats = plugin.stats().clone();
+        let shown = package.clone().or(newest);
+        let manifest = shown.as_ref().map(|package| package.manifest.clone());
+        // Its texts in the request's language, else the household's, else English (docs/plans/i18n.md).
+        let languages = crate::locale::preferences(&self.settings);
+        // As the panel sees them: a secret one only as «••••••».
+        let stored = self.settings.get(&PACKAGE_SETTINGS, None).unwrap_or_default();
+        let values = manifest
+            .as_ref()
+            .map(|manifest| {
+                manifest.settings_shown(Some(&manifest.stored_with_secrets(stored.get(&plugin.id), &self.secrets)))
+            })
+            .unwrap_or_default();
+        let state = if self.config.disabled {
+            "safeMode"
+        } else if !enabled {
+            "off"
+        } else if package.is_none() {
+            "error"
+        } else if loaded.is_some() {
+            "loaded"
+        } else {
+            "ready"
+        };
+        let (source, verified) = {
+            let state = plugin.state();
+            (state.source.clone(), state.verified)
+        };
+        let origin = Origin::of(&source);
+        // A face (stage 5б) runs at home always: its code is the Турбо's.
+        let runs_at = package
+            .as_ref()
+            .filter(|package| package.manifest.prefer_home || package.manifest.face_at((self.placement)()))
+            .map(|package| if self.runs_at_home(package) { "home" } else { "here" });
+        let panel_part = |file: &str| {
+            package
+                .as_ref()
+                .filter(|package| package.manifest.contributes.panel.is_some() && package.dir.join(file).is_file())
+                .filter(|_| !self.config.disabled)
+                .map(|package| format!("/panel-plugins/{}/{}/{file}", plugin.id, package.version()))
+        };
+        PackageView {
+            runs_at,
+            origin,
+            removable: origin.removable(),
+            can_disable: origin.can_disable(),
+            editable: origin.editable(),
+            panel_module: panel_part("panel.js"),
+            panel_styles: panel_part("panel.css"),
+            kind: manifest.as_ref().map(|manifest| manifest.kind),
+            runtime: manifest.as_ref().map(|manifest| manifest.runtime),
+            id: plugin.id.clone(),
+            title: manifest.as_ref().map(|manifest| manifest.title_in(&languages)).unwrap_or_else(|| plugin.id.clone()),
+            description: manifest.as_ref().and_then(|manifest| manifest.description_in(&languages)),
+            languages: manifest.as_ref().map(|manifest| manifest.languages.clone()).unwrap_or_default(),
+            license: manifest.as_ref().and_then(|manifest| manifest.license.clone()),
+            source,
+            verified,
+            version: shown.as_ref().map(|package| package.version()),
+            versions,
+            enabled,
+            state,
+            loaded: loaded.is_some(),
+            problem,
+            budget: manifest.as_ref().map(|manifest| manifest.budget.clone()),
+            memory,
+            storage_used: storage_used(&self.db, &plugin.id),
+            permissions: manifest
+                .as_ref()
+                .map(|manifest| manifest.permissions.iter().map(Permission::name).collect())
+                .unwrap_or_default(),
+            runs: manifest
+                .as_ref()
+                .map(|manifest| manifest.runs.iter().map(|runs| runs.as_str()).collect())
+                .unwrap_or_default(),
+            place: manifest.as_ref().and_then(|manifest| {
+                let mcp = manifest.runtime == super::manifest::Runtime::Mcp;
+                super::catalog::place_of(manifest.kind, mcp, &manifest.runs, Some((self.placement)()))
+            }),
+            calls: stats.calls,
+            errors: stats.errors,
+            last_error: stats.last_error,
+            last_call_at: stats.last_call_at,
+            contributes: manifest
+                .as_ref()
+                .map(|manifest| ContributesView {
+                    phrases: manifest
+                        .contributes
+                        .intents
+                        .iter()
+                        .flat_map(|intent| intent.phrases.iter().map(|phrase| phrase.template.clone()))
+                        .collect(),
+                    tools: manifest.contributes.tools.iter().map(|tool| tool.name.clone()).collect(),
+                    media: manifest
+                        .contributes
+                        .media
+                        .iter()
+                        .map(|media| format!("{} ({:?})", media.id, media.kind).to_lowercase())
+                        .collect(),
+                    events: manifest.contributes.events.iter().map(|event| event.name.clone()).collect(),
+                    panel: manifest.contributes.panel.is_some(),
+                    themes: manifest
+                        .contributes
+                        .themes
+                        .as_ref()
+                        .is_some_and(|themes| themes.as_array().is_some_and(|all| !all.is_empty())),
+                })
+                .unwrap_or_default(),
+            waits: manifest
+                .as_ref()
+                .map(|manifest| {
+                    manifest
+                        .settings_in(&languages)
+                        .into_iter()
+                        .filter(|spec| spec.waited(values.contains_key(&spec.key)))
+                        .map(|spec| spec.title)
+                        .collect()
+                })
+                .unwrap_or_default(),
+            turbo: package
+                .as_ref()
+                .filter(|package| package.manifest.face_at((self.placement)()))
+                .and_then(|_| self.turbo_note(&plugin.id))
+                .map(|(why, _)| why),
+            settings: manifest
+                .as_ref()
+                .map(|manifest| {
+                    manifest
+                        .settings_in(&languages)
+                        .into_iter()
+                        .map(|spec| SettingView { value: values.get(&spec.key).cloned(), spec })
+                        .collect()
+                })
+                .unwrap_or_default(),
+        }
+    }
+
+    /// Every package found, as the panel lists them — but the ones their feeds hide. The folder is read again first: a
+    /// package copied in shows.
+    pub async fn view(&self) -> PackagesView {
+        self.rescan();
+        let mut packages = Vec::new();
+        for plugin in self.list() {
+            if plugin.state().hidden {
+                continue;
+            }
+            packages.push(self.view_of(&plugin).await);
+        }
+        PackagesView {
+            safe_mode: self.config.disabled,
+            dir: self.config.packages_dir.display().to_string(),
+            placement: (self.placement)(),
+            idle_unload_s: self.config.idle_unload_s,
+            packages,
+        }
+    }
+
+    pub async fn view_one(&self, id: &str) -> Result<PackageView, ApiError> {
+        let plugin = self.known(id)?;
+        Ok(self.view_of(&plugin).await)
+    }
+}
+
+/// A package's folder copied under a new id: every file, the manifest's id and title changed.
+/// Settings checked against a manifest's, nothing written yet: each plain one with its new value (None — removed),
+/// each private one with its new value (None — removed). A private one that comes back as the panel was shown it
+/// («••••••») is left out: it stays as it is.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct CheckedSettings {
+    pub plain: Vec<(String, Option<Value>)>,
+    pub private: Vec<(String, Option<String>)>,
+}
+
+/// The values given for a plugin's settings: each must be one its manifest declares, of its type. Every value is
+/// checked before any is written: a wrong one changes nothing.
+pub fn check_settings(
+    specs: &[manifest::SettingSpec],
+    values: &Map<String, Value>,
+) -> Result<CheckedSettings, ApiError> {
+    let mut checked = CheckedSettings::default();
+    for (key, value) in values {
+        let spec = specs
+            .iter()
+            .find(|spec| &spec.key == key)
+            .ok_or_else(|| ApiError::field(key, crate::tr!("нет такой настройки")))?;
+        if spec.secret && value.as_str() == Some(manifest::SECRET_SHOWN) {
+            continue;
+        }
+        if !value.is_null() && !spec.accepts(value) {
+            return Err(ApiError::field(key, crate::tr!("значение не подходит к настройке")));
+        }
+        match (spec.secret, value) {
+            (true, Value::Null) => checked.private.push((key.clone(), None)),
+            (true, value) => checked.private.push((key.clone(), value.as_str().map(str::to_string))),
+            (false, Value::Null) => checked.plain.push((key.clone(), None)),
+            (false, value) => checked.plain.push((key.clone(), Some(value.clone()))),
+        }
+    }
+    Ok(checked)
+}
+
+fn copy_package(from: &std::path::Path, to: &std::path::Path, id: &str, title: &str) -> std::io::Result<()> {
+    fn copy_dir(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
+        std::fs::create_dir_all(to)?;
+        for entry in std::fs::read_dir(from)? {
+            let entry = entry?;
+            let kind = entry.file_type()?;
+            if kind.is_dir() {
+                copy_dir(&entry.path(), &to.join(entry.file_name()))?;
+            } else if kind.is_file() {
+                std::fs::copy(entry.path(), to.join(entry.file_name()))?;
+            }
+        }
+        Ok(())
+    }
+    copy_dir(from, to)?;
+    let file = to.join("manifest.json");
+    let mut manifest: Value = serde_json::from_str(&std::fs::read_to_string(&file)?)?;
+    manifest["id"] = json!(id);
+    manifest["title"] = json!(title);
+    std::fs::write(file, serde_json::to_string_pretty(&manifest)?)
+}
+
+/// A theme as a package gives it (docs/design/glass/THEMES.md): an id, a title, each mode by its palette of text
+/// tokens or by three colors the panel builds the palette from (`colors`, «Три цвета»), or both; a drawn backdrop of
+/// the panel's scenes (`backdrop`, «Фон»); the layout, if given, one the panel knows the name of. What it leaves out
+/// the panel takes from «Минимал».
+pub fn theme_form(theme: &Value) -> Result<(), String> {
+    let id = theme.get("id").and_then(Value::as_str).unwrap_or_default();
+    if id.is_empty() || id.len() > 40 || !id.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-') {
+        return Err(crate::tr!("id темы — строчные латинские буквы, цифры и «-»"));
+    }
+    if theme.get("title").and_then(Value::as_str).is_none_or(|title| title.trim().is_empty()) {
+        return Err(crate::tr!("{id}: нет title", id = id));
+    }
+    if let Some(colors) = theme.get("colors") {
+        theme_colors(id, colors)?;
+    }
+    for mode in ["dark", "light"] {
+        let palette = theme.pointer(&format!("/palette/{mode}")).and_then(Value::as_object);
+        let Some(palette) = palette else {
+            if theme.pointer(&format!("/colors/{mode}")).is_some() {
+                continue;
+            }
+            return Err(crate::tr!("{id}: нет palette.{mode} и colors.{mode}", id = id, mode = mode));
+        };
+        if let Some((token, _)) = palette.iter().find(|(token, value)| {
+            !value.is_string()
+                || token.is_empty()
+                || !token.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        }) {
+            return Err(crate::tr!(
+                "{id}: palette.{mode}.{token} — токен из строчных букв, цифр и «-» со строкой-значением",
+                id = id,
+                mode = mode,
+                token = token
+            ));
+        }
+    }
+    if let Some(backdrop) = theme.get("backdrop") {
+        theme_backdrop(id, backdrop)?;
+    }
+    match theme.get("layout").and_then(Value::as_str) {
+        // «desk» — стол и док (docs/plans/desk.md); «tabbar» прежних тем — тоже стол.
+        None | Some("desk") | Some("tabbar") | Some("sidebar") => Ok(()),
+        Some(other) => Err(crate::tr!(
+            "{id}: раскладка «{other}» — это код оболочки, плагин пульта, а не тема",
+            id = id,
+            other = other
+        )),
+    }
+}
+
+/// `#rgb` or `#rrggbb` as its three channels.
+fn hex_rgb(value: &Value) -> Option<[f64; 3]> {
+    let digits = value.as_str()?.strip_prefix('#')?;
+    if !digits.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    let full: String = match digits.len() {
+        3 => digits.chars().flat_map(|c| [c, c]).collect(),
+        6 => digits.to_string(),
+        _ => return None,
+    };
+    let channel = |at: usize| u8::from_str_radix(&full[at..at + 2], 16).ok().map(f64::from);
+    Some([channel(0)?, channel(2)?, channel(4)?])
+}
+
+/// How bright a color looks (WCAG): 0 black, 1 white.
+fn luminance([r, g, b]: [f64; 3]) -> f64 {
+    let linear = |v: f64| {
+        let c = v / 255.0;
+        if c <= 0.03928 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    0.2126 * linear(r) + 0.7152 * linear(g) + 0.0722 * linear(b)
+}
+
+/// The contrast of two colors (WCAG): 1 the same, 21 black on white; text reads from 4.5.
+fn contrast(a: [f64; 3], b: [f64; 3]) -> f64 {
+    let (x, y) = (luminance(a), luminance(b));
+    (x.max(y) + 0.05) / (x.min(y) + 0.05)
+}
+
+/// The three colors of each mode the theme gives (`colors.dark`, `colors.light`): the background, the text and the
+/// accent, all `#rrggbb`; the text must read on the background and the accent must not melt into it.
+fn theme_colors(id: &str, colors: &Value) -> Result<(), String> {
+    let Some(modes) = colors.as_object() else {
+        return Err(crate::tr!("{id}: colors — {dark: {bg, text, accent}, light: {…}}", id = id));
+    };
+    for (mode, anchors) in modes {
+        if mode != "dark" && mode != "light" {
+            return Err(crate::tr!("{id}: colors.{mode} — режимы только dark и light", id = id, mode = mode));
+        }
+        let color = |name: &str| anchors.get(name).and_then(hex_rgb);
+        let (Some(bg), Some(text), Some(accent)) = (color("bg"), color("text"), color("accent")) else {
+            return Err(crate::tr!(
+                "{id}: colors.{mode} — три цвета \"#rrggbb\": bg, text, accent",
+                id = id,
+                mode = mode
+            ));
+        };
+        let ratio = contrast(text, bg);
+        if ratio < 4.5 {
+            return Err(crate::tr!(
+                "{id}: colors.{mode} — текст на фоне не читается (контраст {ratio}, нужно от 4,5): возьмите фон и текст дальше по яркости",
+                id = id,
+                mode = mode,
+                ratio = format!("{ratio:.1}")
+            ));
+        }
+        if contrast(accent, bg) < 1.3 {
+            return Err(crate::tr!("{id}: colors.{mode} — акцент сливается с фоном", id = id, mode = mode));
+        }
+    }
+    Ok(())
+}
+
+/// A drawn backdrop: one for both modes or its own for each (`{dark, light}`, `null` — none in that mode); each is
+/// `scene` or `layers` (1–3 of the panel's scenes, `opacity` 0.1–1), `colors` (1–3) and `dim` (0–0.8).
+fn theme_backdrop(id: &str, backdrop: &Value) -> Result<(), String> {
+    let Some(fields) = backdrop.as_object() else {
+        return Err(crate::tr!("{id}: backdrop — объект {scene | layers, colors?, dim?}", id = id));
+    };
+    if fields.contains_key("dark") || fields.contains_key("light") {
+        for (mode, own) in fields {
+            if mode != "dark" && mode != "light" {
+                return Err(crate::tr!("{id}: backdrop.{mode} — режимы только dark и light", id = id, mode = mode));
+            }
+            if !own.is_null() {
+                one_backdrop(id, own)?;
+            }
+        }
+        return Ok(());
+    }
+    one_backdrop(id, backdrop)
+}
+
+fn one_backdrop(id: &str, backdrop: &Value) -> Result<(), String> {
+    let scenes = || crate::bus::cards::SCENES.iter().map(|(scene, _)| *scene).collect::<Vec<_>>().join(", ");
+    let known = |scene: &Value| {
+        scene.as_str().is_some_and(|scene| crate::bus::cards::SCENES.iter().any(|(name, _)| *name == scene))
+    };
+    let opacity_ok =
+        |value: Option<&Value>| value.is_none_or(|value| value.as_f64().is_some_and(|v| (0.1..=1.0).contains(&v)));
+    let Some(fields) = backdrop.as_object() else {
+        return Err(crate::tr!("{id}: backdrop — объект {scene | layers, colors?, dim?}", id = id));
+    };
+    for (name, value) in fields {
+        let fine = match name.as_str() {
+            "scene" => known(value),
+            "opacity" => opacity_ok(Some(value)),
+            "layers" => value.as_array().is_some_and(|layers| {
+                (1..=3).contains(&layers.len())
+                    && layers.iter().all(|layer| {
+                        layer.get("scene").is_some_and(known)
+                            && opacity_ok(layer.get("opacity"))
+                            && layer
+                                .as_object()
+                                .is_some_and(|layer| layer.keys().all(|key| key == "scene" || key == "opacity"))
+                    })
+            }),
+            "colors" => value
+                .as_array()
+                .is_some_and(|colors| (1..=3).contains(&colors.len()) && colors.iter().all(|c| hex_rgb(c).is_some())),
+            "dim" => value.as_f64().is_some_and(|dim| (0.0..=0.8).contains(&dim)),
+            _ => false,
+        };
+        if !fine {
+            return Err(match name.as_str() {
+                "scene" | "layers" => crate::tr!(
+                    "{id}: backdrop.layers — 1–3 слоя {scene, opacity?: 0,1–1}; сцены — {scenes}",
+                    id = id,
+                    scenes = scenes()
+                ),
+                "opacity" => crate::tr!("{id}: backdrop.opacity — от 0,1 до 1", id = id),
+                "colors" => crate::tr!("{id}: backdrop.colors — 1–3 цвета \"#rrggbb\"", id = id),
+                "dim" => crate::tr!("{id}: backdrop.dim — от 0 до 0,8", id = id),
+                other => crate::tr!(
+                    "{id}: в backdrop нет поля «{other}» — scene, layers, opacity, colors, dim",
+                    id = id,
+                    other = other
+                ),
+            });
+        }
+    }
+    if !fields.contains_key("scene") && !fields.contains_key("layers") && !fields.contains_key("colors") {
+        return Err(crate::tr!("{id}: backdrop — нужна сцена (scene или layers) или цвета (colors)", id = id));
+    }
+    Ok(())
+}
+
+/// A plugin's part of the panel, to load.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PanelPart {
+    pub id: String,
+    pub title: String,
+    /// The languages it speaks, its own first: its window picks its texts by them (docs/plans/i18n.md).
+    pub languages: Vec<String>,
+    pub version: String,
+    /// Its panel code (`panel.js`): it runs in a window of its own — a sandboxed frame that reaches the gateway only
+    /// through the panel's bridge (docs/plans/bus.md, «Окошки»); its styles load in that window.
+    pub module: Option<String>,
+    pub styles: Option<String>,
+    /// The values of its settings, for `useSettings`: a secret one only as «••••••».
+    pub settings: Map<String, Value>,
+    /// Its cards (`contributes.panel.cards`: id, title, function, size…): the panel draws them with its own parts, the
+    /// data comes from the app's function (src/bus/cards.rs).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub cards: Vec<Value>,
+    /// The settings it needs that nobody filled in yet (a key): its tiles say «ждёт ключ».
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub waits: Vec<String>,
+}
+
+/// A theme of a package, for the panel's choice.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThemeView {
+    pub package: String,
+    pub version: String,
+    pub origin: Origin,
+    pub theme: Value,
+}
+
+/// A tool's answer as the model reads it: text as it is, anything else as JSON; cut to what a turn can carry.
+fn tool_text(answer: Value) -> String {
+    let text = match answer {
+        Value::String(text) => text,
+        Value::Null => "null".into(),
+        other => other.to_string(),
+    };
+    if text.len() <= TOOL_ANSWER {
+        return text;
+    }
+    let mut end = TOOL_ANSWER;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &text[..end])
+}
+
+/// The plugins' phrases for the router: the first that takes the whole command wins, in the plugins' order.
+impl ExtraRules for PluginHost {
+    fn matched(&self, normalized: &str) -> Option<QuickMatch> {
+        let rules = self.rules.read().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
+        rules.iter().find_map(|rule| {
+            let slots = rule.phrase.matches(normalized)?;
+            let mut intent = Intent::new(rule.capability, &rule.handler);
+            intent.params.insert(EXECUTOR.into(), json!(CapabilityName::Plugins.as_str()));
+            intent.params.insert("plugin".into(), json!(rule.plugin));
+            intent.params.insert("handler".into(), json!(rule.handler));
+            intent.params.insert("slots".into(), Value::Object(slots));
+            Some(QuickMatch { intent, rule: rule.name })
+        })
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VersionView {
+    pub version: String,
+    /// Why it cannot run here; empty when it can.
+    pub problems: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContributesView {
+    pub phrases: Vec<String>,
+    pub tools: Vec<String>,
+    pub media: Vec<String>,
+    pub events: Vec<String>,
+    pub panel: bool,
+    pub themes: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SettingView {
+    #[serde(flatten)]
+    pub spec: SettingSpec,
+    pub value: Option<Value>,
+}
+
+/// A package as the panel shows it.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PackageView {
+    /// The package's kind: a plugin, or a package of another kind this host lists and does not run.
+    pub kind: Option<PackageKind>,
+    /// Its engine: what the panel says to people instead of the kind — in the gateway (js, wasm), beside it on the
+    /// computer (process), in the network (mcp). docs/ARCHITECTURE.md, «Как называем и где работает».
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<super::manifest::Runtime>,
+    /// Where it came from, as the gateway knows: system, bundled, user, catalog.
+    pub origin: Origin,
+    /// For a plugin that prefers home: where its calls go now — home (the computer) or here.
+    pub runs_at: Option<&'static str>,
+    /// Its folder may go: one's own and a catalog's; a built-in is updated with the gateway.
+    pub removable: bool,
+    /// It may be switched off: all but a system one.
+    pub can_disable: bool,
+    /// It changes in place, in the workshop: one's own only.
+    pub editable: bool,
+    /// While it is on: its part of the panel (`panel.js`) and its styles, to load.
+    pub panel_module: Option<String>,
+    pub panel_styles: Option<String>,
+    pub id: String,
+    /// Its title and description in the request's language when it speaks it (docs/plans/i18n.md).
+    pub title: String,
+    pub description: Option<String>,
+    /// The languages it speaks, its own first (`languages` of its manifest).
+    pub languages: Vec<String>,
+    pub license: Option<String>,
+    /// catalog: installed from the catalog by a button; local: copied in by hand.
+    pub source: String,
+    /// The catalog vouched for it; one put in by hand never is.
+    pub verified: bool,
+    /// The version in force, or the newest found while it is off.
+    pub version: Option<String>,
+    pub versions: Vec<VersionView>,
+    pub enabled: bool,
+    /// off, ready (on, its code not loaded), loaded, error (on, but nothing of it runs here), safeMode.
+    pub state: &'static str,
+    pub loaded: bool,
+    pub problem: Option<String>,
+    pub budget: Option<Budget>,
+    /// While loaded: what its engine counts.
+    pub memory: Option<MemoryStats>,
+    /// Its `kv` store, bytes.
+    pub storage_used: u64,
+    pub permissions: Vec<String>,
+    pub runs: Vec<&'static str>,
+    /// Where it works for this gateway, in MagicPlace's words (`catalog::place_of`): an app for both a station and a
+    /// computer is `station` on a station's gateway.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub place: Option<&'static str>,
+    pub calls: u64,
+    pub errors: u64,
+    pub last_error: Option<LastError>,
+    pub last_call_at: Option<String>,
+    pub contributes: ContributesView,
+    pub settings: Vec<SettingView>,
+    /// The settings it needs that nobody filled in yet — a private one without a default (a key): their titles. It
+    /// works without them only in part: the panel marks it «ждёт ключ» (docs/plans/audio-interface.md).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub waits: Vec<String>,
+    /// A face whose code the Турбо did not install, in the Турбо's words (home/apps.rs, `sync_faces`): the version
+    /// here is in force, and the Турбо runs another or none — the card says so, not only a call that fails.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub turbo: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PackagesView {
+    /// PLUGINS_DISABLED: the packages are listed, no plugin runs.
+    pub safe_mode: bool,
+    pub dir: String,
+    pub placement: Placement,
+    pub idle_unload_s: u64,
+    pub packages: Vec<PackageView>,
+}
+
+/// The media serves the apps' sound and the packages' assets through this (src/gateway/media, a floor below).
+impl crate::gateway::media::AppMedia for PluginHost {
+    fn app_stream<'a>(&'a self, id: &'a str, path: &'a str) -> futures::future::BoxFuture<'a, Option<String>> {
+        Box::pin(PluginHost::app_stream(self, id, path))
+    }
+
+    fn media_assets(&self, id: &str) -> Option<std::path::PathBuf> {
+        PluginHost::media_assets(self, id)
+    }
+}
+
+/// The characters read their characters from the installed packages through this (src/characters, a floor below).
+impl crate::characters::contributes::CharacterPackages for PluginHost {
+    fn rescan(&self) {
+        PluginHost::rescan(self)
+    }
+
+    fn visible(&self) -> Vec<crate::characters::contributes::CharacterPackage> {
+        self.visible_all()
+            .iter()
+            .filter(|package| package.manifest.kind == PackageKind::Character)
+            .map(|package| character_package(package))
+            .collect()
+    }
+
+    fn hidden(&self) -> Vec<crate::characters::contributes::CharacterPackage> {
+        self.hidden_all()
+            .iter()
+            .filter(|package| package.manifest.kind == PackageKind::Character)
+            .map(|package| character_package(package))
+            .collect()
+    }
+
+    fn verified(&self, package: &str) -> bool {
+        self.origin(package).1
+    }
+}
+
+/// A package as the characters read it: its manifest's words and its assets' folder.
+pub fn character_package(package: &Package) -> crate::characters::contributes::CharacterPackage {
+    let manifest = &package.manifest;
+    crate::characters::contributes::CharacterPackage {
+        id: manifest.id.clone(),
+        version: manifest.version.to_string(),
+        title: manifest.title.clone(),
+        description: manifest.description.clone(),
+        license: manifest.license.clone(),
+        characters: manifest.contributes.characters.clone(),
+        assets: package.assets(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::*;
+    use crate::core::identity::principal::system;
+    use crate::plugins::quickjs::QuickJs;
+    use crate::plugins::registry::tests::write_package;
+    use crate::skills::media::media_types::MediaKind;
+    use tokio_util::sync::CancellationToken;
+
+    struct Fixture {
+        host: Arc<PluginHost>,
+        media: Arc<MediaSources>,
+        events: EventBus,
+    }
+
+    thread_local! {
+        static PLAYER: std::cell::RefCell<Option<Arc<MediaPlayer>>> = const { std::cell::RefCell::new(None) };
+        static HOME: std::cell::RefCell<Option<Arc<dyn HomeLink>>> = const { std::cell::RefCell::new(None) };
+    }
+
+    /// The player the test's watch watches (a test sets it before it builds the host).
+    fn player_of_tests() -> Arc<MediaPlayer> {
+        PLAYER.with(|player| player.borrow().clone()).expect("a test that plays sets its player")
+    }
+
+    fn host_on(dir: &Path, db: Arc<Db>, disabled: bool, placement: Placement) -> Fixture {
+        host_with(dir, db, disabled, placement, crate::plugins::budget::fake::plenty())
+    }
+
+    fn host_with(
+        dir: &Path,
+        db: Arc<Db>,
+        disabled: bool,
+        placement: Placement,
+        memory: Arc<crate::plugins::budget::fake::FixedMemory>,
+    ) -> Fixture {
+        host_playing(dir, db, disabled, placement, memory, None)
+    }
+
+    fn host_playing(
+        dir: &Path,
+        db: Arc<Db>,
+        disabled: bool,
+        placement: Placement,
+        memory: Arc<crate::plugins::budget::fake::FixedMemory>,
+        watch: Option<Arc<PlaybackWatch>>,
+    ) -> Fixture {
+        let events = EventBus::new();
+        let settings = Arc::new(SettingsService::new(db.clone(), events.clone()));
+        let media = MediaSources::new(Vec::new());
+        let host = PluginHost::new(PluginsDeps {
+            config: PluginsConfig {
+                packages_dir: dir.to_path_buf(),
+                disabled,
+                idle_unload_s: 1,
+                feed_url: None,
+                catalog_dir: dir.join(".catalog"),
+                dev_dir: dir.join(".dev"),
+                catalog_key: None,
+                reserve_mb: Some(40),
+                storage_reserve_mb: Some(15),
+                pressure_action: crate::plugins::budget::PressureAction::Sleep,
+                bundled: false,
+                schedules: true,
+                node_dir: std::path::PathBuf::from("node"),
+                own_node: None,
+                node_mirror: None,
+                mirrors: None,
+            },
+            db,
+            settings,
+            events: events.clone(),
+            media: media.clone(),
+            placement: Arc::new(move || placement),
+            runtime: Arc::new(QuickJs),
+            memory,
+            gauge: Default::default(),
+            bundled: Vec::new(),
+            player: watch.as_ref().map(|_| player_of_tests()),
+            watch,
+            home: HOME.with(|home| home.borrow().clone()),
+            gateway_url: "http://127.0.0.1:9".into(),
+            services: None,
+            secrets: Arc::new(
+                crate::secrets::SecretsService::new(Arc::new(crate::storage::Db::memory()), None).unwrap(),
+            ),
+        });
+        Fixture { host, media, events }
+    }
+
+    fn echo(version: &str) -> Value {
+        json!({
+            "schema": 1, "id": "echo", "version": version, "title": "Эхо", "api": "^2",
+            "runs": ["pc", "station", "stationServer"],
+            "budget": { "memoryMb": 2 },
+            "permissions": ["call:system/voice", "net:allowed.example"],
+            "contributes": {
+                "intents": [{ "phrases": ["скажи эхо {word}"], "handler": "say" }],
+                "tools": [{
+                    "name": "echo_word", "description": "Повторяет слово", "handler": "say",
+                    "input": { "type": "object", "properties": { "word": { "type": "string" } } }
+                }],
+                "media": [{ "id": "tracks", "kind": "music" }]
+            }
+        })
+    }
+
+    const CODE: &str = r#"
+        let calls = 0;
+        export function say({ word }) { calls += 1; return `${word} (${calls})`; }
+        export function tracks({ query }) { return [{ id: "a", title: `Трек ${query ?? ""}`, url: "https://music.example/a.mp3" }]; }
+        export function spin() { while (true) {} }
+        export function remember({ value }) { host.kv.set("last", value); return host.kv.get("last"); }
+        export async function reach({ url }) { return (await host.http.fetch(url)).status; }
+        export async function speak({ text }) { return await host.bus.call("system/voice", "say", { text }); }
+    "#;
+
+    fn said(answer: Result<Value, PluginError>) -> String {
+        answer.unwrap().as_str().unwrap().to_string()
+    }
+
+    fn changes(events: &mut tokio::sync::broadcast::Receiver<Arc<GatewayEvent>>) -> Vec<String> {
+        let mut found = Vec::new();
+        while let Ok(event) = events.try_recv() {
+            if let GatewayEvent::PackagesChanged { change, .. } = event.as_ref() {
+                found.push(change.clone());
+            }
+        }
+        found
+    }
+
+    /// Stage 2 of docs/plans/speaker-alone.md: «Своя музыка» with an empty folder is no source once a request found it
+    /// empty — the next «включи музыку» goes straight to Yandex; a library with something in it stays one. Nothing is
+    /// asked just to look.
+    #[tokio::test]
+    async fn an_empty_music_library_is_no_source_and_a_full_one_is() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut manifest = echo("1.0.0");
+        manifest["id"] = json!("shelf");
+        write_package(
+            dir.path(),
+            &manifest,
+            Some("export function tracks() { return []; }\nexport function say() { return ''; }"),
+        );
+        let fixture = host_on(dir.path(), Arc::new(Db::memory()), false, Placement::Pc);
+        fixture.host.enable("shelf", None).await.unwrap();
+        assert!(fixture.media.available(MediaKind::Music), "not asked yet: taken as having something");
+        assert!(fixture.media.find(MediaKind::Music, None, None).await.is_none_or(|(_, items)| items.is_empty()));
+        assert!(!fixture.media.available(MediaKind::Music), "found empty: no source");
+
+        let full = tempfile::tempdir().unwrap();
+        write_package(full.path(), &echo("1.0.0"), Some(CODE));
+        let fixture = host_on(full.path(), Arc::new(Db::memory()), false, Placement::Pc);
+        fixture.host.enable("echo", None).await.unwrap();
+        assert!(fixture.media.find(MediaKind::Music, None, None).await.is_some());
+        assert!(fixture.media.available(MediaKind::Music), "it has a track");
+    }
+
+    #[tokio::test]
+    async fn switches_a_plugin_on_and_off_and_its_phrases_tools_and_sources_with_it() {
+        let dir = tempfile::tempdir().unwrap();
+        write_package(dir.path(), &echo("1.0.0"), Some(CODE));
+        let fixture = host_on(dir.path(), Arc::new(Db::memory()), false, Placement::Pc);
+        let (host, mut events) = (fixture.host.clone(), fixture.events.subscribe());
+        assert_eq!(host.view().await.packages[0].state, "off");
+        assert!(host.matched("скажи эхо привет").is_none());
+        assert!(host.tool_contributions().is_empty() && fixture.media.of(MediaKind::Music).is_empty());
+
+        let view = host.enable("echo", None).await.unwrap();
+        assert_eq!((view.state, view.version.as_deref(), view.loaded), ("loaded", Some("1.0.0"), true));
+        let found = host.matched("скажи эхо привет").unwrap();
+        assert_eq!((found.rule, found.intent.capability), ("plugin:echo", CapabilityName::Plugins));
+        assert_eq!(found.intent.params["slots"], json!({"word": "привет"}));
+        assert_eq!(found.intent.params[EXECUTOR], "plugins");
+        assert_eq!(said(host.call("echo", "say", json!({"word": "а"}), CallKind::Voice).await), "а (1)");
+        // Speech without a request is a letter to `system/voice` (Host API 2): this host has no bus, so it is refused.
+        assert!(host.call("echo", "speak", json!({"text": "Звонок в дверь"}), CallKind::Background).await.is_err());
+
+        let tools = host.tool_contributions();
+        assert_eq!(tools.len(), 1);
+        let tool = &tools[0];
+        assert_eq!((tool.tool.name.as_str(), tool.permission.as_str()), ("echo_word", "use:plugins"));
+        assert_eq!(tool.tool.description, "[Эхо] Повторяет слово");
+        assert!(tool.outside && !tool.read_only, "a plugin with net: rights brings text from outside");
+        let input = json!({"word": "б"}).as_object().cloned().unwrap();
+        let context = ToolContext { principal: system(), cancel: CancellationToken::new(), ear: None, origin: None };
+        assert_eq!((tool.run)(input, context).await.unwrap(), "б (2)");
+
+        let sources = fixture.media.of(MediaKind::Music);
+        assert_eq!(sources.len(), 1);
+        assert!(sources[0].available());
+        let items = sources[0].search(Some("джаз".into()), None).await;
+        assert_eq!((items[0].id.as_str(), items[0].title.as_str()), ("echo/a", "Трек джаз"));
+
+        host.disable("echo", None).await.unwrap();
+        assert!(host.matched("скажи эхо привет").is_none());
+        assert!(host.tool_contributions().is_empty() && fixture.media.of(MediaKind::Music).is_empty());
+        assert!(matches!(host.call("echo", "say", json!({}), CallKind::Voice).await, Err(PluginError::Unavailable(_))));
+        assert_eq!(changes(&mut events), ["enabled", "disabled"]);
+    }
+
+    #[tokio::test]
+    async fn loads_its_code_at_the_first_call_and_unloads_it_after_a_while_without_one() {
+        let dir = tempfile::tempdir().unwrap();
+        write_package(dir.path(), &echo("1.0.0"), Some(CODE));
+        let db = Arc::new(Db::memory());
+        let first = host_on(dir.path(), db.clone(), false, Placement::Pc);
+        first.host.enable("echo", None).await.unwrap();
+        assert_eq!(said(first.host.call("echo", "say", json!({"word": "а"}), CallKind::Voice).await), "а (1)");
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+        first.host.unload_idle();
+        let view = first.host.view_one("echo").await.unwrap();
+        assert_eq!((view.state, view.loaded), ("ready", false));
+        // Loaded again at the next call, a fresh context.
+        assert_eq!(said(first.host.call("echo", "say", json!({"word": "б"}), CallKind::Voice).await), "б (1)");
+        assert!(first.host.view_one("echo").await.unwrap().memory.is_some_and(|memory| memory.used > 0));
+
+        // After a restart it is on, and nothing is loaded until it is called.
+        let again = host_on(dir.path(), db, false, Placement::Pc);
+        let view = again.host.view_one("echo").await.unwrap();
+        assert_eq!((view.enabled, view.state, view.loaded), (true, "ready", false));
+        assert!(again.host.matched("скажи эхо привет").is_some());
+        assert_eq!(said(again.host.call("echo", "say", json!({"word": "в"}), CallKind::Voice).await), "в (1)");
+    }
+
+    #[tokio::test]
+    async fn loads_nothing_once_the_gateway_stops_and_what_is_loaded_answers_on() {
+        // 20.11.2026 on the station: an event of the stop itself loaded the radio in the middle of a stop.
+        let dir = tempfile::tempdir().unwrap();
+        write_package(dir.path(), &echo("1.0.0"), Some(CODE));
+        let fixture = host_on(dir.path(), Arc::new(Db::memory()), false, Placement::Pc);
+        let host = fixture.host.clone();
+        host.enable("echo", None).await.unwrap();
+        assert_eq!(said(host.call("echo", "say", json!({"word": "а"}), CallKind::Voice).await), "а (1)");
+        host.close();
+        assert_eq!(said(host.call("echo", "say", json!({"word": "б"}), CallKind::Voice).await), "б (2)");
+        host.unload_now("echo").await;
+        let refused = host.call("echo", "say", json!({"word": "в"}), CallKind::Voice).await.unwrap_err();
+        assert!(refused.to_string().contains("DuoWave останавливается"), "{refused}");
+        assert!(!host.view_one("echo").await.unwrap().loaded);
+    }
+
+    #[tokio::test]
+    async fn keeps_the_running_version_when_a_new_one_does_not_start_after_a_restart_too() {
+        let dir = tempfile::tempdir().unwrap();
+        write_package(dir.path(), &echo("1.0.0"), Some(CODE));
+        let db = Arc::new(Db::memory());
+        let fixture = host_on(dir.path(), db.clone(), false, Placement::Pc);
+        let host = fixture.host.clone();
+        host.enable("echo", None).await.unwrap();
+        assert_eq!(said(host.call("echo", "say", json!({"word": "а"}), CallKind::Voice).await), "а (1)");
+
+        write_package(dir.path(), &echo("1.1.0"), Some("export function say( {"));
+        let refused = host.reload("echo", None).await.unwrap_err();
+        assert!(
+            refused.message.contains("1.1.0 не поднялась") && refused.message.contains("прежняя 1.0.0"),
+            "{}",
+            refused.message
+        );
+        let view = host.view_one("echo").await.unwrap();
+        assert_eq!((view.version.as_deref(), view.state), (Some("1.0.0"), "loaded"));
+        assert!(view.last_error.unwrap().message.contains("1.1.0"));
+        // The old code goes on, its state too.
+        assert_eq!(said(host.call("echo", "say", json!({"word": "б"}), CallKind::Voice).await), "б (2)");
+
+        // A restart takes the newest version on disk; it does not start, so the one that last did runs.
+        let restarted = host_on(dir.path(), db, false, Placement::Pc);
+        assert_eq!(said(restarted.host.call("echo", "say", json!({"word": "в"}), CallKind::Voice).await), "в (1)");
+        let view = restarted.host.view_one("echo").await.unwrap();
+        assert_eq!(view.version.as_deref(), Some("1.0.0"));
+        assert!(
+            view.problem.as_deref().is_some_and(|problem| problem.contains("1.1.0 не поднялась")),
+            "{:?}",
+            view.problem
+        );
+
+        // A version that starts takes over.
+        write_package(dir.path(), &echo("1.2.0"), Some(CODE));
+        let view = host.reload("echo", None).await.unwrap();
+        assert_eq!(view.version.as_deref(), Some("1.2.0"));
+        assert_eq!(said(host.call("echo", "say", json!({"word": "г"}), CallKind::Voice).await), "г (1)");
+    }
+
+    /// The owner, 10.11: an item added to the list by voice did not show in the widget until a reload. A plugin's
+    /// write to its store tells the panel (`packages.data`): the widget reads its data again.
+    #[tokio::test]
+    async fn a_plugins_write_to_its_store_tells_the_panel() {
+        let dir = tempfile::tempdir().unwrap();
+        write_package(dir.path(), &echo("1.0.0"), Some(CODE));
+        let fixture = host_on(dir.path(), Arc::new(Db::memory()), false, Placement::Pc);
+        let (host, mut events) = (fixture.host.clone(), fixture.events.subscribe());
+        host.enable("echo", None).await.unwrap();
+        let remembered = host.call("echo", "remember", json!({"value": "молоко"}), CallKind::Voice).await;
+        assert_eq!(remembered, Ok(json!("молоко")));
+        let mut told = Vec::new();
+        while let Ok(event) = events.try_recv() {
+            if let GatewayEvent::PackageDataChanged { package } = event.as_ref() {
+                told.push(package.clone());
+            }
+        }
+        assert_eq!(told, ["echo"]);
+    }
+
+    #[tokio::test]
+    async fn refuses_what_the_manifest_does_not_allow() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut strict = echo("1.0.0");
+        strict["id"] = json!("strict");
+        strict["permissions"] = json!(["net:allowed.example"]);
+        strict["contributes"] = json!({ "intents": [{ "phrases": ["проверь права"], "handler": "say" }] });
+        write_package(dir.path(), &strict, Some(CODE));
+        let mut greedy = echo("1.0.0");
+        greedy["id"] = json!("greedy");
+        greedy["permissions"] = json!([]);
+        write_package(dir.path(), &greedy, Some(CODE));
+        let host = host_on(dir.path(), Arc::new(Db::memory()), false, Placement::Pc).host;
+        host.enable("strict", None).await.unwrap();
+
+        let failure = |answer: Result<Value, PluginError>| match answer {
+            Err(PluginError::Script(text)) => text,
+            other => panic!("{other:?}"),
+        };
+        // Its own store is its own (Host API 2): no right needed.
+        assert_eq!(host.call("strict", "remember", json!({"value": 1}), CallKind::Voice).await, Ok(json!(1)));
+        let other =
+            failure(host.call("strict", "reach", json!({"url": "https://other.example/x"}), CallKind::Voice).await);
+        assert!(other.contains("хост other.example не разрешён"), "{other}");
+        let local = failure(host.call("strict", "reach", json!({"url": "http://127.0.0.1:1/"}), CallKind::Voice).await);
+        assert!(local.contains("адрес этого компьютера"), "{local}");
+        let scheme = failure(host.call("strict", "reach", json!({"url": "file:///etc/passwd"}), CallKind::Voice).await);
+        assert!(scheme.contains("только http и https"), "{scheme}");
+        let speech = failure(host.call("strict", "speak", json!({"text": "Привет"}), CallKind::Background).await);
+        assert!(speech.contains("служб DuoWave здесь нет"), "a letter needs the bus: {speech}");
+        let view = host.view_one("strict").await.unwrap();
+        assert_eq!(view.errors, 4);
+        assert!(view.last_error.unwrap().message.starts_with("speak: "), "the last error names the function");
+
+        // Tools for «Мозг», a source for the player: what an app gives needs no right (Host API 2), only `contributes`.
+        host.enable("greedy", None).await.unwrap();
+        assert!(!host.tool_contributions().is_empty());
+    }
+
+    #[tokio::test]
+    async fn starts_afresh_after_a_call_that_ran_out_of_time() {
+        let dir = tempfile::tempdir().unwrap();
+        write_package(dir.path(), &echo("1.0.0"), Some(CODE));
+        let host = host_on(dir.path(), Arc::new(Db::memory()), false, Placement::Pc).host;
+        host.enable("echo", None).await.unwrap();
+        assert_eq!(said(host.call("echo", "say", json!({"word": "а"}), CallKind::Voice).await), "а (1)");
+        assert_eq!(host.call("echo", "spin", json!({}), CallKind::Voice).await, Err(PluginError::Timeout(2000)));
+        assert!(!host.view_one("echo").await.unwrap().loaded, "a context that ran away is not trusted");
+        assert_eq!(said(host.call("echo", "say", json!({"word": "б"}), CallKind::Voice).await), "б (1)");
+    }
+
+    #[tokio::test]
+    async fn runs_nothing_in_the_safe_mode_whatever_is_switched_on() {
+        let dir = tempfile::tempdir().unwrap();
+        write_package(dir.path(), &echo("1.0.0"), Some(CODE));
+        let db = Arc::new(Db::memory());
+        registry::set_enabled(&db, "echo", true, Some("1.0.0"), None).unwrap();
+        let fixture = host_on(dir.path(), db, true, Placement::Pc);
+        let host = fixture.host.clone();
+        let view = host.view().await;
+        assert!(view.safe_mode);
+        assert_eq!((view.packages[0].enabled, view.packages[0].state), (true, "safeMode"));
+        assert!(host.matched("скажи эхо привет").is_none());
+        assert!(host.tool_contributions().is_empty() && fixture.media.of(MediaKind::Music).is_empty());
+        let answer = host.call("echo", "say", json!({}), CallKind::Voice).await;
+        assert!(matches!(answer, Err(PluginError::Unavailable(text)) if text.contains("безопасный режим")));
+        assert_eq!(host.enable("echo", None).await.unwrap_err().status, axum::http::StatusCode::CONFLICT);
+        assert!(!host.is_active("echo"));
+    }
+
+    #[tokio::test]
+    async fn refuses_to_switch_on_what_does_not_run_where_the_gateway_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut pc_only = echo("1.0.0");
+        pc_only["runs"] = json!(["pc"]);
+        write_package(dir.path(), &pc_only, Some(CODE));
+        let host = host_on(dir.path(), Arc::new(Db::memory()), false, Placement::Station).host;
+        let refused = host.enable("echo", None).await.unwrap_err();
+        assert!(refused.message.contains("На колонке"), "{}", refused.message);
+        let view = host.view_one("echo").await.unwrap();
+        assert!(view.versions[0].problems[0].contains("не работает здесь"));
+    }
+
+    /// `runs: ["station"]` (AirPlay, VPN) on a station with its Турбо (`stationServer`): the station still — it
+    /// switches on and runs here, on the station, not at the Турбо; a computer refuses it.
+    #[tokio::test]
+    async fn switches_on_what_is_for_the_station_on_a_station_with_its_turbo() {
+        let mut station_only = echo("1.0.0");
+        station_only["runs"] = json!(["station"]);
+        for placement in [Placement::Station, Placement::StationServer] {
+            let dir = tempfile::tempdir().unwrap();
+            write_package(dir.path(), &station_only, Some(CODE));
+            let host = host_on(dir.path(), Arc::new(Db::memory()), false, placement).host;
+            host.enable("echo", None).await.unwrap();
+            let call = host.call("echo", "say", json!({"word": "а"}), CallKind::Voice).await;
+            assert_eq!(said(call), "а (1)", "{placement:?}");
+            let view = host.view_one("echo").await.unwrap();
+            // No `runs_at`: neither a face nor `prefer: home` — nothing of it goes to the Турбо.
+            assert_eq!((view.state, view.runs_at), ("loaded", None), "{placement:?}");
+            assert!(view.versions[0].problems.is_empty(), "{placement:?}: {:?}", view.versions[0].problems);
+        }
+        let dir = tempfile::tempdir().unwrap();
+        write_package(dir.path(), &station_only, Some(CODE));
+        let host = host_on(dir.path(), Arc::new(Db::memory()), false, Placement::Pc).host;
+        let refused = host.enable("echo", None).await.unwrap_err();
+        assert!(refused.message.contains("На компьютере"), "{}", refused.message);
+    }
+
+    #[tokio::test]
+    async fn lists_a_package_of_another_kind_without_code_and_does_not_switch_it_on() {
+        let dir = tempfile::tempdir().unwrap();
+        let character = json!({
+            "schema": 1, "kind": "character", "id": "ded-moroz", "version": "1.0.0", "title": "Дед Мороз", "api": "^2",
+            "runs": ["pc", "station", "stationServer"],
+            "contributes": { "characters": [{ "id": "ded-moroz" }] }
+        });
+        write_package(dir.path(), &character, None);
+        let host = host_on(dir.path(), Arc::new(Db::memory()), false, Placement::Pc).host;
+        let view = host.view_one("ded-moroz").await.unwrap();
+        assert_eq!((view.kind, view.state), (Some(PackageKind::Character), "off"));
+        assert!(view.versions[0].problems[0].contains("персонаж"));
+        let refused = host.enable("ded-moroz", None).await.unwrap_err();
+        assert!(refused.message.contains("персонаж — не приложение"), "{}", refused.message);
+    }
+
+    /// A small plugin of its own id: one phrase, its own `memoryMb`, the echo's code.
+    fn small(id: &str, memory_mb: u64) -> Value {
+        json!({
+            "schema": 1, "id": id, "version": "1.0.0", "title": id, "api": "^2",
+            "runs": ["pc", "station", "stationServer"],
+            "budget": { "memoryMb": memory_mb },
+            "permissions": [],
+            "contributes": { "intents": [{ "phrases": [format!("{id} {{word}}")], "handler": "say" }] }
+        })
+    }
+
+    /// The station with `available_mb` of memory available: with the reserve of 40, the rest is the plugins' budget.
+    fn station(available_mb: u64) -> crate::plugins::budget::MemoryNow {
+        crate::plugins::budget::MemoryNow {
+            total_mb: 238,
+            available_mb,
+            pressure: Pressure::Normal,
+            gateway_mb: Some(33),
+        }
+    }
+
+    async fn is_loaded(host: &PluginHost, id: &str) -> bool {
+        host.view_one(id).await.unwrap().loaded
+    }
+
+    /// The owner, 10.11: a small plugin from the workshop did not go on — «нужно 4 МБ, свободно 0» — because every
+    /// plugin that was on took its declared budget. Now only a loaded context takes its share, and memory never keeps
+    /// a plugin off.
+    #[tokio::test]
+    async fn switches_a_plugin_on_whatever_the_memory_and_counts_only_what_is_loaded() {
+        let dir = tempfile::tempdir().unwrap();
+        for (id, memory_mb) in [("alpha", 4), ("beta", 4), ("big", 30)] {
+            write_package(dir.path(), &small(id, memory_mb), Some(CODE));
+        }
+        // 60 MB available, the reserve 40: 20 for the plugins' contexts.
+        let memory = crate::plugins::budget::fake::plenty();
+        memory.set(station(60));
+        let fixture = host_with(dir.path(), Arc::new(Db::memory()), false, Placement::Station, memory.clone());
+        let host = fixture.host.clone();
+        // The declared count: what each loaded context declared (the measured one — below).
+        host.measure.store(false, Ordering::Relaxed);
+        // 38 MB declared in all, more than the 20, and none refused.
+        assert!(host.enable("alpha", None).await.unwrap().loaded);
+        assert!(host.enable("beta", None).await.unwrap().loaded);
+        let big = host.enable("big", None).await.unwrap();
+        assert_eq!((big.enabled, big.state, big.loaded), (true, "ready", false), "on, its context waits for room");
+        assert!(
+            host.journal("big").iter().any(|line| line.message.contains("нужно 30 МБ")),
+            "the journal says why it did not start"
+        );
+        assert!(host.is_active("big"), "its phrases and the rest are in force");
+
+        // Only the loaded contexts take their share: 4 + 4 of the budget, the plugin that is on but not loaded nothing.
+        let resources = host.resources().await;
+        assert!(resources.enforced && resources.measured);
+        assert_eq!((resources.committed_mb, resources.loaded), (8, 2), "{resources:?}");
+        assert!(resources.free_mb >= 12 && resources.room_mb >= 20, "{resources:?}");
+        assert!(
+            resources.note.starts_with("Загружено приложений: 2, под них занято 8 МБ. Можно загрузить ещё"),
+            "{}",
+            resources.note
+        );
+        let share = |id: &str| resources.plugins.iter().find(|share| share.id == id).cloned().unwrap();
+        assert_eq!((share("alpha").taken_mb, share("big").taken_mb, share("big").enabled), (4, 0, true));
+
+        // Its load: 30 MB do not fit even with the idle contexts unloaded, so none of them is unloaded for nothing.
+        let refused = host.call("big", "say", json!({"word": "а"}), CallKind::Voice).await.unwrap_err();
+        assert!(
+            matches!(&refused, PluginError::NoRoom(why) if why.contains("нужно 30 МБ, а приложениям всего 20 МБ")),
+            "the apps' whole budget is short, not what the loaded take: {refused}"
+        );
+        assert!(is_loaded(&host, "alpha").await && is_loaded(&host, "beta").await);
+        assert!(host.view_one("big").await.unwrap().last_error.unwrap().message.contains("не хватает ОЗУ"));
+
+        // More memory: it loads at its call.
+        memory.set(station(80));
+        assert_eq!(said(host.call("big", "say", json!({"word": "б"}), CallKind::Voice).await), "б (1)");
+        assert_eq!(host.resources().await.committed_mb, 38);
+    }
+
+    /// Windows test 21.11, a Station Mini 2: widgets «нужно 2 МБ, свободно 0» while each held a fraction of what it
+    /// declared. Measured, an idle context takes what it holds with a margin: a fourth context of 4 MB loads in a
+    /// budget of 12 beside three idle ones, none unloaded; one in a call is charged all it declared.
+    #[tokio::test]
+    async fn idle_contexts_are_charged_what_they_hold_and_one_in_a_call_all_it_declared() {
+        let dir = tempfile::tempdir().unwrap();
+        for id in ["alpha", "beta", "gamma", "delta"] {
+            write_package(dir.path(), &small(id, 4), Some(CODE));
+        }
+        // 12 MB for the plugins: by the declared count, three contexts of 4.
+        let memory = crate::plugins::budget::fake::plenty();
+        memory.set(station(52));
+        let fixture = host_with(dir.path(), Arc::new(Db::memory()), false, Placement::Station, memory);
+        let host = fixture.host.clone();
+        for id in ["alpha", "beta", "gamma"] {
+            assert!(host.enable(id, None).await.unwrap().loaded);
+        }
+        assert!(host.enable("delta", None).await.unwrap().loaded, "it fits beside the idle ones");
+        for id in ["alpha", "beta", "gamma", "delta"] {
+            assert!(is_loaded(&host, id).await, "{id} stays loaded: nothing had to go");
+        }
+        let resources = host.resources().await;
+        assert!(resources.committed_mb < 16, "less than four times 4: {resources:?}");
+        let share = |resources: &crate::plugins::budget::ResourcesView, id: &str| {
+            resources.plugins.iter().find(|share| share.id == id).cloned().unwrap()
+        };
+        let alpha = share(&resources, "alpha");
+        assert!(alpha.taken_mb < 4 && alpha.actual_mb.is_some(), "{alpha:?}");
+        // In a call it may grow to its limit: charged all of it.
+        let gamma = host.plugin("gamma").unwrap();
+        let _in_call = Busy::new(&gamma);
+        assert_eq!(share(&host.resources().await, "gamma").taken_mb, 4);
+    }
+
+    #[tokio::test]
+    async fn unloads_the_longest_idle_contexts_to_make_room_and_never_one_in_a_call() {
+        let dir = tempfile::tempdir().unwrap();
+        for id in ["alpha", "beta", "gamma", "delta"] {
+            write_package(dir.path(), &small(id, 4), Some(CODE));
+        }
+        // 12 MB for the plugins: three contexts of 4.
+        let memory = crate::plugins::budget::fake::plenty();
+        memory.set(station(52));
+        let fixture = host_with(dir.path(), Arc::new(Db::memory()), false, Placement::Station, memory);
+        let (host, mut events) = (fixture.host.clone(), fixture.events.subscribe());
+        // The declared count: each loaded context takes its 4 (the measured one — below).
+        host.measure.store(false, Ordering::Relaxed);
+        for id in ["alpha", "beta", "gamma"] {
+            assert!(host.enable(id, None).await.unwrap().loaded);
+        }
+        // alpha idle the longest, then beta; gamma is in a call, however long it has been.
+        for (id, used) in [("alpha", 1), ("beta", 2), ("gamma", 0)] {
+            host.plugin(id).unwrap().used.store(used, Ordering::Relaxed);
+        }
+        let gamma = host.plugin("gamma").unwrap();
+        let in_call = Busy::new(&gamma);
+        changes(&mut events);
+
+        // delta switched on: alpha, the longest idle, makes room — only it.
+        assert!(host.enable("delta", None).await.unwrap().loaded);
+        let loaded = [
+            is_loaded(&host, "alpha").await,
+            is_loaded(&host, "beta").await,
+            is_loaded(&host, "gamma").await,
+            is_loaded(&host, "delta").await,
+        ];
+        assert_eq!(loaded, [false, true, true, true]);
+        assert_eq!(changes(&mut events), ["unloaded", "enabled"]);
+        assert!(host.journal("alpha").iter().any(|line| line.message.contains("понадобилось плагину delta")));
+
+        // alpha called again: beta is the longest idle now; gamma, in its call, stays.
+        host.plugin("delta").unwrap().used.store(4, Ordering::Relaxed);
+        assert_eq!(said(host.call("alpha", "say", json!({"word": "а"}), CallKind::Voice).await), "а (1)");
+        assert!(!is_loaded(&host, "beta").await);
+        assert!(is_loaded(&host, "alpha").await && is_loaded(&host, "gamma").await && is_loaded(&host, "delta").await);
+
+        // Every loaded context in a call: nothing can be freed, the load is refused and nothing is unloaded.
+        let (alpha, delta) = (host.plugin("alpha").unwrap(), host.plugin("delta").unwrap());
+        let calls = [Busy::new(&alpha), Busy::new(&delta)];
+        let refused = host.call("beta", "say", json!({"word": "б"}), CallKind::Voice).await.unwrap_err();
+        assert_eq!(
+            refused,
+            PluginError::NoRoom(
+                "колонке не хватает ОЗУ, чтобы загрузить приложение: нужно 4 МБ, свободно 0 из 12 МБ для приложений; сейчас заняли (МБ): «alpha» 4, «delta» 4, «gamma» 4.".into()
+            )
+        );
+        assert!(is_loaded(&host, "alpha").await && is_loaded(&host, "gamma").await && is_loaded(&host, "delta").await);
+        let view = host.view_one("beta").await.unwrap();
+        assert_eq!((view.enabled, view.loaded), (true, false), "refused a load, it stays on");
+        // The idle unloading leaves a context in a call too.
+        host.unload_idle_for(0);
+        assert!(is_loaded(&host, "alpha").await && is_loaded(&host, "gamma").await && is_loaded(&host, "delta").await);
+
+        // The calls over, the next load makes room again.
+        drop((calls, in_call));
+        assert_eq!(said(host.call("beta", "say", json!({"word": "б"}), CallKind::Voice).await), "б (1)");
+    }
+
+    #[tokio::test]
+    async fn gives_memory_back_under_pressure_and_puts_to_sleep_only_what_is_loaded() {
+        use crate::plugins::budget::MemoryNow;
+        let dir = tempfile::tempdir().unwrap();
+        write_package(dir.path(), &echo("1.0.0"), Some(CODE));
+        write_package(dir.path(), &small("big", 30), Some(CODE));
+        // The station: 60 MB available, the reserve 40 — 20 for plugins.
+        let memory = crate::plugins::budget::fake::plenty();
+        memory.set(station(60));
+        let fixture = host_with(dir.path(), Arc::new(Db::memory()), false, Placement::Station, memory.clone());
+        let (host, mut events) = (fixture.host.clone(), fixture.events.subscribe());
+        host.enable("echo", None).await.unwrap();
+        assert!(!host.enable("big", None).await.unwrap().loaded, "on, no room to load");
+
+        // Pressure: an idle plugin unloads, background work waits; at «critical» the plugin switched on last among
+        // those loaded falls asleep — still on — and big, switched on later, holds nothing and stays as it is.
+        memory.set(MemoryNow { available_mb: 15, pressure: Pressure::Critical, ..station(60) });
+        host.plugin("echo").unwrap().used.store(0, Ordering::Relaxed);
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        host.watch_memory().await;
+        assert!(host.deferring.load(Ordering::Relaxed));
+        let view = host.view_one("echo").await.unwrap();
+        assert_eq!((view.enabled, view.loaded), (true, false));
+        assert!(view.problem.unwrap().contains("спит: колонке не хватало ОЗУ"));
+        assert_eq!(host.sleeping(), [("echo".to_string(), 2)]);
+        assert!(host.view_one("big").await.unwrap().enabled);
+        let told: Vec<String> = changes(&mut events);
+        assert!(told.contains(&"asleep".to_string()), "{told:?}");
+        // Again: nothing is loaded, nothing more sleeps.
+        host.watch_memory().await;
+        assert!(host.view_one("big").await.unwrap().enabled);
+        assert_eq!(host.sleeping().len(), 1);
+
+        // The memory is back, but not with room to spare: it sleeps on. Then there is room: it wakes by itself.
+        memory.set(MemoryNow { available_mb: 50, pressure: Pressure::Normal, ..station(60) });
+        host.watch_memory().await;
+        assert_eq!(host.sleeping().len(), 1, "40 of reserve + 2 + 15 to spare is more than 50");
+        memory.set(MemoryNow { available_mb: 80, pressure: Pressure::Normal, ..station(80) });
+        host.watch_memory().await;
+        assert!(host.sleeping().is_empty());
+        let view = host.view_one("echo").await.unwrap();
+        assert_eq!((view.enabled, view.problem), (true, None));
+        assert!(changes(&mut events).contains(&"awake".to_string()));
+
+        // On a computer the budget is shown, not kept.
+        let pc = host_on(dir.path(), Arc::new(Db::memory()), false, Placement::Pc).host;
+        assert!(!pc.resources().await.enforced);
+        assert!(pc.enable("big", None).await.unwrap().loaded);
+    }
+
+    #[tokio::test]
+    async fn a_secret_setting_reaches_the_plugin_as_it_is_and_the_panel_only_as_dots() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut calendar = echo("1.0.0");
+        calendar["settings"] = json!([
+            { "key": "ics", "type": "string", "title": "Ссылка iCal", "secret": true },
+            { "key": "days", "type": "number", "title": "Дней", "default": 7 }
+        ]);
+        calendar["contributes"]["panel"] = json!({ "slots": ["desk.widgets"] });
+        write_package(dir.path(), &calendar, Some(CODE));
+        std::fs::write(dir.path().join("echo/1.0.0/panel.js"), "export default {};").unwrap();
+        let host = host_on(dir.path(), Arc::new(Db::memory()), false, Placement::Pc).host;
+        host.enable("echo", None).await.unwrap();
+        let stored = |key: &str| {
+            let all = host.settings().get(&PACKAGE_SETTINGS, None).unwrap_or_default();
+            all.get("echo").and_then(|own| own.get(key)).cloned()
+        };
+        let link = "https://calendar.example/private-0123/basic.ics";
+
+        let values = json!({ "ics": link, "days": 3 });
+        let view = host.set_settings("echo", values.as_object().unwrap(), None).await.unwrap();
+        let shown: Vec<Option<Value>> = view.settings.iter().map(|setting| setting.value.clone()).collect();
+        assert_eq!(shown, [Some(json!(manifest::SECRET_SHOWN)), Some(json!(3))]);
+        assert_eq!(serde_json::to_value(&view).unwrap()["settings"][0]["secret"], true);
+        let part = host.panel_parts().into_iter().find(|part| part.id == "echo").unwrap();
+        assert_eq!(part.settings["ics"], manifest::SECRET_SHOWN, "the panel parts — every viewer of the station");
+        assert_eq!(host.view_one("echo").await.unwrap().settings[0].value, Some(json!(manifest::SECRET_SHOWN)));
+        // The plugin itself reads the link as it is; the settings never hold it, the safe does.
+        assert_eq!(host.settings_of("echo")["ics"], link);
+        assert_eq!(stored("ics"), None, "no private value among the settings");
+        assert_eq!(host.secrets().get("plugin:echo:ics").as_deref(), Some(link));
+
+        // The panel saves back what it was shown: the link stays; a new one takes its place; null — none.
+        let back = json!({ "ics": manifest::SECRET_SHOWN, "days": 5 });
+        host.set_settings("echo", back.as_object().unwrap(), None).await.unwrap();
+        assert_eq!((host.settings_of("echo")["ics"].clone(), stored("days")), (json!(link), Some(json!(5))));
+        let other = "https://calendar.example/private-4567/basic.ics";
+        host.set_settings("echo", json!({ "ics": other }).as_object().unwrap(), None).await.unwrap();
+        assert_eq!(host.settings_of("echo")["ics"], other);
+        // A wrong value among them changes nothing, the key neither.
+        let wrong = json!({ "ics": "https://calendar.example/third.ics", "days": "много" });
+        assert!(host.set_settings("echo", wrong.as_object().unwrap(), None).await.is_err());
+        assert_eq!(host.settings_of("echo")["ics"], other);
+        host.set_settings("echo", json!({ "ics": null }).as_object().unwrap(), None).await.unwrap();
+        assert!(!host.secrets().has("plugin:echo:ics"));
+        assert_eq!(host.view_one("echo").await.unwrap().settings[0].value, None, "not set: nothing shown");
+    }
+
+    /// Stage 1 of docs/plans/voice-creation.md: a key stored among the settings before the safe kept them moves into
+    /// the safe at the start; the plugin reads it as before, from the safe; its journal and the gateway's log show
+    /// «•••» in its place; a copy takes the key along, a removal takes it away.
+    #[tokio::test]
+    async fn a_plugins_key_lives_in_the_safe_and_never_in_its_journal() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut todo = echo("1.0.0");
+        todo["settings"] = json!([
+            { "key": "token", "type": "string", "title": "Ключ Todoist", "secret": true },
+            { "key": "count", "type": "number", "title": "Показывать", "default": 5 }
+        ]);
+        let code = r#"
+            export function key() { return host.settings.get("token"); }
+            export function leak() { console.log(`ключ ${host.settings.get("token")} принят`); return 1; }
+        "#;
+        write_package(dir.path(), &todo, Some(code));
+        let db = Arc::new(Db::memory());
+        // As an older gateway left it: the key in clear among the settings.
+        let settings = SettingsService::new(db.clone(), EventBus::new());
+        let mut stored = BTreeMap::new();
+        stored.insert("echo".to_string(), json!({ "token": "td-0123", "count": 3 }).as_object().unwrap().clone());
+        settings.set(&PACKAGE_SETTINGS, &stored, None).unwrap();
+        let host = host_on(dir.path(), db, false, Placement::Pc).host;
+        let own = host.settings().get(&PACKAGE_SETTINGS, None).unwrap_or_default();
+        assert_eq!(own["echo"], json!({ "count": 3 }).as_object().unwrap().clone(), "moved out of the settings");
+        assert_eq!(host.secrets().get("plugin:echo:token").as_deref(), Some("td-0123"));
+        host.enable("echo", None).await.unwrap();
+        assert_eq!(host.call("echo", "key", json!({}), CallKind::Tool).await.unwrap(), json!("td-0123"));
+
+        host.call("echo", "leak", json!({}), CallKind::Tool).await.unwrap();
+        let lines: Vec<String> = host.journal("echo").into_iter().map(|line| line.message).collect();
+        assert!(lines.iter().any(|line| line == "ключ ••• принят"), "{lines:?}");
+        assert!(!lines.iter().any(|line| line.contains("td-0123")));
+
+        let copy = host.fork("echo", Some("my-echo"), None).await.unwrap();
+        assert_eq!(copy.id, "my-echo");
+        assert_eq!(host.secrets().get("plugin:my-echo:token").as_deref(), Some("td-0123"), "the copy takes the key");
+        host.forget("my-echo").await.unwrap();
+        assert!(!host.secrets().has("plugin:my-echo:token"), "a removal takes it away");
+        assert!(host.secrets().has("plugin:echo:token"), "the original's stays");
+    }
+
+    /// A built-in of an earlier build goes with its keys and its settings; a copy of one's own keeps its.
+    #[test]
+    fn a_built_in_of_an_earlier_build_goes_with_its_keys_and_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Arc::new(Db::memory());
+        let settings = SettingsService::new(db.clone(), EventBus::new());
+        let secrets = SecretsService::new(Arc::new(Db::memory()), None).unwrap();
+        for (id, source) in [("radio", registry::SOURCE_BUNDLED), ("my-radio", registry::SOURCE_LOCAL)] {
+            std::fs::create_dir_all(dir.path().join(id).join("1.0.0")).unwrap();
+            registry::set_installed(&db, id, source, true, None).unwrap();
+            secrets.set(&crate::secrets::plugin_secret(id, "token"), Some("td-0123")).unwrap();
+        }
+        let stored: BTreeMap<String, Map<String, Value>> = BTreeMap::from([
+            ("radio".to_string(), json!({ "country": "RU" }).as_object().unwrap().clone()),
+            ("my-radio".to_string(), json!({ "country": "DE" }).as_object().unwrap().clone()),
+        ]);
+        settings.set(&PACKAGE_SETTINGS, &stored, None).unwrap();
+
+        let kept = std::collections::BTreeSet::from(["p-a2fd1d7eb8a4".to_string()]);
+        assert_eq!(retire_built_ins(dir.path(), &db, &settings, &secrets, &kept), ["radio"]);
+        assert!(!secrets.has("plugin:radio:token") && secrets.has("plugin:my-radio:token"));
+        let left = settings.get(&PACKAGE_SETTINGS, None).unwrap();
+        assert_eq!(left.keys().collect::<Vec<_>>(), ["my-radio"]);
+        assert!(!dir.path().join("radio").exists() && dir.path().join("my-radio").is_dir());
+    }
+
+    #[tokio::test]
+    async fn keeps_each_kinds_rules_copies_a_built_in_and_lists_the_packages_themes() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Arc::new(Db::memory());
+        let mut with_panel = echo("1.0.0");
+        with_panel["contributes"]["panel"] = json!({ "slots": ["home.cards"] });
+        write_package(dir.path(), &with_panel, Some(CODE));
+        std::fs::write(dir.path().join("echo/1.0.0/panel.js"), "export default {};").unwrap();
+        registry::set_installed(&db, "echo", registry::SOURCE_BUNDLED, true, None).unwrap();
+        let mut core = echo("1.0.0");
+        core["id"] = json!("core");
+        core["permissions"] = json!([]);
+        core["contributes"] = json!({ "intents": [{ "phrases": ["ядро"], "handler": "say" }] });
+        write_package(dir.path(), &core, Some(CODE));
+        registry::set_installed(&db, "core", registry::SOURCE_SYSTEM, true, None).unwrap();
+        let theme = json!({
+            "schema": 1, "kind": "theme", "id": "forest", "version": "1.0.0", "title": "Лес", "api": "^2",
+            "runs": ["pc", "station", "stationServer"],
+            "contributes": { "themes": [
+                { "id": "forest", "title": "Лес", "layout": "sidebar", "palette": { "dark": { "bg": "#0b1a10" }, "light": { "bg": "#eef7ee" } } },
+                { "id": "grid", "title": "Плитки", "layout": "grid", "palette": { "dark": {}, "light": {} } }
+            ] }
+        });
+        write_package(dir.path(), &theme, None);
+        let fixture = host_on(dir.path(), db, false, Placement::Pc);
+        let host = fixture.host.clone();
+        host.enable("core", None).await.unwrap();
+        let view = host.enable("echo", None).await.unwrap();
+        assert_eq!(
+            (view.origin, view.removable, view.can_disable, view.editable),
+            (Origin::Bundled, false, true, false)
+        );
+        assert_eq!(view.panel_module.as_deref(), Some("/panel-plugins/echo/1.0.0/panel.js"));
+        assert!(host.panel_file("echo", "1.0.0", "panel.js").is_some());
+        assert!(host.panel_file("echo", "1.0.0", "backend.js").is_none(), "only the panel's part is served");
+        assert!(host.panel_file("echo", "0.9.0", "panel.js").is_none());
+
+        let system = host.disable("core", None).await.unwrap_err();
+        assert!(system.message.contains("системное приложение"), "{}", system.message);
+        assert!(!host.view_one("core").await.unwrap().can_disable);
+
+        // Themes: the package's that is in form; a layout of code is the panel's plugin, not a theme.
+        let themes = host.themes();
+        assert_eq!(themes.len(), 1);
+        assert_eq!((themes[0].package.as_str(), themes[0].theme["id"].as_str()), ("forest", Some("forest")));
+
+        // A copy of one's own: the built-in goes off, the copy is on in its place, one's own to change.
+        let copy = host.fork("echo", None, None).await.unwrap();
+        assert_eq!((copy.id.as_str(), copy.origin, copy.editable, copy.enabled), ("my-echo", Origin::User, true, true));
+        assert!(copy.title.contains("моя копия"));
+        assert!(!host.view_one("echo").await.unwrap().enabled);
+        assert_eq!(said(host.call("my-echo", "say", json!({"word": "к"}), CallKind::Voice).await), "к (1)");
+        assert!(host.fork("echo", None, None).await.unwrap_err().message.contains("уже есть"));
+        assert!(host.fork("core", None, None).await.unwrap_err().message.contains("Системное приложение"));
+    }
+
+    #[tokio::test]
+    async fn a_tool_that_acts_plays_at_once_and_a_silent_station_is_answered_by_its_plugin() {
+        use crate::ear::{Command, EarAct as StationAct};
+        use crate::skills::media::playback::{PlaybackNews, PlaybackReport, Pusher};
+
+        struct Pushed(Mutex<Vec<String>>);
+        impl Pusher for Pushed {
+            fn push(&self, _device: &str, command: Command) -> bool {
+                self.0.lock().unwrap().push(command.name().to_string());
+                true
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = json!({
+            "schema": 1, "id": "tuner", "version": "1.0.0", "title": "Тюнер", "api": "^2", "runs": ["pc"],
+            "permissions": [],
+            "contributes": {
+                "tools": [
+                    { "name": "tuner_play", "description": "Включает станцию", "handler": "play", "capability": "radio" },
+                    { "name": "tuner_pause", "description": "Пауза", "handler": "pause", "capability": "radio" }
+                ],
+                "media": [{ "id": "stations", "kind": "radio" }],
+                "events": [{ "name": "player.silent", "handler": "silent" }]
+            }
+        });
+        let code = r#"
+            const A = { id: "a", title: "Станция А", url: "https://a.example/a.mp3" };
+            const B = { id: "b", title: "Станция Б", url: "https://b.example/b.mp3" };
+            export function play() { return { say: "Включаю станцию А", play: [A, B] }; }
+            export function pause({ request }) { return request.station ? { player: "pause", say: "Пауза" } : { station: false }; }
+            export function stations() { return []; }
+            export function silent({ payload }) { return payload.retrying ? null : { play: [B] }; }
+        "#;
+        write_package(dir.path(), &manifest, Some(code));
+        let player = Arc::new(MediaPlayer::new());
+        PLAYER.with(|cell| *cell.borrow_mut() = Some(player.clone()));
+        let watch = PlaybackWatch::with(player.clone(), Duration::from_secs(3600));
+        let pushed = Arc::new(Pushed(Mutex::new(Vec::new())));
+        watch.set_pusher(pushed.clone());
+        let fixture = host_playing(
+            dir.path(),
+            Arc::new(Db::memory()),
+            false,
+            Placement::Pc,
+            crate::plugins::budget::fake::plenty(),
+            Some(watch.clone()),
+        );
+        let host = fixture.host.clone();
+        host.enable("tuner", None).await.unwrap();
+
+        // The model calls the tool inside the station's answer: it plays at once, the model reads what is on.
+        let added: Arc<Mutex<Vec<Command>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = added.clone();
+        let station = StationAct {
+            device: "kitchen".into(),
+            media_base_url: None,
+            add: Arc::new(move |directives| {
+                sink.lock().unwrap().extend(directives);
+                true
+            }),
+        };
+        let tool = host.tool_contributions().into_iter().find(|tool| tool.tool.name == "tuner_play").unwrap();
+        assert_eq!(tool.permission, "use:radio");
+        let context =
+            ToolContext { principal: system(), cancel: CancellationToken::new(), ear: Some(station), origin: None };
+        let said = (tool.run)(Map::new(), context).await.unwrap();
+        assert!(said.contains("Playing «Станция А» now") && said.contains("Включаю станцию А"), "{said}");
+        assert_eq!(added.lock().unwrap()[0].name(), "play");
+        // Without a station (the panel's check) nothing plays.
+        let check = ToolContext { principal: system(), cancel: CancellationToken::new(), ear: None, origin: None };
+        assert!((tool.run)(Map::new(), check).await.unwrap().contains("nothing played"));
+        // The tool knows where the words came from (`request.station`); `player` pauses the station's player.
+        let pause = host.tool_contributions().into_iter().find(|tool| tool.tool.name == "tuner_pause").unwrap();
+        let sink = added.clone();
+        let station = StationAct {
+            device: "kitchen".into(),
+            media_base_url: None,
+            add: Arc::new(move |directives| {
+                sink.lock().unwrap().extend(directives);
+                true
+            }),
+        };
+        let context =
+            ToolContext { principal: system(), cancel: CancellationToken::new(), ear: Some(station), origin: None };
+        let said = (pause.run)(Map::new(), context).await.unwrap();
+        assert!(said.contains("player — pause") && said.contains("Пауза"), "{said}");
+        assert_eq!(added.lock().unwrap().last().unwrap().name(), "pause_player");
+        let check = ToolContext { principal: system(), cancel: CancellationToken::new(), ear: None, origin: None };
+        assert!((pause.run)(Map::new(), check).await.unwrap().contains("\"station\":false"));
+
+        // The station kept silent on it, through the gateway too: the plugin answers with the next station.
+        let (item, state) = player.current("kitchen").unwrap();
+        host.player_news(&PlaybackReport {
+            device: "kitchen".into(),
+            play_id: state.play_id.clone(),
+            request: None,
+            item,
+            news: PlaybackNews::Silent { seconds: 5, retrying: false },
+            via_gateway: true,
+        });
+        for _ in 0..50 {
+            if !pushed.0.lock().unwrap().is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(pushed.0.lock().unwrap().as_slice(), ["ask_again"]);
+        assert_eq!(player.current("kitchen").unwrap().0.title, "Станция Б");
+
+        // The answer went out while the tool worked (the station said «Сейчас посмотрю»): the play is pushed, and the
+        // model is told it plays — not «ask the user to say it again» (test 19.11, remark 9).
+        let late = StationAct { device: "kitchen".into(), media_base_url: None, add: Arc::new(|_| false) };
+        let context =
+            ToolContext { principal: system(), cancel: CancellationToken::new(), ear: Some(late), origin: None };
+        let said = (tool.run)(Map::new(), context).await.unwrap();
+        assert!(said.starts_with("Playing «Станция А» now"), "{said}");
+        assert_eq!(pushed.0.lock().unwrap().as_slice(), ["ask_again", "ask_again"]);
+    }
+
+    #[tokio::test]
+    async fn runs_a_plugin_that_prefers_home_on_the_computer_and_here_only_when_it_fits() {
+        use crate::plugins::budget::MemoryNow;
+        use axum::routing::post;
+
+        struct Home(Mutex<Option<(String, String)>>);
+        impl HomeLink for Home {
+            fn up(&self) -> Option<(String, String)> {
+                self.0.lock().unwrap().clone()
+            }
+
+            /// The station's computer gives the apps, on the line or not.
+            fn offered(&self) -> bool {
+                true
+            }
+        }
+
+        // The computer: its copy of the plugin answers.
+        let computer = axum::Router::new().route(
+            "/home/v1/plugins/{id}/call",
+            post(|axum::extract::Path(id): axum::extract::Path<String>, body: axum::Json<Value>| async move {
+                assert_eq!(body["function"], "say");
+                axum::Json(json!({ "result": format!("{id} с компьютера") }))
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, computer).await.unwrap() });
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut heavy = echo("1.0.0");
+        heavy["prefer"] = json!("home");
+        heavy["budget"] = json!({ "memoryMb": 30 });
+        write_package(dir.path(), &heavy, Some(CODE));
+        let home = Arc::new(Home(Mutex::new(Some((url, "key".into())))));
+        HOME.with(|cell| *cell.borrow_mut() = Some(home.clone() as Arc<dyn HomeLink>));
+        PLAYER.with(|cell| *cell.borrow_mut() = Some(Arc::new(MediaPlayer::new())));
+        let memory = crate::plugins::budget::fake::plenty();
+        let fixture =
+            host_playing(dir.path(), Arc::new(Db::memory()), false, Placement::StationServer, memory.clone(), None);
+        let host = fixture.host.clone();
+        host.enable("echo", None).await.unwrap();
+        host.unload_idle_for(0);
+        assert_eq!(said(host.call("echo", "say", json!({"word": "а"}), CallKind::Voice).await), "echo с компьютера");
+        assert!(!host.view_one("echo").await.unwrap().loaded, "nothing of it loads on the station");
+
+        // The computer is away: here, when it fits.
+        *home.0.lock().unwrap() = None;
+        assert_eq!(said(host.call("echo", "say", json!({"word": "б"}), CallKind::Voice).await), "б (1)");
+        host.unload_idle_for(0);
+        // It does not fit: unavailable until the computer is back.
+        memory.set(MemoryNow { total_mb: 238, available_mb: 50, pressure: Pressure::Normal, gateway_mb: Some(14) });
+        let refused = host.call("echo", "say", json!({"word": "в"}), CallKind::Voice).await.unwrap_err();
+        assert!(refused.to_string().contains("недоступно, пока компьютер не на связи"), "{refused}");
+        HOME.with(|cell| *cell.borrow_mut() = None);
+    }
+
+    /// The apps follow the helpers' list (docs/plans/home-and-helpers.md, stage 3): on a station a `prefer: home` app
+    /// goes to whichever helper gives the apps now — the pair's computer or another one, whose station keeps the plain
+    /// station's placement. A computer runs its apps itself.
+    #[tokio::test]
+    async fn an_app_that_prefers_home_goes_to_the_helper_that_gives_the_apps_on_any_station() {
+        use axum::routing::post;
+
+        struct Helper(String);
+        impl HomeLink for Helper {
+            fn up(&self) -> Option<(String, String)> {
+                Some((self.0.clone(), "key".into()))
+            }
+        }
+
+        let helper = axum::Router::new().route(
+            "/home/v1/plugins/{id}/call",
+            post(|axum::extract::Path(id): axum::extract::Path<String>| async move {
+                axum::Json(json!({ "result": format!("{id} у Турбо") }))
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, helper).await.unwrap() });
+
+        let mut heavy = echo("1.0.0");
+        heavy["prefer"] = json!("home");
+        HOME.with(|cell| *cell.borrow_mut() = Some(Arc::new(Helper(url)) as Arc<dyn HomeLink>));
+        for (placement, answer, runs_at) in
+            [(Placement::Station, "echo у Турбо", "home"), (Placement::Pc, "а (1)", "here")]
+        {
+            let dir = tempfile::tempdir().unwrap();
+            write_package(dir.path(), &heavy, Some(CODE));
+            let host = host_on(dir.path(), Arc::new(Db::memory()), false, placement).host;
+            host.enable("echo", None).await.unwrap();
+            let call = host.call("echo", "say", json!({"word": "а"}), CallKind::Voice).await;
+            assert_eq!(said(call), answer, "{placement:?}");
+            assert_eq!(host.view_one("echo").await.unwrap().runs_at, Some(runs_at), "{placement:?}");
+        }
+        HOME.with(|cell| *cell.borrow_mut() = None);
+    }
+
+    /// An app for a computer, a face on the station (stage 5б): YouTube's shape.
+    fn tube() -> Value {
+        json!({
+            "schema": 1, "kind": "app", "id": "tube", "version": "1.0.0", "title": "YouTube", "api": "^2",
+            "runtime": "node", "node": { "entry": "backend.js" },
+            "runs": ["pc"], "budget": { "memoryMb": 4 }, "permissions": [],
+            "contributes": {
+                "tools": [{
+                    "name": "tube_play", "description": "Включает музыку с YouTube", "handler": "play",
+                    "input": { "type": "object", "properties": { "query": { "type": "string" } } }
+                }]
+            }
+        })
+    }
+
+    /// The clean-path check of 19.11: the Mac was on the line, YouTube's code was not on it, and the station said «its
+    /// Турбо is off» — the model told the person so. A face's call says what is so: the Турбо on the line without the
+    /// app's code (and that it is being installed, or what the Турбо said when asked to), the Турбо refusing or the
+    /// app there failing in their own words, the Турбо asleep — by its name. Only the first asks for the code again.
+    #[tokio::test]
+    async fn a_face_says_honestly_why_its_turbo_did_not_answer() {
+        use axum::routing::post;
+
+        struct Turbo(Mutex<Option<(String, String)>>);
+        impl HomeLink for Turbo {
+            fn up(&self) -> Option<(String, String)> {
+                self.0.lock().unwrap().clone()
+            }
+
+            fn offered(&self) -> bool {
+                true
+            }
+
+            fn name(&self) -> Option<String> {
+                self.up().map(|_| "Mac".into())
+            }
+
+            fn why_not(&self) -> Option<String> {
+                self.up().is_none().then(|| "Mac не на связи — спит, выключен или без сети".into())
+            }
+        }
+
+        // The Mac: no code of «tube» there; «echo» there fails in its own words.
+        let computer = axum::Router::new().route(
+            "/home/v1/plugins/{id}/call",
+            post(|axum::extract::Path(id): axum::extract::Path<String>| async move {
+                match id.as_str() {
+                    "tube" => (
+                        axum::http::StatusCode::CONFLICT,
+                        axum::Json(json!({ "code": 409, "message": "Приложение tube здесь не включено." })),
+                    ),
+                    _ => (
+                        axum::http::StatusCode::BAD_GATEWAY,
+                        axum::Json(json!({ "code": 502, "message": "Приложение не ответило: нет сети." })),
+                    ),
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, computer).await.unwrap() });
+
+        let dir = tempfile::tempdir().unwrap();
+        write_package(dir.path(), &tube(), Some(CODE));
+        let mut other = tube();
+        (other["id"], other["title"]) = (json!("echo"), json!("Эхо"));
+        other["contributes"]["tools"][0]["name"] = json!("echo_play");
+        write_package(dir.path(), &other, Some(CODE));
+        let turbo = Arc::new(Turbo(Mutex::new(Some((url, "key".into())))));
+        HOME.with(|cell| *cell.borrow_mut() = Some(turbo.clone() as Arc<dyn HomeLink>));
+        let fixture = host_on(dir.path(), Arc::new(Db::memory()), false, Placement::StationServer);
+        HOME.with(|cell| *cell.borrow_mut() = None);
+        let host = fixture.host.clone();
+        host.enable("tube", None).await.unwrap();
+        host.enable("echo", None).await.unwrap();
+        let mut events = fixture.events.subscribe();
+        let call = |id: &'static str| {
+            let host = host.clone();
+            async move {
+                host.call(id, "play", json!({ "query": "Кино" }), CallKind::Tool).await.unwrap_err().to_string()
+            }
+        };
+
+        // On the line, its code not there: said so, and its code asked for.
+        let missing = call("tube").await;
+        assert_eq!(
+            missing,
+            "«YouTube» ещё не стоит на Турбо «Mac» (он на связи): ставлю его туда — попробуйте через минуту."
+        );
+        assert!(!missing.contains("нет на связи"));
+        assert_eq!(changes(&mut events), ["turbo"], "the home's watch installs the faces' code on «turbo»");
+
+        // The Турбо said why it did not install it: the card hears it at once (20.11 — before, only a call that
+        // failed said it), the call answers with it, and it is not asked again at once.
+        let why =
+            "Не поставлено: каталог этого компьютера не проверял «tube» из ленты хаба — код из неё здесь не ставится.";
+        host.note_turbo("tube", Some(why.into()));
+        assert_eq!(changes(&mut events), ["failed"], "the card and the journal hear the refusal, once");
+        assert_eq!(host.view_one("tube").await.unwrap().turbo.as_deref(), Some(why), "the card says it");
+        host.note_turbo("tube", Some(why.into()));
+        assert!(changes(&mut events).is_empty(), "the same refusal again is not news");
+        assert_eq!(call("tube").await, format!("«YouTube» не стоит на Турбо «Mac» (он на связи): {why}"));
+        assert!(changes(&mut events).is_empty(), "a refusal is not asked again within minutes");
+
+        // The app there fails: its own words, the Турбо named on the line.
+        assert_eq!(
+            call("echo").await,
+            "Турбо «Mac» на связи, но «Эхо» там не ответило: компьютер: Приложение не ответило: нет сети."
+        );
+
+        // The Турбо asleep: by its name, and why.
+        *turbo.0.lock().unwrap() = None;
+        assert_eq!(
+            call("tube").await,
+            "«YouTube» работает на Турбо (компьютере дома), а его сейчас не позвать: Mac не на связи — спит, выключен \
+             или без сети."
+        );
+    }
+
+    /// An update of a face (stage 5б) on the station whose Турбо gives the apps (20.11): the new version is in force at
+    /// once — its tools, its version — and its code is never started on the station: the Турбо installs it (the home's
+    /// watch syncs on «reloaded»). Before, the update started the Mac's program on the station: Node fetched there, the
+    /// station's memory asked, and «версия не поднялась» kept the old face.
+    #[tokio::test]
+    async fn an_update_of_a_face_is_in_force_at_once_and_its_code_never_starts_on_the_station() {
+        struct Turbo;
+        impl HomeLink for Turbo {
+            fn up(&self) -> Option<(String, String)> {
+                Some(("http://127.0.0.1:9".into(), "key".into()))
+            }
+
+            fn offered(&self) -> bool {
+                true
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        write_package(dir.path(), &tube(), Some(CODE));
+        HOME.with(|cell| *cell.borrow_mut() = Some(Arc::new(Turbo) as Arc<dyn HomeLink>));
+        let fixture = host_on(dir.path(), Arc::new(Db::memory()), false, Placement::StationServer);
+        HOME.with(|cell| *cell.borrow_mut() = None);
+        let host = fixture.host.clone();
+        host.enable("tube", None).await.unwrap();
+        let mut events = fixture.events.subscribe();
+
+        // Version 1.1.0 put beside 1.0.0, as the catalog's update does, with a tool of its own.
+        let mut newer = tube();
+        newer["version"] = json!("1.1.0");
+        newer["contributes"]["tools"][0]["name"] = json!("tube_search");
+        write_package(dir.path(), &newer, Some(CODE));
+        let view = host.reload("tube", None).await.expect("the new face takes over");
+        assert_eq!(view.version.as_deref(), Some("1.1.0"), "in force at once");
+        assert_eq!(view.runs_at, Some("home"), "its code is the Турбо's");
+        assert!(!view.loaded, "nothing of it started on the station");
+        assert_eq!(changes(&mut events), ["reloaded"], "the home's watch hears it and syncs the code to the Турбо");
+        assert_eq!(view.contributes.tools, ["tube_search"], "the new version's tools, not the old one's");
+    }
+
+    /// The clean-path check of 19.11: «какие новинки?» about an app with a card was answered «виджет у вас на столе» —
+    /// and nobody saw it there. «Мозг» reads the card as the desk does, by its function, and gets its data in words;
+    /// the tool names the apps by title beside the id, and is not offered while no app that is on shows a card.
+    #[tokio::test]
+    async fn the_brain_reads_an_apps_card_as_the_desk_shows_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let fresh = json!({
+            "schema": 1, "id": "fresh-rap", "version": "1.0.0", "title": "Fresh Hip-Hop & Rap", "api": "^2",
+            "runs": ["pc", "station", "stationServer"], "budget": { "memoryMb": 2 }, "permissions": [],
+            "contributes": {
+                "panel": {
+                    "calls": ["latest"],
+                    "cards": [{ "id": "latest", "title": "Fresh Hip-Hop & Rap", "function": "latest", "initial": true }]
+                }
+            }
+        });
+        let code = r#"
+            export function latest() {
+                return {
+                    big: "2", cap: "новых треков",
+                    rows: [{ text: "Kendrick Lamar — Luther", time: "2026-11-18" }, { text: "Doechii — Anxiety" }],
+                };
+            }
+        "#;
+        write_package(dir.path(), &fresh, Some(code));
+        let host = host_on(dir.path(), Arc::new(Db::memory()), false, Placement::Pc).host;
+        assert!(host.tool_contributions().iter().all(|tool| tool.tool.name != CARD_TOOL), "nothing is on: no tool");
+        host.enable("fresh-rap", None).await.unwrap();
+        let tool = host.tool_contributions().into_iter().find(|tool| tool.tool.name == CARD_TOOL).unwrap();
+        assert!(tool.read_only);
+        let app = &tool.tool.parameters["properties"]["app"];
+        assert_eq!(app["enum"], json!(["fresh-rap"]));
+        assert!(app["description"].as_str().unwrap().contains("Fresh Hip-Hop & Rap [fresh-rap]"), "{app}");
+        assert!(tool.tool.description.contains("Never send the person to look at the desk"));
+
+        let context = ToolContext {
+            principal: crate::core::identity::principal::system(),
+            cancel: CancellationToken::new(),
+            ear: None,
+            origin: None,
+        };
+        let input = Map::from_iter([("app".to_string(), json!("fresh-rap"))]);
+        let read = (tool.run)(input, context.clone()).await.unwrap();
+        assert_eq!(read, "Fresh Hip-Hop & Rap: 2. новых треков. 2026-11-18 Kendrick Lamar — Luther; Doechii — Anxiety");
+        let unknown = Map::from_iter([("app".to_string(), json!("weather"))]);
+        assert!((tool.run)(unknown, context).await.unwrap_err().to_string().contains("с карточкой «weather»"));
+    }
+
+    /// A theme of three colors and a drawn backdrop (THEMES.md, «Три цвета», «Фон»): what reads passes, what does not
+    /// is told in words the agent can act on.
+    #[test]
+    fn a_theme_of_three_colors_and_a_backdrop() {
+        let night = json!({
+            "id": "night-sky",
+            "title": "Звёздное небо",
+            "colors": {
+                "dark": { "bg": "#0B1026", "text": "#EEF0FF", "accent": "#FFD36E" },
+                "light": { "bg": "#F4F1FF", "text": "#1B1A33", "accent": "#5B4BD6" }
+            },
+            "backdrop": { "dark": { "layers": [{ "scene": "stars" }, { "scene": "aurora", "opacity": 0.5 }], "dim": 0.2 }, "light": null }
+        });
+        assert_eq!(theme_form(&night), Ok(()));
+        // One backdrop for both modes, by a scene alone.
+        let mut snow = night.clone();
+        snow["backdrop"] = json!({ "scene": "snow", "colors": ["#1d2b44", "#3a5277"] });
+        assert_eq!(theme_form(&snow), Ok(()));
+        // A palette alone still makes a mode, as before.
+        let old =
+            json!({ "id": "old", "title": "Old", "palette": { "dark": { "bg": "#000" }, "light": { "bg": "#fff" } } });
+        assert_eq!(theme_form(&old), Ok(()));
+
+        let mut grey = night.clone();
+        grey["colors"]["light"]["text"] = json!("#C9C6D8");
+        assert!(theme_form(&grey).unwrap_err().contains("не читается"));
+        let mut half = night.clone();
+        half["colors"].as_object_mut().unwrap().remove("light");
+        assert!(theme_form(&half).unwrap_err().contains("palette.light"));
+        let mut unknown = night.clone();
+        unknown["backdrop"] = json!({ "scene": "volcano" });
+        assert!(theme_form(&unknown).unwrap_err().contains("stars"));
+        let mut many = night.clone();
+        many["backdrop"] =
+            json!({ "layers": [{ "scene": "stars" }, { "scene": "snow" }, { "scene": "fog" }, { "scene": "rain" }] });
+        assert!(theme_form(&many).is_err());
+        let mut code = night.clone();
+        code["backdrop"] = json!({ "scene": "stars", "draw": "function () {}" });
+        assert!(theme_form(&code).unwrap_err().contains("draw"));
+    }
+}

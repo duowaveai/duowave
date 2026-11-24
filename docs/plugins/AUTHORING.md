@@ -765,8 +765,9 @@ await host.bus.call("device/screen", "keep", { window: opened[0].id }); // «о�
 ## MIDI-клавиатура
 
 Клавиатуру (USB, на Mac — и Bluetooth) слышит шлюз на компьютере: в окне приложения DuoWave Web MIDI нет, а так она
-работает и там, и в любом браузере, и с планшета дома. Связь `listen:device/midi`, `"runs": ["pc"]` (без `pc` —
-проблема манифеста); слышит её окошко приложения (`panel.js`). Заготовка — `midi` («Учитель на MIDI-клавиатуре»), `duowave plugin new <id> --midi`.
+работает и там, и в любом браузере, и с планшета дома. Хаб на колонке слышит клавиатуру своего Турбо: центр пробрасывает
+её ноты. Связь `listen:device/midi`, `"runs": ["pc", "stationServer"]` (без `pc` — проблема манифеста); слышит её окошко
+приложения (`panel.js`). Заготовка — `midi` («Учитель на MIDI-клавиатуре»), `duowave plugin new <id> --midi`.
 
 ```js
 import { PianoKeys, useMidi, useSynth } from "@duowave/panel-sdk";

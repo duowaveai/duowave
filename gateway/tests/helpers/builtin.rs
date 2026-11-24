@@ -11,6 +11,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use duowave::bus::BusFolders;
 use duowave::config::ModelProfile;
 use duowave::dialog::BrainSource;
 use duowave::helpers::contract::Ability;
@@ -289,7 +290,7 @@ async fn the_computers_own_clouds_go_under_the_regulator() {
     assert!(asr.as_str().unwrap().contains("https://asr.example.invalid/v1"), "{asr}");
     let speaker = pc.app.voice.speaker().map(|speaker| speaker.base_url());
     assert_eq!(speaker.as_deref(), Some("https://tts.example.invalid/v1"), "and speaks");
-    assert!(!pc.app.builtin.gives_here(Ability::Hearing) && !pc.app.builtin.gives_here(Ability::Voice));
+    assert!(!pc.app.pc.builtin.gives_here(Ability::Hearing) && !pc.app.pc.builtin.gives_here(Ability::Voice));
     // The registry says where as `/health` does: through the clouds, never «на этом компьютере».
     let ways = |registry: Value| -> Vec<(String, String)> {
         let features = registry["features"].as_array().unwrap().clone();
@@ -395,7 +396,7 @@ async fn a_mac_whose_model_is_on_this_computer_gets_a_cloud_backup_by_itself_and
     // Ollama closes: OpenAI's model answers at once, and «Где сейчас» says why. The tick's look is taken here at once
     // (the first test waits for a real tick).
     ollama.close().await;
-    pc.app.builtin.check().await;
+    pc.app.pc.builtin.check().await;
     let slot = BrainSource::slot(&*pc.app.brain, ModelProfile::Fast).unwrap();
     assert_eq!((slot.provider.as_str(), slot.model.as_str(), slot.cloud), (openai.as_str(), "gpt-5-mini", true));
     let row = now(&helpers(&pc, &auth).await, "model").clone();

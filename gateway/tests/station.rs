@@ -296,7 +296,7 @@ async fn takes_what_came_through_a_cloudflare_tunnel_for_outside_no_debug_api_no
     headers.extend(tunnel);
     let refused = StationClient::connect(&env.url(), &headers).await.err();
     assert_eq!(refused, Some(403));
-    if cfg!(feature = "pc") {
+    if duowave::core::build::computer() {
         let calls = format!("ws://127.0.0.1:{}/calls/ws", env.gateway.port);
         assert_eq!(StationClient::connect(&calls, &headers).await.err(), Some(403));
     }
@@ -2170,12 +2170,14 @@ async fn answers_for_yandex_when_it_does_not_answer_in_time() {
 }
 
 /// Our calls are a PC's part: the station's build has no /calls.
-#[cfg(feature = "pc")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn announces_a_call_on_the_station_in_alice_voice_and_answers_it_by_voice() {
     use fakes::calls_client::CallsClient;
     // The station's tag unhashed: its call party is named by it.
     let env = env_with(&[("RECORDER_REDACT", "false")]).await;
+    if !duowave::core::build::computer() {
+        return;
+    }
     let (uni, _) = env.connected_station("sync-30").await;
     let calls = format!("ws://127.0.0.1:{}/calls/ws", env.gateway.port);
     // The TS test called from a browser; a browser joins only with the webrtc feature, so here the caller is a

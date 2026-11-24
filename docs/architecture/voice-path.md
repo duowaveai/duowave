@@ -38,7 +38,7 @@
 
 Внутренняя модель (`src/gateway/protocol/protocol_types.rs`) — свои типы событий, не JSON-формат старых
 прошивок. Кодек (`aapi_codec.rs`) переводит провод в модель и обратно; сессия не знает про protobuf. Типы
-провода (`pb`) собираются из `gateway/proto/station-protocol.proto` при сборке (`gateway/build.rs`, protox и
+провода (`pb`) собираются из `crates/duowave-ears/proto/station-protocol.proto` при сборке (`crates/duowave-ears/build.rs`, protox и
 prost, без protoc).
 
 ## Речь (этап 2, `src/speech/`)

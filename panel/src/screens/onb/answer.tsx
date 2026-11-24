@@ -373,12 +373,17 @@ export function AnswerStep() {
         }
     };
 
+    /**
+     * Выбран DuoWave, а вход не закончен: «Дальше» ждёт его, и строка под выбором говорит почему (решение владельца к
+     * замечанию 8 проверки шага 11: не пускать, но объяснить). У других путей «Дальше» можно и без входа.
+     */
+    const duowaveWaits = mode !== 0 && path === 'duowave' && !signed && mayModel;
     const latest = useRef({ mode, current, modeGate });
     latest.current = { mode, current, modeGate };
     useStepNav(
         {
             label: mode === 0 ? t.finish : t.next,
-            disabled: busy || held,
+            disabled: busy || held || duowaveWaits,
             onNext: async () => {
                 const now = latest.current;
                 const want = MODES[now.mode];
@@ -393,7 +398,7 @@ export function AnswerStep() {
                 }
             },
         },
-        [mode, busy, current, stationKey, held],
+        [mode, busy, current, stationKey, held, duowaveWaits],
     );
 
     const alice = 'c-out';
@@ -526,18 +531,24 @@ export function AnswerStep() {
                         )}
                     </div>
 
+                    {/* Страница сервиса — большой кнопкой, а не мелкой ссылкой в строке: после «Получить подарок» было не
+                        понять, что дальше её надо открыть (замечание 7 проверки шага 11). */}
                     {signin && (
-                        <div class="onb-cx-form">
-                            <span class="small" style={{ flexBasis: '100%' }}>
+                        <div class="onb-cx-btns">
+                            <a class="dw-btn dw-btn-lg dw-btn-accent" href={signin.start.url} target="_blank" rel="noopener noreferrer">
+                                {tr.ui.signInOpen(signin.service)}
+                            </a>
+                            <span class="small">
                                 {signin.start.mode === 'code'
                                     ? tr.ui.signInSayCode(signin.service)
                                     : signin.start.mode === 'address'
                                       ? tr.ui.signInSayAddress(signin.service)
-                                      : tr.ui.signInSayHere(signin.service)}{' '}
-                                <a href={signin.start.url} target="_blank" rel="noopener noreferrer">
-                                    {tr.ui.signInOpen(signin.service)}
-                                </a>
+                                      : tr.ui.signInSayHere(signin.service)}
                             </span>
+                        </div>
+                    )}
+                    {signin && (
+                        <div class="onb-cx-form">
                             <input
                                 class="input"
                                 autocomplete="off"
@@ -674,7 +685,13 @@ export function AnswerStep() {
                             {note.text}
                         </p>
                     )}
-                    <p class="small onb-cx-p">{path === 'local' ? t.noteLocal : t.noteDefault}</p>
+                    {duowaveWaits ? (
+                        <p class="small onb-cx-p" role="status">
+                            {signin?.start.mode === 'code' ? t.duowaveNextAfterCode : t.duowaveNextAfter}
+                        </p>
+                    ) : (
+                        <p class="small onb-cx-p">{path === 'local' ? t.noteLocal : t.noteDefault}</p>
+                    )}
                 </div>
             )}
             {!needModel && <p class="small onb-cx-p">{t.noModel}</p>}

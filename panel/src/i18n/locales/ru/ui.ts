@@ -32,6 +32,8 @@ export default {
     movedLabel: 'Колонка ждёт хаб по старому адресу',
     movedTitle: (name: string) => `${name}: не слышит хаб`,
     movedAbout: (was: string, now: string) => `ходит на ${was}, а хаб теперь на ${now}`,
+    localNetworkTitle: 'macOS не пускает DuoWave в домашнюю сеть',
+    localNetworkAbout: 'Колонки и другие компьютеры дома этот не видят. Разрешите в «Системных настройках»: «Конфиденциальность и безопасность» → «Локальная сеть» → DuoWave.',
     reconnect: 'Переподключить',
     fileLabel: (path: string) => `Файл ${path}`,
     yes: 'Да',

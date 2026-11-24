@@ -8,7 +8,6 @@
 //!
 //! test/voice-lab.e2e-spec.ts, the Node original, is removed from the tree: git tag `node-gateway-last`.
 
-#[cfg(feature = "pc")]
 mod pc {
     use std::path::Path;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -223,8 +222,8 @@ mod pc {
         config.models.piper_registry = format!("http://127.0.0.1:{closed}/registry");
         let app = App::build(config).unwrap();
         let memory = Arc::new(Memory { free_mb: AtomicU64::new(16_384), pressure_level: AtomicU64::new(1) });
-        app.voice_lab.use_probe(Arc::new(Mac { memory: memory.clone() }));
-        app.voice_lab.start();
+        app.pc.voice_lab.use_probe(Arc::new(Mac { memory: memory.clone() }));
+        app.pc.voice_lab.start();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
         let (shutdown, stopped) = oneshot::channel::<()>();
@@ -529,25 +528,5 @@ mod pc {
         let memory = gw.call(Method::PUT, "/api/v1/voice-lab/memory", Some(json!({"mode": "cap", "mb": 2048}))).await;
         assert_eq!(memory.status, StatusCode::NOT_FOUND);
         assert_eq!(memory.body["message"], "Cannot PUT /api/v1/voice-lab/memory");
-    }
-}
-
-/// The station's build: the voice lab is not part of it, and says so in the envelope.
-#[cfg(not(feature = "pc"))]
-mod station {
-    use duowave::config::{Config, Env};
-    use reqwest::StatusCode;
-
-    #[tokio::test]
-    async fn says_the_voice_lab_is_not_part_of_this_build() {
-        let app = duowave::app::App::build(Config::for_tests(&Env::from_pairs([("STATE_DIR", "")]))).unwrap();
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let base = format!("http://{}", listener.local_addr().unwrap());
-        tokio::spawn(duowave::app::serve(app, listener, std::future::pending()));
-        let response = duowave::utils::http::client().get(format!("{base}/api/v1/voice-lab")).send().await.unwrap();
-        assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
-        let body: serde_json::Value = response.json().await.unwrap();
-        assert_eq!(body["code"], 501);
-        assert!(body["message"].as_str().unwrap().contains("нет в этой сборке"), "{body}");
     }
 }

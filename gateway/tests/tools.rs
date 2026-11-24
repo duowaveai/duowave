@@ -1,15 +1,13 @@
 //! `duowave call-sim` end to end: the simulator against a gateway built in this process on 127.0.0.1, another party
 //! on the same calls socket. The station's build has no calls, nor this test.
 
-#![cfg(feature = "pc")]
-
 mod support;
 
 use std::time::Duration;
 
+use duowave::computer::tools::call_sim::{self, Options};
 use duowave::speech::audio::pcm::{decode_wav, encode_wav};
 use duowave::speech::test_audio::voice;
-use duowave::tools::call_sim::{self, Options};
 use futures::{SinkExt, StreamExt};
 use serde_json::{json, Value};
 use support::Gateway;
@@ -92,7 +90,7 @@ async fn the_simulator_answers_a_call_plays_its_recording_and_keeps_what_it_hear
     let simulator = call_sim::run(&options, &microphone, &mut say);
     let caller = async {
         let joined =
-            support::until(4000, || gateway.app.calls.hub.list().iter().any(|party| party.id == "station:default"))
+            support::until(4000, || gateway.app.pc.calls.hub.list().iter().any(|party| party.id == "station:default"))
                 .await;
         assert!(joined, "the simulator in the hub");
         let mut kitchen =

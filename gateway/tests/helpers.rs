@@ -4,16 +4,10 @@
 
 mod support;
 
-#[path = "helpers/builtin.rs"]
-#[cfg(feature = "pc")]
-mod builtin;
 #[path = "helpers/choice.rs"]
 mod choice;
 #[path = "helpers/home.rs"]
 mod home;
-#[cfg(feature = "pc")]
-#[path = "helpers/link.rs"]
-mod link;
 #[path = "helpers/model.rs"]
 mod model;
 #[path = "helpers/stand.rs"]
