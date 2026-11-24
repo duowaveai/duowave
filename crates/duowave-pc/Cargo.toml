@@ -92,8 +92,11 @@ sha2.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 
-[target."cfg(unix)".dependencies]
-libc.workspace = true
+# On every system, not only Unix: the local recognition worker on Windows takes its stdout through the C runtime
+# (libc::dup, dup2, get_osfhandle in speech/asr/local/worker.rs) and leaves with libc::_exit, as before the move into
+# crates, when the gateway's `pc` brought libc everywhere. The 0.19.0 release's Windows app build failed without it.
+[dependencies.libc]
+workspace = true
 
 # Metal on Apple Silicon. An Intel Mac stays on its processor: ggml's Metal shaders hang there on some AMD cards
 # (as Handy found), and Metal buys little at these models' sizes.
