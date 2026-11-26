@@ -3,6 +3,11 @@
 What a gateway user can see, release by release. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versions follow [SemVer](https://semver.org/).
 
+## 0.19.2 — 27.11.2026
+
+- **After DuoWave asks you something, music and weather that Alice answers work again.** The answer no longer ends
+  with "Yandex did not answer" (#2, thanks @salekseev).
+
 ## 0.19.1 — 24.11.2026
 
 - **Deevi is a clear bubble now**, with soft light inside in the colour of Deevi's mood, in the app and on the sites.

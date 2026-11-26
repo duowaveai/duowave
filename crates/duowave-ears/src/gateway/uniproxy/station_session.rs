@@ -75,8 +75,8 @@ use crate::gateway::observability::session_recorder::{
 use crate::gateway::protocol::aapi_codec::AapiCodec;
 use crate::gateway::protocol::ids::{new_message_id, new_session_id};
 use crate::gateway::protocol::proto_edit::{
-    cancel_request, continue_request, edit_frame, get_bytes, get_string, restream, retext_text_input,
-    voice_to_text_input, wait_for_approval, waits_for_approval, FrameEdit,
+    cancel_request, continue_request, detach_voice_session, edit_frame, get_bytes, get_string, is_aapi, restream,
+    retext_text_input, voice_to_text_input, wait_for_approval, waits_for_approval, FrameEdit,
 };
 use crate::gateway::protocol::proto_object::{bytes_value, is_js_space};
 use crate::gateway::protocol::protocol_types::{
@@ -4011,13 +4011,30 @@ impl StationSession {
             );
         }
         let label = if voice.is_some() { "voiceInput" } else { "textInput" };
-        let frames = match voice {
+        let mut frames = match voice {
             Some(frames) => frames,
             None => match self.text_frame(inner, r#ref, &message_id, request, text, None) {
                 Ok(frame) => vec![frame],
                 Err(error) => return self.note("frameError", &format!("{error:#}"), None),
             },
         };
+        // A follow-up of our own question («Что включить?») is auto_listening inside a voice
+        // session Yandex never opened. Left as it is, Yandex recognizes it and sends no answer.
+        // A follow-up of Yandex's own question keeps the session, and a fresh wake word is not this.
+        let yandex_dialog = inner.continuation.is_some_and(|continuation| continuation.executor == RouteStep::Yandex);
+        if request.activation_type.as_deref() == Some("auto_listening") && !yandex_dialog {
+            for frame in &mut frames {
+                if !is_aapi(frame) {
+                    continue;
+                }
+                match detach_voice_session(frame) {
+                    Ok(detached) => *frame = Bytes::from(detached),
+                    Err(error) => {
+                        self.note("frameError", &format!("could not detach the voice session: {error}"), None)
+                    }
+                }
+            }
+        }
         self.relay_yandex(
             inner,
             Some(r#ref),

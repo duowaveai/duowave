@@ -1414,7 +1414,7 @@ checksum = "92773504d58c093f6de2459af4af33faa518c13451eb8f2b5698ed3d36e7c813"
 
 [[package]]
 name = "duowave"
-version = "0.19.1"
+version = "0.19.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1456,7 +1456,7 @@ dependencies = [
 
 [[package]]
 name = "duowave-apps"
-version = "0.19.1"
+version = "0.19.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1509,7 +1509,7 @@ dependencies = [
 
 [[package]]
 name = "duowave-base"
-version = "0.19.1"
+version = "0.19.2"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -1548,7 +1548,7 @@ dependencies = [
 
 [[package]]
 name = "duowave-brain"
-version = "0.19.1"
+version = "0.19.2"
 dependencies = [
  "anyhow",
  "axum",
@@ -1577,7 +1577,7 @@ dependencies = [
 
 [[package]]
 name = "duowave-desktop"
-version = "0.19.1"
+version = "0.19.2"
 dependencies = [
  "dirs 7.0.0",
  "duowave",
@@ -1598,7 +1598,7 @@ dependencies = [
 
 [[package]]
 name = "duowave-ears"
-version = "0.19.1"
+version = "0.19.2"
 dependencies = [
  "anyhow",
  "axum",
@@ -1639,7 +1639,7 @@ dependencies = [
 
 [[package]]
 name = "duowave-home"
-version = "0.19.1"
+version = "0.19.2"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -1681,7 +1681,7 @@ dependencies = [
 
 [[package]]
 name = "duowave-pc"
-version = "0.19.1"
+version = "0.19.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1730,7 +1730,7 @@ dependencies = [
 
 [[package]]
 name = "duowave-rights"
-version = "0.19.1"
+version = "0.19.2"
 dependencies = [
  "anyhow",
  "axum",
@@ -1756,7 +1756,7 @@ dependencies = [
 
 [[package]]
 name = "duowave-voice"
-version = "0.19.1"
+version = "0.19.2"
 dependencies = [
  "anyhow",
  "axum",

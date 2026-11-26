@@ -2,7 +2,8 @@
 
 
 *In English: contributions are welcome. Code is Apache-2.0 and documentation CC BY 4.0; what you send comes under
-the same licences (Apache-2.0, section 5) — no separate agreement to sign.*
+the same licences (Apache-2.0, section 5) — no separate agreement to sign. A pull request is not merged with the
+button: we take your commits as they are, with your name on them, and the next release merges your pull request.*
 
 ## Что можно прислать
 
@@ -22,6 +23,14 @@ the same licences (Apache-2.0, section 5) — no separate agreement to sign.*
 ни файлом, ни именем в умолчаниях кода), координаты и домашние адреса. Журнал шлюза
 хеширует идентификаторы сам (`RECORDER_REDACT`), но перед тем как вставить кусок журнала, проверьте его глазами.
 Звук для тестов — только синтетический.
+
+## Как мы принимаем PR
+
+Проект разрабатывается в рабочем репозитории, а сюда каждый выпуск выходит одним коммитом. Поэтому PR не сливается
+кнопкой. Мы берём ваши коммиты к себе как есть, с вашим именем, и проверяем их вместе с остальным. Ближайший выпуск
+вливает ваш PR: ваши коммиты остаются в истории этого репозитория под вашим именем, GitHub помечает PR слитым, а в
+CHANGELOG и заметках выпуска стоит ссылка на PR. Если по дороге мы что-то поправили, скажем об этом в PR.
+
 
 ## Колонки
 
