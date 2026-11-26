@@ -387,6 +387,40 @@ pub fn waits_for_approval(voice_input: &[u8]) -> bool {
     read().ok().flatten() == Some(1)
 }
 
+/// AliceRequest.request: voice_session, reset_session, activation_type.
+const VOICE_SESSION: u32 = 6;
+const RESET_SESSION: u32 = 7;
+const ACTIVATION_TYPE: u32 = 14;
+
+/// A follow-up of a dialog Yandex does not own, sent to Yandex as a new request.
+///
+/// The station marks that follow-up `voiceSession` and `auto_listening`, and sends `continueRequest` for *our*
+/// previous answer. Replaying the frame as it is makes Yandex recognize the audio and then send no `aliceResponse`:
+/// the session is not one it started (live, 26.11: «Любую музыку» and «какая погода?» both timed out after `ASR_OK`).
+/// `voice_session` goes off, `reset_session` goes on, and `auto_listening` is removed. A request with no body, and a
+/// frame that is not a voice or text input, stay as they are.
+pub fn detach_voice_session(input: &[u8]) -> Result<Vec<u8>, ProtoError> {
+    let message = edit_message(body(input)?, 1, |event| {
+        let event = edit_message(event, 3, detach_request_body)?;
+        edit_message(&event, 2, detach_request_body)
+    })?;
+    Ok(frame(&message))
+}
+
+fn detach_request_body(request: &[u8]) -> Result<Vec<u8>, ProtoError> {
+    if get_bytes(request, 3)?.is_none() {
+        return Ok(request.to_vec());
+    }
+    edit_message(request, 3, |request_body| {
+        let mut body = set_varint(request_body, VOICE_SESSION, 0)?;
+        body = set_varint(&body, RESET_SESSION, 1)?;
+        if get_string(&body, ACTIVATION_TYPE)?.as_deref() == Some("auto_listening") {
+            body = remove_field(&body, ACTIVATION_TYPE)?;
+        }
+        Ok(body)
+    })
+}
+
 /// «Answer it yourself»: the ContinueRequest for a VoiceInput Yandex holds. Its header is the request's own (as the
 /// station would send it) with a new message id, no reference and no stream.
 pub fn continue_request(voice_input: &[u8], message_id: &str) -> Result<Vec<u8>, ProtoError> {
@@ -545,6 +579,47 @@ mod tests {
         assert_eq!(get_varint(options, 4).unwrap(), Some(1));
         // Twice is once.
         assert_eq!(wait_for_approval(&gated).unwrap(), gated);
+    }
+
+    #[test]
+    fn detaches_a_follow_up_from_a_voice_session_yandex_does_not_own() {
+        let codec = AapiCodec::new();
+        let voice = codec
+            .encode_client_object(&json!({ "event": {
+                "header": { "messageId": "voice-9", "streamId": 3 },
+                "voiceInput": {
+                    "header": { "requestId": "req-9", "sequenceNumber": 4 },
+                    "request": {
+                        "event": { "type": "voice_input" },
+                        "voiceSession": true,
+                        "activationType": "auto_listening",
+                    },
+                    "lang": "ru-RU",
+                },
+            } }))
+            .unwrap();
+        let detached = detach_voice_session(&voice).unwrap();
+        let decoded = codec.decode_client(&detached).unwrap().decoded;
+        assert_eq!(decoded["event"]["header"], json!({ "messageId": "voice-9", "streamId": 3 }));
+        assert_eq!(decoded["event"]["voiceInput"]["header"]["requestId"], "req-9");
+        assert_eq!(decoded["event"]["voiceInput"]["lang"], "ru-RU");
+        let request = &decoded["event"]["voiceInput"]["request"];
+        assert_eq!(request["voiceSession"], false);
+        assert_eq!(request["resetSession"], true);
+        assert_eq!(request.get("activationType"), None);
+
+        let text = voice_to_text_input(&voice, "text-9", "какая погода", None).unwrap();
+        let detached = detach_voice_session(&text).unwrap();
+        let decoded = codec.decode_client(&detached).unwrap().decoded;
+        let request = &decoded["event"]["textInput"]["request"];
+        assert_eq!(request["event"]["text"], "какая погода");
+        assert_eq!(request["voiceSession"], false);
+        assert_eq!(request["resetSession"], true);
+
+        let close = codec
+            .encode_client_object(&json!({ "streamControl": { "streamId": 3, "messageId": "close-1", "close": {} } }))
+            .unwrap();
+        assert_eq!(detach_voice_session(&close).unwrap(), close.to_vec());
     }
 
     #[test]
