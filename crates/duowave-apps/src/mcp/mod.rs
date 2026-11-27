@@ -7,6 +7,9 @@ use axum::extract::DefaultBodyLimit;
 use axum::Router;
 
 pub mod ask_controller;
+pub mod for_systems;
+/// `/mcp/home`: DuoWave's MCP server for an agent on this computer (docs/plans/own-agent.md, stage 1).
+pub mod home_line;
 pub mod mcp_background;
 pub mod mcp_connection;
 pub mod mcp_controller;

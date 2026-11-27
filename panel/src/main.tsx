@@ -33,6 +33,9 @@ import { ScreenPage } from './screen/page';
 import { AppShareHost } from './frame/share';
 import { MediaViewerHost } from './media/viewer';
 import { initLanguage, useLanguage } from './i18n';
+import { VoiceStripPage } from './screens/voice-strip';
+import { GuidePage } from './screens/guide';
+import type { PermissionItem } from './api';
 
 // Встроенное — тем же путём, что плагины: разделы, слоты и темы приходят в реестр, тема применяется до первой отрисовки.
 registerPlugin(core);
@@ -40,6 +43,11 @@ applyTheme();
 
 // Окно на экране компьютера (screen/page.tsx): своё окно приложения DuoWave — только то, что оно показывает.
 const screen = /^#\/screen\/([^/?]+)/.exec(location.hash);
+// Полоса поверх окон (screens/voice-strip.tsx): своё окно приложения, пока идёт разговор с ухом приложения.
+const strip = /^#\/voice-strip/.test(location.hash);
+// Окно-подсказка рядом с «Системными настройками» Mac (screens/guide.tsx): своё окно приложения, пока человек включает
+// разрешение.
+const guide = /^#\/guide\/(localNetwork|microphone)\b/.exec(location.hash);
 
 /**
  * Корень пульта по языку (docs/plans/i18n.md): смена языка пересоздаёт его — каждый текст читается из словаря нового
@@ -47,6 +55,8 @@ const screen = /^#\/screen\/([^/?]+)/.exec(location.hash);
  */
 function Root() {
     const language = useLanguage();
+    if (strip) return <VoiceStripPage key={language} />;
+    if (guide) return <GuidePage key={language} item={guide[1] as PermissionItem} />;
     return screen ? (
         <ScreenPage key={language} id={decodeURIComponent(screen[1])} />
     ) : (

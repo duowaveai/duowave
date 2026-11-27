@@ -682,7 +682,7 @@ export function SpeakerStep() {
             }
             if (!mayManage) return void (alive && setFound([]));
             try {
-                const result = await api.discoverStations();
+                const result = await api.discoverStations(true);
                 if (!alive) return;
                 const gw = gateway || result.gateway?.[0] || '';
                 setGateway(gw);
@@ -704,7 +704,7 @@ export function SpeakerStep() {
     const searchAgain = async (): Promise<void> => {
         if (address) return read(address);
         try {
-            const result = await api.discoverStations();
+            const result = await api.discoverStations(true);
             const stations = ours(result.stations);
             setFound(stations);
             setWhyNone(result.whyNone ?? null);

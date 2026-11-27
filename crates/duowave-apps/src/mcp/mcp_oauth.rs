@@ -1,6 +1,6 @@
 //! Signing in to a server in the cloud (Todoist, Notion): the gateway is the OAuth client. The SDK (rmcp) does the
-//! protocol — discovery, registration (dynamic, or the client of an earlier sign-in at the same authorization
-//! server), PKCE, the code exchange, refreshing; this module keeps what it must remember sealed among the secrets
+//! protocol — discovery, the client (the one of an earlier sign-in at the same authorization server, a dynamic
+//! registration, or — at a server with no registration, ElevenLabs — DuoWave's client document on the site), PKCE, the code exchange, refreshing; this module keeps what it must remember sealed among the secrets
 //! (`mcp:<id>:oauth:tokens`: the tokens, the client id and the issuer that minted them) and sends the OAuth requests
 //! over the gateway's own TLS. The return comes to localhost: on this computer the browser lands on the gateway by
 //! itself; from a phone the owner pastes the address the browser could not open.
@@ -20,6 +20,11 @@ use crate::secrets::SecretsService;
 use crate::utils::http::client_builder;
 
 const CLIENT_NAME: &str = "DuoWave";
+/// DuoWave's client document (CIMD, SEP-991): its address is the client id at an authorization server that has no
+/// registration but reads such documents. It lists one return, `http://localhost:7780/api/v1/mcp/oauth/callback`
+/// (the default port). A Cloudflare Worker of its own serves it (scripts/release/cloudflare/metadata-worker.mjs), on a
+/// product host of duowave.app, not the landing site: the address is built into every release.
+pub const CLIENT_METADATA_URL: &str = "https://metadata.duowave.app/oauth/client-metadata.json";
 /// An OAuth request's longest wait, as the SDK's own client has it.
 const OAUTH_TIMEOUT: Duration = Duration::from_secs(30);
 /// The largest OAuth answer read (metadata, a registration, tokens).
@@ -186,8 +191,8 @@ impl PendingLogin {
 }
 
 /// Starts signing in to a server by address: discovery (seeded by the server's 401 challenge when there is one),
-/// the client (the one registered at the last sign-in with the same authorization server, or a new registration)
-/// and the page for the owner.
+/// the client (the one of the last sign-in with the same authorization server, a new registration, or the client
+/// document where the server has no registration) and the page for the owner.
 pub async fn start_login(
     url: &str,
     server_id: &str,
@@ -198,8 +203,14 @@ pub async fn start_login(
     let mut manager = manager(url, server_id, secrets).await?;
     let resolution = manager.resolve_metadata_from_challenge(challenge).await?;
     let issuer = resolution.metadata.issuer.clone();
+    // The document only where there is no registration: a server with both keeps the registered client it had, and a
+    // gateway on another port (whose return the document does not list) still signs in there.
+    let registers = resolution.metadata.registration_endpoint.is_some();
     manager.set_metadata(resolution.metadata);
     let mut request = AuthorizationRequest::new(callback).with_client_name(CLIENT_NAME).with_application_type("native");
+    if !registers {
+        request = request.with_client_metadata_url(CLIENT_METADATA_URL);
+    }
     if let Some(challenge) = challenge {
         request = request.with_challenge(challenge);
     }
@@ -281,6 +292,30 @@ mod tests {
         // Signed in already: «Войти» has no page to open, the server just reconnects.
         let started = s.mcp.login(&server.id).await.unwrap();
         assert_eq!((started.url, started.done), (None, Some(true)));
+        s.mcp.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn signs_in_with_the_client_document_where_the_server_has_no_registration() {
+        let cloud = fixtures::cloud_reading_client_documents().await;
+        let s = setup();
+        let given =
+            json!({ "transport": "http", "title": "Voices", "url": format!("{}/mcp", cloud.base), "auth": "oauth" });
+        let server = s.mcp.add(&input(given), None).unwrap();
+        until("«Войти»", || state(&s.mcp, &server.id).state == ServerState::Login, Duration::from_secs(5)).await;
+        let url = s.mcp.login(&server.id).await.unwrap().url.expect("the service's page");
+        let page = url::Url::parse(&url).unwrap();
+        let client = page.query_pairs().find(|(key, _)| key == "client_id").map(|(_, value)| value.into_owned());
+        assert_eq!(client.as_deref(), Some(CLIENT_METADATA_URL));
+        let browser = client_builder().redirect(reqwest::redirect::Policy::none()).build().unwrap();
+        let back = browser.get(&url).send().await.unwrap();
+        let returned = url::Url::parse(back.headers()[reqwest::header::LOCATION].to_str().unwrap()).unwrap();
+        let query: Vec<(String, String)> =
+            returned.query_pairs().map(|(k, v)| (k.into_owned(), v.into_owned())).collect();
+        s.mcp.complete_login(&query, None).await.unwrap();
+        ready(&s.mcp, &server.id).await;
+        assert_eq!(cloud.issued.lock().unwrap().as_slice(), ["token-1"]);
+        assert_eq!(cloud.clients.lock().unwrap().as_slice(), [CLIENT_METADATA_URL, CLIENT_METADATA_URL]);
         s.mcp.shutdown().await;
     }
 

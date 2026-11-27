@@ -1,4 +1,5 @@
 // Тексты: screens/journal.tsx.
+import { plural } from '../../format';
 
 export default {
     keepNone: 'Не хранить',
@@ -49,4 +50,41 @@ export default {
         `токены ${input} → ${output}${cached ? `, из кэша ${cached}` : ''}${rounds > 1 ? `, кругов ${rounds}` : ''}`,
     /** Сделка ответа: место, модель и доллары (docs/plans/router-and-works.md, «Устройство: пульт»). */
     deal: (seat: string, model: string, money: string) => [seat, model, money].filter(Boolean).join(' · '),
+
+    // Блок «Мышление» в подробностях запроса (docs/plans/thinking.md, «The turn's line»).
+    thinkingTitle: 'Мышление',
+    /** `tokens` — число коротко («1,9 тыс.»), `n` — оно же целиком, для слова. */
+    thinkingCard: (tokens: string, n: number) =>
+        `карточка ${tokens} ${n >= 1000 ? 'токенов' : plural(n, { one: 'токен', few: 'токена', many: 'токенов' })}`,
+    thinkingFast: (step: string) => `быстрый путь: ${step}`,
+    thinkingOpened: (groups: string) => `открыто: ${groups}`,
+    thinkingRounds: (n: number) => `${n} ${plural(n, { one: 'круг', few: 'круга', many: 'кругов' })}`,
+    thinkingFirstWord: (time: string) => `первое слово ${time}`,
+    /** Карточка в тени: хватило бы её, не хватило бы или инструменты не понадобились. */
+    thinkingShadow: {
+        hit: 'карточка в тени: хватило бы',
+        miss: 'карточка в тени: не хватило бы',
+        none: 'карточка в тени: инструменты не понадобились',
+    },
+    thinkingWaits: (n: number) => `ждали: ${n}`,
+    /** Что человек сделал потом. Другая фраза или тишина — ничего не пишем. */
+    thinkingNext: {
+        cut: 'перебили',
+        repeated: 'повторили',
+        not_that: 'не то',
+        answered: 'ответили на вопрос',
+    },
+    /** Встроенные группы инструментов. Группы приложений и MCP (`app:…`, `mcp:…`) — как их назвал шлюз. */
+    thinkingGroups: {
+        weather: 'погода',
+        news: 'новости',
+        calendar: 'календарь',
+        timers: 'таймеры',
+        alarms: 'будильники',
+        memory: 'память',
+        works: 'работы',
+        music: 'музыка',
+        radio: 'радио',
+        sound: 'звук',
+    },
 };

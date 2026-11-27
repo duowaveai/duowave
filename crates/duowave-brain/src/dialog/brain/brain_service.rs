@@ -1394,6 +1394,7 @@ impl BrainService {
             model: String::new(),
             models: ModelPair { fast: String::new(), smart: String::new() },
             tokens_field: tokens_field_for(base_url.as_deref().unwrap_or(OPENAI_BASE_URL)),
+            reasoning_effort: preset.is_some_and(|preset| preset.reasoning_effort),
             base_url,
             api_key,
             max_tokens: self.config.max_tokens,
@@ -1511,6 +1512,10 @@ impl BrainService {
         let body = response.bytes().await.map_err(failed)?;
         let body: Value =
             serde_json::from_slice(&body).map_err(|error| anyhow!("the list of models is not JSON: {error}"))?;
+        // DuoWave's list also says how long an answer each model gives (its plan's ceiling): requests ask no more.
+        if let Some(cell) = settings.limits.as_ref().filter(|cell| cell.words() == ErrorWords::DuoWave) {
+            cell.caps_read(crate::dialog::llm::limits::output_caps_of(&body), chrono::Utc::now());
+        }
         let listed: Vec<String> = match (body.get("data"), body.get("models")) {
             (Some(Value::Array(models)), _) => {
                 models.iter().filter_map(|model| model.get("id").and_then(Value::as_str).map(str::to_string)).collect()

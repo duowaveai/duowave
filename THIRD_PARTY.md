@@ -77,7 +77,7 @@ Apache-2.0, исходные веса — MIT. Приложение их не н
 
 | Модель | Лицензия | Дома, некоммерчески | За деньги, в облаке |
 |---|---|---|---|
-| GigaAM v1–v3 | MIT | да | да |
+| GigaAM v1–v4, Multilingual, Multilingual v2 | MIT | да | да |
 | Parakeet TDT 0.6B v3 (NVIDIA) | CC BY 4.0 | да, с указанием авторов | да, с указанием авторов |
 | Whisper | MIT | да | да |
 | Silero TTS `v4_ru`, `v5_ru` (silero.ai) | CC BY-NC 4.0 (MIT — только `v5_cis_base`) | да, с указанием авторов | нет |

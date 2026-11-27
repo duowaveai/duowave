@@ -15,6 +15,7 @@ yandex-station = ["duowave-ears/yandex-station", "duowave-apps/yandex-station"]
 testing = ["duowave-base/testing", "duowave-rights/testing", "duowave-voice/testing", "duowave-brain/testing", "duowave-ears/testing", "duowave-apps/testing", "dep:tempfile", "dep:minisign"]
 
 [dependencies]
+async-trait.workspace = true
 duowave-base = { path = "../duowave-base" }
 duowave-rights = { path = "../duowave-rights" }
 duowave-voice = { path = "../duowave-voice" }

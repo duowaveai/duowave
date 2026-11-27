@@ -129,3 +129,29 @@
 журнала — откуда реплика (`origin`) и что потратила модель (`tokens`); речевой ответ — не длиннее 600 токенов, вызов,
 обрезанный потолком, модель повторяет короче; агент мастерской кэширует историю (Claude); готовые фразы своим голосом
 лежат запасом (`speech/tts/phrase_cache.rs`, до 20 МБ) — первая фраза строки слоя звучит сразу.
+
+## Thinking behind the door (`crates/duowave-brain/src/thinking/`, plan)
+
+Built 27.11.2026 on the branch `thinking`, beside the audio stage 3; not merged yet.
+
+- **`OurThinking`** implements the door's `Thinking`: a phrase in the door's words, its events (`begun`, `say`,
+  `wait`, `ask`, `hands`, `work`, `follow`, `handoff`, `end`) out, `tell` and `notices`. A turn: the agent it is
+  said to (`agent.rs`), the fast route as one list of steps (`fast.rs`: `answer`, `quick`, `door`, `works`,
+  `assistant`, then the reader), the brain with the card (`card.rs`, `more.rs`) and the rounds' policy
+  (`rounds.rs`).
+- **The switch** (`switch.rs`) stands in front: per phrase ours or the talk layer's stand-in (`TalkThinking`), by the
+  setting `thinking.implementation`; a second agent's Thinking by `to.agent` (`foreign.rs`). The computer's channel,
+  the panel's chat and the station's session talk to it: the station sends plain phrases while the setting gives it
+  ours (`{"station": "ours"}`), else — the default until its checks by hand — its own chain (`DialogThinking`); the
+  brain goes on in the station's request of the journal (`RequestOffers`).
+- **Everything is a setting**: `thinking` (`settings.rs`), one home-wide JSON value with a schema number, `GET`/`PUT
+  /api/v1/thinking/settings`, the hidden developer options. Every number, list, order and variant has its default
+  in code.
+- **The card**: the catalog of groups (`catalog.rs`, `groups.json`), the place's usual tools (`usual.rs`, a part of
+  the sleep), «спросить ещё» (`open`), the hands of the place as tools (`hands.rs`), three deliveries (`append`,
+  `use`, Claude's `deferred`). `all` is live by default; the card runs in shadow beside it.
+- **The turn's line** (`line.rs`) on `requests.thinking`: variants, the card's parts, each round's times and tokens,
+  the first word, the waits, the shadow, «Чутьё»'s answers, what came next. `GET /api/v1/thinking/stats` gives the
+  medians; «Журнал» shows a request's block «Мышление».
+- **«Чутьё»** (`sense.rs`): Thinking's kinds as words steps wrapping today's code; **live voice** (`live.rs`): the
+  same card as a live session's instructions, the pipeline as its fallback.

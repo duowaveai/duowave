@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'preact/hooks';
 
-import { AccessCatalog, ApiError, RequestView, SessionSnapshot, Station, UnsupportedEntry, api, can, problemOf } from '../api';
+import { AccessCatalog, ApiError, RequestView, SessionSnapshot, Station, ThinkingLine, UnsupportedEntry, api, can, problemOf } from '../api';
 import { CAPABILITY_TITLES } from '../capabilities';
 import { tr } from '../i18n';
 import { clock, timeAgo } from '../time';
@@ -9,6 +9,7 @@ import { KIND_WORDS, PLACE_WORDS, STEP_TITLES, answeredBy, feltMs, seconds, stat
 import { byMode } from '../words';
 import { onComputer } from '../voice-input';
 import { moneyOf, seatWord } from './spend';
+import { tokensShort } from './works';
 
 interface Props {
     debug: { sessions: SessionSnapshot[] | null; unsupported: UnsupportedEntry[]; error: ApiError | null };
@@ -100,6 +101,49 @@ function dealMoney(usdMicro: number | undefined, billing: string | undefined): s
     return billing === 'plan' && money.sub ? `${money.main} ${money.sub}` : money.main;
 }
 
+/** Слово словаря по ключу шлюза; ключа в словаре нет — ничего. */
+function wordOf(words: Record<string, string>, key: string | undefined): string | undefined {
+    return key !== undefined && Object.hasOwn(words, key) ? words[key] : undefined;
+}
+
+/**
+ * Блок «Мышление» в подробностях запроса (docs/plans/thinking.md, «The turn's line»). Строкой: карточка в токенах (или
+ * шаг быстрого пути, когда кругов не было), открытые группы, круги, первое слово. Второй строкой, когда есть что:
+ * хватило бы карточки в тени, сколько ждали, что человек сделал потом.
+ */
+function ThinkingLines({ line }: { line: ThinkingLine }) {
+    const rounds = line.rounds ?? [];
+    const parts = line.card?.tokens;
+    const tokens = parts ? parts.tools + parts.stable + parts.changing + parts.history : undefined;
+    const card = tokens !== undefined ? tr.journal.thinkingCard(tokensShort(tokens), tokens) : undefined;
+    // Встроенные группы словами («календарь»), группы приложений и MCP — как их назвал шлюз.
+    const opened = [...new Set(rounds.flatMap((round) => round.opened ?? []))].map((group) => wordOf(tr.journal.thinkingGroups, group) ?? group);
+    const main = [
+        line.fast && !rounds.length ? tr.journal.thinkingFast(line.fast) : card,
+        opened.length ? tr.journal.thinkingOpened(opened.join(', ')) : undefined,
+        rounds.length ? tr.journal.thinkingRounds(rounds.length) : undefined,
+        line.first_word_ms != null ? tr.journal.thinkingFirstWord(seconds(line.first_word_ms)) : undefined,
+    ]
+        .filter(Boolean)
+        .join(' · ');
+    const quiet = [
+        wordOf(tr.journal.thinkingShadow, line.shadow?.find((shadow) => shadow.part === 'card')?.hit),
+        line.waits?.length ? tr.journal.thinkingWaits(line.waits.length) : undefined,
+        wordOf(tr.journal.thinkingNext, line.next?.what),
+    ]
+        .filter(Boolean)
+        .join(' · ');
+    return (
+        <>
+            <li>
+                <b>{tr.journal.thinkingTitle}</b>
+                {main ? ` ${main}` : ''}
+            </li>
+            {quiet && <li>{quiet}</li>}
+        </>
+    );
+}
+
 /** Запрос строкой: время, слова, итог, полоска пути; по нажатию — шаги. И в журнале, и на главной. */
 export function RequestRow({
     request,
@@ -157,8 +201,9 @@ export function RequestRow({
                             {step.what ? ` · ${step.what}` : ''}
                         </li>
                     ))}
+                    {request.thinking && <ThinkingLines line={request.thinking} />}
                     {request.error && <li class="req-error">{request.error}</li>}
-                    {!request.steps.length && !request.error && <li>{tr.journal.noSteps}</li>}
+                    {!request.steps.length && !request.error && !request.thinking && <li>{tr.journal.noSteps}</li>}
                 </ol>
             )}
         </li>

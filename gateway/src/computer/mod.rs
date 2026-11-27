@@ -9,8 +9,8 @@ use axum::Router;
 use tokio::net::TcpListener;
 
 pub use duowave_pc::{
-    calls, capabilities, characters, helpers, home, home_server, mcp, models, placement, platform, settings, speech,
-    stations, voice_lab, works,
+    calls, capabilities, characters, helpers, home, home_server, mcp, models, permissions, placement, platform,
+    settings, speech, stations, voice_lab, works,
 };
 
 use crate::access::AccessService;
@@ -32,6 +32,8 @@ use crate::updates::UpdatesService;
 
 pub mod links;
 pub mod tools;
+/// The computer's own voice channel, wired to the gateway (docs/plans/audio-interface-3.md, part К).
+pub mod voice;
 
 #[cfg(test)]
 mod tests;
@@ -70,9 +72,16 @@ pub struct Computer {
     pub calls: Arc<calls::CallsService>,
     /// The works in folders, the helper's heavy part (works): work folders, agents, work copies, journals of runs.
     pub works: Option<Arc<works::FolderWorks>>,
+    /// Claude Code run by hand as a work system (works/plugs/claude.rs): its sessions, heard by its hooks.
+    pub claude: Option<Arc<works::plugs::claude::ClaudeByHand>>,
     /// What the home asks of this computer (`home::computer::ComputerHome`): its stations, its shop and voice lab,
     /// its link.
     pub home: Arc<home::computer::Computer>,
+    /// The computer's own voice channel (docs/plans/audio-interface-3.md, part К; src/computer/voice.rs), once the app
+    /// gave its audio port.
+    pub voice: std::sync::OnceLock<Arc<crate::channel::VoiceChannel>>,
+    /// Where the ear's sound waits for the word's program (К10, channel/share.rs).
+    pub voice_share: std::sync::OnceLock<u16>,
 }
 
 /// What each step of `App::build` takes of the gateway's base.
@@ -100,6 +109,7 @@ pub struct Building {
     models: Option<Arc<models::ModelsService>>,
     calls: Option<Arc<calls::CallsService>>,
     works: Option<Arc<works::FolderWorks>>,
+    claude: Option<Arc<works::plugs::claude::ClaudeByHand>>,
 }
 
 /// A step's part that an earlier step made.
@@ -336,6 +346,9 @@ impl Building {
         base: &Base<'_>,
         folder_executor: &Arc<crate::talk::folder::FolderExecutor>,
         plugins: &Arc<crate::plugins::PluginHost>,
+        helpers: &Arc<crate::helpers::Helpers>,
+        systems: &Arc<crate::talk::systems::Systems>,
+        mcp: Arc<dyn crate::talk::system::McpCaller>,
     ) {
         let config = base.config;
         let dir = config.plugins.dev_dir.with_file_name("works");
@@ -355,7 +368,67 @@ impl Building {
             base.secrets.clone(),
             base.events.clone(),
         );
+        // Behind the port stands the built-in helper (docs/plans/router-and-works.md, stage 5): its ability `works`. A
+        // new work begins only while the helpers pick this computer for it; the works going on are followed through the
+        // port either way.
+        let builtin = self.builtin.clone().expect(MADE);
+        builtin.set_works(works.clone());
         folder_executor.attach(works.clone());
+        // Our runner is the system `duowave` too (works/system.rs): what the contract asks of every system.
+        systems.add(works::system::DuowaveSystem::new(works.clone()));
+        // Claude Code run by hand (works/plugs/claude.rs): the sessions a person begins in a terminal, quiet until
+        // watched (docs/plans/work-systems.md, stage 3).
+        let program = Arc::downgrade(&works);
+        let claude = Arc::new(works::plugs::claude::ClaudeByHand::new(Arc::new(move || {
+            program.upgrade().and_then(|works| works.claude_program())
+        })));
+        // Its own runs in the works' copies are DuoWave's, not begun outside.
+        claude.ours_under(works.root().to_path_buf());
+        if let Ok(real) = works.root().canonicalize() {
+            claude.ours_under(real);
+        }
+        systems.add(claude.clone());
+        self.claude = Some(claude);
+        // The systems led by the command plug (works/plugs/cards.rs): bb and T3 Code come with DuoWave, each ready
+        // once its program is found; a card from MagicPlace with a block `system` adds one, or takes the place of the
+        // bundled one with its id (docs/plans/work-systems.md, stage 4).
+        {
+            let (find, list) = (Arc::downgrade(&works), Arc::downgrade(&works));
+            let search = config.app.find_systems;
+            let cards = works::plugs::cards::CardSystems::new(
+                systems,
+                Arc::new(move |id: &str, name: &str| {
+                    find.upgrade().and_then(|works| works.program_of(id, name, search))
+                }),
+                Arc::new(move || list.upgrade().map(|works| works.folder_paths()).unwrap_or_default()),
+            );
+            // A verb of a card may be a tool of an MCP server (stage 8): T3 Code stops this way.
+            cards.set_mcp(mcp);
+            let host = Arc::downgrade(plugins);
+            systems.set_refresh(Arc::new(move || {
+                let Some(host) = host.upgrade() else { return };
+                let blocks = host
+                    .agent_cards()
+                    .into_iter()
+                    .filter_map(|(id, title, _, card)| {
+                        let block = card.system?;
+                        Some(works::plugs::cards::CardBlock { id, title, program: card.program.name, block })
+                    })
+                    .collect();
+                cards.sync(blocks);
+            }));
+        }
+        {
+            let (helpers, builtin) = (Arc::downgrade(helpers), Arc::downgrade(&builtin));
+            folder_executor.set_giver(Arc::new(move || {
+                let helpers = helpers.upgrade()?;
+                match helpers.pick(crate::core::helpers::contract::Ability::Works)? {
+                    crate::helpers::Giver::Itself => builtin.upgrade()?.works(),
+                    // A helper over the link does not carry works yet (block В of that plan).
+                    crate::helpers::Giver::Helper(_) => None,
+                }
+            }));
+        }
         // The agents' cards from MagicPlace: only those installed from the catalog (works/agents.rs).
         let host = Arc::downgrade(plugins);
         works.agents.set_cards(Arc::new(move || {
@@ -366,6 +439,13 @@ impl Building {
                 .collect()
         }));
         self.works = Some(works);
+    }
+
+    /// The router's door before each run of a work in a folder (app.rs): the works made above take it.
+    pub fn works_door(&self, door: crate::talk::folder::WorkerDoor) {
+        if let Some(works) = &self.works {
+            works.attach_door(door);
+        }
     }
 
     /// The characters' voices on this computer (characters/voices.rs): the voice lab's, the shop's.
@@ -464,7 +544,10 @@ impl Building {
             models,
             calls: self.calls.expect(MADE),
             works: self.works,
+            claude: self.claude,
             home,
+            voice: std::sync::OnceLock::new(),
+            voice_share: std::sync::OnceLock::new(),
         }
     }
 }
@@ -554,6 +637,10 @@ impl Computer {
     /// Recognition's worker and the own voice's server end with the gateway: the desktop app restarts the gateway
     /// inside its process, and an old gateway's processes must not stay behind with their models.
     pub async fn shutdown(&self) {
+        // The computer's microphone closes before the gateway goes (part К).
+        if let Some(voice) = self.voice.get() {
+            voice.shutdown();
+        }
         if let Some(local) = &self.local_asr {
             local.shutdown().await;
         }
@@ -601,6 +688,8 @@ pub fn attach(app: &Arc<App>) {
     pc.placement.set_centre(Arc::new(move || {
         weak.upgrade().and_then(|app| home::devices::link_centre(&app.pc.home, &Provides::provide(&app)))
     }));
+    // The computer's own ear and voice, when the app gave its audio port (part К).
+    voice::attach(app);
 }
 
 /// The computer's routes: our calls, Windows' reach and the report, the works in folders (folders, agents, runs and
@@ -609,9 +698,11 @@ pub fn routes(routes: Router<Arc<App>>) -> Router<Arc<App>> {
     routes
         .merge(calls::router())
         .merge(platform::windows_net::routes())
+        .merge(permissions::routes::routes())
         .merge(platform::report::routes())
         .merge(works::routes::routes())
         .merge(placement::proxy::routes())
+        .merge(crate::channel::routes::routes())
 }
 
 /// Outermost: the link's door for a proxy on this computer (a plain upgrade to /home/v1/link) — the proxy passes the
@@ -685,6 +776,7 @@ provides! {
     station_connect: Arc<stations::connect::station_connect::StationConnectService>,
     calls: Arc<calls::CallsService>,
     works: Option<Arc<works::FolderWorks>>,
+    claude: Option<Arc<works::plugs::claude::ClaudeByHand>>,
     station_gateway: Arc<placement::watch::StationGateways>,
     moves: Arc<placement::moves::MovesService>,
     clients: Arc<helpers::clients::Clients>,

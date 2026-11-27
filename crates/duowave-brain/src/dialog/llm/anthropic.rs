@@ -153,24 +153,37 @@ fn messages_url(base: &str) -> String {
     }
 }
 
+/// Claude's tool search (BM25 over the deferred tools' names and descriptions), for Thinking's delivery `deferred`.
+pub const TOOL_SEARCH: &str = "tool_search_tool_bm25_20251119";
+pub const TOOL_SEARCH_NAME: &str = "tool_search_tool_bm25";
+
 /// Characters as JavaScript counted them: the cache threshold is the Node gateway's.
 fn js_len(text: &str) -> usize {
     text.encode_utf16().count()
 }
 
 fn body_of(settings: &LlmSettings, request: &LlmRequest, model: &str, haiku: bool) -> Value {
-    let tools: Vec<Value> = request
+    let mut tools: Vec<Value> = request
         .tools
         .iter()
         .map(|tool| {
-            json!({
+            let mut entry = json!({
                 "name": tool.name,
                 "description": tool.description,
                 "input_schema": tool.parameters,
                 "eager_input_streaming": true,
-            })
+            });
+            // Thinking's delivery `deferred`: sent, loaded only when the model finds it.
+            if request.deferred.contains(&tool.name) {
+                entry["defer_loading"] = json!(true);
+            }
+            entry
         })
         .collect();
+    // The search for the deferred tools; at least one tool stays loaded (the search itself counts).
+    if request.tool_search && request.tools.iter().any(|tool| request.deferred.contains(&tool.name)) {
+        tools.push(json!({"type": TOOL_SEARCH, "name": TOOL_SEARCH_NAME}));
+    }
     let tools_chars =
         if request.tools.is_empty() { 0 } else { js_len(&serde_json::to_string(&request.tools).unwrap_or_default()) };
     let mut stable = json!({"type": "text", "text": request.system});
@@ -190,7 +203,9 @@ fn body_of(settings: &LlmSettings, request: &LlmRequest, model: &str, haiku: boo
         mark_last(&mut messages);
     }
     body.insert("messages".into(), Value::Array(messages));
-    body.insert("output_config".into(), json!({"effort": settings.effort}));
+    // A turn before this one spent its whole answer on thinking: this one thinks less.
+    let effort = if request.think_less { "low" } else { settings.effort.as_str() };
+    body.insert("output_config".into(), json!({ "effort": effort }));
     if !tools.is_empty() {
         body.insert("tools".into(), Value::Array(tools));
         if request.tool_choice == ToolChoice::None {
@@ -763,6 +778,7 @@ mod tests {
             explicit,
             headers: BTreeMap::new(),
             tokens_field: Default::default(),
+            reasoning_effort: false,
             access: None,
             api: Default::default(),
             limits: None,
@@ -806,6 +822,21 @@ mod tests {
         assert!(overloaded.is::<Interrupted>() && overloaded.to_string().contains("overloaded_error"), "{overloaded}");
         let refused = events(&llm, request()).await.unwrap_err();
         assert!(!refused.is::<Interrupted>() && refused.to_string().contains("invalid_request_error"), "{refused}");
+    }
+
+    /// A turn before this one spent its whole answer on thinking: this one thinks less than the owner's effort.
+    #[tokio::test]
+    async fn thinks_less_after_a_turn_the_thinking_took_whole() {
+        let server = stub().await;
+        let llm =
+            AnthropicLlm::new(LlmSettings { effort: "high".into(), ..settings(&server.url, true, Some("panel-key")) });
+        let request =
+            |think_less| LlmRequest { system: "s".into(), messages: ask("q"), think_less, ..LlmRequest::default() };
+        let effort = || server.requests.lock().unwrap().last().unwrap().0["output_config"].clone();
+        events(&llm, request(false)).await.unwrap();
+        assert_eq!(effort(), json!({"effort": "high"}));
+        events(&llm, request(true)).await.unwrap();
+        assert_eq!(effort(), json!({"effort": "low"}));
     }
 
     #[tokio::test]
@@ -987,6 +1018,29 @@ mod tests {
         let request = LlmRequest { cache_history: true, ..request };
         let body = body_of(&settings, &request, "claude", false);
         assert_eq!(body["messages"][0]["content"][0]["cache_control"], json!({"type": "ephemeral"}));
+    }
+
+    /// Thinking's delivery `deferred` (docs/plans/thinking.md, §6): the deferred tools are marked and the tool search
+    /// comes with them; without deferred tools there is no search.
+    #[test]
+    fn deferred_tools_are_marked_and_the_search_comes_with_them() {
+        let settings = settings("http://127.0.0.1:9", true, Some("key"));
+        let tool =
+            |name: &str| LlmTool { name: name.into(), description: "d".into(), parameters: json!({"type": "object"}) };
+        let request = LlmRequest {
+            messages: vec![LlmMessage::User("Привет".into())],
+            tools: vec![tool("recall"), tool("set_reminder")],
+            deferred: vec!["set_reminder".into()],
+            tool_search: true,
+            ..LlmRequest::default()
+        };
+        let body = body_of(&settings, &request, "claude", false);
+        assert!(body["tools"][0].get("defer_loading").is_none(), "the card's tool is loaded");
+        assert_eq!(body["tools"][1]["defer_loading"], json!(true));
+        assert_eq!(body["tools"][2], json!({"type": TOOL_SEARCH, "name": TOOL_SEARCH_NAME}));
+        let plain = LlmRequest { deferred: Vec::new(), ..request };
+        let body = body_of(&settings, &plain, "claude", false);
+        assert_eq!(body["tools"].as_array().map(Vec::len), Some(2), "no search without deferred tools");
     }
 
     /// The workshop's «Вдогонку: …» after the tools' results goes in the same turn of the person's side: the turns

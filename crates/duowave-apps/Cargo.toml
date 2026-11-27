@@ -51,7 +51,7 @@ reqwest.workspace = true
 # takes its memory from a block of its own (plugins/quickjs_memory.rs), TLSF inside it (rlsf).
 rquickjs = { version = "0.14.0", default-features = false, features = ["std", "futures", "allocator"] }
 rlsf = "0.2.3"
-rmcp = { version = "3.9.0", default-features = false, features = ["client", "transport-streamable-http-client-reqwest", "reqwest-tls-no-provider", "auth"] }
+rmcp = { version = "3.9.0", default-features = false, features = ["client", "transport-streamable-http-client-reqwest", "reqwest-tls-no-provider", "auth", "elicitation"] }
 rusqlite.workspace = true
 rust-embed.workspace = true
 rustls.workspace = true

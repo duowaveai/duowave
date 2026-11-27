@@ -427,6 +427,7 @@ mod tests {
             explicit: true,
             headers: BTreeMap::new(),
             tokens_field: Default::default(),
+            reasoning_effort: false,
             access: Some(Access(access)),
             api: LlmApi::Responses,
             limits: None,
@@ -502,7 +503,10 @@ mod tests {
             tools: vec![tool()],
             tool_choice: ToolChoice::Auto,
             max_tokens: None,
+            think_less: false,
             cache_history: false,
+            deferred: Vec::new(),
+            tool_search: false,
         };
         let got = events(&llm, request).await.unwrap();
         assert_eq!(got[0], LlmEvent::Text("Сейчас ".into()));

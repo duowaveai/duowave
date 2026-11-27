@@ -51,6 +51,59 @@ pub fn routes<S: crate::works::RouteNeeds>() -> Router<S> {
         .route("/api/v1/works/{id}/runs", get(runs_of))
         .route("/api/v1/works/{id}/runs/{n}/log", get(log))
         .route("/api/v1/works/{id}/runs/{n}/raw", get(raw))
+        .route(super::plugs::plugin::HOOKS_PATH, post(hooks))
+        .route("/api/v1/work-systems/claude-code/plugin", get(plugin))
+}
+
+/// Two keys alike, compared in a time that does not tell how much of them matched.
+fn same(given: &str, expected: &str) -> bool {
+    given.len() == expected.len()
+        && given.bytes().zip(expected.bytes()).fold(0u8, |differ, (a, b)| differ | (a ^ b)) == 0
+}
+
+/// Claude Code's hooks post here (works/plugs/plugin.rs, docs/plans/work-systems.md, stage 3): a session's event,
+/// and the answer is the hook's decision. The system's key stands for a sign-in; a wrong one is refused.
+async fn hooks(
+    Uses(claude): Uses<Option<Arc<super::plugs::claude::ClaudeByHand>>>,
+    Uses(secrets): Uses<Arc<SecretsService>>,
+    headers: axum::http::HeaderMap,
+    Body(input): Body<serde_json::Value>,
+) -> Response {
+    let Some(claude) = claude else { return axum::http::StatusCode::NOT_FOUND.into_response() };
+    let given = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .unwrap_or_default();
+    let expected = secrets.get(super::plugs::plugin::KEY_SECRET).unwrap_or_default();
+    if expected.is_empty() || !same(given, &expected) {
+        return axum::http::StatusCode::UNAUTHORIZED.into_response();
+    }
+    axum::Json(claude.hook(&input, super::plugs::claude::ASK_WAIT).await).into_response()
+}
+
+/// DuoWave's plugin for Claude Code, written now with this system's key and this gateway's port, and the commands
+/// that install and remove it (the person runs them; DuoWave edits nothing of Claude Code's).
+async fn plugin(
+    Uses(works_service): Uses<Option<Arc<crate::works::FolderWorks>>>,
+    Uses(secrets): Uses<Arc<SecretsService>>,
+    Uses(config): Uses<Arc<crate::config::Config>>,
+    caller: Caller,
+) -> ApiResult<super::plugs::plugin::PluginView> {
+    caller.permitted(SETTINGS_EDIT)?;
+    let works = helper(&works_service)?;
+    let key = match secrets.get(super::plugs::plugin::KEY_SECRET).filter(|key| !key.is_empty()) {
+        Some(key) => key,
+        None => {
+            use base64::Engine;
+            let key = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(crate::utils::ids::random_bytes(32));
+            secrets.set(super::plugs::plugin::KEY_SECRET, Some(&key))?;
+            key
+        }
+    };
+    let dir = super::plugs::plugin::dir_of(&works.dir);
+    let view = super::plugs::plugin::write(&dir, config.app.port, &key).map_err(ApiError::internal)?;
+    Ok(ok(view))
 }
 
 /// A folder as the panel shows it: the setting, its branch now and whether git answers there.
@@ -150,6 +203,12 @@ struct StartAsked {
     agent: Option<String>,
     #[serde(default)]
     model: Option<String>,
+    /// The panel's switch of the set (stage 5 of docs/plans/work-systems.md).
+    #[serde(default)]
+    set: Option<String>,
+    /// How our system does it (stage 6): `review`, `plan`; none — at once.
+    #[serde(default)]
+    way: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -176,7 +235,14 @@ async fn start(
     // Typed in the panel: no limit of the works by voice holds it.
     let origin = Origin::computer(Activator::Text).by(caller.principal().map(|principal| principal.name.clone()));
     let lang = talk.lang(crate::talk::COMPUTER);
-    let ask = FolderAsk { folder: id, task: asked.task, agent: asked.agent, model: asked.model };
+    let set = asked.set.map(|set| set.trim().to_string()).filter(|set| !set.is_empty());
+    if let Some(set) = &set {
+        let sets = settings.get(&crate::router::sets::WORK_SETS, None).unwrap_or_default();
+        crate::router::sets::find(&sets, set)
+            .ok_or_else(|| ApiError::field("set", crate::tr!("Такого набора нет.")))?;
+    }
+    let way = super::ways::parse(asked.way.as_deref()).map(str::to_string);
+    let ask = FolderAsk { folder: id, task: asked.task, agent: asked.agent, model: asked.model, set, way };
     let (said, work) = talk
         .start_folder(origin, ask)
         .map_err(|refusal| ApiError::conflict(refusal.for_person(crate::talk::pack::of(lang))))?;

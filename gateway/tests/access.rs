@@ -412,3 +412,60 @@ async fn lists_the_catalog_for_the_editors_and_sets_the_households_voice() {
     assert_eq!(guest, json!({"role": "guest", "restrictions": {"allow": ["use:calls"]}}));
     assert_eq!(gateway.app.access.household.speaker(None).role, Some(duowave::core::identity::Role::Guest));
 }
+
+/// `/mcp/home` (docs/plans/own-agent.md, stage 1): an agent's key with the grants `agent.*` speaks MCP to the home:
+/// its tools by its grants, its own task shown in «Работы» as begun outside. A key without them gets no tool, and a
+/// call of a tool it was not given is refused in words.
+#[tokio::test]
+async fn an_agents_key_speaks_mcp_to_the_home_by_its_grants() {
+    let gateway = Gateway::start(ENV).await;
+    let admin = setup(&gateway, "admin-password-1").await;
+    let key = |grants: Value| {
+        let request = gateway.post("/api/v1/api-keys").signed(&admin);
+        let request = request.json(&json!({"name": "Hermes", "grants": grants}));
+        async move { message(request, StatusCode::CREATED).await["secret"].as_str().unwrap().to_string() }
+    };
+    let rpc = |secret: &str, id: u64, method: &str, params: Value| {
+        let request = gateway.post("/mcp/home").signed(secret);
+        let request = request.json(&json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}));
+        async move {
+            let (code, body) = send(request).await;
+            assert_eq!(code, StatusCode::OK, "{body}");
+            body
+        }
+    };
+    let agent = key(json!(["agent.say", "agent.ask", "agent.notify", "agent.desk"])).await;
+    let begun = rpc(&agent, 1, "initialize", json!({"protocolVersion": "2025-06-18"})).await;
+    assert_eq!(begun["result"]["serverInfo"]["name"], "duowave-home", "{begun}");
+    let tools = rpc(&agent, 2, "tools/list", json!({})).await;
+    let names: Vec<&str> =
+        tools["result"]["tools"].as_array().unwrap().iter().map(|tool| tool["name"].as_str().unwrap()).collect();
+    assert_eq!(names, ["say", "ask_yes_no", "notify", "desk_card", "task_step"]);
+    let card = json!({"name": "desk_card", "arguments": {"task": "t-1", "title": "Билеты в Казань", "line": "цены"}});
+    let shown = rpc(&agent, 3, "tools/call", card).await;
+    assert_eq!(
+        (shown["result"]["content"][0]["text"].as_str(), shown["result"]["isError"].as_bool()),
+        (Some("shown"), Some(false))
+    );
+    let mut found = None;
+    for _ in 0..200 {
+        let works = message(gateway.get("/api/v1/works").signed(&admin), StatusCode::OK).await;
+        found = works.as_array().unwrap().iter().find(|work| work["title"] == "Билеты в Казань").cloned();
+        if found.is_some() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    let work = found.expect("the task in «Работы»");
+    assert_eq!((work["kind"].as_str(), work["outside"].as_bool()), (Some("system"), Some(true)), "{work}");
+
+    // A key with another right: no tools here, and a call is refused in words; no key, no answer.
+    let viewer = key(json!(["station.view"])).await;
+    let none = rpc(&viewer, 4, "tools/list", json!({})).await;
+    assert_eq!(none["result"]["tools"], json!([]));
+    let refused = rpc(&viewer, 5, "tools/call", json!({"name": "say", "arguments": {"text": "x"}})).await;
+    assert_eq!(refused["result"]["isError"], true);
+    assert!(refused["result"]["content"][0]["text"].as_str().unwrap().starts_with("У этого ключа нет права"));
+    let bare = gateway.post("/mcp/home").json(&json!({"jsonrpc": "2.0", "id": 6, "method": "ping"}));
+    assert_eq!(status(bare).await, StatusCode::UNAUTHORIZED);
+}

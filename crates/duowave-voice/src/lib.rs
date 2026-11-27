@@ -8,6 +8,7 @@
 pub use duowave_base::{config, core, locale, operations, platform, secrets, settings, storage, utils};
 pub use duowave_base::{route_needs, tr, ApiError, VERSION};
 
+pub use duowave_door::door;
 pub mod ear;
 pub mod models;
 pub mod speech;

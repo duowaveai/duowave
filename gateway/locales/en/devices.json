@@ -70,5 +70,19 @@
   "Дому отдаются только папки дома.": "Only the home's folders are given to the home.",
   "Этот компьютер не даёт дому флешки: это включают на нём, на странице «Этот компьютер».": "This computer does not give the home its flash drives: it is switched on there, on the «This computer» page.",
   "Флешки этого компьютера дому не видны: он сейчас не дома, на связи не из домашней сети.": "This computer's flash drives are not seen by the home: it is not at home now, online from outside the home network.",
-  "Флешка другого компьютера отсюда только для чтения.": "Another computer's flash drive is read only from here."
+  "Флешка другого компьютера отсюда только для чтения.": "Another computer's flash drive is read only from here.",
+  "Голосовой канал остановлен.": "The voice channel has stopped.",
+  "Нет доступа к микрофону. Разрешите его DuoWave: «Системные настройки» → «Конфиденциальность и безопасность» → «Микрофон».": "No access to the microphone. Allow it for DuoWave: «System Settings» → «Privacy & Security» → «Microphone».",
+  "Слушать некому: «Слух» не настроен. Его выбирают в «Настройки» → «Микрофон».": "There is nobody to listen: «Hearing» is not set up. It is chosen in «Settings» → «Microphone».",
+  "Жду.": "Waiting.",
+  "Компьютер сейчас занят разговором: проверьте чуть позже.": "The computer is in a talk now: check a little later.",
+  "Микрофон не дал звука во время проверки: проверьте доступ к микрофону и повторите.": "The microphone gave no sound during the check: check the access to the microphone and try again.",
+  "У компьютера нет своего голоса: выберите его в «Голос».": "The computer has no voice of its own: choose one in «Voice».",
+  "Проверяю, слышу ли я себя. Раз, два, три.": "Checking whether I hear myself. One, two, three.",
+  "Не получилось ответить. Подробности в пульте.": "I could not answer. The details are in the panel.",
+  "колонка": "the speaker",
+  "У этого шлюза нет уха: компьютер слышит и говорит сам в приложении DuoWave на Mac.": "This gateway has no ear: the computer hears and speaks by itself in the DuoWave app on a Mac.",
+  "Такую клавишу не выбрать: нужно сочетание, например ⌥Пробел (Alt+Space).": "This key cannot be chosen: it needs a combination, for example ⌥Space (Alt+Space).",
+  "звук уха компьютера ещё не готов: попробуйте через секунду": "the computer's ear sound is not ready yet: try again in a second",
+  "Нет такого способа держать клавишу.": "There is no such way to hold the key."
 }

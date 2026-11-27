@@ -17,6 +17,8 @@ silero = ["dep:ort"]
 testing = ["duowave-base/testing"]
 
 [dependencies]
+# The door's spec of a hand: an ear declares its hands with it (ear/hands.rs).
+duowave-door = { path = "../duowave-door" }
 duowave-base = { path = "../duowave-base" }
 anyhow.workspace = true
 axum.workspace = true

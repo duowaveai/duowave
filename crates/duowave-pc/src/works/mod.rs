@@ -1,7 +1,7 @@
 //! The works in folders, the helper's heavy part (docs/plans/router-and-works.md, block A, 6–9): the work folders, the
 //! socket of agents (Claude Code built in), the work copies, the run of a work and its journal. Only in the
-//! computer's build. The rest of the gateway sees it through the port `WorksPort` (talk/folder.rs): until stage 5 the
-//! port is this module itself, in the same program.
+//! computer's build. The rest of the gateway sees it through the port `WorksPort` (talk/folder.rs): since stage 5 it is
+//! the ability `works` of the built-in helper (helpers/builtin.rs) — in the same program, the link does not carry it.
 //!
 //! A work: a copy of the folder on its own branch → the folder's preparation → the agent's run with the task → a
 //! commit if the agent left changes → the branch into the folder → the folder's checks → its end. Notes said on the
@@ -14,9 +14,12 @@ pub mod agents;
 pub mod folders;
 pub mod git;
 pub mod harness;
+pub mod plugs;
 pub mod routes;
 mod runner;
 pub mod runs;
+pub mod system;
+pub mod ways;
 pub mod workspace;
 
 use std::collections::HashMap;
@@ -30,11 +33,12 @@ use serde::Serialize;
 use tokio_util::sync::CancellationToken;
 
 use crate::core::events::{EventBus, GatewayEvent};
+use crate::router::settings::ROUTER_SEATS;
 use crate::secrets::SecretsService;
 use crate::settings::SettingsService;
 use crate::storage::Db;
 use crate::talk::folder::{
-    FolderCheck, FolderDoing, FolderStart, FolderTold, FolderWhy, PortEvent, PortListener, WorksPort,
+    FolderCheck, FolderDoing, FolderStart, FolderTold, FolderWhy, PortEvent, PortListener, WorkerDoor, WorksPort,
 };
 use crate::utils::time::now_ms;
 use harness::claude_code::{ClaudeCode, CLAUDE_CODE};
@@ -46,7 +50,9 @@ crate::route_needs!(
     Arc<crate::settings::SettingsService>,
     Option<Arc<FolderWorks>>,
     Arc<crate::talk::TalkLayer>,
-    Arc<crate::secrets::SecretsService>
+    Arc<crate::secrets::SecretsService>,
+    Option<Arc<plugs::claude::ClaudeByHand>>,
+    Arc<crate::config::Config>
 );
 
 /// A work's record and its journals are kept this long after its end, as the talk's record.
@@ -128,6 +134,32 @@ pub struct Record {
     pub created_at: u64,
     pub updated_at: u64,
     pub ended_at: Option<u64>,
+    /// The model the agent's session was opened with: `""` — the agent's own; none — not known (a work of an older
+    /// gateway: its `model`). Another model is another session.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_model: Option<String>,
+    /// The set its model came from (router/sets.rs, stage 5 of docs/plans/work-systems.md); none — no set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_set: Option<String>,
+    /// How our system does it (works/ways.rs, stage 6): `review`, `plan`; none — at once.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub way: Option<String>,
+    /// «С планом»: the plan the person agreed to.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plan: Option<String>,
+    /// «С проверкой»: `clean`, `fixed:<n>`, or the remarks left.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub review: Option<String>,
+}
+
+impl Record {
+    /// The model its session is on: none — the agent's own.
+    pub fn session_model(&self) -> Option<String> {
+        match &self.session_model {
+            Some(model) => Some(model.clone()).filter(|model| !model.is_empty()),
+            None => self.model.clone(),
+        }
+    }
 }
 
 /// What `checks` keeps as JSON: the checks, whether they were skipped, the changes and the error of handing over.
@@ -136,6 +168,16 @@ pub struct Record {
 struct Kept {
     #[serde(default)]
     checks: Option<Vec<KeptCheck>>,
+    /// The work's set: kept with the rest, as it needs no column of its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    set: Option<String>,
+    /// Its way, its plan, what its review came to (stage 6): kept so too.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    way: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    plan: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    review: Option<String>,
     #[serde(default)]
     skipped: bool,
     #[serde(default)]
@@ -155,12 +197,15 @@ struct KeptCheck {
 }
 
 const COLUMNS: &str = "id, folder, folder_name, agent, model, title, task, branch, base, base_commit, copy, billing, \
-     session, state, why, wait_until, last, checks, committed, fetched, usd_micro, runs, created_at, updated_at, ended_at";
+     session, state, why, wait_until, last, checks, committed, fetched, usd_micro, runs, created_at, updated_at, ended_at, \
+     session_model";
 
 fn record_of(row: &Row<'_>) -> rusqlite::Result<Record> {
     let kept: Kept =
         row.get::<_, Option<String>>(17)?.and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_default();
     let maybe = |value: Option<i64>| value.map(|value| value.max(0) as u64);
+    let model_set = kept.set.clone();
+    let (way, plan, review) = (kept.way.clone(), kept.plan.clone(), kept.review.clone());
     Ok(Record {
         id: row.get(0)?,
         folder: row.get(1)?,
@@ -201,6 +246,11 @@ fn record_of(row: &Row<'_>) -> rusqlite::Result<Record> {
         created_at: row.get::<_, i64>(22)?.max(0) as u64,
         updated_at: row.get::<_, i64>(23)?.max(0) as u64,
         ended_at: maybe(row.get(24)?),
+        session_model: row.get(25)?,
+        model_set,
+        way,
+        plan,
+        review,
     })
 }
 
@@ -221,18 +271,23 @@ fn save(db: &Db, record: &Record) {
         skipped: record.checks_skipped,
         changed: record.changed,
         error: record.error.clone(),
+        set: record.model_set.clone(),
+        way: record.way.clone(),
+        plan: record.plan.clone(),
+        review: record.review.clone(),
     };
     let done = db.with(|c| {
         c.execute(
             &format!(
                 "INSERT INTO folder_works ({COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
-                     ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)
+                     ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26)
                  ON CONFLICT (id) DO UPDATE SET folder_name = excluded.folder_name, model = excluded.model,
                      branch = excluded.branch, base = excluded.base, base_commit = excluded.base_commit,
                      copy = excluded.copy, billing = excluded.billing, session = excluded.session, state = excluded.state,
                      why = excluded.why, wait_until = excluded.wait_until, last = excluded.last, checks = excluded.checks,
                      committed = excluded.committed, fetched = excluded.fetched, usd_micro = excluded.usd_micro,
-                     runs = excluded.runs, updated_at = excluded.updated_at, ended_at = excluded.ended_at"
+                     runs = excluded.runs, updated_at = excluded.updated_at, ended_at = excluded.ended_at,
+                     session_model = excluded.session_model"
             ),
             params![
                 record.id,
@@ -260,6 +315,7 @@ fn save(db: &Db, record: &Record) {
                 record.created_at as i64,
                 record.updated_at as i64,
                 record.ended_at.map(|at| at as i64),
+                record.session_model,
             ],
         )
     });
@@ -273,6 +329,8 @@ pub(crate) struct Going {
     pub(crate) stop: CancellationToken,
     pub(crate) notes: Mutex<Vec<String>>,
     pub(crate) doing: Mutex<Option<FolderDoing>>,
+    /// Its budget grew while it waited on the budget's question: ask the door again.
+    pub(crate) nudge: tokio::sync::Notify,
     /// When the panel last heard a step of it: at most once a second.
     told_at: AtomicU64,
 }
@@ -283,6 +341,7 @@ impl Going {
             stop: CancellationToken::new(),
             notes: Mutex::new(Vec::new()),
             doing: Mutex::new(Some(FolderDoing::Begins)),
+            nudge: tokio::sync::Notify::new(),
             told_at: AtomicU64::new(0),
         })
     }
@@ -306,10 +365,14 @@ pub struct FolderWorks {
     pub(crate) guarded: Vec<PathBuf>,
     events: EventBus,
     going: Mutex<HashMap<String, Arc<Going>>>,
-    listener: RwLock<Option<PortListener>>,
+    /// Who hears its works: the folder executor, and the system `duowave` (works/system.rs).
+    listeners: RwLock<Vec<PortListener>>,
     cancel: CancellationToken,
     /// The gateway is closing: what its stop cuts is interrupted, not stopped — «Продолжить» goes on in the session.
     closing: std::sync::atomic::AtomicBool,
+    /// The router's door before each run: the model and the step of the budget (app.rs). None — the folder's model
+    /// and stage 3's ceiling, as before the door (tests).
+    pub(crate) door: std::sync::OnceLock<WorkerDoor>,
 }
 
 impl FolderWorks {
@@ -349,10 +412,16 @@ impl FolderWorks {
             guarded,
             events,
             going: Mutex::new(HashMap::new()),
-            listener: RwLock::new(None),
+            listeners: RwLock::new(Vec::new()),
             cancel: CancellationToken::new(),
             closing: std::sync::atomic::AtomicBool::new(false),
+            door: std::sync::OnceLock::new(),
         })
+    }
+
+    /// The router's door, from now on asked before each run.
+    pub fn attach_door(&self, door: WorkerDoor) {
+        let _ = self.door.set(door);
     }
 
     /// The cleaning: now, then every six hours — works older than a month with their journals; copies a week after
@@ -389,9 +458,9 @@ impl FolderWorks {
     }
 
     pub(crate) fn tell(&self, event: PortEvent) {
-        let listener = self.listener.read().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
-        if let Some(listener) = listener {
-            listener(event);
+        let listeners = self.listeners.read().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
+        for listener in listeners {
+            listener(event.clone());
         }
     }
 
@@ -409,6 +478,28 @@ impl FolderWorks {
         self.events.emit(GatewayEvent::WorksRun { work: id.to_string(), run, change: change.to_string() });
     }
 
+    /// Where Claude Code's program is now: the path the panel set, else `claude` on the search path.
+    pub fn claude_program(&self) -> Option<std::path::PathBuf> {
+        self.claude.program()
+    }
+
+    /// A work system's program (works/plugs/command.rs): the path set in the panel for its id, else its name on the
+    /// search path — as an agent's is. `search` off (tests): only the path set.
+    pub fn program_of(&self, id: &str, name: &str, search: bool) -> Option<PathBuf> {
+        let paths = self.settings.get(&crate::settings::definitions::HARNESS_PATHS, None).unwrap_or_default();
+        let set = paths.get(id).map(String::as_str).filter(|path| !path.trim().is_empty());
+        match set {
+            Some(path) => harness::find_program(path),
+            None if search => harness::find_program(name),
+            None => None,
+        }
+    }
+
+    /// The work folders' paths now.
+    pub fn folder_paths(&self) -> Vec<String> {
+        folders::list(&self.settings).into_iter().map(|folder| folder.path).collect()
+    }
+
     /// An agent by its id: Claude Code, built in, or one of a card from MagicPlace.
     pub fn harness(&self, agent: &str) -> Option<Arc<dyn Harness>> {
         match agent {
@@ -422,6 +513,18 @@ impl FolderWorks {
         let mut all = vec![self.claude.clone() as Arc<dyn Harness>];
         all.extend(self.agents.list().into_iter().map(|agent| agent as Arc<dyn Harness>));
         all
+    }
+
+    /// The newest works, at most `limit`.
+    pub fn records(&self, limit: usize) -> Vec<Record> {
+        self.db
+            .with(|c| {
+                let mut statement =
+                    c.prepare(&format!("SELECT {COLUMNS} FROM folder_works ORDER BY created_at DESC LIMIT ?1"))?;
+                let rows = statement.query_map(params![limit as i64], record_of)?;
+                rows.collect::<rusqlite::Result<Vec<_>>>()
+            })
+            .unwrap_or_default()
     }
 
     pub fn record(&self, id: &str) -> Option<Record> {
@@ -448,6 +551,11 @@ impl FolderWorks {
                 rows.collect::<rusqlite::Result<Vec<_>>>()
             })
             .unwrap_or_default()
+    }
+
+    /// Where the works' folders are: `<data>/works`.
+    pub fn root(&self) -> &std::path::Path {
+        &self.dir
     }
 
     /// The work's folder: `<data>/works/<id>`.
@@ -542,6 +650,7 @@ impl FolderWorks {
             last: record.last.clone(),
             why: record.why.as_deref().and_then(FolderWhy::parse),
             error: record.error.clone(),
+            review: record.review.clone(),
         }
     }
 }
@@ -551,18 +660,41 @@ impl WorksPort for FolderWorks {
         folders::get(&self.settings, folder).map(|folder| folder.name)
     }
 
+    fn folders(&self) -> Vec<(String, String)> {
+        folders::list(&self.settings).into_iter().map(|folder| (folder.id, folder.name)).collect()
+    }
+
+    fn agents(&self) -> Vec<(String, String)> {
+        self.harnesses().into_iter().map(|agent| (agent.id(), agent.title())).collect()
+    }
+
     fn start(&self, start: FolderStart) -> Result<String, String> {
         let folder = folders::get(&self.settings, &start.folder).ok_or("no such work folder")?;
-        let agent = start
-            .agent
-            .clone()
-            .or(folder.agent.clone())
-            .filter(|agent| !agent.trim().is_empty())
-            .unwrap_or_else(|| CLAUDE_CODE.to_string());
+        // The work's ask, else its folder's, else the seat «Исполнитель» (router_seats), else Claude Code.
+        let seat = self.settings.get(&ROUTER_SEATS, None).unwrap_or_default().worker;
+        let (agent, model) = crate::router::seats::worker_of(
+            (start.agent.as_deref(), start.model.as_deref()),
+            (folder.agent.as_deref(), folder.model.as_deref()),
+            &seat,
+            |agent| self.harness(agent).is_some(),
+        );
         if self.harness(&agent).is_none() {
             return Err(format!("no agent {agent}"));
         }
-        let model = start.model.clone().or(folder.model.clone()).filter(|model| !model.trim().is_empty());
+        // The set (router/sets.rs, stage 5 of docs/plans/work-systems.md): one chosen for this work gives the model
+        // unless the work names one; the folder's set and the home's only give a model nobody named.
+        let sets = self.settings.get(&crate::router::sets::WORK_SETS, None).unwrap_or_default();
+        let set_id =
+            crate::router::sets::chosen(start.set.as_deref(), folder.set.as_deref(), &sets).map(str::to_string);
+        let by_set = set_id
+            .as_deref()
+            .and_then(|id| crate::router::sets::find(&sets, id))
+            .and_then(|set| crate::router::sets::model_of(&set, &agent, crate::router::sets::Tier::Mid));
+        let chosen_here = start.set.is_some() && start.model.is_none();
+        let (model, model_set) = match by_set {
+            Some(by_set) if chosen_here || model.is_none() => (Some(by_set), set_id),
+            _ => (model, None),
+        };
         let now = now_ms();
         let mut record = Record {
             id: self.new_id(),
@@ -593,6 +725,11 @@ impl WorksPort for FolderWorks {
             created_at: now,
             updated_at: now,
             ended_at: None,
+            session_model: None,
+            model_set,
+            way: ways::parse(start.way.as_deref()).map(str::to_string),
+            plan: None,
+            review: None,
         };
         self.keep(&mut record);
         self.spawn(&record.id, start.task, What::Work, start.resume)?;
@@ -644,6 +781,16 @@ impl WorksPort for FolderWorks {
         }
     }
 
+    fn nudge(&self, id: &str) -> bool {
+        match self.going_of(id) {
+            Some(going) => {
+                going.nudge.notify_one();
+                true
+            }
+            None => false,
+        }
+    }
+
     fn told(&self, id: &str) -> Option<FolderTold> {
         self.record(id).map(|record| self.told_of(&record))
     }
@@ -653,7 +800,35 @@ impl WorksPort for FolderWorks {
     }
 
     fn listen(&self, listener: PortListener) {
-        *self.listener.write().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(listener);
+        self.listeners.write().unwrap_or_else(|poisoned| poisoned.into_inner()).push(listener);
+    }
+
+    fn cheaper(&self, id: &str) -> Option<String> {
+        use crate::router::sets;
+        let record = self.record(id)?;
+        let all = self.settings.get(&sets::WORK_SETS, None).unwrap_or_default();
+        let next = sets::cheaper(record.model_set.as_deref().unwrap_or(sets::USUAL))?;
+        let model = sets::model_of(&sets::find(&all, next)?, &record.agent, sets::Tier::Mid)?;
+        (record.model.as_deref() != Some(model.as_str())).then(|| next.to_string())
+    }
+
+    fn switch_set(&self, id: &str, set: &str) -> Result<(), String> {
+        use crate::router::sets;
+        let mut record = self.record(id).ok_or("no such work")?;
+        let all = self.settings.get(&sets::WORK_SETS, None).unwrap_or_default();
+        let found = sets::find(&all, set).ok_or("no such set")?;
+        let model = sets::model_of(&found, &record.agent, sets::Tier::Mid).ok_or("the set does not reach its agent")?;
+        record.model = Some(model);
+        record.model_set = Some(set.to_string());
+        self.keep(&mut record);
+        tracing::info!(target: "works", "work {id}: the set {set}, the model {:?}", record.model);
+        // A work held by a limit goes on now, on the set's model, in a new session.
+        WorksPort::nudge(self, id);
+        Ok(())
+    }
+
+    fn folder_of(&self, id: &str) -> Option<String> {
+        self.record(id).map(|record| record.folder)
     }
 }
 

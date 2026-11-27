@@ -39,7 +39,7 @@
 .onb .onb-x:hover { color: var(--text); }
 
 /* ─── Середина: шаг по центру, прокрутка, если не влез ────────── */
-.onb-main { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; display: flex; padding: 32px 64px; }
+.onb-main { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; display: flex; flex-wrap: wrap; padding: 32px 64px; }
 .onb-main > * { margin: auto; }
 .onb-split { width: 100%; max-width: 1152px; display: flex; align-items: center; justify-content: center; gap: 48px; }
 .onb-col { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; }

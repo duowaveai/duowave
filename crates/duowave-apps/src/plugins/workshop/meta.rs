@@ -163,6 +163,10 @@ pub struct DraftMeta {
     /// a template no agent touched went on the desk as «готово».
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub unchanged: bool,
+    /// The last run ended because the model's thinking took its whole answer again and again (27.11, GLM 5.3): «не
+    /// доделано: модель думала слишком долго», not «ничего не поменялось».
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub overthought: bool,
 }
 
 fn kept() -> bool {
@@ -189,6 +193,7 @@ impl DraftMeta {
             kept: false,
             work: None,
             unchanged: false,
+            overthought: false,
         }
     }
 }

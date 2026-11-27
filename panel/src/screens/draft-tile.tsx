@@ -255,9 +255,11 @@ export function DraftTile({ draft, more }: { draft: DraftView; more: number }) {
                         {stage === 'failed'
                             ? tr.drafts.failedWithNote(draft.meta.note ?? tr.drafts.failedNoteDefault)
                             : stage === 'unfinished'
-                              ? draft.meta.unchanged
-                                  ? tr.drafts.unchangedNote
-                                  : tr.drafts.unfinishedNote
+                              ? draft.meta.overthought
+                                  ? tr.drafts.overthoughtNote
+                                  : draft.meta.unchanged
+                                    ? tr.drafts.unchangedNote
+                                    : tr.drafts.unfinishedNote
                               : stage === 'interrupted'
                                 ? tr.drafts.interruptedNote
                                 : tr.drafts.stoppedNote}

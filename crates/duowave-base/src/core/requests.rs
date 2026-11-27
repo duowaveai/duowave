@@ -141,6 +141,14 @@ pub struct RequestView {
     /// button, the answer to a question, a typed text — the character, who, the device, by voice or in text.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<crate::core::origin::Origin>,
+    /// How Thinking answered it (docs/plans/thinking.md, «The turn's line»): its line, once the turn ended; none for
+    /// a request Thinking did not answer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<serde_json::Value>,
+    /// The request where Thinking thought this phrase when that is another gateway's (a Турбо's phrase thought on its
+    /// hub): the ear keeps the whole trip here, and the panel folds that request into this one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thought_in: Option<String>,
 }
 
 /// The model's spending on one request, every round of its answer summed: in, out, read from the cache, written to
@@ -180,6 +188,46 @@ pub struct RequestStart {
 /// Where sessions start requests (the service, with the mode filled in).
 pub trait RequestStarter: Send + Sync {
     fn begin(&self, start: RequestStart) -> Arc<RequestHandle>;
+}
+
+/// A device's request offered to the Thinking that answers its phrase (docs/plans/thinking.md, «The station behind
+/// the door»): the station opens the journal's request when it hears; the brain, asked to begin one on that device,
+/// goes on in it — one request per phrase, as the station's own chain keeps it.
+#[derive(Default)]
+pub struct RequestOffers(Mutex<std::collections::HashMap<String, Arc<RequestHandle>>>);
+
+impl RequestOffers {
+    fn lock(&self) -> std::sync::MutexGuard<'_, std::collections::HashMap<String, Arc<RequestHandle>>> {
+        self.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    pub fn offer(&self, device: &str, request: Arc<RequestHandle>) {
+        self.lock().insert(device.to_string(), request);
+    }
+
+    /// The request offered on the device, taken once, while it goes on: one nobody took is ended by the station,
+    /// and is nobody's then.
+    pub fn take(&self, device: &str) -> Option<Arc<RequestHandle>> {
+        self.lock().remove(device).filter(|request| request.active())
+    }
+}
+
+/// A request with Thinking's line, as the journal keeps it: when it started, on which device, the line.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LineRow {
+    pub id: String,
+    pub device: String,
+    /// When it started, ms since the epoch.
+    pub at: u64,
+    pub line: serde_json::Value,
+}
+
+/// Where Thinking's lines go and come back from (docs/plans/thinking.md, «The turn's line»): the journal's.
+pub trait RequestLines: Send + Sync {
+    /// The line of a request that ended: written onto it, or written again (what came next).
+    fn line(&self, request: &str, line: &serde_json::Value);
+    /// The lines of the requests started since `since_ms` (on `device` alone, when given), oldest first, at most `limit`.
+    fn lines(&self, since_ms: u64, device: Option<&str>, limit: usize) -> Vec<LineRow>;
 }
 
 /// Long texts are cut: the journal keeps what was said, not a novel the model wrote.
@@ -332,6 +380,10 @@ impl RequestHandle {
     /// with the time it took there.
     pub fn heard_before(&self, by: Place, what: Option<&str>, ms: u64) {
         self.change(|state, _| {
+            // An ear that writes its own steps (the computer's voice channel) heard it in this request already.
+            if state.view.steps.iter().any(|step| step.phase == RequestPhase::Recognize) {
+                return false;
+            }
             let step = RequestStep {
                 phase: RequestPhase::Recognize,
                 at: 0,
@@ -352,6 +404,17 @@ impl RequestHandle {
             state.view.phase = None;
             state.view.partial = None;
             state.view.text = Some(clip(text));
+            true
+        });
+    }
+
+    /// Thinking thought it in another gateway's request (the hub of a Турбо): named here, the panel folds that one.
+    pub fn thought_in(&self, request: &str) {
+        self.change(|state, _| {
+            if request.is_empty() || state.view.thought_in.as_deref() == Some(request) {
+                return false;
+            }
+            state.view.thought_in = Some(request.to_string());
             true
         });
     }
@@ -431,6 +494,12 @@ impl RequestHandle {
         if state.view.status == RequestStatus::Active {
             state.owner = Some(owner);
         }
+    }
+
+    /// The end by one that never claimed it (Thinking, in a request a station opened and offered it): it ends unless
+    /// another claimed it, who ends it then (the station, once its answer is spoken).
+    pub fn finish_unclaimed(&self, status: RequestStatus, error: Option<&str>) {
+        self.finish(status, error, Some(new_owner()));
     }
 
     /// The end: by its last claimant, or by anyone when nobody claimed it or no owner is named (a disconnect).
@@ -552,6 +621,8 @@ mod tests {
             parent: None,
             tokens: None,
             origin: None,
+            thinking: None,
+            thought_in: None,
         };
         let handle = RequestHandle::new(view, hooks.clone(), Arc::new(move || *clock_now.lock().unwrap()));
         Trip { handle, hooks, now }
@@ -732,5 +803,51 @@ mod tests {
             vec![step(RequestPhase::Think, 0, Some(0), Some(Place::Cloud), Some("claude-haiku-5-5"))]
         );
         assert_eq!(t.handle.snapshot().text.as_deref(), Some("Позвони маме"));
+    }
+
+    /// An ear that writes its own steps (the computer's voice channel, 27.11) offers its trip to Thinking: Thinking's
+    /// «heard before» does not add the ear's recognition a second time; Thinking on another gateway is named.
+    #[test]
+    fn an_ear_s_own_recognition_is_not_written_twice_and_thinking_elsewhere_is_named() {
+        let t = trip(None);
+        t.handle.step(RequestPhase::Listen, Some(Place::Own), None);
+        t.handle.step(RequestPhase::Recognize, Some(Place::Own), None);
+        t.handle.heard("который час");
+        t.handle.heard_before(Place::Own, Some("gigaam-v3"), 400);
+        let phases: Vec<RequestPhase> = t.handle.snapshot().steps.iter().map(|step| step.phase).collect();
+        assert_eq!(phases, vec![RequestPhase::Listen, RequestPhase::Recognize]);
+        t.handle.thought_in("hub-7");
+        assert_eq!(t.handle.snapshot().thought_in.as_deref(), Some("hub-7"));
+        // A request Thinking opened itself still gets the ear's step it was given.
+        let alone = trip(Some("который час"));
+        alone.handle.heard_before(Place::Own, Some("gigaam-v3"), 400);
+        assert_eq!(alone.handle.snapshot().steps[0].phase, RequestPhase::Recognize);
+    }
+
+    /// A station's request offered to Thinking: taken once while it goes on; Thinking's end leaves it to the station
+    /// that claimed it, which ends it once its answer is spoken; nobody's claim — Thinking ends it.
+    #[test]
+    fn a_request_offered_to_thinking_is_taken_once_and_ended_by_the_station_that_claimed_it() {
+        let offers = RequestOffers::default();
+        let station = Arc::new(trip(Some("привет")).handle);
+        let answer = new_owner();
+        station.claim(answer);
+        offers.offer("kitchen", station.clone());
+        assert!(offers.take("bedroom").is_none(), "another device's phrase does not take it");
+        let taken = offers.take("kitchen").expect("the brain goes on in the station's request");
+        assert_eq!(taken.id(), station.id());
+        assert!(offers.take("kitchen").is_none(), "taken once");
+        taken.answered("Привет.");
+        taken.finish_unclaimed(RequestStatus::Answered, None);
+        assert!(station.active(), "the station's claim holds: it ends the request once it has spoken");
+        station.finish(RequestStatus::Answered, None, Some(answer));
+        assert!(!station.active());
+        assert_eq!(station.snapshot().answer.as_deref(), Some("Привет."));
+        // A request nobody claimed ends by Thinking; an ended one is not offered again.
+        let alone = Arc::new(trip(None).handle);
+        alone.finish_unclaimed(RequestStatus::Silent, None);
+        assert_eq!(alone.snapshot().status, RequestStatus::Silent);
+        offers.offer("kitchen", alone);
+        assert!(offers.take("kitchen").is_none(), "an ended request is nobody's to go on in");
     }
 }

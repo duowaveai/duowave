@@ -1,7 +1,8 @@
 //! Whether a thought is over (docs/plans/audio-interface-2.md, «К1. Мысль»): the panel records a phrase in pieces, cut
 //! at pauses, and each piece comes back from «Слух» judged — how long to wait for more before the thought is over. The
 //! words that decide it are the household language's lists (words.rs); the numbers are here, in one place, and the
-//! panel takes them from the answer. The station's way of sound takes the same judge (the plan's part С).
+//! panel takes them from the answer. The station's way of sound takes the same judge (the plan's part С), and so does
+//! the computer's own ear (crates/duowave-ears/src/channel): «Чутьё»'s kind `finished`, its words step (mod.rs).
 //!
 //! | Heard | End | Silence to wait after the speech |
 //! |---|---|---|
@@ -115,7 +116,7 @@ fn strip_head(text: &str, words: &Words) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::talk::words;
+    use crate::sense::words;
 
     fn ends(text: &str, code: &str, first: bool) -> (End, u64, String) {
         let thought = judge(text, words::of(code), first);

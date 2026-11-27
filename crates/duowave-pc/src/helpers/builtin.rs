@@ -2,7 +2,8 @@
 //! computer's own program behind the helpers' contract (contract.rs) — its hearing (the recognition engine of this
 //! program, or its recognition server at home), its voice (the own voice's server, the voice lab's voices too), its
 //! models (the model servers of «Мозг» on this computer: Ollama, LM Studio), its Telegram bot, its apps with their
-//! history, and its copy of the catalog. Inside it is still one program; splitting it in two is for later.
+//! history, its copy of the catalog, and the works in work folders (works, `works` — docs/plans/router-and-works.md,
+//! stage 5). Inside it is still one program; splitting it in two is for later.
 //!
 //! Made on every computer's build: `/home/v1` (home_server/serve.rs) answers through it, one answer for every gateway it
 //! helps. A computer that is not in the station role also takes its own parts through it (`Helpers::set_own`): first,
@@ -37,6 +38,7 @@ use crate::speech::tts::own_speech::OwnSpeech;
 use crate::speech::VoiceService;
 use crate::stations::connect::station_connect::{host_interfaces, in_container};
 use crate::storage::Db;
+use crate::talk::folder::WorksPort;
 
 /// How long a look at a model server waits for its port to answer.
 const LOOK: Duration = Duration::from_millis(500);
@@ -117,6 +119,9 @@ pub struct BuiltinHelper {
     routed: AtomicBool,
     /// The contract as last told: a change of it is `helpers.changed {id: "self", change: "contract"}`.
     told: Mutex<Option<Contract>>,
+    /// The works in work folders (works), once made: its ability `works`, behind the port the talk layer's executor
+    /// «папка» speaks to.
+    works: OnceLock<Arc<dyn WorksPort>>,
 }
 
 fn locked<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -181,6 +186,7 @@ impl BuiltinHelper {
             looking: tokio::sync::Mutex::new(()),
             routed: AtomicBool::new(false),
             told: Mutex::new(None),
+            works: OnceLock::new(),
         });
         helper.routed.store(helper.route().is_some(), Ordering::Relaxed);
         helper
@@ -191,6 +197,16 @@ impl BuiltinHelper {
     pub fn attach(&self, late: Arc<dyn LateParts>) {
         let _ = self.late.set(late);
         self.find_addresses();
+    }
+
+    /// The works in work folders join it: from now on it gives `works`.
+    pub fn set_works(&self, works: Arc<dyn WorksPort>) {
+        let _ = self.works.set(works);
+    }
+
+    /// The port of its works in folders, when it has them.
+    pub fn works(&self) -> Option<Arc<dyn WorksPort>> {
+        self.works.get().cloned()
     }
 
     /// What it declares is followed: a change of the voice, of «Мозг», of a connector (the bot), of a server of this
@@ -462,6 +478,16 @@ impl OwnParts for BuiltinHelper {
                 abilities.push(AbilityState::new(Ability::Files, true));
             }
         }
+        if let Some(works) = self.works.get() {
+            // Ready while it has a folder to work in; each agent says at its run whether it is signed in.
+            let folders = works.folders().len();
+            let mut state = AbilityState::new(Ability::Works, folders > 0);
+            let agents: Vec<String> = works.agents().into_iter().map(|(id, _)| id).collect();
+            state.details.insert("agents".into(), json!(agents));
+            state.details.insert("folders".into(), json!(folders));
+            state.details.insert("atOnce".into(), json!(crate::talk::works::FOLDERS_AT_ONCE));
+            abilities.push(state);
+        }
         Contract::new(self.identity(), abilities)
     }
 
@@ -475,6 +501,7 @@ impl OwnParts for BuiltinHelper {
             Ability::Model => self.routed.load(Ordering::Relaxed),
             Ability::Messages => self.late.get().is_some_and(|late| late.messages()),
             Ability::Apps | Ability::History | Ability::Catalog => self.late.get().is_some(),
+            Ability::Works => self.works.get().is_some(),
             _ => false,
         }
     }

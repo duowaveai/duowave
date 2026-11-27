@@ -10,8 +10,8 @@
 import type { JSX } from 'preact';
 import { useEffect, useState } from 'preact/hooks';
 
-import { WorkAnswer, WorkGroup, WorkModel, WorkSpent, WorkView, WorkWait, api, can, problemOf } from '../api';
-import { agentTitle, useHarnesses, useWorkFolders, WorkFoldersPage } from './work-folders';
+import { WorkAnswer, WorkGroup, WorkModel, WorkSpent, WorkView, WorkWait, WorkWay, api, can, problemOf } from '../api';
+import { agentTitle, setTitle, useHarnesses, useWorkFolders, useWorkSets, WorkFoldersPage } from './work-folders';
 import { IconChevronRight } from '../icons';
 import { formatDate, formatNumber, tr } from '../i18n';
 import { usePoll } from '../poll';
@@ -31,6 +31,18 @@ export const WORKS_POLL_MS = 4000;
 // ─── Слова о работе — общие для страницы, работы и виджета ────────────────────────────────────────────────────────
 
 /** Вид работы словами: приложение, инструмент, задача приложения, рабочая папка. */
+/** Система работ словами людей: свои имена, остальные как есть. */
+export function systemTitle(system: string | undefined): string {
+    switch (system) {
+        case 'claude-code':
+            return 'Claude Code';
+        case 'duowave':
+            return 'DuoWave';
+        default:
+            return system ?? tr.router.kindSystem;
+    }
+}
+
 export function kindWord(kind: string): string {
     switch (kind) {
         case 'app':
@@ -41,6 +53,8 @@ export function kindWord(kind: string): string {
             return tr.router.kindTask;
         case 'folder':
             return tr.router.kindFolder;
+        case 'system':
+            return tr.router.kindSystem;
         default:
             return tr.router.kindOther(kind);
     }
@@ -183,7 +197,13 @@ export function ModelChip({ model }: { model?: WorkModel }) {
 }
 
 /** Кнопки ответа на вопрос работы по его виду — те же ответы, что голосом; первая — главная. */
-export function answersOf(work: WorkView): Array<{ answer: WorkAnswer; label: string; danger?: boolean }> {
+export function answersOf(work: WorkView): Array<{ answer: WorkAnswer; label: string; danger?: boolean; to?: string }> {
+    // Вопрос лимита предлагает ещё то, что возможно сейчас (этап 5): набор дешевле, другую систему.
+    const offers = (work.question?.offers ?? []).map((offer) =>
+        offer.kind === 'switch'
+            ? { answer: 'switch' as WorkAnswer, label: tr.router.answerSwitch(offer.title) }
+            : { answer: 'hand' as WorkAnswer, label: tr.router.answerHand(offer.title), to: offer.id },
+    );
     switch (work.question?.kind) {
         case 'ready':
             return [
@@ -218,7 +238,26 @@ export function answersOf(work: WorkView): Array<{ answer: WorkAnswer; label: st
         case 'wait':
             return [
                 { answer: 'yes', label: tr.router.answerWait },
+                ...offers,
                 { answer: 'no', label: tr.router.answerStop, danger: true },
+            ];
+        // Бюджет работы в папке кончился: добавить столько же (и работа идёт дальше) или остановить; без ответа ждёт.
+        case 'budget':
+            return [
+                { answer: 'yes', label: tr.router.answerAddBudget },
+                ...offers,
+                { answer: 'no', label: tr.router.answerStop, danger: true },
+            ];
+        // «С планом»: план готов — делать по нему или не надо.
+        case 'plan':
+            return [
+                { answer: 'yes', label: tr.router.answerDoPlan },
+                { answer: 'no', label: tr.router.answerStop, danger: true },
+            ];
+        case 'permission':
+            return [
+                { answer: 'yes', label: tr.router.answerAllow },
+                { answer: 'no', label: tr.router.answerDeny, danger: true },
             ];
         default:
             return [];
@@ -235,12 +274,12 @@ export function AnswerButtons({ work, onAnswered }: { work: WorkView; onAnswered
     const answers = answersOf(work);
     if (answers.length === 0) return <p class="w-cap m-0">{tr.router.answerAloud}</p>;
     // Ответ шлюза показывает тот, кто перечитывает: на вопрос ответили — работа уходит из «Спрашивает» вместе с кнопками.
-    const answer = (choice: WorkAnswer) => {
+    const answer = (choice: WorkAnswer, to?: string) => {
         setBusy(choice);
         setSaid(null);
         // «Применить» / «Включить» у темы: поставленная — сразу на пульте (shell/theme-apply.ts).
         if (choice === 'yes' && work.face === 'theme' && work.target) takeThemeWhenInstalled(work.target);
-        api.workAnswer(work.id, choice)
+        api.workAnswer(work.id, choice, to)
             .then((reply) => onAnswered(tr.router.answered(reply.said)))
             .catch((e) => {
                 setSaid({ text: problemOf(e), failed: true });
@@ -253,11 +292,11 @@ export function AnswerButtons({ work, onAnswered }: { work: WorkView; onAnswered
             <div class="wk-answer-row">
                 {answers.map((entry, at) => (
                     <button
-                        key={entry.answer}
+                        key={`${entry.answer}${entry.to ?? ''}`}
                         type="button"
                         class={`pill ${entry.danger ? 'pill-error' : at === 0 ? 'pill-own' : ''}`}
                         disabled={busy !== null}
-                        onClick={() => answer(entry.answer)}
+                        onClick={() => answer(entry.answer, entry.to)}
                     >
                         {busy === entry.answer ? '…' : entry.label}
                     </button>
@@ -442,6 +481,9 @@ function NewWork({ onStarted }: { onStarted: (work: WorkView, said: string) => v
     const [folder, setFolder] = useState('');
     const [task, setTask] = useState('');
     const [agent, setAgent] = useState('');
+    const [set, setSet] = useState('');
+    const [way, setWay] = useState<'' | WorkWay>('');
+    const sets = useWorkSets();
     const [busy, setBusy] = useState(false);
     const [problem, setProblem] = useState<string | null>(null);
     // Работа в папках есть только у компьютера: шлюз колонки этих папок не знает.
@@ -452,7 +494,7 @@ function NewWork({ onStarted }: { onStarted: (work: WorkView, said: string) => v
         if (!chosen || !task.trim()) return;
         setBusy(true);
         setProblem(null);
-        api.startFolderWork(chosen.id, task.trim(), agent || undefined)
+        api.startFolderWork(chosen.id, task.trim(), agent || undefined, undefined, set || undefined, way || undefined)
             .then((begun) => {
                 setTask('');
                 onStarted(begun.work, begun.said);
@@ -505,6 +547,27 @@ function NewWork({ onStarted }: { onStarted: (work: WorkView, said: string) => v
                             </select>
                         </label>
                     </div>
+                    <label class="flex flex-col gap-4">
+                        <span class="t-caption">{tr.router.wayLabel}</span>
+                        <select class="field" value={way} onChange={(e) => setWay((e.target as HTMLSelectElement).value as '' | WorkWay)}>
+                            <option value="">{tr.router.wayAtOnce}</option>
+                            <option value="review">{tr.router.wayReview}</option>
+                            <option value="plan">{tr.router.wayPlan}</option>
+                        </select>
+                    </label>
+                    {sets && (
+                        <label class="flex flex-col gap-4">
+                            <span class="t-caption">{tr.router.setLabel}</span>
+                            <select class="field" value={set} onChange={(e) => setSet((e.target as HTMLSelectElement).value)}>
+                                <option value="">{tr.router.setOfFolder(setTitle(sets, chosen?.set ?? sets.default))}</option>
+                                {sets.sets.map((entry) => (
+                                    <option key={entry.id} value={entry.id}>
+                                        {setTitle(sets, entry.id)}
+                                    </option>
+                                ))}
+                            </select>
+                        </label>
+                    )}
                     <label class="flex flex-col gap-4">
                         <span class="t-caption">{tr.router.newWorkTask}</span>
                         <textarea
@@ -579,7 +642,8 @@ function Row({
                 <span class="wk-row-main">
                     <span class="wk-row-title">
                         <b>{work.title}</b>
-                        <span class="wk-kind">{kindWord(work.kind)}</span>
+                        <span class="wk-kind">{work.kind === 'system' ? systemTitle(work.system) : kindWord(work.kind)}</span>
+                        {work.outside && <span class="wk-kind">{tr.router.beganOutside}</span>}
                     </span>
                     {lead && <span class="wk-lead">{lead}</span>}
                     {lines.length > 0 && <span class="wk-meta">{lines.join(' · ')}</span>}

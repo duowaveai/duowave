@@ -125,6 +125,6 @@ pub async fn listen(
         ApiError::bad_gateway(crate::tr!("«Слух» не ответил: {error}", error = format!("{error:#}")))
     })?;
     let first = piece.piece.unwrap_or(1) <= 1;
-    let thought = super::thought::judge(&recognition.text, super::words::household(), first);
+    let thought = crate::sense::home().finished(&recognition.text, None, first);
     Ok(ok(Heard { text: recognition.text, heard: if speech.at_home() { "home" } else { "cloud" }, thought }))
 }

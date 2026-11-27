@@ -118,6 +118,24 @@ export function WorkPage({ id }: { id: string }) {
     );
 }
 
+/** Название системы работ, что умеет показать свою работу у себя («открой»); не умеет или не система — null. */
+function useOpenIn(system: string | undefined): string | null {
+    const [title, setTitle] = useState<string | null>(null);
+    useEffect(() => {
+        setTitle(null);
+        if (!system) return;
+        const abort = new AbortController();
+        api.workSystems(abort.signal)
+            .then(({ systems }) => {
+                const found = systems.find((entry) => entry.id === system);
+                setTitle(found?.can.open ? found.title : null);
+            })
+            .catch(() => undefined);
+        return () => abort.abort();
+    }, [system]);
+    return title;
+}
+
 /** Шапка работы: название и вид, где она, модель и расход, действия и открытый вопрос. */
 function Head({ work, onChanged }: { work: WorkView; onChanged: () => void }) {
     const panel = usePanel();
@@ -135,6 +153,8 @@ function Head({ work, onChanged }: { work: WorkView; onChanged: () => void }) {
     const mayAdd = (work.kind === 'app' && (going || queued || work.group === 'asking')) || folder;
     // «Продолжить» — работе в папке, которую прервали, остановили или которая не доделана: та же сессия агента.
     const mayGoOn = folder && ['interrupted', 'stopped', 'unfinished', 'failed'].includes(work.state);
+    // «Открыть в bb»: работу системы — в ней самой, её командой на компьютере, где она стоит (проверка руками 27.11).
+    const openIn = useOpenIn(work.system);
     const act = (job: () => Promise<{ said: string }>) => {
         setBusy(true);
         setSaid(null);
@@ -199,7 +219,7 @@ function Head({ work, onChanged }: { work: WorkView; onChanged: () => void }) {
                     />
                 </div>
             )}
-            {(going || queued || mayAdd || mayGoOn) && !noteOpen && (
+            {(going || queued || mayAdd || mayGoOn || openIn) && !noteOpen && (
                 <div class="wk-actions">
                     {(going || queued) && (
                         <button type="button" class="pill" disabled={busy} onClick={() => void stop()}>
@@ -209,6 +229,11 @@ function Head({ work, onChanged }: { work: WorkView; onChanged: () => void }) {
                     {mayGoOn && (
                         <button type="button" class="pill pill-own" disabled={busy} onClick={() => act(() => goOn(work, (id) => panel.go('works', id)))}>
                             {tr.router.goOn}
+                        </button>
+                    )}
+                    {openIn && (
+                        <button type="button" class="pill" disabled={busy} onClick={() => act(() => api.workDo(work.id, 'show'))}>
+                            {tr.router.openIn(openIn)}
                         </button>
                     )}
                     {mayAdd && (
@@ -511,7 +536,7 @@ function Deals({ work }: { work: WorkView }) {
 // ─── «Где» ──────────────────────────────────────────────────────────────────────────────────────────────────────
 
 /** «Скопировать» у пути и имени: путь черновика открывают в терминале или редакторе. */
-function CopyButton({ text }: { text: string }) {
+export function CopyButton({ text }: { text: string }) {
     const [done, setDone] = useState(false);
     const copy = () =>
         void navigator.clipboard

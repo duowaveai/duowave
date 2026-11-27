@@ -255,7 +255,8 @@ impl Executor for WorkshopExecutor {
     fn facts<'a>(&'a self, work: &'a Work) -> BoxFuture<'a, Facts> {
         Box::pin(async move {
             let Some(draft) = work.target.as_deref() else { return Facts::default() };
-            let unchanged = self.workshop.card(draft).unchanged;
+            let card = self.workshop.card(draft);
+            let (unchanged, overthought) = (card.unchanged, card.overthought);
             let failure = self.workshop.activity().failure(draft);
             let host = self.workshop.host();
             let installed = host.installed(draft).is_some();
@@ -303,10 +304,11 @@ impl Executor for WorkshopExecutor {
                         installed,
                         ready: true,
                         unchanged,
+                        overthought,
                         failure,
                     }
                 }
-                Err(_) => Facts { needs, installed, unchanged, failure, ..Facts::default() },
+                Err(_) => Facts { needs, installed, unchanged, overthought, failure, ..Facts::default() },
             }
         })
     }

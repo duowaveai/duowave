@@ -30,6 +30,7 @@ const en: Translation<typeof ru> = {
     stoppedShort: 'stopped',
     unfinishedNote: 'Not finished: the check did not pass, or the work ran into its limit. It can go on.',
     unfinishedShort: 'not finished',
+    overthoughtNote: 'Not finished: the model thought too long and wrote no code. You can go on.',
     unchangedNote: 'Nothing changed: the agent finished without touching the draft. Say what should be done.',
     unchangedShort: 'nothing changed',
     editing: (text: string) => `Change: ${text}`,

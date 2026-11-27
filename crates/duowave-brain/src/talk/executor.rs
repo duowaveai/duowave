@@ -72,6 +72,8 @@ pub struct Facts {
     pub ready: bool,
     /// Its last run changed nothing: «ничего не поменялось», not «не доделано».
     pub unchanged: bool,
+    /// Its last run ended because the model's thinking took its whole answer again: «не доделано», and why.
+    pub overthought: bool,
     /// Its last run failed so: the model's error as the log has it (a key out of money, a key refused). The station
     /// names a plain cause in its «не получилось» (19.11: OpenAI's 429 «no credits» was only «подробности в пульте»).
     pub failure: Option<String>,
@@ -99,6 +101,14 @@ pub enum Put {
     },
     Parked,
     Deleted,
+    /// A work system's work, opened in the system itself: its command run on the computer it lives on.
+    InSystem {
+        system: String,
+    },
+    /// A work system that cannot show its works from here.
+    NoOpen {
+        system: String,
+    },
 }
 
 /// Who put a thing on the desk by voice, for the audit: the device it was said to.
@@ -175,6 +185,12 @@ pub trait Executor: Send + Sync {
     fn put<'a>(&'a self, work: &'a Work, end: End, by: ByVoice) -> BoxFuture<'a, Result<Put, String>>;
     /// Stops the work; false when nothing went on.
     fn stop(&self, work: &Work) -> bool;
+    /// Stops the work and waits for the word of whoever runs it: false — nothing to stop there, an error — why it did
+    /// not stop, in its words (a work system's refusal, the hand check of 27.11). By default as `stop`.
+    fn stop_waiting<'a>(&'a self, work: &'a Work) -> BoxFuture<'a, Result<bool, String>> {
+        let stopped = self.stop(work);
+        Box::pin(async move { Ok(stopped) })
+    }
     /// Whether it is at the work's thing now; None when it cannot tell (the layer then believes the record).
     fn running(&self, _work: &Work) -> Option<bool> {
         None
@@ -187,6 +203,23 @@ pub trait Executor: Send + Sync {
     fn told(&self, _work: &Work) -> Option<Told> {
         None
     }
+    /// The person answered the question the work's own system asks (a permission): yes or no, by voice or by a tap.
+    fn answer_question(&self, _work: &Work, _yes: bool, _by_voice: bool) -> Result<(), NotAnswered> {
+        Err(NotAnswered::Gone)
+    }
+    /// Who leads the work, as people hear it: a work system's title («Claude Code»); None — the executor itself.
+    fn who(&self, _work: &Work) -> Option<String> {
+        None
+    }
+}
+
+/// Why an answer to a system's question was not taken.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotAnswered {
+    /// Nothing waits for it now.
+    Gone,
+    /// It is marked dangerous: only a tap approves it (D3 of docs/plans/work-systems.md).
+    Dangerous,
 }
 
 /// The MCP servers' background tools as the talk asks them (src/mcp/talk_work.rs, a floor above): whether a paid run

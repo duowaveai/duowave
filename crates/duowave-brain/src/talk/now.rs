@@ -242,7 +242,7 @@ fn face_of(work: &Work, words: &super::pack::WorkWords) -> &'static str {
     if matches!(work.kind.as_str(), super::works::TOOL | super::works::TASK) {
         return words.background.face;
     }
-    if work.kind == super::works::FOLDER {
+    if matches!(work.kind.as_str(), super::works::FOLDER | super::works::SYSTEM) {
         return words.folder.face;
     }
     work.face.map(|face| words.faces[face.index()]).unwrap_or(words.faces[0])
@@ -264,11 +264,14 @@ mod tests {
             kind: "app".into(),
             face: Some(Face::Widget),
             executor: "workshop".into(),
+            system: None,
             target: Some(format!("golos-{id}")),
             title: title.into(),
             state,
             brief: "я учу испанский, дай мне виджет со словами дня, и чтобы знакомые подсвечивались".into(),
             again: false,
+            outside: false,
+            watched: false,
             notes: Vec::new(),
             result: None,
             question: None,
@@ -355,5 +358,13 @@ mod tests {
         let text = block(pack::of(Lang::Ru), &Sources { works: &works, doing: &doing, desk: &desk, door: true, now });
         assert!(tokens(&text) <= BUDGET, "{} tokens: {text}", tokens(&text));
         assert!(text.contains("[р45]") && text.contains("[р41]"), "the works going on stay: {text}");
+    }
+
+    #[test]
+    fn a_work_is_touched_last_where_its_last_phrase_came_from() {
+        let mut started = work("7", "Курс валют", WorkState::Working, 10 * MIN, None);
+        assert_eq!(crate::talk::ready::touched_on(&started), "kitchen", "nothing after its start");
+        started.notes.push(note_of("и ещё юань", Origin::computer(crate::talk::Activator::Button), 12 * MIN));
+        assert_eq!(crate::talk::ready::touched_on(&started), crate::talk::COMPUTER, "«и ещё…» at the desk");
     }
 }

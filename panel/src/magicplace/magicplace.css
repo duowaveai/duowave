@@ -96,6 +96,15 @@
 }
 .mp-tile-actions { margin-top: auto; display: flex; flex-wrap: wrap; gap: 6px; }
 
+/* Каталог ещё читается: заготовки плиток, мерцают. */
+.mp-ghost { min-height: 150px; animation: mp-ghost 1.4s ease-in-out infinite; }
+.mp-ghost:hover { border-color: var(--glass-border); }
+.mp-ghost-icon { width: 44px; height: 44px; border-radius: 12px; background: var(--track, rgba(127, 127, 127, 0.22)); }
+.mp-ghost-bar { display: block; height: 12px; border-radius: 999px; background: var(--track, rgba(127, 127, 127, 0.22)); }
+.mp-ghost-bar.is-thin { height: 8px; }
+@keyframes mp-ghost { 0%, 100% { opacity: 0.55; } 50% { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .mp-ghost { animation: none; } }
+
 /* «Ещё 3 — здесь не пойдут. Показать». */
 .mp-more {
     align-self: flex-start;

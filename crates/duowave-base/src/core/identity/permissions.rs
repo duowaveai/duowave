@@ -33,6 +33,11 @@ pub const PERMISSIONS: &[(&str, &str)] = &[
         "home.models",
         "Пользоваться моделями этого компьютера — распознаванием, голосом, моделью: так хаб на колонке берёт их у домашнего сервера",
     ),
+    // The home line `/mcp/home` (docs/plans/own-agent.md, stage 1): what an agent's key may do in the home.
+    ("agent.say", "Агенту: говорить вслух через колонку"),
+    ("agent.ask", "Агенту: спрашивать «да или нет» голосом"),
+    ("agent.notify", "Агенту: писать на телефон"),
+    ("agent.desk", "Агенту: показывать свои дела в «Работах»"),
 ];
 
 pub const STATION_VIEW: &str = "station.view";
@@ -55,6 +60,10 @@ pub const MEMORY_VIEW: &str = "memory.view";
 pub const MEMORY_MANAGE: &str = "memory.manage";
 pub const SYSTEM_UPDATE: &str = "system.update";
 pub const HOME_MODELS: &str = "home.models";
+pub const AGENT_SAY: &str = "agent.say";
+pub const AGENT_ASK: &str = "agent.ask";
+pub const AGENT_NOTIFY: &str = "agent.notify";
+pub const AGENT_DESK: &str = "agent.desk";
 
 /// The use of a capability: by voice through the router, or as the model's tool.
 pub fn use_of(capability: CapabilityName) -> String {

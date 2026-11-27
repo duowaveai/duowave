@@ -117,6 +117,9 @@ pub struct HealthStatus {
     /// Where the gateway runs (src/placement): its role, placement, the station's space and memory, its home server.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub placement: Option<Value>,
+    /// The computer hears and speaks by itself (src/channel): its app gave the gateway an ear.
+    #[serde(rename = "voiceChannel", skip_serializing_if = "Option::is_none")]
+    pub voice_channel: Option<bool>,
 }
 
 /// The parts of /health that modules ported apart know. Each defaults to None (left out of the answer).
@@ -151,6 +154,10 @@ pub trait HealthSources: Send + Sync {
     }
     /// `{routes, implemented, served, unsupported}` (src/skills), asked only in gateway mode.
     fn skills(&self) -> Option<Value> {
+        None
+    }
+    /// Whether the computer hears and speaks by itself (src/channel).
+    fn voice_channel(&self) -> Option<bool> {
         None
     }
 }
@@ -227,6 +234,7 @@ impl HealthStatusService {
             station: first(&sources, |s| s.station()),
             skills: if mode == "gateway" { first(&sources, |s| s.skills()) } else { None },
             placement: placement.map(|source| source.health()),
+            voice_channel: first(&sources, |s| s.voice_channel()),
         }
     }
 }

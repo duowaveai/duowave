@@ -67,6 +67,7 @@ export default {
     /** Договор 3 (docs/plans/turbo-devices.md): что подключено к компьютеру и его папка DuoWave. */
     abilityDevices: 'Устройства',
     abilityFiles: 'Папки',
+    abilityWorks: 'Работы',
     aboutHearing: 'распознаёт, что сказали',
     /** Без «голосов лаборатории»: шлюзу другой семьи Турбо даёт только обычный голос (Silero, Piper). */
     aboutVoice: 'говорит своим голосом',
@@ -77,6 +78,7 @@ export default {
     aboutCatalog: 'каталог приложений, когда у хаба нет интернета',
     aboutDevices: 'что к нему подключено: клавиатура, экран, флешки',
     aboutFiles: 'его папка DuoWave: фото, документы',
+    aboutWorks: 'работы в его папках: bb, T3 Code, Claude Code и DuoWave',
     withoutTitle: (name: string) => `Что брать у «${name}»`,
     withoutAbout: 'Выключенное хаб возьмёт у следующего Турбо или в облаке.',
     takeFrom: 'Брать у него',

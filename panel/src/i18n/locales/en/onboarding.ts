@@ -14,6 +14,7 @@ const en: Translation<typeof ru> = {
     stepOf: (n: number, all: number) => `${n} of ${all}`,
     steps: {
         password: 'Password',
+        allow: 'Permissions',
         answer: 'Who answers',
         where: 'Where',
         brain: 'Who answers',

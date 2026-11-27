@@ -89,7 +89,7 @@ default = ["pc", "wasm", "yandex-station"]
 yandex-station = ["duowave-ears/yandex-station", "duowave-apps/yandex-station", "duowave-home/yandex-station", "duowave-pc?/yandex-station"]
 # Everything that builds from source: the station connect over SSH, local model servers, the voice lab, calls.
 # MCP servers as programs on this computer (npx, uvx) too.
-pc = ["dep:duowave-pc", "duowave-pc/pc", "dep:libc"]
+pc = ["dep:duowave-pc", "duowave-pc/pc", "dep:libc", "duowave-ears/computer-ear"]
 # The build for the station itself: none of the PC parts; mimalloc in place of musl's allocator (src/main.rs).
 station = ["yandex-station", "duowave-base/station", "duowave-rights/station", "duowave-voice/station", "duowave-brain/station", "duowave-ears/station", "duowave-apps/station", "duowave-home/station", "dep:mimalloc", "dep:libmimalloc-sys"]
 # Recognition on this computer itself (src/speech/asr/local): GigaAM, Parakeet and Whisper as GGUF through

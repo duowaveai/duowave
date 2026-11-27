@@ -455,10 +455,20 @@ impl MemoryService {
     /// The memory's block for a character's prompt, in the prompt's language: the wake-up and how to use the memory
     /// tools offered in this answer (`offered`: their names). Empty when the memory is off and nothing is offered.
     pub fn prompt(&self, lang: Lang, offered: &[&str]) -> String {
+        self.prompt_as(lang, offered, None)
+    }
+
+    /// The same, as a character sees it: its own layer and the home's records it may see (docs/plans/thinking.md,
+    /// §11). None — the home's character.
+    pub fn prompt_as(&self, lang: Lang, offered: &[&str], character: Option<&str>) -> String {
         if !self.enabled() {
             return String::new();
         }
-        let items = self.wake_up(&self.viewer());
+        let viewer = match character {
+            Some(id) => Viewer { character: Some(id.to_string()), ..self.viewer() },
+            None => self.viewer(),
+        };
+        let items = self.wake_up(&viewer);
         let ids: Vec<String> = items.iter().map(|item| item.id.clone()).collect();
         if !ids.is_empty() {
             let _ = self.db.with(|c| store::prompted(c, &ids));

@@ -343,6 +343,12 @@ const post = <T>(path: string, body: unknown = {}) => call<T>('POST', path, body
 const put = <T>(path: string, body: unknown) => call<T>('PUT', path, body);
 const patch = <T>(path: string, body: unknown) => call<T>('PATCH', path, body);
 const del = <T>(path: string) => call<T>('DELETE', path);
+/**
+ * Ухо приложения живёт у шлюза этого компьютера (docs/plans/audio-interface-3.md, «К5»): и в окне колонки (`?via=`,
+ * компьютер — Турбо колонки) его зовут мимо прохода — у колонки уха нет.
+ */
+const ear = <T>(method: 'GET' | 'PUT' | 'POST', path: string, body?: unknown) =>
+    VIA ? ownCall<T>(method, path, body) : call<T>(method, path, body);
 
 export type Executor = 'own' | 'yandex' | 'unsupported';
 
@@ -869,6 +875,31 @@ export interface HomeVoice {
     provider: 'own' | 'mixed' | 'yandex' | 'none';
 }
 
+/** Разрешение системы для приложения DuoWave на этом компьютере (docs/plans/permissions.md). */
+export type PermissionItem = 'localNetwork' | 'microphone' | 'firewall' | 'networkProfile';
+/** `notAsked` — система ещё не спрашивала; `unknown` — не прочитать, считается разрешённым. */
+export type PermissionState = 'granted' | 'denied' | 'notAsked' | 'unknown';
+/** Что делает кнопка строки: вопрос системы (macOS), её настройки, разрешение брандмауэра (одно окно UAC). */
+export type PermissionAction = 'ask' | 'open' | 'allowFirewall';
+
+export interface PermissionRow {
+    item: PermissionItem;
+    state: PermissionState;
+    action?: PermissionAction;
+    /** Сети, о которых строка «Общедоступная сеть». */
+    networks?: string[];
+}
+
+/** `GET /api/v1/permissions`: разрешения этого компьютера. Без приложения DuoWave (сервер, колонка) — пусто. */
+export interface PermissionsView {
+    os: 'mac' | 'windows' | 'linux';
+    /** Шлюз запущен приложением DuoWave на компьютере. */
+    app: boolean;
+    /** Пульт открыт на самом этом компьютере: только тогда кнопки что-то открывают. */
+    here: boolean;
+    items: PermissionRow[];
+}
+
 /** `GET /api/v1/system/windows-network`: на Windows — что закрывает компьютер для колонки; иначе `windows: false`. */
 export interface WindowsNetworkView {
     windows: boolean;
@@ -1087,7 +1118,7 @@ export interface PlacementView {
 // ─── Помощники (docs/plans/home-and-helpers.md, блок 1) ───────────────────────────────────────────────────────────
 
 /** Что помощник даёт: умения договора 1 и договора 3 — устройства и папки компьютера (docs/plans/turbo-devices.md). */
-export type Ability = 'hearing' | 'voice' | 'model' | 'messages' | 'apps' | 'history' | 'catalog' | 'devices' | 'files';
+export type Ability = 'hearing' | 'voice' | 'model' | 'messages' | 'apps' | 'history' | 'catalog' | 'devices' | 'files' | 'works';
 /** Где помощник, как это говорит человек: дома, мой сервер, облако. */
 export type HelperKind = 'home' | 'own' | 'cloud';
 /** off — выключен в списке; self — это сам этот шлюз; twin — тот же помощник, что выше в списке. */
@@ -1479,6 +1510,12 @@ export interface WorkView {
     kind: string;
     face?: DraftFace;
     executor: string;
+    /** Система работ, что её ведёт (docs/plans/work-systems.md): `claude-code`, `bb`; нет — свой исполнитель. */
+    system?: string;
+    /** Начата не здесь, в самой системе руками: тихая, пока за ней не следят. */
+    outside?: boolean;
+    /** «Следи за этой»: её конец говорится вслух. */
+    watched?: boolean;
     /** Своё имя вещи у исполнителя: черновик мастерской. */
     target?: string;
     title: string;
@@ -1501,10 +1538,12 @@ export interface WorkView {
         text: string;
         until: number;
         /** `wait` — работу в рабочей папке держит лимит подписки: подождать или остановить. */
-        kind?: 'ready' | 'unfinished' | 'apply' | 'delete' | 'more' | 'wait';
+        kind?: 'ready' | 'unfinished' | 'apply' | 'delete' | 'more' | 'wait' | 'budget' | 'permission' | 'plan';
         askedAt?: number;
         outcome?: 'answered' | 'declined' | 'silent';
         reminded?: boolean;
+        /** Что ещё вопрос лимита предлагает: набор дешевле, другую систему. */
+        offers?: WorkOffer[];
     };
     origin: TalkOrigin;
     /** Когда итог прозвучал до конца; нет — ещё не сказан. */
@@ -1558,11 +1597,79 @@ export interface WorkSpent {
 }
 
 /** Ответ на вопрос работы кнопкой — тот же, что голосом: «да», «примерить», «нет», «в черновики», «подробнее». */
-export type WorkAnswer = 'yes' | 'fit' | 'no' | 'park' | 'details';
+export type WorkAnswer = 'yes' | 'fit' | 'no' | 'park' | 'details' | 'switch' | 'hand';
+
+/** Ещё один ответ вопроса лимита (docs/plans/work-systems.md, этап 5): перейти на набор дешевле, передать другой системе. */
+export interface WorkOffer {
+    kind: 'switch' | 'hand';
+    id: string;
+    title: string;
+}
+
+/** Набор моделей (router/sets.rs): ступени low, mid, high по агенту или системе; работа идёт на mid. */
+export interface ModelSet {
+    id: string;
+    title: string;
+    models: Record<string, { low?: string; mid?: string; high?: string }>;
+    bundled?: boolean;
+}
+
+/** Наборы: все, что есть (три с DuoWave и свои), свои, набор дома по умолчанию. */
+export interface SetsView {
+    sets: ModelSet[];
+    default?: string;
+    own: ModelSet[];
+}
+
+/** Что система работ умеет (talk/system.rs `Can`). */
+export interface SystemCan {
+    start: boolean;
+    list: boolean;
+    steps: boolean;
+    tellNow: boolean;
+    tellAfter: boolean;
+    stop: boolean;
+    questions: boolean;
+    result: boolean;
+    places: boolean;
+    open: boolean;
+}
+
+/** Система работ (docs/plans/work-systems.md): кто она, что умеет, готова ли. */
+export interface WorkSystemView {
+    id: string;
+    title: string;
+    names: string[];
+    plug: string;
+    protocol?: string;
+    version?: string;
+    can: SystemCan;
+    ready: { ready: boolean; why?: string };
+}
+
+/** Кому поручать работы: система дома по умолчанию и своя у папки (id папки → id системы); нет — DuoWave. */
+export interface WorkSystemsSetup {
+    default?: string;
+    folders?: Record<string, string>;
+}
+
+/** Как наша система делает работу (docs/plans/work-systems.md, этап 6): с проверкой или с планом; нет — сразу. */
+export type WorkWay = 'review' | 'plan';
+
+/** Ответ на «Что поручать …?»: все работы, работы в её проектах, только когда назову. */
+export type AssignMode = 'all' | 'places' | 'named';
+
+/** Плагин DuoWave для Claude Code (works/plugs/plugin.rs): где лежит, чем поставить, чем убрать. */
+export interface ClaudePluginView {
+    dir: string;
+    install: string[];
+    remove: string[];
+}
 
 /**
  * Рабочая папка (docs/plans/router-and-works.md, этап 3): папка с git на этом компьютере, где агент делает работы — у
- * каждой своя рабочая копия и своя ветка. `agent` и `model` пусто — место «Исполнитель»; `maxUsd` — потолок запуска;
+ * каждой своя рабочая копия и своя ветка. `agent` и `model` пусто — место «Исполнитель»; `maxUsd` — бюджет одной работы в
+ * долларах (этап 2 роутера; полный бюджет — `budget`);
  * `prepare` — подготовка свежей копии, `checks` — проверки после агента, `allow` — что агенту можно без вопроса.
  */
 export interface WorkFolderView {
@@ -1572,6 +1679,8 @@ export interface WorkFolderView {
     kind: string;
     agent?: string;
     model?: string;
+    /** Набор моделей папки; нет — набор дома. */
+    set?: string;
     maxUsd?: number;
     prepare: string[];
     checks: string[];
@@ -1587,6 +1696,8 @@ export interface WorkFolderInput {
     path?: string;
     agent?: string;
     model?: string;
+    /** Набор моделей папки; пусто — без своего набора. */
+    set?: string;
     maxUsd?: number;
     prepare?: string[];
     checks?: string[];
@@ -1991,6 +2102,117 @@ export interface RequestView {
     tokens?: RequestTokens;
     /** Откуда фраза: чем открыта, кто, где. */
     origin?: TalkOrigin;
+    /** Как ответило «Мышление», когда ход кончился; нет — отвечало не оно (или шлюз постарше). */
+    thinking?: ThinkingLine;
+    /** The request on another gateway where Thinking thought this phrase (a Турбо's phrase thought on its hub): this trip
+     * is the whole question, that one is folded into it. */
+    thoughtIn?: string;
+}
+
+/**
+ * Строка хода «Мышления» (docs/plans/thinking.md, «The turn's line»): варианты, карточка, круги модели, первое слово,
+ * ожидания, тень и что человек сделал потом. Ключи — как их пишет шлюз, snake_case. Слов фразы в ней нет: они в
+ * самом запросе.
+ */
+export interface ThinkingLine {
+    v: number;
+    /** Метка настроек, с которыми шёл ход: числа до правки и после не смешиваются. */
+    settings: string;
+    variants: { thinking: string; card: string; rounds: string; delivery: string };
+    /** Вид устройства (`station`, `computer`…) и слышен ли ответ. */
+    kind: string;
+    voice: boolean;
+    /** Кому сказано, как это узнали (`by`), кто ответил (`as`). */
+    agent: { to?: string | null; by: string; as?: string | null };
+    /** Шаг быстрого пути, который взял фразу. */
+    fast?: string | null;
+    card?: ThinkingCard;
+    rounds?: ThinkingRound[];
+    provider?: string;
+    model?: string;
+    /** От фразы до первого `say`, готового для речи. */
+    first_word_ms?: number;
+    budget_ms?: number;
+    waits?: Array<{ why: string; expect_ms?: number; at_ms: number }>;
+    end: string;
+    ms: number;
+    /** Что человек сделал потом: `cut`, `repeated`, `answered`, `not_that`, `next`, `quiet`. */
+    next?: { after_ms: number; what: string; heard_chars?: number };
+    shadow?: ThinkingShadow[];
+    /** Ответы «Чутья» за этот ход. */
+    sense?: Array<{ kind: string; pick?: string; by: string; ms: number; shadow?: string }>;
+}
+
+/** Карточка первого круга: её части в токенах (оценка), группы каталога, инструменты, выбранные группы и откуда выбор. */
+export interface ThinkingCard {
+    tokens: { tools: number; stable: number; changing: number; history: number };
+    groups?: number;
+    tools?: number;
+    picked?: string[];
+    /** `words`, `journal`, `sense`. */
+    from?: string[];
+}
+
+/** Круг модели: время, первый токен, токены, вызванные инструменты и открытые группы. */
+export interface ThinkingRound {
+    ms: number;
+    first_ms?: number;
+    in: number;
+    out: number;
+    cache_read?: number;
+    cache_write?: number;
+    calls?: string[];
+    /** Группы, что модель открыла сама (`open`): `calendar`, `app:<id>`, `mcp:<id>`. */
+    opened?: string[];
+    recall?: number;
+    tools?: number;
+    /** Последний круг: только слова. */
+    words?: boolean;
+}
+
+/** Вариант в тени: что он сделал бы рядом с живым. У карточки `hit`, `miss` или `none`. */
+export interface ThinkingShadow {
+    part: string;
+    variant: string;
+    tokens?: number;
+    tools?: string[];
+    hit: string;
+    decisions?: string[];
+}
+
+/**
+ * Настройка «Мышления» (docs/plans/thinking.md, «Everything is a setting»): как она действует сейчас (по умолчанию там,
+ * где ничего не задано), значения по умолчанию, метка, которую несут строки ходов, и схема, которую читает этот шлюз.
+ */
+export interface ThinkingSettingsView {
+    settings: Record<string, unknown>;
+    defaults: Record<string, unknown>;
+    mark: string;
+    schema: number;
+}
+
+/**
+ * Числа строк ходов «Мышления» (docs/plans/thinking.md, «Numbers for decisions»): медианы первого слова, кругов и
+ * карточки, доли от 0 до 1. Нет значения — не из чего считать. `fast` — сколько ходов взял каждый шаг быстрого пути,
+ * `tools` — вызванные инструменты, частые первыми, `settings` — ходы по метке настроек.
+ */
+export interface ThinkingStats {
+    turns: number;
+    /** Ходы, на которые ответил мозг; остальные взял быстрый путь. */
+    brain: number;
+    firstWordMs?: number;
+    rounds?: number;
+    cardTokens?: number;
+    cacheShare?: number;
+    hitRate?: number;
+    missesPer100?: number;
+    cutShare?: number;
+    repeatedShare?: number;
+    notThatShare?: number;
+    waitsPer100?: number;
+    fast: Record<string, number>;
+    tools: Array<[string, number]>;
+    settings: Record<string, number>;
 }
 
 /** Как колонку слышно: голосовой канал, её собственные клиенты (микрофон, звонки) или никак. */
@@ -2044,7 +2266,70 @@ export type LiveMessage =
     | { type: 'request'; request: RequestView }
     | { type: 'presence'; presence: StationPresence }
     | { type: 'changed'; name: string; subject?: string; change?: string }
-    | { type: 'station'; station: string; message?: LiveMessage };
+    | { type: 'station'; station: string; message?: LiveMessage }
+    | LiveVoice;
+
+/** Что делает ухо приложения этого компьютера (этап 3 аудиоинтерфейса, «К2»): для полосы. */
+export type AppVoiceState = 'quiet' | 'listening' | 'recognizing' | 'thinking' | 'speaking' | 'window';
+
+/** Сообщение живого канала об ухе приложения: состояние, уровень, причина окна, сколько ждать, отложенная мысль. */
+export interface LiveVoice {
+    type: 'voice';
+    device: string;
+    state: AppVoiceState;
+    level?: number;
+    why?: 'question' | 'work' | 'ready' | 'barge';
+    wait?: number;
+    request?: string;
+    parked?: string;
+}
+
+/** Ухо приложения сейчас (`GET /api/v1/talk/voice` → `state`). */
+export interface VoiceView {
+    state: AppVoiceState;
+    why?: string;
+    wait?: number;
+    request?: string;
+    parked?: string;
+    note?: string;
+}
+
+/**
+ * Голос компьютера (этап 3, «К5»): есть ли у шлюза ухо приложения (`port`), этот ли пульт на этом компьютере
+ * (`here`), клавиша для всех программ и занята ли она, выключатели и итог проверки эха.
+ */
+export interface TalkVoiceView {
+    port: boolean;
+    here: boolean;
+    state: VoiceView;
+    key: string;
+    keyTaken: boolean;
+    sounds: boolean;
+    bargeIn: boolean;
+    strip: boolean;
+    word: boolean;
+    echo?: { ok: boolean; at: number };
+    cancelsEcho: boolean;
+    access?: 'granted' | 'denied' | 'unknown';
+    busy: boolean;
+    wordApp: boolean;
+    /** How the key drives a thought (Handy's three modes, 27.11). */
+    activation?: KeyActivation;
+    /** A tapped thought ends by itself when the person is done (on by default). */
+    autoEnd?: boolean;
+}
+
+export type KeyActivation = 'hold_or_toggle' | 'push_to_talk' | 'toggle';
+
+export interface TalkVoiceChange {
+    sounds?: boolean;
+    bargeIn?: boolean;
+    strip?: boolean;
+    word?: boolean;
+    key?: string;
+    activation?: KeyActivation;
+    autoEnd?: boolean;
+}
 
 export interface UnsupportedEntry {
     at: string;
@@ -2069,7 +2354,7 @@ export interface AsrCard {
     description: string;
     badge?: string;
     license?: string;
-    /** Советуем: показывается в панели «Советуем» (GigaAM v3). */
+    /** Советуем: показывается в панели «Советуем» (GigaAM v4 на сервере распознавания, v3 на компьютере). */
     recommended?: boolean;
     active: boolean;
     pending: boolean;
@@ -2363,6 +2648,24 @@ export interface AgentCard {
     model: { choose: boolean; via: string };
     resume?: string;
     asks?: boolean;
+    /** Блок системы работ (docs/plans/work-systems.md, «The system card»): какая команда что делает. */
+    system?: SystemBlock;
+}
+
+/** Блок `system` карточки: глаголы — команды программы; пульт показывает по ним, что система умеет. */
+export interface SystemBlock {
+    plug: string;
+    contract?: number;
+    names?: Record<string, string[]>;
+    ready?: { run: string[] };
+    places?: { run: string[] };
+    start?: { run: string[] };
+    list?: { run: string[] };
+    status?: { run: string[] };
+    tell?: { run: string[]; when?: Record<string, string> };
+    stop?: { run: string[] };
+    result?: { run: string[] };
+    open?: { run: string[] };
 }
 
 /** Пакет, который стоит на шлюзе (GET /api/v1/packages), любого вида. */
@@ -2877,6 +3180,8 @@ export interface DraftMeta {
     work?: string | null;
     /** Последний запуск ничего не поменял (`unfinished`): «ничего не поменялось», а не «готово». */
     unchanged?: boolean;
+    /** The last run ended because the model's thinking took its whole answer again: «не доделано», and why. */
+    overthought?: boolean;
 }
 
 /** Что начал `make`: черновик, его лицо и название на сейчас (агент может переименовать). */
@@ -3384,6 +3689,8 @@ export interface CatalogView {
     packages: CatalogEntry[];
     /** Дополнительные ленты, которые называет главная, по порядку, потом свои источники (шлюз постарше их не знает). */
     feeds?: CatalogSource[];
+    /** Картинки и звуки ещё докачиваются: шлюз отдал список, не дождавшись их, — спросить снова чуть позже. */
+    previewsComing?: boolean;
 }
 
 /** Голос персонажа: готов, нужна модель, ставится, не пойдёт здесь, говорит запасной или голоса нет вовсе. */
@@ -4061,6 +4368,14 @@ export const api = {
     setEgressCustom: (hosts: string[]) => put<EgressView>('/api/v1/egress/custom', { hosts }),
     egressSeen: () => post<{ seen: boolean }>('/api/v1/egress/seen', {}),
     talkInput: () => get<VoiceInputSetting>('/api/v1/talk/input'),
+    // Голос компьютера: ухо и голос приложения (этап 3 аудиоинтерфейса).
+    talkVoice: () => ear<TalkVoiceView>('GET', '/api/v1/talk/voice'),
+    setTalkVoice: (change: TalkVoiceChange) => ear<TalkVoiceView>('PUT', '/api/v1/talk/voice', change),
+    voicePress: () => ear<{ state: VoiceView }>('POST', '/api/v1/talk/voice/press', {}),
+    voiceRelease: (heldMs: number) => ear<{ state: VoiceView }>('POST', '/api/v1/talk/voice/release', { heldMs }),
+    voiceStop: () => ear<{ state: VoiceView }>('POST', '/api/v1/talk/voice/stop', {}),
+    voiceCheck: () => ear<{ ok: boolean; heard: string }>('POST', '/api/v1/talk/voice/check', {}),
+    voicePanel: () => ear<{ state: VoiceView }>('POST', '/api/v1/talk/voice/panel', {}),
     setTalkInput: (input: VoiceInput) => put<VoiceInputSetting>('/api/v1/talk/input', { input }),
     // Колонка
     sessions: () => get<SessionSnapshot[]>('/api/v1/station/sessions'),
@@ -4224,6 +4539,20 @@ export const api = {
         return get<{ requests: RequestView[]; keepDays: number }>(`/api/v1/requests${search ? `?${search}` : ''}`);
     },
     keepRequests: (days: number) => put<{ days: number }>('/api/v1/requests/keep', { days }),
+    /**
+     * Настройка «Мышления» (docs/plans/thinking.md, «Everything is a setting»): целиком или частью, `{}` — снова как по
+     * умолчанию. Действует со следующей фразы. Тому, кому можно менять настройки шлюза.
+     */
+    thinkingSettings: () => get<ThinkingSettingsView>('/api/v1/thinking/settings'),
+    setThinkingSettings: (settings: Record<string, unknown>) => put<ThinkingSettingsView>('/api/v1/thinking/settings', settings),
+    /** Числа строк ходов за последние 14 дней: только голос или только текст, один вариант карточки или кругов. По праву на журнал. */
+    thinkingStats: (query: { mode?: 'voice' | 'text'; variant?: string } = {}, signal?: AbortSignal) => {
+        const params = new URLSearchParams();
+        if (query.mode) params.set('mode', query.mode);
+        if (query.variant) params.set('variant', query.variant);
+        const search = params.toString();
+        return get<ThinkingStats>(`/api/v1/thinking/stats${search ? `?${search}` : ''}`, signal);
+    },
     updateStation: (device: string, change: { status?: Station['status']; name?: string; model?: string | null; color?: string | null; sticker?: boolean | null }) =>
         patch<Station>(`/api/v1/stations/${encodeURIComponent(device)}`, change),
     // Подключение колонки из пульта (gateway/src/stations/connect)
@@ -4231,8 +4560,15 @@ export const api = {
     /** port — на какой порт колонка пойдёт, если адрес шлюза введён без порта: порт самого шлюза. */
     /** `whyNone` — ничего не нашлось на Windows: что на этом компьютере может закрывать поиск (брандмауэр, общедоступная сеть). */
     /** `homes` — DuoWave на компьютерах и серверах, что объявляют себя (`_duowave._tcp`, этап 6 плана home-setup-flow). */
-    discoverStations: () =>
-        get<{ stations: FoundStation[]; homes?: FoundStation[]; gateway?: string[]; port?: number; whyNone?: string }>('/api/v1/stations/connect/discover'),
+    /**
+     * `asked` — поиск начал человек (шаг «Где», подключение колонки, «Искать снова»). Без него, пока новый Mac ещё не
+     * спрашивал про домашнюю сеть, шлюз отвечает пустым списком и в сеть не идёт: окно macOS — только после шага
+     * «Разрешения» (docs/plans/permissions.md). Карточки, что ищут сами (стол), его не ставят.
+     */
+    discoverStations: (asked = false) =>
+        get<{ stations: FoundStation[]; homes?: FoundStation[]; gateway?: string[]; port?: number; whyNone?: string }>(
+            `/api/v1/stations/connect/discover${asked ? '?asked=1' : ''}`,
+        ),
     /** Подключённые колонки, которые всё ещё ходят на прежний порт этого компьютера: шлюз с тех пор сменил порт. */
     movedGateway: () => get<MovedGateway[]>('/api/v1/stations/connect/moved'),
     /** Windows: профиль сети, брандмауэр и правила для DuoWave — что мешает колонке и другим достучаться до компьютера. */
@@ -4243,6 +4579,16 @@ export const api = {
     developerReport: () => get<{ text: string }>('/api/v1/system/report'),
     /** Windows: одно разрешение DuoWave в брандмауэре для частной сети — Windows спросит права на экране компьютера. */
     allowWindowsFirewall: () => ownCall<WindowsNetworkView>('POST', '/api/v1/system/windows-network/allow', {}),
+    /** Разрешения этого компьютера (docs/plans/permissions.md): всегда шлюзу этого компьютера, мимо прохода. */
+    permissions: () => ownCall<PermissionsView>('GET', '/api/v1/permissions'),
+    /** Вопрос самой системы (macOS): локальная сеть или микрофон. Ответ человека придёт в списке позже. */
+    askPermission: (item: PermissionItem) => ownCall<PermissionsView>('POST', `/api/v1/permissions/${item}/ask`, {}),
+    /** Настройки системы на нужной странице; на Mac — с окном-подсказкой рядом. */
+    openPermission: (item: PermissionItem, guide: boolean) =>
+        ownCall<PermissionsView>('POST', `/api/v1/permissions/${item}/open`, { guide }),
+    /** Окно-подсказка рядом с «Системными настройками»: показать или закрыть. */
+    permissionGuide: (item: PermissionItem, show: boolean) =>
+        ownCall<{ shown: boolean }>('POST', `/api/v1/permissions/${item}/guide`, { show }),
     /** «Безопасность Windows» на странице, где Smart App Control: решает человек, шлюз ничего не меняет. */
     openWindowsSecurity: () => ownCall<{ opened: boolean }>('POST', '/api/v1/system/windows-security/open', {}),
     /** `password` — свой пароль root колонки, когда пустой не подошёл: шлюз хранит его зашифрованным, только если подошёл. */
@@ -4533,8 +4879,11 @@ export const api = {
     worksIn: (groups: WorkGroup[], signal?: AbortSignal) =>
         get<WorkView[]>(`/api/v1/works${groups.length ? `?group=${groups.join(',')}` : ''}`, signal),
     /** Ответ на вопрос работы кнопкой — тот же, что голосом. Ничего не спрашивает — 409. */
-    workAnswer: (id: string, answer: WorkAnswer) =>
-        post<{ said: string }>(`/api/v1/works/${encodeURIComponent(id)}/do`, { action: 'answer', answer }),
+    workAnswer: (id: string, answer: WorkAnswer, to?: string) =>
+        post<{ said: string }>(`/api/v1/works/${encodeURIComponent(id)}/do`, { action: 'answer', answer, to }),
+    /** Наборы моделей для работ: все, свои и набор дома. */
+    workSets: (signal?: AbortSignal) => get<SetsView>('/api/v1/work-sets', signal),
+    setWorkSets: (sets: { default?: string; own: ModelSet[] }) => put<SetsView>('/api/v1/work-sets', sets),
     /**
      * «Расход» (docs/plans/router-and-works.md, этап 6б): итоги суточных строк по `by` за дни `from`–`to`
      * (`ГГГГ-ММ-ДД`, по UTC, оба включены). Только администратору.
@@ -4568,10 +4917,19 @@ export const api = {
     updateWorkFolder: (id: string, folder: WorkFolderInput) => put<WorkFolderView>(`/api/v1/work-folders/${encodeURIComponent(id)}`, folder),
     removeWorkFolder: (id: string) => del<{ ok: boolean }>(`/api/v1/work-folders/${encodeURIComponent(id)}`),
     /** «Новая работа» в папке: сразу или в очереди — одна работа в папках за раз. */
-    startFolderWork: (folder: string, task: string, agent?: string, model?: string) =>
-        post<{ said: string; work: WorkView }>(`/api/v1/work-folders/${encodeURIComponent(folder)}/start`, { task, agent, model }),
+    /** `way`: как делать (этап 6) — `review` с проверкой, `plan` с планом; нет — сразу. */
+    startFolderWork: (folder: string, task: string, agent?: string, model?: string, set?: string, way?: WorkWay) =>
+        post<{ said: string; work: WorkView }>(`/api/v1/work-folders/${encodeURIComponent(folder)}/start`, { task, agent, model, set, way }),
     /** Агенты: Claude Code и поставленные карточки — найден ли, версия, вошёл ли. */
     harnesses: (signal?: AbortSignal) => get<{ harnesses: HarnessView[] }>('/api/v1/harnesses', signal),
+    /** Плагин DuoWave для Claude Code: записан заново, с командами поставить и убрать. */
+    claudePlugin: () => get<ClaudePluginView>('/api/v1/work-systems/claude-code/plugin'),
+    /** Системы работ: наша, Claude Code в терминале, bb, T3 Code и системы карточек. */
+    workSystems: (signal?: AbortSignal) => get<{ systems: WorkSystemView[] }>('/api/v1/work-systems', signal),
+    workSystemsSetup: (signal?: AbortSignal) => get<WorkSystemsSetup>('/api/v1/work-systems/setup', signal),
+    setWorkSystemsSetup: (setup: WorkSystemsSetup) => put<WorkSystemsSetup>('/api/v1/work-systems/setup', setup),
+    assignWorkSystem: (id: string, mode: AssignMode) =>
+        put<WorkSystemsSetup>(`/api/v1/work-systems/${encodeURIComponent(id)}/assign`, { mode }),
     setClaudeCode: (change: ClaudeCodeChange) => put<HarnessView>('/api/v1/harnesses/claude-code', change),
     /** Где программа агента карточки; пусто — искать по имени. */
     setAgentPath: (id: string, path: string) => put<HarnessView>(`/api/v1/harnesses/${encodeURIComponent(id)}`, { path }),

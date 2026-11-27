@@ -94,8 +94,14 @@ async fn work_said(Uses(parts): Uses<Parts>, caller: Caller, Path(id): Path<Stri
 }
 
 /// The panel's person on the computer, typing.
+/// A text typed or a button pressed in the panel: who, and their role (a system's question takes only the admin's
+/// answer, docs/plans/work-systems.md, D3).
 fn typed(caller: &Caller) -> Origin {
-    Origin::computer(Activator::Text).by(caller.principal().map(|principal| principal.name.clone()))
+    let origin = Origin::computer(Activator::Text);
+    match caller.principal() {
+        Some(principal) => origin.of(principal),
+        None => origin,
+    }
 }
 
 async fn work_notes(
@@ -130,7 +136,15 @@ async fn work_do(
             "no" => Answer::No,
             "park" => Answer::Park,
             "details" => Answer::Details,
-            _ => return Err(ApiError::field("answer", crate::tr!("ответ — yes, fit, no, park или details"))),
+            // A limit's question (stage 5 of docs/plans/work-systems.md): a cheaper set, another system (`to`).
+            "switch" => Answer::Switch,
+            "hand" => Answer::HandTo { to: body.get("to").and_then(Value::as_str).unwrap_or_default().to_string() },
+            _ => {
+                return Err(ApiError::field(
+                    "answer",
+                    crate::tr!("ответ — yes, fit, no, park, details, switch или hand"),
+                ))
+            }
         };
         let said = talk
             .answer_work(typed(&caller), &id, answer)
@@ -509,18 +523,27 @@ fn turn_of(body: &Value) -> Result<Turn, ApiError> {
         heard,
         voice: body.get("voice").and_then(Value::as_bool) == Some(true),
         fresh: body.get("fresh").and_then(Value::as_bool) == Some(true),
+        tools: crate::skills::tools::ToolsKind::Conversation,
     })
 }
 
 async fn talk(
     Uses(parts): Uses<Parts>,
+    Uses(thinking): Uses<Arc<crate::thinking::OurThinking>>,
     caller: Caller,
     headers: HeaderMap,
     Body(body): Body<Value>,
 ) -> Result<Response, ApiError> {
     let principal = caller.permitted(&use_of(CapabilityName::Chat))?.clone();
     let turn = turn_of(&body)?;
-    let mut talk = super::begin(&parts, &principal, turn)?;
+    // Through the door to ours when the setting says so for the panel's computer (docs/plans/thinking.md, M4).
+    let place = crate::thinking::settings::Where::of(crate::door::Kind::Computer, turn.voice);
+    let ours = thinking.settings().implementation(place) == crate::thinking::settings::Implementation::Ours;
+    let mut talk = if ours && parts.dialog.enabled() {
+        crate::thinking::panel::talk(&thinking, &principal, &turn)
+    } else {
+        super::begin(&parts, &principal, turn)?
+    };
     let stream = headers
         .get(header::ACCEPT)
         .and_then(|accept| accept.to_str().ok())

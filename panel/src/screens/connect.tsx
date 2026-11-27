@@ -391,7 +391,7 @@ export function ConnectSheet({
 
     useEffect(() => {
         let live = true;
-        api.discoverStations()
+        api.discoverStations(true)
             .then((result) => {
                 if (!live) return;
                 setFound(result.stations);
@@ -511,7 +511,7 @@ export function ConnectSheet({
                             <AllowFirewall
                                 onAllowed={() =>
                                     void api
-                                        .discoverStations()
+                                        .discoverStations(true)
                                         .then((result) => {
                                             setFound(result.stations);
                                             setWhyNone(result.whyNone ?? null);

@@ -393,6 +393,7 @@ impl Workshop {
             kept: true,
             work,
             unchanged: false,
+            overthought: false,
         };
         self.keep_card(&id, card, Some("made"))?;
         tracing::info!(target: "plugins", "workshop: {} asked to make {id} ({})", match by { By::Voice => "a station", By::Panel => "the panel" }, kind.word());

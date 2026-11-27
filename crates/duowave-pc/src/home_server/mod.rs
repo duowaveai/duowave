@@ -13,6 +13,8 @@ use crate::platform::http::{ok, ApiResult, Caller};
 
 pub mod devices;
 pub mod serve;
+/// `/home/v1/systems/call`: this computer's work systems for the hub (docs/plans/work-systems.md, stage 9).
+pub mod systems;
 pub mod voice_plan;
 
 crate::route_needs!(
@@ -39,7 +41,8 @@ crate::route_needs!(
     Arc<crate::home::turbo_devices::HouseDevices>,
     Arc<crate::settings::SettingsService>,
     Arc<crate::bus::Bus>,
-    Arc<crate::midi::MidiService>
+    Arc<crate::midi::MidiService>,
+    Arc<crate::talk::systems::Systems>
 );
 
 /// The home server's routes with the computer's own: `/home/v1` and «Что даю колонке».
@@ -47,7 +50,10 @@ pub fn router<S>() -> axum::Router<S>
 where
     S: crate::home_server::RouteNeeds + duowave_home::home_server::RouteNeeds,
 {
-    duowave_home::home_server::router::<S>().merge(serve::router()).route("/api/v1/home-server/served", get(served))
+    duowave_home::home_server::router::<S>()
+        .merge(serve::router())
+        .merge(systems::router())
+        .route("/api/v1/home-server/served", get(served))
 }
 
 /// The helper's «Что даю колонке»: how many times and how fast it gave the station hearing, voice and the model

@@ -250,9 +250,18 @@ pub struct LlmRequest {
     /// agent writes files (WORKSHOP_MAX_TOKENS), a spoken answer is short (SPEECH_MAX_TOKENS). The ChatGPT plan sends
     /// no limit at all.
     pub max_tokens: Option<u32>,
+    /// Think less than the model's default for this request: a turn before it spent its whole answer on thinking.
+    /// DuoWave's chat sends `reasoning_effort: "low"` (its `duowave-smart`, GLM 5.3, thinks at `high` by default and
+    /// its thinking counts within `max_tokens`), Claude its effort `low`; the other clients do not read it.
+    pub think_less: bool,
     /// Cache the history as well as the stable instructions: Claude marks the last message too, so the next round of
     /// a long run reads all before it from the cache. The other clients do not read it.
     pub cache_history: bool,
+    /// Tools sent but loaded only when the model finds them (Thinking's delivery `deferred`, docs/plans/thinking.md,
+    /// §6): Claude marks them `defer_loading` and gets its tool search tool (`tool_search`). The other clients offer
+    /// them as any tool.
+    pub deferred: Vec<String>,
+    pub tool_search: bool,
 }
 
 /// A turn cut off by its output limit in the middle of a tool call. The call is not run: its input is cut short.
@@ -361,6 +370,9 @@ pub struct LlmSettings {
     /// Extra request headers a provider needs (YandexGPT's folder).
     pub headers: BTreeMap<String, String>,
     pub tokens_field: TokensField,
+    /// The service takes `reasoning_effort` in a chat request (DuoWave's: `high`, `low` or `max`, nothing else). Other
+    /// compatible servers may refuse a field they do not know (OpenAI's own, for a model that does not reason).
+    pub reasoning_effort: bool,
     /// The bearer from a sign-in, taken fresh before each request, in place of `api_key`.
     pub access: Option<Access>,
     /// /chat/completions or /responses, for an OpenAI-kind provider.
@@ -398,6 +410,7 @@ impl LlmSettings {
             model: config.model.clone(),
             models: config.models.clone(),
             tokens_field: tokens_field_for(base_url.as_deref().unwrap_or(OPENAI_BASE_URL)),
+            reasoning_effort: false,
             base_url,
             api_key,
             max_tokens: config.max_tokens,

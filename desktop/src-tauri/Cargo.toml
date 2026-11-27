@@ -1,6 +1,6 @@
 [package]
 name = "duowave-desktop"
-version = "0.19.2"
+version = "0.20.0"
 description = "The voice gateway in the tray: runs the gateway (the Rust engine, crate duowave, inside the app) and shows its panel"
 edition = "2021"
 publish = false
@@ -30,12 +30,31 @@ dirs = "7"
 tauri-plugin-notification = "2"
 # «Подключить папку…»: the system's window to pick a folder for the home folder's Connected.
 tauri-plugin-dialog = "2"
+# The key «Сказать» from any program (src/hotkey.rs; docs/plans/audio-interface-3.md, «К4»): pressed — the computer
+# listens, let go after holding — the thought ends. No «Универсальный доступ» needed on a Mac.
+tauri-plugin-global-shortcut = "2"
 
 [dev-dependencies]
 tempfile = "3"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+# The computer's own ear and voice (src/audio_port.rs; docs/plans/audio-interface-3.md, «К3»): AVAudioEngine with the
+# system's voice processing — the echo cancelling FaceTime and Zoom use — and its player node, so the cancelling knows
+# what we play; Core Audio for «the microphone is held by another program». The objc2 family Tauri already pulls in:
+# no C to build, no bindgen.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = "0.3"
+objc2-avf-audio = "0.3"
+objc2-core-audio = "0.3"
+objc2-core-audio-types = "0.3"
+block2 = "0.6"
+# The guide window beside System Settings (src/guide.rs): the window server's list of windows. Both are in the tree
+# already (Tauri's).
+core-graphics = "0.25"
+core-foundation = "0.10"
 
 # Thin LTO over the default codegen units: the app's dependency tree is large, and fat LTO with one unit, the slowest
 # build there is, bought speed the app does not need, on each of five systems.
@@ -56,6 +75,10 @@ debug = "line-tables-only"
 
 # The gateway's floors below it, crates of their own (../../crates, docs/plans/modular-gateway.md).
 [profile.dev.package.duowave-base]
+debug = "line-tables-only"
+[profile.dev.package.duowave-door]
+debug = "line-tables-only"
+[profile.dev.package.duowave-sense]
 debug = "line-tables-only"
 
 [profile.dev.package.duowave-rights]

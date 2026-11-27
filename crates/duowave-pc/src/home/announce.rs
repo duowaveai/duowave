@@ -121,6 +121,8 @@ pub fn start(parts: Parts, pc: Arc<Computer>) {
     stop_quietly();
     let goodbye = discovery::mdns_answer(&records(&parts, &pc, None), 0);
     let task = tokio::spawn(async move {
+        // A fresh Mac app says nothing on the home network until its person was asked (step «Разрешения»).
+        crate::permissions::hold_until_asked(&parts.settings, &parts.db, crate::permissions::routes::desktop()).await;
         let Some(socket) = discovery::shared_socket() else {
             tracing::info!(target: "home", "announce: UDP {MDNS_PORT} is the system's own — this gateway is not announced");
             return;

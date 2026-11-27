@@ -1,7 +1,7 @@
 # The voice gateway in Rust (gateway/) and, once it runs the Rust engine inside, the desktop app.
 [workspace]
 resolver = "2"
-members = ["gateway", "crates/duowave-base", "crates/duowave-rights", "crates/duowave-voice", "crates/duowave-brain", "crates/duowave-ears", "crates/duowave-apps", "crates/duowave-home", "crates/duowave-pc"]
+members = ["gateway", "crates/duowave-door", "crates/duowave-base", "crates/duowave-sense", "crates/duowave-rights", "crates/duowave-voice", "crates/duowave-brain", "crates/duowave-ears", "crates/duowave-apps", "crates/duowave-home", "crates/duowave-pc"]
 # yam: YAM's own repository, checked out there by the release to pack the station's package (release.yml,
 # yam-registry.yml) — a package of its own, not a member. apps/own-server: the «VPN» app's program with shoes inside,
 # a project of its own so that shoes' dependencies never reach the gateway's builds; apps/youtube-lite: «YouTube
@@ -9,7 +9,7 @@ members = ["gateway", "crates/duowave-base", "crates/duowave-rights", "crates/du
 exclude = ["desktop/src-tauri", "yam", "apps/own-server", "apps/youtube-lite"]
 
 [workspace.package]
-version = "0.19.2"
+version = "0.20.0"
 edition = "2021"
 license = "Apache-2.0"
 publish = false

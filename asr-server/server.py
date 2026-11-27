@@ -3,7 +3,7 @@
 The voice gateway sends one utterance (16 kHz mono 16-bit WAV) after the end of speech to
 POST /v1/audio/transcriptions, the same call it makes to OpenAI, so either can be used.
 
-    python server.py --model v3_e2e_rnnt --device auto --port 8090
+    python server.py --model v4_rnnt --device auto --port 8090
 
 Endpoints:
     POST /v1/audio/transcriptions   multipart form (file, model, language, response_format) or a raw WAV body
@@ -16,7 +16,7 @@ Endpoints:
     GET  /health                    model, device, requests served, the load under way and the last one's error
 
 The model at start: --model or GIGAAM_MODEL; without them the one last loaded over HTTP (--model-file, by default
-chosen-model next to this file), else v3_e2e_rnnt; one that does not load gives way to the default. `none` starts without a
+chosen-model next to this file), else v4_rnnt; one that does not load gives way to the default. `none` starts without a
 model and waits for a load.
 
 Only the standard library besides gigaam/torch/numpy: no web framework to install or keep updated.
@@ -50,7 +50,8 @@ import gigaam
 SAMPLE_RATE = 16000
 # GigaAM's short-form transcribe() accepts up to 25 s; the gateway caps utterances well below that.
 MAX_SECONDS = 24
-DEFAULT_MODEL = "v3_e2e_rnnt"
+# GigaAM v4 with punctuation and capitals. A server that remembers a model (chosen-model) keeps it.
+DEFAULT_MODEL = "v4_rnnt"
 PARAKEET_REPO = "nvidia/parakeet-tdt-0.6b-v3"
 HERE = os.path.dirname(os.path.abspath(__file__))
 # A name that comes over the network or from the remembered file is a name, never a path: gigaam.load_model also
@@ -69,6 +70,7 @@ class Recognizer:
         started = time.monotonic()
         self.whisper = None
         self.parakeet = None
+        self.languages: frozenset[str] = frozenset()
         # Hugging Face's hub cache (Parakeet, Whisper) beside GigaAM's: one folder to mount as a volume.
         hub = os.path.join(cache_dir, "huggingface", "hub") if cache_dir else None
         if model_name.startswith("parakeet-"):
@@ -89,13 +91,16 @@ class Recognizer:
         else:
             root = os.path.join(cache_dir, "gigaam") if cache_dir else None
             self.model = gigaam.load_model(model_name, device=device, download_root=root)
+            # The languages it can be told (Multilingual v2); none: it hears without being told.
+            embedding = getattr(self.model, "language_embedding", None)
+            self.languages = frozenset(getattr(embedding, "languages", ()))
         self.lock = threading.Lock()  # one inference at a time: a single model, a single GPU queue
         self.transcribe(np.zeros(SAMPLE_RATE, dtype=np.float32))  # warm-up: first MPS/CUDA call is slow
         log.info("loaded %s in %.1f s", model_name, time.monotonic() - started)
 
     def transcribe(self, samples: np.ndarray, language: str | None = None) -> str:
-        """`language`: the gateway's hint (the household's language); Whisper takes it, None — it detects. GigaAM and
-        Parakeet hear without one."""
+        """`language`: the gateway's hint (the household's language); Whisper takes it, None — it detects. GigaAM
+        Multilingual v2 takes it when it is one of its languages; the other GigaAM and Parakeet hear without one."""
         samples = samples[: MAX_SECONDS * SAMPLE_RATE]
         if self.parakeet is not None:
             with self.lock, torch.inference_mode():
@@ -116,32 +121,46 @@ class Recognizer:
                     return " ".join(segment.text.strip() for segment in segments).strip()
                 finally:
                     os.unlink(path)
+        told = told_language(language, self.languages)
         with self.lock, torch.inference_mode():
             try:
-                return self._transcribe_tensor(samples)
+                return self._transcribe_tensor(samples, told)
             except (AttributeError, TypeError) as error:
                 # Internal API changed in another gigaam version: fall back to the public file-based call.
                 log.warning("in-memory path failed (%s), using a temporary file", error)
-                return self._transcribe_file(samples)
+                return self._transcribe_file(samples, told)
 
-    def _transcribe_tensor(self, samples: np.ndarray) -> str:
+    def _transcribe_tensor(self, samples: np.ndarray, language: str | None) -> str:
         model = self.model
-        wav = torch.from_numpy(np.ascontiguousarray(samples, dtype=np.float32))
-        wav = wav.to(model._device).to(model._dtype).unsqueeze(0)
+        # float32 on the model's device, as gigaam's own prepare_wav: with an fp16 encoder it casts inside.
+        wav = torch.from_numpy(np.ascontiguousarray(samples, dtype=np.float32)).to(model._device).unsqueeze(0)
         length = torch.full([1], wav.shape[-1], device=model._device)
-        encoded, encoded_len = model.forward(wav, length)
-        text, _ = model._decode(encoded, encoded_len, length)[0]
-        return text
+        encoded, encoded_len = model.forward(wav, length, language)
+        return e2e(model._decode(encoded, encoded_len, length))[0][0]
 
-    def _transcribe_file(self, samples: np.ndarray) -> str:
+    def _transcribe_file(self, samples: np.ndarray, language: str | None) -> str:
         fd, path = tempfile.mkstemp(suffix=".wav")
         os.close(fd)
         try:
             write_wav(path, samples)
-            result = self.model.transcribe(path)
+            result = e2e(self.model.transcribe(path, **({"language": language} if language else {})))
             return getattr(result, "text", result)
         finally:
             os.unlink(path)
+
+
+def e2e(decoded):
+    """The text a dual-head model (GigaAM v4, Multilingual v2) writes with punctuation and capitals: it decodes per
+    head, `e2e` and `raw` (the same words without them). A one-head model's answer as it is."""
+    return decoded["e2e"] if isinstance(decoded, dict) else decoded
+
+
+def told_language(language: str | None, known: frozenset[str]) -> str | None:
+    """The household's language for a model that is told one, by its primary tag ("ru-RU" is "ru"); None when the
+    model knows no such language or is told none: it hears which for itself. gigaam reads each part of a tag as its
+    own language and fails on one it does not know."""
+    code = (language or "").split("-")[0].strip().lower()
+    return code if code in known else None
 
 
 def check_name(model: str) -> None:
@@ -159,9 +178,10 @@ def check_name(model: str) -> None:
         if importlib.util.find_spec("transformers") is None or importlib.util.find_spec("librosa") is None:
             raise ValueError("Parakeet needs transformers and librosa, not installed here")
     else:
-        # Full names only: gigaam also takes "ctc" for v3_ctc, and the gateway would then wait for a model that
-        # never reports by its own name. SSL and emotion checkpoints do not transcribe.
-        names = [name for name in getattr(gigaam, "_MODEL_HASHES", {}) if "ssl" not in name and name != "emo"]
+        # Full names only: gigaam also takes "ctc" for v4_ctc, and the gateway would then wait for a model that
+        # never reports by its own name. SSL, emotion and VAD checkpoints do not transcribe.
+        hashes = getattr(gigaam, "_MODEL_HASHES", {})
+        names = [name for name in hashes if "ssl" not in name and name not in ("emo", "vad")]
         if names and model not in names:
             raise ValueError(f"no GigaAM model {model}: {', '.join(names)}")
 
@@ -389,7 +409,7 @@ class Handler(BaseHTTPRequestHandler):
             body = json.loads(self.rfile.read(length) or b"{}")
             model = body.get("model") if isinstance(body, dict) else None
             if not isinstance(model, str) or not model.strip():
-                raise ValueError('body: {"model": "v3_e2e_rnnt"}')
+                raise ValueError('body: {"model": "v4_rnnt"}')
             model = model.strip()
             check_name(model)
         except ValueError as error:
@@ -449,7 +469,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         recognizer = self.models.current  # this request's model, whatever a load swaps in meanwhile
         if recognizer is None:
-            self.reply(503, {"error": {"message": 'no model loaded yet: POST /v1/models/load {"model": "v3_e2e_rnnt"}'}})
+            self.reply(503, {"error": {"message": 'no model loaded yet: POST /v1/models/load {"model": "v4_rnnt"}'}})
             return
         try:
             text = recognizer.transcribe(samples, language).strip()
@@ -511,8 +531,8 @@ def main() -> None:
                         help="0.0.0.0 to answer beyond this computer (the Docker image does); there is no other guard than --api-key")
     parser.add_argument("--port", type=int, default=int(os.environ.get("ASR_PORT", "8090")))
     parser.add_argument("--model", default=os.environ.get("GIGAAM_MODEL") or None,
-                        help="v3_e2e_rnnt (punctuation and casing), v3_rnnt, v3_ctc, v2_rnnt, …, parakeet-0.6b-v3, "
-                             "whisper-large-v3-turbo; none: start without one. Unset: the remembered model, else v3_e2e_rnnt")
+                        help="v4_rnnt (punctuation and casing), v4_ctc, multilingual_v2_rnnt, v3_e2e_rnnt, …, parakeet-0.6b-v3, "
+                             "whisper-large-v3-turbo; none: start without one. Unset: the remembered model, else v4_rnnt")
     parser.add_argument("--device", default=os.environ.get("GIGAAM_DEVICE", "auto"), help="auto | cuda | mps | cpu")
     parser.add_argument("--cache-dir", default=os.environ.get("ASR_CACHE_DIR") or None,
                         help="where the weights go: <dir>/gigaam and <dir>/huggingface (default ~/.cache/gigaam and "

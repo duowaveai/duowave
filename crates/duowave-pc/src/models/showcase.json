@@ -1,5 +1,5 @@
 {
-    "$comment": "Каталог моделей пульта: распознавание (asr) и голос (tts). Карточки — как их показывает панель; url — прямые ссылки открытых хранилищ (HuggingFace). Редактируется руками: это витрина, а не код. Русские title, description, badge, license и size переводятся по gateway/locales/en/models.json: новый текст — новая строка там.",
+    "$comment": "Каталог моделей пульта: распознавание (asr) и голос (tts). Карточки — как их показывает панель; url — прямые ссылки открытых хранилищ (HuggingFace). Редактируется руками: это витрина, а не код. Русские title, description, badge, license и size переводятся по gateway/locales/en/models.json: новый текст — новая строка там. successor у распознавания — модель, которая занимает место этой в «Советуем» там, где сама запускается: на сервере распознавания сразу, на компьютере — когда у неё есть GGUF.",
     "asr": [
         {
             "id": "yandex",
@@ -10,18 +10,48 @@
             "license": "—"
         },
         {
+            "id": "gigaam-v4",
+            "recommended": true,
+            "model": "v4_rnnt",
+            "title": "GigaAM v4 RNNT",
+            "description": "Новая GigaAM: русская и английская речь. Сразу ставит знаки препинания и заглавные буквы, заметно точнее v3.",
+            "badge": "рекомендуем",
+            "license": "MIT · Сбер",
+            "source": "huggingface:ai-sage/GigaAM-v4"
+        },
+        {
+            "id": "gigaam-v4-ctc",
+            "recommended": true,
+            "model": "v4_ctc",
+            "title": "GigaAM v4 CTC",
+            "description": "GigaAM v4 в варианте CTC: быстрее RNNT, но чуть менее точная. Тоже ставит знаки препинания.",
+            "license": "MIT · Сбер",
+            "source": "huggingface:ai-sage/GigaAM-v4"
+        },
+        {
+            "id": "gigaam-multilingual-v2",
+            "recommended": true,
+            "model": "multilingual_v2_rnnt",
+            "title": "GigaAM Multilingual v2",
+            "description": "Понимает 21 язык: русский, английский, языки Европы и СНГ. Ставит знаки препинания. Точнее всех GigaAM, но втрое тяжелее v4.",
+            "badge": "много языков",
+            "license": "MIT · Сбер",
+            "source": "huggingface:ai-sage/GigaAM-Multilingual-v2"
+        },
+        {
             "id": "gigaam-v3-e2e",
             "recommended": true,
+            "successor": "v4_rnnt",
             "model": "v3_e2e_rnnt",
             "title": "GigaAM v3 e2e RNNT",
             "description": "Распознаёт русскую речь и сразу ставит знаки препинания и заглавные буквы.",
-            "badge": "рекомендуем",
             "license": "MIT · Сбер",
             "source": "huggingface:salute-developers/GigaAM"
         },
         {
             "id": "gigaam-v3-e2e-ctc",
             "recommended": true,
+            "successor": "v4_ctc",
             "model": "v3_e2e_ctc",
             "title": "GigaAM v3 e2e CTC",
             "description": "Тоже ставит знаки препинания. Быстрее e2e RNNT, но чуть менее точная.",
@@ -31,6 +61,7 @@
         {
             "id": "gigaam-v3-rnnt",
             "recommended": true,
+            "successor": "v4_rnnt",
             "model": "v3_rnnt",
             "title": "GigaAM v3 RNNT",
             "description": "Распознаёт так же точно, но без знаков препинания. Чуть быстрее.",
@@ -40,6 +71,7 @@
         {
             "id": "gigaam-v3-ctc",
             "recommended": true,
+            "successor": "v4_ctc",
             "model": "v3_ctc",
             "title": "GigaAM v3 CTC",
             "description": "Самая быстрая из GigaAM v3, но чуть менее точная. Без знаков препинания.",

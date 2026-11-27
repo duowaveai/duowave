@@ -699,6 +699,8 @@ pub fn work(
     toolbox.cache_history = true;
     // A last round forced by the limits: the run may have stopped half-way (the card's «не доделано»).
     toolbox.limited = Some(run.limited.clone());
+    // The model's thinking took its answer whole again: the card says why it is not finished.
+    toolbox.thought_away = Some(run.thought.clone());
     // Words added on the way go to the agent between its steps (docs/plans/audio-interface.md, «Вдогонку»).
     let (inbox_workshop, inbox_run) = (workshop.clone(), run.clone());
     toolbox.inbox = Some(Arc::new(move || {

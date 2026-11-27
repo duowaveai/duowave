@@ -6,6 +6,9 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::core::identity::principal::Principal;
+use crate::core::identity::Role;
+
 /// The device of a talk without a station: the journal's requests carry it, and the talk's state is kept under it.
 pub const COMPUTER: &str = "computer";
 
@@ -46,13 +49,15 @@ impl Activator {
 }
 
 /// Why the microphone opened by itself (docs/plans/audio-interface-2.md, «К2»): the brain asked, a work's line
-/// («Делаю…», «Добавлю…») invites more, a work's «Готово…» asks. A phrase said then is the closed window's.
+/// («Делаю…», «Добавлю…») invites more, a work's «Готово…» asks — or the person spoke over our speech, and the
+/// computer's ear heard it (docs/plans/audio-interface-3.md, «К7»). A phrase said then is the closed window's.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Why {
     Question,
     Work,
     Ready,
+    Barge,
 }
 
 impl Why {
@@ -61,7 +66,17 @@ impl Why {
             "question" => Some(Why::Question),
             "work" => Some(Why::Work),
             "ready" => Some(Why::Ready),
+            "barge" => Some(Why::Barge),
             _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Why::Question => "question",
+            Why::Work => "work",
+            Why::Ready => "ready",
+            Why::Barge => "barge",
         }
     }
 }
@@ -91,13 +106,26 @@ pub struct Origin {
     /// Why the microphone opened by itself, for an answer: the window's reason.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub why: Option<Why>,
+    /// The role of who said it, as the phrase came (`of`): a work in a folder begins only an admin's (router-and-works,
+    /// stage 5). Not kept in the records: read back, it is unknown.
+    #[serde(skip)]
+    pub role: Option<Role>,
 }
 
 impl Origin {
     /// A phrase of this computer: said after the button or after a question, or typed.
     pub fn computer(activator: Activator) -> Origin {
         let via = if activator == Activator::Text { Via::Text } else { Via::Voice };
-        Origin { activator, name: None, character: None, who: None, device: COMPUTER.into(), via, why: None }
+        Origin {
+            activator,
+            name: None,
+            character: None,
+            who: None,
+            device: COMPUTER.into(),
+            via,
+            why: None,
+            role: None,
+        }
     }
 
     /// A station's phrase opened by an app's word of its own (src/activator): which word, and the character it goes
@@ -111,6 +139,7 @@ impl Origin {
             device: device.to_string(),
             via: Via::Voice,
             why: None,
+            role: None,
         }
     }
 
@@ -119,13 +148,34 @@ impl Origin {
     pub fn station(device: &str, wake_word: bool) -> Origin {
         let (activator, name) =
             if wake_word { (Activator::Word, Some(STATION_WORD.to_string())) } else { (Activator::Answer, None) };
-        Origin { activator, name, character: None, who: None, device: device.to_string(), via: Via::Voice, why: None }
+        Origin {
+            activator,
+            name,
+            character: None,
+            who: None,
+            device: device.to_string(),
+            via: Via::Voice,
+            why: None,
+            role: None,
+        }
     }
 
     /// Who said it.
     pub fn by(mut self, who: Option<String>) -> Origin {
         self.who = who.filter(|who| !who.is_empty());
         self
+    }
+
+    /// Who said it, and their role.
+    pub fn of(self, principal: &Principal) -> Origin {
+        let mut origin = self.by(Some(principal.name.clone()));
+        origin.role = principal.role;
+        origin
+    }
+
+    /// Said by the home's admin: they may begin a work in a folder.
+    pub fn admin(&self) -> bool {
+        self.role == Some(Role::Admin)
     }
 }
 

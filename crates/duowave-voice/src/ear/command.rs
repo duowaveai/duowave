@@ -2,10 +2,14 @@
 //! skill's dialog, timers and alarms, «не беспокоить», the display. The skills and the apps decide which; the ear's
 //! adapter says it in the ear's own words: the Station's are Yandex's commands (src/gateway/commands.rs).
 
+use serde::{Deserialize, Serialize};
+
 use super::media::MediaItem;
 
-/// One thing an ear is asked to do in an answer, or pushed to it outside one.
-#[derive(Debug, Clone, PartialEq)]
+/// One thing an ear is asked to do in an answer, or pushed to it outside one. As JSON it goes through the door to
+/// Thinking as a hand's arguments (ear/hands.rs), externally tagged by its name.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Command {
     /// The volume, 0–10. `whisper`: lower for this answer only, as on a whispered question.
     SetVolume {
@@ -120,7 +124,7 @@ pub fn new_timer_id() -> String {
     (0..4).map(|_| format!("{:08x}", rand::random::<u32>())).collect::<Vec<_>>().join("-")
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TimerSpec {
     pub id: String,
     /// Unix seconds.
@@ -128,14 +132,14 @@ pub struct TimerSpec {
     pub seconds: u64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CalendarDate {
     pub year: u32,
     pub month: u32,
     pub day: u32,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AlarmSpec {
     pub id: String,
     pub hours: u32,

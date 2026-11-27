@@ -190,11 +190,31 @@ pub struct Reflection {
     model: Arc<dyn NightModel>,
     /// Where the night's spending goes: each answer of the model is a deal on the memory's seat (src/router).
     usage: std::sync::OnceLock<crate::router::UsageSink>,
+    /// The router's door: the memory's seat goes through it once attached.
+    router: std::sync::OnceLock<Arc<crate::router::Router>>,
 }
 
 impl Reflection {
     pub fn new(memory: Arc<MemoryService>, settings: Arc<SettingsService>, model: Arc<dyn NightModel>) -> Reflection {
-        Reflection { memory, settings, model, usage: std::sync::OnceLock::new() }
+        Reflection { memory, settings, model, usage: std::sync::OnceLock::new(), router: std::sync::OnceLock::new() }
+    }
+
+    /// The router's door, from now on asked for the memory's model (src/router).
+    pub fn attach_router(&self, router: Arc<crate::router::Router>) {
+        let _ = self.router.set(router);
+    }
+
+    /// The memory's model through the router's door, and who answers for the deal. A model chosen to stay at home
+    /// stays: the table does not send the memory's night out of the house.
+    fn door(&self, slot: ModelSlot) -> (ModelSlot, Answerer) {
+        let ask = crate::router::policy::Ask::of(Seat::Memory, Reason::Seat);
+        match self.router.get().filter(|_| self.model_choice() != MemoryModel::Home) {
+            Some(router) => router.slot(&ask, slot, &|provider, model| self.model.pick(provider, model).ok()),
+            None => {
+                let asked = Answerer::of(&slot, Seat::Memory, Reason::Seat);
+                (slot, asked)
+            }
+        }
     }
 
     /// Where the model's spending goes from now on (the gateway's deals).
@@ -285,6 +305,8 @@ impl Reflection {
             Ok(slot) => slot,
             Err(why) => return PartReport::new(self, PartState::Waiting, why),
         };
+        // Each answer of the model is a deal on the memory's seat, by what the door gave it.
+        let (slot, asked) = self.door(slot);
         let (order, day) = (self.order(), self.day());
         let mut tally = Tally::default();
         let mut budget = MAX_ACTIONS;
@@ -302,9 +324,7 @@ impl Reflection {
                 }
             };
             let (system, user) = prompt(&input);
-            // Each answer of the model is a deal on the memory's seat, by what stands there for it.
-            let asked = Answerer::of(&slot, Seat::Memory, Reason::Seat);
-            let spending = Spending::new(self.usage.get().cloned(), "", asked);
+            let spending = Spending::new(self.usage.get().cloned(), "", asked.clone());
             let answer = match ask(&slot, &spending, system, user, night.cancel.clone()).await {
                 Ok(answer) => answer,
                 Err(error) => {
@@ -1338,7 +1358,10 @@ mod tests {
             let deals = deals.lock().unwrap();
             assert_eq!(deals.len(), model.asked.lock().unwrap().len(), "one deal per answer: {deals:?}");
             let first = &deals[0];
-            assert_eq!((first.by.seat, first.by.reason), (crate::router::Seat::Memory, crate::router::Reason::Seat));
+            assert_eq!(
+                (first.by.seat, first.by.reason.clone()),
+                (crate::router::Seat::Memory, crate::router::Reason::Seat)
+            );
             assert_eq!((first.by.model.as_str(), first.by.cloud, first.rounds), ("test-model", false, 1));
             assert_eq!(first.outcome, crate::router::Outcome::Ok);
         }

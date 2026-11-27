@@ -32,6 +32,10 @@ pub enum What {
     Work,
     Note,
     Resume,
+    /// «С планом»: the plan, in a read-only session (stage 6).
+    Plan,
+    /// «С проверкой»: the review, in a read-only session on another model.
+    Review,
 }
 
 impl What {
@@ -40,6 +44,8 @@ impl What {
             What::Work => "work",
             What::Note => "note",
             What::Resume => "resume",
+            What::Plan => "plan",
+            What::Review => "review",
         }
     }
 
@@ -47,6 +53,8 @@ impl What {
         match text {
             "note" => What::Note,
             "resume" => What::Resume,
+            "plan" => What::Plan,
+            "review" => What::Review,
             _ => What::Work,
         }
     }
@@ -355,7 +363,16 @@ mod tests {
             log.step(None, Step::Says { text: "x".repeat(100) });
         }
         assert!(log.was_cut());
-        log.step(None, Step::End { outcome: "ok".into(), text: Some("Готово".into()), error: None, usd_micro: None });
+        log.step(
+            None,
+            Step::End {
+                outcome: "ok".into(),
+                text: Some("Готово".into()),
+                error: None,
+                usd_micro: None,
+                unknown: None,
+            },
+        );
         let all = read(dir.path(), "w1", 1, 2, 1000, false, None);
         let types: Vec<&str> = all.steps.iter().filter_map(|step| step["type"].as_str()).collect();
         assert_eq!(types.last(), Some(&"end"), "the end is written past the limit");

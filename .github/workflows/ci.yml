@@ -130,6 +130,9 @@ jobs:
       # get.duowave.app's Worker (scripts/release/cloudflare): its paths and 404s against a pretend catalog.
       - name: The Worker that serves it over HTTP
         run: node scripts/release/cloudflare/get-worker-check.mjs
+      # metadata.duowave.app's Worker: the OAuth client document (CIMD) at its one path, its client_id, 404s and 405s.
+      - name: The Worker that serves the OAuth client document
+        run: node scripts/release/cloudflare/metadata-worker-check.mjs
 
   rust:
     runs-on: ubuntu-latest

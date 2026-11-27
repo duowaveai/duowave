@@ -173,6 +173,14 @@ fn with_param(intent: &Intent, key: &str, value: Value) -> Intent {
     changed
 }
 
+/// Where a station is, as its last request said.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DeviceContext {
+    pub timezone: Option<String>,
+    /// Where it fetches our /media: `http://<the host it connects to>/media`.
+    pub media_base_url: Option<String>,
+}
+
 pub struct SkillsService {
     pub config: SkillsConfig,
     pub router: Arc<Router>,
@@ -213,6 +221,10 @@ pub struct SkillsService {
     /// The station's state as its last request carried it — its player, its timers — with when (unix ms): the
     /// panel's widgets between requests (docs/plans/desk.md, stage 2).
     device_states: Mutex<HashMap<String, (DeviceState, u64)>>,
+    /// Where the station is, as its last request said: its time zone, where it fetches our /media — for a phrase of
+    /// it that Thinking answers, which hears no request of its own (docs/plans/thinking.md, «The station behind the
+    /// door»).
+    device_contexts: Mutex<HashMap<String, DeviceContext>>,
     /// The station's own radio we stopped from the panel (player_pause and clear_queue), per device, and when: its
     /// queue is gone with the station, so the panel's «продолжить» is answered in words until something plays there.
     radio_stopped: Mutex<HashMap<String, u64>>,
@@ -362,6 +374,7 @@ impl SkillsService {
             tasks: Mutex::new(Vec::new()),
             speaker: RwLock::new(None),
             device_states: Mutex::new(HashMap::new()),
+            device_contexts: Mutex::new(HashMap::new()),
             radio_stopped: Mutex::new(HashMap::new()),
         });
         service.intercept();
@@ -556,6 +569,24 @@ impl SkillsService {
 
     fn player_changed(&self, device: &str) {
         self.events.emit(GatewayEvent::StationStateChanged { device: device.to_string(), what: "player".into() });
+    }
+
+    /// Where the station is, as its request says it (its time zone, where it fetches our /media).
+    pub fn note_device_context(&self, device: &str, context: DeviceContext) {
+        self.device_contexts
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(device.to_string(), context);
+    }
+
+    /// Where the device is, as its last request said; nothing known — none of it.
+    pub fn device_context(&self, device: &str) -> DeviceContext {
+        self.device_contexts
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(device)
+            .cloned()
+            .unwrap_or_default()
     }
 
     /// The station's state its last request carried, and when.

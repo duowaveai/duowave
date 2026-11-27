@@ -836,7 +836,7 @@ export function ModelsScreen({ tab, onTab, bare = false, page = false }: { tab: 
     };
     const pending = view.ttsPending;
     const pendingTitle = pending ? (pending.title ?? view.tts.find((card) => card.id === pending.modelId)?.title ?? pending.modelId) : '';
-    // «Распознавание» так же, как «Голос»: сверху то, что работает (или ждёт перезапуска); «Советуем» — GigaAM v3;
+    // «Распознавание» так же, как «Голос»: сверху то, что работает (или ждёт перезапуска); «Советуем» — GigaAM v4 (на компьютере, пока у v4 нет GGUF, — v3);
     // остальные модели — по «Посмотреть ещё модели».
     // Шлюз без признака «советуем» (до его перезапуска) — хотя бы карточка с плашкой «рекомендуем».
     const advised = (card: AsrCard): boolean => card.recommended ?? card.badge === 'рекомендуем';

@@ -53,9 +53,17 @@ impl Provides<crate::helpers::home_voice::HomeVoice> for App {
     }
 }
 
+/// The computer's own voice channel, when its app gave the gateway an ear (part К).
+#[cfg(feature = "pc")]
+impl Provides<crate::channel::routes::VoiceHandle> for App {
+    fn provide(&self) -> crate::channel::routes::VoiceHandle {
+        crate::channel::routes::VoiceHandle(self.pc.voice.get().cloned())
+    }
+}
+
 impl Provides<crate::talk::Parts> for App {
     fn provide(&self) -> crate::talk::Parts {
-        let requests = self.requests.clone();
+        let (requests, offers) = (self.requests.clone(), self.request_offers.clone());
         let connectors = self.connectors.clone();
         crate::talk::Parts {
             talk: self.talk.clone(),
@@ -65,7 +73,10 @@ impl Provides<crate::talk::Parts> for App {
             skills: self.skills.clone(),
             mcp: self.mcp.clone(),
             router: self.router.clone(),
-            journal: Arc::new(move |start| requests.begin_in(start, "own")),
+            // An ear's phrase: Thinking goes on in the request the ear opened (one per phrase, `RequestOffers`).
+            journal: Arc::new(move |start| {
+                offers.take(&start.device).unwrap_or_else(|| requests.begin_in(start, "own"))
+            }),
             connector_tools: Arc::new(move |principal| connectors.tools(principal)),
         }
     }
@@ -215,6 +226,9 @@ provides! {
     personas: Arc<crate::dialog::PersonaService>,
     router: Arc<crate::router::Router>,
     talk: Arc<crate::talk::TalkLayer>,
+    systems: Arc<crate::talk::systems::Systems>,
+    home_line: Arc<crate::mcp::home_line::HomeLine>,
+    thinking: Arc<crate::thinking::OurThinking>,
     placement: Arc<crate::placement::PlacementService>,
     modes: Arc<crate::ear::mode::ModeService>,
     memory: Arc<crate::memory::MemoryService>,

@@ -59,6 +59,8 @@ pub enum Refusal {
     /// A built-in app: not changed; one's own copy may be made. Its title.
     BuiltIn(String),
     Failed(String),
+    /// A phrase of the pack said as it is: «Для работы в папках нужен компьютер.», «В какой папке: …?».
+    Said(String),
     UnknownAction,
 }
 
@@ -79,6 +81,7 @@ impl Refusal {
             Refusal::BuiltIn(title) => fill(say.built_in, &[("title", title)]),
             Refusal::Gone { title } => fill(say.gone, &[("title", title)]),
             Refusal::Failed(why) => fill(say.failed, &[("why", why)]),
+            Refusal::Said(text) => text.clone(),
         }
     }
 }
@@ -137,6 +140,14 @@ pub fn in_sentence(title: &str) -> String {
     first.to_lowercase().chain(rest.chars()).collect()
 }
 
+/// What `work_start` begins (docs/plans/router-and-works.md, stage 5, the common start): a thing the workshop makes,
+/// or a work for an agent in a work folder — the folder and the agent as they were said.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Begin<'a> {
+    Thing { face: Option<Face>, title: Option<&'a str>, new: bool },
+    Folder { folder: Option<&'a str>, agent: Option<&'a str> },
+}
+
 /// Which work a `thing` names on a device — or an app of an executor's that no work names. An answer of one lookup,
 /// never kept: its size does not matter.
 #[allow(clippy::large_enum_variant)]
@@ -159,6 +170,8 @@ impl TalkLayer {
         if origin.who.is_none() {
             origin.who = Some(context.principal.name.clone()).filter(|name| !name.is_empty());
         }
+        // Whose call it is decides what it may begin: the principal of the call, whatever its phrase said.
+        origin.role = context.principal.role;
         origin
     }
 
@@ -245,6 +258,15 @@ impl TalkLayer {
         Ok(said)
     }
 
+    /// A new work of a kind, by its executor: the workshop's thing (`start`), or a work in a folder (folder.rs). The
+    /// background tools and the apps' tasks begin by their own roads, as before.
+    pub fn begin(&self, origin: Origin, brief: &str, what: Begin) -> Result<String, Refusal> {
+        match what {
+            Begin::Thing { face, title, new } => self.start(origin, brief, face, title, new),
+            Begin::Folder { folder, agent } => self.start_folder_said(origin, brief, folder, agent),
+        }
+    }
+
     /// The work a `thing` names on a device: a label of the block («р3», «[w3]», «3»), a title, or — named not at
     /// all — the thing in focus.
     pub(super) fn find(&self, device: &str, thing: Option<&str>) -> Found {
@@ -258,7 +280,10 @@ impl TalkLayer {
         };
         let label = thing.trim_start_matches('[').trim_end_matches(']');
         let digits = label.trim_start_matches(|c: char| c.is_alphabetic());
-        if !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()) {
+        // A label is a number after one letter at most («р3», «w3», «3»), not a word that ends in one: «haiku2» is a
+        // file's name (the hand check of 27.11 took it for work 2).
+        let letters = label.chars().count() - digits.chars().count();
+        if letters <= 1 && !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()) {
             if let Some(work) = self.works.get(digits) {
                 return if work.removed() { Found::Gone(work) } else { Found::One(work) };
             }
@@ -266,7 +291,7 @@ impl TalkLayer {
         let wanted = stems(thing);
         let mut matched: Vec<Work> = Vec::new();
         let mut gone: Option<Work> = None;
-        for work in self.works.all(Some(device), None) {
+        for work in self.home_works(device) {
             let same =
                 |known: &Work| known.target.is_some() && known.target == work.target && known.executor == work.executor;
             if !alike(&stems(&work.title), &wanted) {
@@ -337,6 +362,12 @@ impl TalkLayer {
                         self.told(&going, "note");
                     }
                     return Ok(fill(say.noted, &[("text", &in_sentence(text))]));
+                }
+                // A work system that takes no words on the way says so; «следи за этой» is what it can.
+                if work.kind == super::works::SYSTEM {
+                    let words = &pack::of(self.lang(&device)).work.system;
+                    let system = executor.who(&work).unwrap_or_default();
+                    return Ok(fill(words.no_tell, &[("system", &system)]));
                 }
                 let target = work.target.clone().ok_or_else(|| Refusal::Failed("there is no thing yet".into()))?;
                 // A work in a folder goes on as a work in a folder; the rest are the workshop's things.
@@ -439,13 +470,35 @@ impl TalkLayer {
                 let since = say.duration(now_ms().saturating_sub(work.started_at));
                 let words = &pack::of(self.lang(device)).work.folder;
                 let doing = executor.details(&work).unwrap_or_else(|| words.begins.to_string());
-                fill(say.working, &[("since", &since), ("doing", &doing)])
+                let line = fill(say.working, &[("since", &since), ("doing", &doing)]);
+                // A plan's limit or its budget holds it: its question asked here, «подожди», «добавь» or «стоп» answers it.
+                let holds =
+                    |question: &&super::works::Question| matches!(question.kind, Some(Kind::Wait | Kind::Budget));
+                match work.question.as_ref().filter(holds) {
+                    Some(question) => {
+                        let ask = question.text.rsplit_once(": ").map_or(question.text.as_str(), |(_, ask)| ask);
+                        self.ask_aloud(&work, device, false);
+                        format!("{line} {}", capitalized(ask))
+                    }
+                    None => line,
+                }
             }
-            "status" if work.going() && matches!(work.kind.as_str(), super::works::TOOL | super::works::TASK) => {
+            "status"
+                if work.going()
+                    && matches!(work.kind.as_str(), super::works::TOOL | super::works::TASK | super::works::SYSTEM) =>
+            {
                 let words = &pack::of(self.lang(device)).work.background;
                 let since = say.duration(now_ms().saturating_sub(work.started_at));
                 let step = executor.details(&work).unwrap_or_else(|| words.waiting_answer.to_string());
-                fill(words.working, &[("title", &work.title), ("since", &since), ("step", &step)])
+                let line = fill(words.working, &[("title", &work.title), ("since", &since), ("step", &step)]);
+                // A work system's question holds it: asked here, «да» or «нет» answers it.
+                match work.question.as_ref().filter(|question| question.kind == Some(Kind::Permission)) {
+                    Some(question) => {
+                        self.ask_aloud(&work, device, false);
+                        format!("{line} {}", question.text)
+                    }
+                    None => line,
+                }
             }
             "status" if work.going() => {
                 let since = say.duration(now_ms().saturating_sub(work.started_at));
@@ -458,6 +511,9 @@ impl TalkLayer {
             "details" => executor.details(&work).unwrap_or_else(|| say.no_details.to_string()),
             "show" => match executor.put(&work, End::Fitting, by).await.map_err(Refusal::Failed)? {
                 super::executor::Put::Shown { open: true } => say.shown.to_string(),
+                // «Открой» on a work system's work (the hand check of 27.11: it said «Плитка ждёт на столе»).
+                super::executor::Put::InSystem { system } => fill(say.opened_in, &[("system", &system)]),
+                super::executor::Put::NoOpen { system } => fill(say.no_open, &[("system", &system)]),
                 _ => say.tile_waits.to_string(),
             },
             "park" => {
@@ -472,7 +528,25 @@ impl TalkLayer {
                 }
                 fill(say.stopped, &[("title", &title)])
             }
+            // A work system's work: its own word on the stop is waited for, and a refusal said as it is.
+            "stop" if work.kind == super::works::SYSTEM && work.going() => {
+                let words = &pack::of(self.lang(device)).work.system;
+                let who = executor.who(&work).unwrap_or_default();
+                match executor.stop_waiting(&work).await {
+                    Ok(true) => fill(say.stopped, &[("title", &title)]),
+                    Ok(false) => fill(words.no_stop, &[("system", &who)]),
+                    Err(why) => fill(
+                        words.not_stopped,
+                        &[("system", &who), ("title", &title), ("why", &why.chars().take(160).collect::<String>())],
+                    ),
+                }
+            }
             "stop" if executor.stop(&work) => fill(say.stopped, &[("title", &title)]),
+            // A work system's work it cannot stop from here: the system's own window can.
+            "stop" if work.kind == super::works::SYSTEM && work.going() => {
+                let words = &pack::of(self.lang(device)).work.system;
+                fill(words.no_stop, &[("system", &executor.who(&work).unwrap_or_default())])
+            }
             // Going in its record, while its executor is at nothing on it: its run ended and the end never reached
             // the record (19.11: «уже не в работе», and the work still «идёт»). The person's «Остановить» ends it here.
             "stop" if work.going() => {
@@ -490,9 +564,24 @@ impl TalkLayer {
                 return self.add(origin.clone(), words.resume_prompt, Some(&label), false).await;
             }
             "stop" => fill(say.not_going, &[("title", &work.title)]),
+            // «Следи за этой» / «не следи»: a work begun outside is said aloud like ours, or quiet again (D1).
+            "watch" | "unwatch" => {
+                let watched = action == "watch";
+                if let Some(work) = self.works.update(&work.id, |work| work.watched = watched) {
+                    self.told(&work, "watch");
+                }
+                let words = &pack::of(self.lang(device)).work.system;
+                fill(if watched { words.watched } else { words.unwatched }, &[("title", &work.title)])
+            }
             _ => return Err(Refusal::UnknownAction),
         })
     }
+}
+
+/// A phrase's part as the beginning of one: its first letter capital.
+fn capitalized(text: &str) -> String {
+    let mut chars = text.chars();
+    chars.next().map(|first| first.to_uppercase().chain(chars).collect()).unwrap_or_default()
 }
 
 /// The connector that gives the brain the works' tools.
@@ -521,14 +610,17 @@ pub fn start_tool() -> LlmTool {
         // with every question (docs/plans/fast-tools.md).
         description: "Make a new thing for the home: a widget for the desk (default), a skill, a game or a theme — \
                       whenever the person wants something that does not exist yet; never tell them a phrase to say \
-                      instead. Its answer is spoken as is."
+                      instead. Kind folder: a task for a coding agent in a work folder. Its answer is spoken as is."
             .into(),
         parameters: object(
             json!({
                 "brief": { "type": "string", "description": "The whole wish from the conversation, every detail, in the person's words." },
                 "face": { "type": "string", "enum": ["widget", "skill", "game", "theme"] },
                 "title": { "type": "string", "description": "A short name: «Испанский: слова дня»." },
-                "new": { "type": "boolean", "description": "Confirmed: new, although a similar one was made lately." }
+                "new": { "type": "boolean", "description": "Confirmed: new, although a similar one was made lately." },
+                "kind": { "type": "string", "enum": ["thing", "folder"] },
+                "folder": { "type": "string", "description": "The work folder's name as said." },
+                "agent": { "type": "string", "description": "Agent or system named («дай T3 Code»)." }
             }),
             &["brief"],
         ),
@@ -625,10 +717,16 @@ impl Connector for TalkConnector {
         vec![
             tool(start_tool(), |layer, input, origin| {
                 async move {
-                    let face = text(&input, "face").and_then(Face::parse);
-                    let new = input.get("new").and_then(Value::as_bool) == Some(true);
                     let brief = text(&input, "brief").unwrap_or_default();
-                    layer.start(origin, brief, face, text(&input, "title"), new)
+                    let (folder, agent) = (text(&input, "folder"), text(&input, "agent"));
+                    let what = if text(&input, "kind") == Some("folder") || folder.is_some() || agent.is_some() {
+                        Begin::Folder { folder, agent }
+                    } else {
+                        let face = text(&input, "face").and_then(Face::parse);
+                        let new = input.get("new").and_then(Value::as_bool) == Some(true);
+                        Begin::Thing { face, title: text(&input, "title"), new }
+                    };
+                    layer.begin(origin, brief, what)
                 }
                 .boxed()
             }),

@@ -19,4 +19,4 @@ pub mod voice_request;
 pub mod yandex_relay;
 
 pub use session_registry::{AnySession, SessionRegistry};
-pub use station_session::{SessionDeps, SessionSnapshot, StationSession};
+pub use station_session::{SessionDeps, SessionSnapshot, StationSession, StationThinking};

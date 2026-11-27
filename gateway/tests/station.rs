@@ -215,6 +215,11 @@ impl Env {
         message(self.gateway.post(path).header(name, value).json(&body), expected).await
     }
 
+    async fn put(&self, path: &str, body: Value, expected: StatusCode) -> Value {
+        let (name, value) = bearer(&self.token);
+        message(self.gateway.put(path).header(name, value).json(&body), expected).await
+    }
+
     /// Every journal event of every session, through the debug API.
     async fn all_events(&self) -> Vec<Value> {
         let mut events = Vec::new();
@@ -1348,6 +1353,56 @@ async fn runs_a_quick_command_itself_gromche_is_a_volume_command_in_the_response
         (&found["status"], &found["capability"], &found["executor"]),
         (&json!("answered"), &json!("volume"), &json!("own"))
     );
+    station.close();
+}
+
+/// Thinking takes the station by the setting (`thinking.implementation`: `{"station": "ours"}`, docs/plans/thinking.md,
+/// «The station behind the door»): a quick command, the clock typed to it and a conversation are answered as the
+/// station's own chain answers them, routed as before, one request per phrase in the journal with Thinking's line.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn behind_thinking_by_the_setting_the_station_answers_as_its_own_chain_does() {
+    let env = env().await;
+    env.put("/api/v1/thinking/settings", json!({ "implementation": { "station": "ours" } }), StatusCode::OK).await;
+    env.asr.set_reply("Алиса, громче.");
+    let station = env.station(STATION_HEADERS).await;
+    station.synchronize("sync-thinking").await;
+    let before = env.llm.requests().len();
+    env.speak(&station, "voice-th1", 21, "req-th1", None, None);
+    let response = station.wait_for(response_to("req-th1"), 4000).await;
+    assert_eq!(directive_names(&response), vec!["sound_louder", "tts_play_placeholder"]);
+    assert_eq!(env.llm.requests().len(), before, "a quick rule: no model");
+    let route = env.route("Громче.").await;
+    assert_eq!((&route["capability"], &route["executor"]), (&json!("volume"), &json!("own")));
+    assert!(env.all_events().await.iter().any(|event| event["kind"] == "thinking"), "Thinking answered it");
+
+    // Typed to it: the clock answers without the model, as a phrase of the station's own (not the closed window's).
+    station.text_input("text-th2", "req-th2", json!({ "type": "text_input", "text": "Который час?" }));
+    let response = station.wait_for(response_to("req-th2"), 8000).await;
+    let speech =
+        at(&response, "event.aliceResponse.voiceResponse.outputSpeech.text").as_str().unwrap_or("").to_string();
+    assert!(regex::Regex::new(r"^\d{2}:\d{2}\.$").unwrap().is_match(&speech), "{speech}");
+
+    // A conversation: the model's words are spoken; the brain goes on in the station's request.
+    env.llm.set_reply("Кофе бодрит.");
+    station.text_input("text-th3", "req-th3", json!({ "type": "text_input", "text": "Расскажи про кофе" }));
+    until(8000, "the words spoken", || env.yandex.tts().iter().any(|text| text.contains("Кофе бодрит"))).await;
+    let mut rows = Vec::new();
+    for _ in 0..60 {
+        let journal = env.get("/api/v1/requests?limit=50").await;
+        rows = journal["requests"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|view| view["text"] == "Расскажи про кофе")
+            .cloned()
+            .collect::<Vec<_>>();
+        if rows.iter().all(|view| view["status"] != "active") && !rows.is_empty() {
+            break;
+        }
+        sleep(50).await;
+    }
+    assert_eq!(rows.len(), 1, "one request for the phrase: {rows:?}");
+    assert_eq!(rows[0]["status"], "answered", "{rows:?}");
     station.close();
 }
 

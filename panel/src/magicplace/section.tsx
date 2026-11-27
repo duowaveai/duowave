@@ -10,7 +10,7 @@
 import { WinRow, WinSection } from '../ui/sheet';
 import { useEffect, useState } from 'preact/hooks';
 
-import type { AgentCard, CatalogEntry, CatalogFace, CatalogPlace, VoiceLabEngine } from '../api';
+import type { AgentCard, CatalogEntry, CatalogFace, CatalogPlace, SystemBlock, VoiceLabEngine } from '../api';
 import { tr } from '../i18n';
 import { IconClose, IconGear, IconSearch } from '../icons';
 import { useLinkedItem, usePanel } from '../shell/context';
@@ -108,6 +108,9 @@ export function AgentFacts({ card, title }: { card: AgentCard; title: string }) 
             <p class="t-caption m-0">{card.signin.hint ?? tr.magicplace.agentSignin(title)}</p>
             {card.asks === false && <p class="t-caption m-0 mp-agent-warn">{tr.magicplace.agentNoQuestions}</p>}
             {card.model.via === 'duowave' && <p class="t-caption m-0">{tr.magicplace.agentViaDuowave}</p>}
+            {card.system && systemVerbs(card.system).length > 0 && (
+                <p class="t-caption m-0">{tr.magicplace.systemCan(systemVerbs(card.system).join(', '))}</p>
+            )}
             {card.terms && (
                 <a class="t-caption c-accent-text" href={card.terms} target="_blank" rel="noopener noreferrer">
                     {tr.magicplace.agentTerms(title)}
@@ -115,6 +118,19 @@ export function AgentFacts({ card, title }: { card: AgentCard; title: string }) 
             )}
         </div>
     );
+}
+
+/** Что умеет система по блоку `system` её карточки — до установки, словами «Систем работ». */
+export function systemVerbs(block: SystemBlock): string[] {
+    const tell = block.tell ? [tr.router.canTell] : [];
+    return [
+        ...(block.start ? [tr.router.canStart] : []),
+        ...(block.list ? [tr.router.canList] : []),
+        ...tell,
+        ...(block.stop ? [tr.router.canStop] : []),
+        ...(block.open ? [tr.router.canOpen] : []),
+        ...(block.places ? [tr.router.canPlaces] : []),
+    ];
 }
 
 /** Что пакет скачает сам, словами: «Один раз скачает Node — около 50 МБ». */
@@ -238,6 +254,35 @@ function Shelf({ id, title, entries, actions, onOpen }: { id: string; title: str
     );
 }
 
+/**
+ * Каталог ещё читается (в первый раз шлюз скачивает ленты, это бывает и полминуты): заготовки плиток и строка, что
+ * идёт загрузка, — а не пустое окно, из которого уходят (тест 26.11).
+ */
+function LoadingShelf() {
+    return (
+        <section class="card glass card-list" aria-busy="true" aria-labelledby="mp-loading-h">
+            <div class="card-head">
+                <h2 id="mp-loading-h" class="t-title-xs m-0">
+                    {tr.magicplace.reading}
+                </h2>
+            </div>
+            <p class="t-caption m-0" role="status">
+                {tr.magicplace.readingNote}
+            </p>
+            <div class="mp-tiles">
+                {[70, 55, 80, 62].map((width) => (
+                    <div key={width} class="mp-tile mp-ghost" aria-hidden="true">
+                        <span class="mp-ghost-icon" />
+                        <span class="mp-ghost-bar" style={{ width: `${width}%` }} />
+                        <span class="mp-ghost-bar is-thin" style={{ width: '45%' }} />
+                        <span class="mp-ghost-bar is-thin" style={{ width: '85%' }} />
+                    </div>
+                ))}
+            </div>
+        </section>
+    );
+}
+
 /** Фильтры над списком: вид — капсулами с числом, лицо, место и состояние — списками; пустой фильтр не рисуется. */
 function FiltersBar({ entries, filters, onFilters }: { entries: CatalogEntry[]; filters: Filters; onFilters: (next: Filters) => void }) {
     const set = (change: Partial<Filters>) => onFilters({ ...filters, ...change });
@@ -349,6 +394,7 @@ export function MagicPlaceSection() {
         .sort((a, b) => (b.addedAt ?? '').localeCompare(a.addedAt ?? ''));
     const linkedEntry = linked.item ? view?.packages.find((entry) => entry.id === linked.item) : undefined;
     const status = catalogStatus(catalog);
+    const loading = !view && !catalog.error && !catalog.absent;
     const manageable = updates.filter((entry) => canManage(entry.kind));
 
     const updateAll = async () => {
@@ -434,35 +480,38 @@ export function MagicPlaceSection() {
             {browsing && recommended.length > 0 && <Shelf id="recommended" title={tr.magicplace.rowRecommended} entries={recommended} actions={actions} onOpen={linked.open} />}
             {browsing && fresh.length > 0 && <Shelf id="new" title={tr.magicplace.rowNew} entries={fresh} actions={actions} onOpen={linked.open} />}
 
-            <section class="card glass card-list" aria-labelledby="mp-all-h">
-                <div class="card-head">
-                    <h2 id="mp-all-h" class="t-title-xs m-0">
-                        {tr.magicplace.rowAll}
-                    </h2>
-                </div>
-                <FiltersBar entries={searched} filters={filters} onFilters={setFilters} />
-                {here.map((entry) => (
-                    <StoreRow key={entry.id} entry={entry} actions={actions} engines={engines} onOpen={linked.open} word={wordOf(entry)} />
-                ))}
-                {blocked.length > 0 &&
-                    (showBlocked ? (
-                        <>
-                            {blocked.map((entry) => (
-                                <StoreRow key={entry.id} entry={entry} actions={actions} engines={engines} onOpen={linked.open} word={wordOf(entry)} />
-                            ))}
-                            <button class="mp-more" onClick={() => setShowBlocked(false)}>
-                                {tr.magicplace.blockedHide}
-                            </button>
-                        </>
-                    ) : (
-                        <button class="mp-more" onClick={() => setShowBlocked(true)}>
-                            {tr.magicplace.blockedMore(blocked.length)}
-                        </button>
+            {loading && <LoadingShelf />}
+            {!loading && (
+                <section class="card glass card-list" aria-labelledby="mp-all-h">
+                    <div class="card-head">
+                        <h2 id="mp-all-h" class="t-title-xs m-0">
+                            {tr.magicplace.rowAll}
+                        </h2>
+                    </div>
+                    <FiltersBar entries={searched} filters={filters} onFilters={setFilters} />
+                    {here.map((entry) => (
+                        <StoreRow key={entry.id} entry={entry} actions={actions} engines={engines} onOpen={linked.open} word={wordOf(entry)} />
                     ))}
-                {view && here.length === 0 && blocked.length === 0 && !status && (
-                    <p class="t-caption m-0 py-8">{browsing ? tr.magicplace.emptyCatalog : tr.magicplace.nothingFound}</p>
-                )}
-            </section>
+                    {blocked.length > 0 &&
+                        (showBlocked ? (
+                            <>
+                                {blocked.map((entry) => (
+                                    <StoreRow key={entry.id} entry={entry} actions={actions} engines={engines} onOpen={linked.open} word={wordOf(entry)} />
+                                ))}
+                                <button class="mp-more" onClick={() => setShowBlocked(false)}>
+                                    {tr.magicplace.blockedHide}
+                                </button>
+                            </>
+                        ) : (
+                            <button class="mp-more" onClick={() => setShowBlocked(true)}>
+                                {tr.magicplace.blockedMore(blocked.length)}
+                            </button>
+                        ))}
+                    {view && here.length === 0 && blocked.length === 0 && !status && (
+                        <p class="t-caption m-0 py-8">{browsing ? tr.magicplace.emptyCatalog : tr.magicplace.nothingFound}</p>
+                    )}
+                </section>
+            )}
 
             {settings && <StoreSettings catalog={catalog} onClose={() => setSettings(false)} />}
 

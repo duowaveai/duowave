@@ -11,7 +11,7 @@ import { createPortal } from 'preact/compat';
 import { useContext, useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
 
 import { LiveMessage, stationCall, viaRefusal } from '../api';
-import { STATION_LIVE, STATION_READY, onStationMessage, stationHello } from '../live';
+import { STATION_LIVE, STATION_READY, onOwnRequest, onStationMessage, ownRequestsNow, stationHello } from '../live';
 import { usePoll } from '../poll';
 import { DISMISS_MESSAGE, SHEET_MESSAGE } from '../ui/sheet';
 import { usePanel } from './context';
@@ -235,17 +235,27 @@ function useFrameLive(frame: RefObject<HTMLIFrameElement>, station: string): voi
         const send = (message: LiveMessage | null): void => {
             frame.current?.contentWindow?.postMessage({ type: STATION_LIVE, message }, location.origin);
         };
+        // This computer's own requests go to the window too: its ear's trip is the home's question as well, and the
+        // station's orbit follows it (live.ts, onOwnRequest). A station's hello resets the window's feed: they go again.
+        const sendOwn = (): void => ownRequestsNow().forEach((request) => send({ type: 'request', request }));
         const onReady = (event: MessageEvent) => {
             if (event.origin !== location.origin || !frame.current || event.source !== frame.current.contentWindow) return;
             if ((event.data as { type?: unknown } | null)?.type !== STATION_READY) return;
             const hello = stationHello(station);
             if (hello) send(hello);
+            sendOwn();
         };
         window.addEventListener('message', onReady);
-        const stop = onStationMessage((from, message) => from === station && send(message));
+        const stop = onStationMessage((from, message) => {
+            if (from !== station) return;
+            send(message);
+            if (message?.type === 'hello') sendOwn();
+        });
+        const stopOwn = onOwnRequest((request) => send({ type: 'request', request }));
         return () => {
             window.removeEventListener('message', onReady);
             stop();
+            stopOwn();
         };
     }, [station]);
 }

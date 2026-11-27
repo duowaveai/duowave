@@ -221,6 +221,14 @@ async fn the_built_in_helper_gives_what_the_computer_has() {
         assert!(matches!(app.helpers.pick(ability), Some(Giver::Itself)), "{ability:?}");
     }
     assert!(app.helpers.pick(Ability::Messages).is_none(), "no bot, no helper with one");
+    // The works in work folders (router-and-works, stage 5): given here, ready once a folder is added.
+    let works = contract.get(Ability::Works).expect("works are declared");
+    assert!(!works.ready, "no work folder yet");
+    assert_eq!(works.details["folders"], 0);
+    assert_eq!(works.details["atOnce"], 1);
+    assert_eq!(works.details["agents"][0], "claude-code");
+    assert!(app.pc.builtin.gives_here(Ability::Works));
+    assert!(matches!(app.helpers.pick(Ability::Works), Some(Giver::Itself)));
     let hears = app.helpers.own_recognizer().unwrap().description();
     assert!(hears.ends_with(&format!("via {asr}/audio/transcriptions")), "{hears}");
     assert!(Arc::ptr_eq(&app.pc.builtin.speech().unwrap(), app.voice.own_speech().unwrap()), "the very engine");

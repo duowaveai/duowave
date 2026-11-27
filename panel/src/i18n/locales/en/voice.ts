@@ -90,6 +90,12 @@ const en: Translation<typeof ru> = {
     // strip.tsx
     hideStrip: 'Hide the strip',
     canSay: 'You can say:',
+
+    // The app's own ear on this computer (voice/app-voice.ts, screens/voice-strip.tsx).
+    appRecognizing: 'Recognizing…',
+    appParked: 'Waiting for the rest',
+    appSpeaking: 'Answering',
+    appQuiet: 'Ready to listen',
 };
 
 export default en;

@@ -110,7 +110,8 @@ pub enum Chore {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum Step {
-    /// The run began: the agent's session, its model, how it pays (`plan`, `key`, `agent`), its version.
+    /// The run began: the agent's session, its model, how it pays (`plan`, `key`, `agent`), its version, the protocol
+    /// and its version agreed with it (`ACP 2`).
     Begin {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         session: Option<String>,
@@ -120,6 +121,8 @@ pub enum Step {
         billing: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         version: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        protocol: Option<String>,
         /// What it was asked, as given to the agent.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         prompt: Option<String>,
@@ -184,7 +187,8 @@ pub enum Step {
     },
     /// The journal reached its limit: from here only the end is written.
     Cut,
-    /// The run ended: how, the agent's last words, the dollars it said.
+    /// The run ended: how, the agent's last words, the dollars it said, how many of its messages were not understood
+    /// (an update of a kind this gateway does not know): many of them — its plug is due an update.
     End {
         outcome: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -193,6 +197,8 @@ pub enum Step {
         error: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         usd_micro: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        unknown: Option<u32>,
     },
 }
 
@@ -331,6 +337,9 @@ pub struct Open {
     /// When the agent cannot go on in a session (no `session/load`), this is said to its new one: the task and the
     /// last result.
     pub recap: Option<String>,
+    /// A session that changes nothing (the plan, the review of stage 6): Claude Code in its mode `plan`, an ACP agent
+    /// refused every change.
+    pub read_only: bool,
 }
 
 /// How a run ended.
@@ -436,6 +445,11 @@ pub trait Harness: Send + Sync {
     fn title(&self) -> String;
     /// How its runs are written in the deals: `harness:claude-code`, `agent:<card>`.
     fn via(&self) -> String;
+    /// Whether its model is someone else's cloud (the regulator «Что может уходить из дома» holds it): Claude Code
+    /// always; a card's agent unless its model goes through DuoWave.
+    fn cloud(&self) -> bool {
+        true
+    }
     /// Found, which version, signed in — and why not.
     async fn ready(&self) -> Ready;
     /// A session in a work copy: a new one, or the given one gone on with.
@@ -452,6 +466,9 @@ pub trait Session: Send {
     /// A prompt: the run goes to its end, its steps to `out`. `stop` ends it: the agent finishes the turn, and is
     /// made to end after ten seconds.
     async fn prompt(&mut self, text: &str, out: Arc<dyn Out>, stop: CancellationToken) -> RunEnd;
+    /// What the next run may spend in dollars — what the work's budget left it; None — no ceiling. An agent that
+    /// cannot be held to a ceiling (ACP has none) leaves it: the budget is counted between its runs.
+    fn ceiling(&mut self, _usd: Option<f64>) {}
     /// The session is left: its program ends.
     async fn close(self: Box<Self>);
 }
@@ -720,7 +737,13 @@ mod tests {
         assert!(!Step::Says { text: "ok".into() }.is_trouble());
         let back: Step = serde_json::from_value(json).unwrap();
         assert_eq!(back, step);
-        let end = serde_json::to_value(Step::End { outcome: "ok".into(), text: None, error: None, usd_micro: Some(5) });
+        let end = serde_json::to_value(Step::End {
+            outcome: "ok".into(),
+            text: None,
+            error: None,
+            usd_micro: Some(5),
+            unknown: None,
+        });
         assert_eq!(end.unwrap()["usdMicro"], 5);
     }
 }

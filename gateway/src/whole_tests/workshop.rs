@@ -50,6 +50,7 @@ async fn the_check_after_a_run_keeps_its_verdict_only_on_the_card_it_began_with(
         kept: true,
         work: None,
         unchanged: false,
+        overthought: false,
     };
     workshop.keep_card("widget-1", card, Some("made")).unwrap();
     let at_end = workshop.kept_card("widget-1").unwrap();
@@ -72,4 +73,45 @@ async fn the_check_after_a_run_keeps_its_verdict_only_on_the_card_it_began_with(
     assert_eq!(workshop.card("widget-1").stage, Stage::Stopped);
     assert!(!workshop.working("widget-1"));
     assert!(!workshop.stop("widget-1"), "nothing goes on now");
+}
+
+/// 27.11, a widget on GLM 5.3: the model's thinking took its whole answer four times running and the run ended with
+/// nothing written. A run its limits cut is «не доделано», never «ничего не поменялось» (the card said the agent
+/// finished without touching the draft); the mark of the thinking goes on the card. A run that ended on its own and
+/// wrote nothing stays «ничего не поменялось».
+#[tokio::test]
+async fn a_run_its_limits_cut_is_unfinished_not_unchanged_and_says_the_thinking_took_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = crate::app::App::build(crate::config::Config::for_tests(&env(dir.path()))).unwrap();
+    let workshop = app.workshop.clone();
+    workshop.create("widget-2", Some("widget"), Some("Цитата дня"), None).unwrap();
+    let working = DraftMeta {
+        by: activity::By::Panel,
+        who: None,
+        asked: "с цитатой дня".into(),
+        kind: Face::Widget,
+        stage: Stage::Working,
+        updated: 0,
+        note: None,
+        kept: true,
+        work: None,
+        unchanged: false,
+        overthought: true,
+    };
+    workshop.keep_card("widget-2", working.clone(), Some("made")).unwrap();
+    let card = workshop.kept_card("widget-2").unwrap();
+    workshop.checked_after_run("widget-2", card, true, false).await;
+    let cut = workshop.card("widget-2");
+    assert_eq!(cut.stage, Stage::Unfinished);
+    assert!(!cut.unchanged, "cut by its limits: «не доделано», not «ничего не поменялось»");
+    assert!(cut.overthought, "the thinking took it");
+
+    // Ended on its own, nothing written: «ничего не поменялось».
+    std::thread::sleep(std::time::Duration::from_millis(3));
+    workshop.keep_card("widget-2", DraftMeta { overthought: false, ..working }, Some("made")).unwrap();
+    let card = workshop.kept_card("widget-2").unwrap();
+    workshop.checked_after_run("widget-2", card, false, false).await;
+    let unchanged = workshop.card("widget-2");
+    assert_eq!(unchanged.stage, Stage::Unfinished);
+    assert!(unchanged.unchanged && !unchanged.overthought);
 }

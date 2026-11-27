@@ -72,7 +72,7 @@ VOLUME /cache
 
 # Not for the open network: no sign-in unless ASR_API_KEY is set (the gateway sends its own ASR_API_KEY).
 EXPOSE 8090
-# The first start downloads the model (~450 MB for GigaAM v3) before it answers.
+# The first start downloads the model (~490 MB for GigaAM v4) before it answers.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10m --retries=3 \
     CMD ["python", "-c", "import os, urllib.request; urllib.request.urlopen('http://127.0.0.1:%s/health' % os.environ.get('ASR_PORT', '8090'), timeout=4)"]
 

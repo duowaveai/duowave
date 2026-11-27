@@ -23,11 +23,14 @@ import { StoreStep } from './onb/store';
 import { TryStep } from './onb/try';
 import { TurboStep } from './onb/turbo';
 import { StatusStep } from './onb/status';
+import { AllowStep } from './onb/allow';
+import type { PermissionItem } from '../api';
+import { type Permissions, PermissionRows, actionable, needs, useGranted, usePermissions } from '../ui/permissions';
 import { ONBOARDING, TOP_VIA, VIA } from '../via';
 import { InstallPill } from '../magicplace/wizard';
 import '../ui/onboarding-canvas.css';
 
-type StepId = 'where' | 'brain' | 'speaker' | 'answer' | 'character' | 'try' | 'store' | 'status';
+type StepId = 'allow' | 'where' | 'brain' | 'speaker' | 'answer' | 'character' | 'try' | 'store' | 'status';
 
 /**
  * Запись первых шагов (onb/record.ts): выбор, шаг, пройденные шаги и хвосты. Нет записи — шаги пройдены или закрыты.
@@ -55,12 +58,32 @@ function againStart(panel: ReturnType<typeof usePanel>): { choice: Choice; done:
     return { choice: linked ? 'stationPc' : 'computer', done, picked: true };
 }
 
-/** Шаги по выбору. Шлюз на самой колонке (пульт открыт на ней): где жить — уже решено. */
-function stepsOf(choice: Choice, onStation: boolean): StepId[] {
+/**
+ * Шаги по выбору. Шлюз на самой колонке (пульт открыт на ней): где жить — уже решено, поиска нет, разрешать нечего.
+ * `allow` — шаг «Разрешения» перед поиском (docs/plans/permissions.md): только когда системе этого компьютера есть что
+ * разрешить.
+ */
+function stepsOf(choice: Choice, onStation: boolean, allow = false): StepId[] {
     // «Ваш дом» (этап 4 плана home-setup-flow) — последним на каждом пути.
     if (onStation) return ['character', 'try', 'store', 'status'];
-    if (choice === 'computer') return ['where', 'brain', 'character', 'try', 'store', 'status'];
-    return ['where', 'speaker', 'answer', 'character', 'try', 'store', 'status'];
+    const first: StepId[] = allow ? ['allow', 'where'] : ['where'];
+    if (choice === 'computer') return [...first, 'brain', 'character', 'try', 'store', 'status'];
+    return [...first, 'speaker', 'answer', 'character', 'try', 'store', 'status'];
+}
+
+/**
+ * Какие строки показать на шаге «Разрешения», по первому прочтению списка: на Mac — локальная сеть и микрофон, если
+ * хоть что-то из них ещё не разрешено; на Windows — только то, что выключено. Нечего — шага нет. Пульт не на этом
+ * компьютере или без приложения — шага нет: окна системы появились бы там, где никто не смотрит.
+ */
+function allowItemsOf(perms: Permissions): PermissionItem[] {
+    const view = perms.view;
+    if (!view || !actionable(view)) return [];
+    if (view.os === 'mac') {
+        const rows = view.items.filter((row) => row.item === 'localNetwork' || row.item === 'microphone');
+        return rows.some(needs) ? rows.map((row) => row.item) : [];
+    }
+    return view.items.filter(needs).map((row) => row.item);
 }
 
 /**
@@ -157,8 +180,41 @@ export function Onboarding({ onClose }: { onClose: () => void }) {
         again ? again.choice : saved?.choice && saved.picked !== false ? saved.choice : 'stationPc',
     );
     const [done, setDone] = useState<string[]>(again?.done ?? saved?.done ?? []);
-    const steps = stepsOf(choice, onStation);
-    const [step, setStep] = useState<StepId>(saved && steps.includes(saved.step) ? saved.step : steps[0]);
+    // «Разрешения» (docs/plans/permissions.md): решается один раз, по первому прочтению списка этого компьютера. Пока
+    // не решено, поиск колонки не начинается: на Mac он сам вызвал бы окно macOS до объяснения.
+    const resumedAllow = saved?.step === 'allow' || (saved?.done ?? []).includes('allow');
+    const [allowItems, setAllowItems] = useState<PermissionItem[] | null>(onStation ? [] : null);
+    // «Где» и «Разрешения» ждут решения о шаге «Разрешения»: продолжение с «Где», когда разрешения ещё нужны, начинается с
+    // них (запись прошлых шагов осталась в памяти пульта — проверка 27.11: поиск на «Где» сразу спросил сеть).
+    const [step, setStepNow] = useState<StepId | null>(
+        saved && saved.step !== 'allow' && saved.step !== 'where' && stepsOf(choice, onStation).includes(saved.step) ? saved.step : null,
+    );
+    const perms = usePermissions(!onStation && (allowItems === null || step === 'allow' || step === 'where' || step === null));
+    useEffect(() => {
+        if (allowItems !== null) return;
+        if (perms.view) setAllowItems(allowItemsOf(perms));
+        else if (perms.failed) setAllowItems([]);
+    }, [perms.view, perms.failed]);
+    // Список не прочитался быстро (старый шлюз): без шага, поиск не ждёт дольше.
+    useEffect(() => {
+        if (allowItems !== null) return;
+        const timer = window.setTimeout(() => setAllowItems((now) => now ?? []), 3000);
+        return () => window.clearTimeout(timer);
+    }, []);
+    const allow = !!allowItems && allowItems.length > 0;
+    const steps = stepsOf(choice, onStation, allow || (resumedAllow && allowItems === null));
+    // Первый шаг — когда решено, нужен ли шаг «Разрешения»; продолжение — с того же шага.
+    // Запись, какой она была при открытии: первая запись ниже кладёт шаг-заглушку, по ней решать нельзя.
+    const [start] = useState(() => saved);
+    useEffect(() => {
+        if (step !== null || allowItems === null) return;
+        const all = stepsOf(choice, onStation, allow);
+        const skipsAllow = allow && start?.step === 'where' && !(start.done ?? []).includes('allow');
+        const first = start && all.includes(start.step) && !skipsAllow ? start.step : all[0];
+        setStepNow(first);
+        patchRecord({ step: first });
+    }, [allowItems]);
+    const setStep = (next: StepId) => setStepNow(next);
     const [busy, setBusy] = useState(false);
     const [problem, setProblem] = useState<string | null>(null);
     const [nav, setNav] = useState<StepNav | null>(null);
@@ -176,12 +232,13 @@ export function Onboarding({ onClose }: { onClose: () => void }) {
     useEffect(() => void resumeLink().catch(() => undefined), []);
     // Шаги открыты — пульт помнит это сразу, ещё до «Дальше» (см. Saved). «Пройти заново» — место выбрано по дому.
     useEffect(() => {
-        if (again) remember(KEY, { ...saved, ...again, step, again: true } satisfies Saved);
-        else openRecord({ choice, step, picked: false });
+        const first = step ?? (resumedAllow ? 'allow' : 'where');
+        if (again) remember(KEY, { ...saved, ...again, step: first, again: true } satisfies Saved);
+        else openRecord({ choice, step: first, picked: false });
     }, []);
 
     // Колонки дома: поиск начинается сразу; выбор он не меняет (см. выше).
-    const scan = useScan(!onStation);
+    const scan = useScan(!onStation && step !== null && step !== 'allow');
 
     // Компьютер уже в доме, а шаги ещё на «Где живёт» (дом настроили в пульте колонки, потом вошли сюда по паролю или
     // коду — замечание 5 после 0.18.1): шаги колонки — её, пройдены там. Сразу последний шаг — «Ваш дом: что работает», с
@@ -190,19 +247,20 @@ export function Onboarding({ onClose }: { onClose: () => void }) {
     // тоже нет: там человек сам идёт по шагам.
     const helperKey = panel.role.role === 'helper' ? (panel.role.station?.key ?? null) : undefined;
     useEffect(() => {
-        if (onStation || again || turbo || helperKey === undefined || step !== 'where' || done.includes('speaker')) return;
+        // До решения о шаге «Разрешения» шага ещё нет: ждём его. Компьютер уже в доме — без шага «Разрешения».
+        if (onStation || again || turbo || helperKey === undefined || (step !== 'where' && step !== 'allow') || done.includes('speaker')) return;
         if (helperKey === null) {
             finish();
             panel.go('home');
             return;
         }
         setTurbo({ key: helperKey, name: panel.role.station?.name ?? '', status: true });
-    }, [helperKey]);
+    }, [helperKey, step === null]);
 
-    const index = Math.max(0, steps.indexOf(step));
+    const index = Math.max(0, step ? steps.indexOf(step) : 0);
     const go = (next: StepId) => {
         // Пройденный «Дальше» шаг — в запись: после перезапуска полоса шагов показывает его ✓.
-        const passed = steps.indexOf(next) > index && !done.includes(step) ? [...done, step] : done;
+        const passed = step && steps.indexOf(next) > index && !done.includes(step) ? [...done, step] : done;
         setStep(next);
         setDone(passed);
         setProblem(null);
@@ -324,10 +382,18 @@ export function Onboarding({ onClose }: { onClose: () => void }) {
                                         } else setTurbo(joined);
                                     }}
                                 />
+                            ) : step === null ? (
+                                // Решается, нужен ли шаг «Разрешения»: доли секунды.
+                                <p class="small" role="status">
+                                    {tr.onboarding.searching}
+                                </p>
+                            ) : step === 'allow' ? (
+                                <AllowStep perms={perms} items={allowItems ?? []} />
                             ) : step === 'where' ? (
                                 <WhereStep
                                     choice={choice}
                                     scan={scan}
+                                    perms={perms}
                                     onPick={(value) => {
                                         setChoice(value);
                                         patchRecord({ choice: value, step, picked: undefined });
@@ -455,9 +521,11 @@ function useScan(enabled: boolean): Scan {
             return;
         }
         let alive = true;
+        // Поиск начинается (в том числе после шага «Разрешения» или «Назад» на него): «Ищу…», а не прошлое «не нашлось».
+        setFound(null);
         void (async () => {
             try {
-                const { stations, homes = [], whyNone: why } = await api.discoverStations();
+                const { stations, homes = [], whyNone: why } = await api.discoverStations(true);
                 if (!alive) return;
                 setFound(stations);
                 setWithGateway([]);
@@ -607,8 +675,16 @@ function choiceMap(choice: Choice): { nodes: MapNode[]; links: MapLink[]; badge:
 
 // ─── «Где будет жить DuoWave» (доска Where) ────────────────────
 
-function WhereStep({ choice, scan, onPick }: { choice: Choice; scan: Scan; onPick: (choice: Choice) => void }) {
+/** Что из разрешений мешает поиску колонки (docs/plans/permissions.md). */
+const SEARCH_ITEMS: PermissionItem[] = ['localNetwork', 'firewall', 'networkProfile'];
+
+function WhereStep({ choice, scan, perms, onPick }: { choice: Choice; scan: Scan; perms: Permissions; onPick: (choice: Choice) => void }) {
     const t = tr.onboarding;
+    // Шаг «Разрешения» пропустили или отказали: строка с кнопкой здесь же; разрешили — поиск повторяется сам.
+    useGranted(perms, SEARCH_ITEMS, () => scan.again());
+    const canAct = actionable(perms.view);
+    const blocking = canAct ? (perms.view?.items ?? []).filter((row) => SEARCH_ITEMS.includes(row.item) && needs(row)).map((row) => row.item) : [];
+    const micRow = canAct && choice === 'computer' ? perms.view?.items.find((row) => row.item === 'microphone' && needs(row)) : undefined;
     const first = scan.found[0];
     const lines = choice === 'computer' ? t.linesComputer : choice === 'station' ? t.linesStation : t.linesStationPc;
     // Последняя строка «Только компьютер» и «Только колонка» — чего не будет (янтарь), у остальных — галочка.
@@ -669,11 +745,17 @@ function WhereStep({ choice, scan, onPick }: { choice: Choice; scan: Scan; onPic
                         </button>
                     </div>
                 )}
-                {/* Поиск не мог и спросить: на Mac у DuoWave нет «Локальной сети» (находка 3 проверки шага 11). */}
-                {scan.done && scan.whyNone && (
-                    <p class="small" role="status" style={{ margin: 0 }}>
-                        {scan.whyNone}
-                    </p>
+                {/* Поиск не мог и спросить: на Mac у DuoWave нет «Локальной сети» (находка 3 проверки шага 11), на Windows —
+                    брандмауэр или общедоступная сеть. В приложении на этом компьютере — строка с кнопкой, иначе — текст. */}
+                {scan.done && blocking.length > 0 ? (
+                    <PermissionRows perms={perms} items={blocking} look="onb" />
+                ) : (
+                    scan.done &&
+                    scan.whyNone && (
+                        <p class="small" role="status" style={{ margin: 0 }}>
+                            {scan.whyNone}
+                        </p>
+                    )
                 )}
                 <div class="onb-opts">
                     {option(
@@ -692,6 +774,15 @@ function WhereStep({ choice, scan, onPick }: { choice: Choice; scan: Scan; onPic
                     {option('computer', t.choiceComputer, t.choiceComputerSub, <Ico name="laptop" size="lg" />)}
                 </div>
                 <HomeFound scan={scan} choice={choice} />
+                {/* «Только этот компьютер»: слушает он сам — микрофон, если его пропустили на шаге «Разрешения». */}
+                {micRow && (
+                    <>
+                        <p class="small" style={{ margin: 0 }}>
+                            {tr.permissions.micForComputer}
+                        </p>
+                        <PermissionRows perms={perms} items={['microphone']} look="onb" />
+                    </>
+                )}
                 {choice !== 'computer' && (
                     <p class="small" style={{ margin: 0 }}>
                         {t.rootNote}{' '}

@@ -24,6 +24,8 @@ pub mod yandex_now;
 pub use callbacks::OUR_CALLBACK_PREFIX;
 pub use router::{Continuation, Decision, Resolution, RouteInput, Router, RESTRICTED};
 pub use skill::{ExecutionContext, Outcome, OwnSkill, PhraseStream};
-pub use skills_service::{CallsLinks, DialogAccess, NoConnectors, SkillConnectors, SkillsDeps, SkillsService};
+pub use skills_service::{
+    CallsLinks, DeviceContext, DialogAccess, NoConnectors, SkillConnectors, SkillsDeps, SkillsService,
+};
 
 crate::route_needs!(std::sync::Arc<SkillsService>);

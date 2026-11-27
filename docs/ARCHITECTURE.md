@@ -39,14 +39,16 @@ Docker или на самой колонке — тогда без тяжёлы�
 
 | Этаж (снизу вверх) | Что там | Модули |
 |---|---|---|
+| Дверь | the door between the audio interface and Thinking: its messages, the `Thinking` trait, a hand's spec (`crates/duowave-door`, none of our floors under it) | `door` |
 | Основание | настройки и `.env`, база SQLite и миграции, секреты, исходящий HTTP, ответы API и кто спрашивает, языки, общие типы и события, домашние сети и сроки хранения | `config` `storage` `secrets` `utils` `platform` `locale` `core` `settings` `operations` |
+| Чутьё | one judge of phrases for both sides of the door: is the thought over, is it ours, what a phrase in the window is (`crates/duowave-sense`) | `sense` |
 | Права | ядро «Связей» — адреса, ступени, правило, цепочка вызова, согласие, журнал, договор поставщика, сохранённые связи; люди, роли и ключи API | `rights` `access` |
 | Голос | VAD, распознавание, синтез, конец фразы; заглушки своих голосов и магазина моделей¹; договор «уха» — что ухо говорит о себе, что умеет (громкость, плеер, таймеры…), режимы дома и выбор «колонка или микрофон» | `speech` `voice_lab` `models` `ear` |
 | Мозг | модели и дороги к ним, вход к поставщикам, разговор без колонки, память, характеры, навыки и маршруты, долгие задачи, ночная работа | `dialog` `router` `oauth` `talk` `memory` `characters` `skills` `tasks` `sleep` |
-| Уши | переходники ушей к договору — сейчас один, Станция Яндекса: её протокол, сессии и команды, связь с Яндексом (за фичей `yandex-station`), медиа, журнал и отладка; колонки и их одобрение; слово-активатор; живой канал пульта; журнал запросов | `gateway` `stations` `activator` `live` `requests` |
+| Уши | переходники ушей к договору — сейчас один, Станция Яндекса: её протокол, сессии и команды, связь с Яндексом (за фичей `yandex-station`), медиа, журнал и отладка; колонки и их одобрение; слово-активатор; живой канал пульта; журнал запросов; the computer's own voice channel (feature `computer-ear`, the computer's build only) | `gateway` `stations` `activator` `live` `requests` `channel` |
 | Приложения | движок пакетов (QuickJS, WASM), приложения-программы, «Связи» наверху — карточки, маршруты пульта, поставщики, возможности, подключения, MCP, экран, MIDI | `plugins` `apps` `bus` `capabilities` `connectors` `mcp` `screen` `midi` |
 | Дом | где работает шлюз, помощники, дом и устройства, домашний сервер, выход в интернет, обновления, `/health` | `placement` `helpers` `home` `home_server` `egress` `updates` `health_status` |
-| Только компьютер² | звонки (WebRTC, LiveKit, SIP, Telegram), работы агентов; компьютерные части модулей нижних этажей под их же именами — лаборатория голоса и магазин моделей, своё распознавание и свой голос, голоса персонажей, «быть Турбо» (встроенный Турбо, приём связи, «Помогаю», поиск дома), устройства Турбо, установка колонки по SSH и её поиск, переезды, наблюдение за шлюзами колонок, запуск программ MCP, ElevenLabs | `calls` `works` + части `voice_lab` `models` `speech` `characters` `helpers` `home` `home_server` `placement` `stations` `mcp` `capabilities` `platform` `settings` |
+| Только компьютер² | звонки (WebRTC, LiveKit, SIP, Telegram), работы агентов; компьютерные части модулей нижних этажей под их же именами — лаборатория голоса и магазин моделей, своё распознавание и свой голос, голоса персонажей, «быть Турбо» (встроенный Турбо, приём связи, «Помогаю», поиск дома), устройства Турбо, установка колонки по SSH и её поиск, переезды, наблюдение за шлюзами колонок, запуск программ MCP, ElevenLabs, разрешения системы (локальная сеть, микрофон, брандмауэр) | `calls` `works` `permissions` + части `voice_lab` `models` `speech` `characters` `helpers` `home` `home_server` `placement` `stations` `mcp` `capabilities` `platform` `settings` |
 | Программа | сборка всего (`app.rs`), связи между модулями (`links/`), подключение этажа компьютера (`computer/`), вшитый пульт, команды разработчика | `app` `links` `computer` `panel` `tools` |
 
 ¹ На колонке лаборатория голоса и магазин моделей отвечают 501. ² В сборку для колонки не входит.
@@ -63,6 +65,11 @@ Docker или на самой колонке — тогда без тяжёлы�
 месте — `gateway/src/computer/` (шаги сборки, запуск и остановка, маршруты, части для обработчиков) под одной пометкой:
 в сборке колонки на его месте `computer/none.rs`, те же имена и ничего за ними. Что этаж компьютера есть в программе,
 общий код спрашивает у `core::build::computer()` (его говорит `duowave_pc::install()` при старте).
+
+The door and «Чутьё» (27.11.2026, the contract): the door is a crate below every
+floor, so either side can move to a repository of its own and take the door by its version; «Чутьё» stands right above
+«Основание» and gets its model steps from above. The audio side — the station's session, the computer's channel —
+holds `Arc<dyn Thinking>` and talks to Thinking only through the door.
 
 Этажи записаны в [`gateway/layers.json`](../gateway/layers.json), CI проверяет их скриптом `scripts/check-layers.mjs`
 (меньше секунды, без сборки). С 24.11 исключений в нём нет: каждый этаж ходит только вниз, и новая связь вверх роняет
@@ -94,6 +101,7 @@ Node, он в git под тегом `node-gateway-last` ([gateway/PORTING.md](..
 | Пакеты и плагины, «Как называем и где работает» | [architecture/packages.md](architecture/packages.md) |
 | Шина «Связи» | [architecture/bus.md](architecture/bus.md) |
 | Разговор без колонки, слой разговора | [architecture/talk.md](architecture/talk.md) |
+| Thinking behind the door: `OurThinking`, the card, the rounds, the turn's line | [architecture/talk.md](architecture/talk.md#thinking-behind-the-door-cratesduowave-brainsrcthinking-plan) |
 | Отладка — первый класс | [architecture/debugging.md](architecture/debugging.md) |
 | Подводные камни протокола | [architecture/protocol-pitfalls.md](architecture/protocol-pitfalls.md) |
 | Этапы, перенос с Node | [architecture/history.md](architecture/history.md) |

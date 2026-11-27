@@ -39,6 +39,8 @@ pub const READ: &str = "read";
 #[serde(rename_all = "lowercase")]
 pub enum Act {
     New,
+    /// A work for an agent in a work folder (router-and-works, stage 5).
+    Folder,
     Add,
     Status,
     Show,
@@ -66,6 +68,10 @@ pub struct Reading {
     pub face: Option<String>,
     #[serde(default)]
     pub answer: Option<String>,
+    #[serde(default)]
+    pub folder: Option<String>,
+    #[serde(default)]
+    pub agent: Option<String>,
 }
 
 pub fn read_tool() -> LlmTool {
@@ -80,13 +86,15 @@ pub fn read_tool() -> LlmTool {
             "properties": {
                 "act": {
                     "type": "string",
-                    "enum": ["new", "add", "status", "show", "desk", "details", "stop", "open", "close", "answer", "noise", "talk"]
+                    "enum": ["new", "folder", "add", "status", "show", "desk", "details", "stop", "open", "close", "answer", "noise", "talk"]
                 },
                 "thing": { "type": "string", "description": "The thing it is about, by its id as «Сейчас» shows it: a work's label ([р3]) or the id of an app that is on ([weather]); its name only when it has neither; leave it out for the thing talked about last." },
-                "text": { "type": "string", "description": "new: the whole wish in the person's words, with what the conversation added; add: what to add or change." },
+                "text": { "type": "string", "description": "new: the whole wish in the person's words, with what the conversation added; folder: the task for the agent; add: what to add or change." },
+                "folder": { "type": "string", "description": "folder: the work folder's name as the person said it; leave it out when they named none." },
+                "agent": { "type": "string", "description": "folder: the agent they asked for, by the program's name; leave it out for the folder's own." },
                 "title": { "type": "string", "description": "new: the thing's short name, one to four words, a noun phrase («Курс доллара», «Часы с секундами») — never the request itself." },
                 "face": { "type": "string", "enum": ["widget", "skill", "game", "theme"], "description": "new: what it becomes; a widget when the person did not say." },
-                "answer": { "type": "string", "enum": ["yes", "fit", "no", "park", "details", "redo", "drop", "new", "edit", "first", "second", "third", "last"], "description": "answer: the person's answer to the question waiting; to «change it, or make a new one?» — edit or new; to «which one?» — first, second, third or last as they were named." }
+                "answer": { "type": "string", "enum": ["yes", "fit", "no", "park", "details", "redo", "drop", "new", "edit", "first", "second", "third", "last", "wait", "stop", "raise"], "description": "answer: the person's answer to the question waiting; to «change it, or make a new one?» — edit or new; to «which one?» — first, second, third or last as they were named; to «wait or stop?» — wait or stop; to «the budget is used up: add more or stop?» — raise or stop." }
             },
             "required": ["act"],
             "additionalProperties": false
@@ -211,8 +219,11 @@ impl TalkLayer {
             return true;
         }
         let now = now_ms();
-        let works = self.works.all(Some(device), None);
-        if works.iter().any(|work| work.going() || now.saturating_sub(work.updated_at) < READ_WINDOW_MS) {
+        // A work going on here makes every phrase here worth reading; another device's does not — its talk would
+        // wait for one more model call. A phrase that names a work by its title is read wherever it began (Н2).
+        let works = self.home_works(device);
+        let here = works.iter().filter(|work| work.device() == device);
+        if here.into_iter().any(|work| work.going() || now.saturating_sub(work.updated_at) < READ_WINDOW_MS) {
             return true;
         }
         let normalized = crate::skills::text::normalize(text);
@@ -221,12 +232,30 @@ impl TalkLayer {
             return true;
         }
         let wanted = stems(text);
-        !wanted.is_empty() && works.iter().any(|work| alike(&stems(&work.title), &wanted))
+        if !wanted.is_empty() && works.iter().any(|work| alike(&stems(&work.title), &wanted)) {
+            return true;
+        }
+        // A work folder by its word («в папке…») or by its name, while there are folders to work in.
+        let cues = pack::of(self.lang(device)).work.folder.cues;
+        let folders = self.folder_names();
+        !folders.is_empty()
+            && (normalized.split_whitespace().any(|word| cues.iter().any(|cue| word.starts_with(cue)))
+                || folders.iter().any(|name| alike(&stems(name), &wanted)))
     }
 
     /// The reader's instructions for a device: the acts, and what waits there — the open door, a question.
     fn reading_instructions(&self, device: &str) -> String {
         let mut text = INSTRUCTIONS.to_string();
+        let folders = self.folder_names();
+        if !folders.is_empty() {
+            let names: Vec<String> = folders.iter().map(|name| format!("«{name}»")).collect();
+            text.push_str(&format!(
+                "\n- folder — they want a coding agent to do a task in a work folder (code, a site, a repository): \
+                 «в папке Сайт поправь опечатку». `text`: the task; `folder`: the folder's name as said; `agent`: \
+                 the agent if they named one. The work folders: {}.",
+                names.join(", ")
+            ));
+        }
         if self.door.is_open(device) {
             text.push_str("\nThe workshop is open: a wish that is not about the thing being made is a new thing.");
         }
@@ -279,6 +308,7 @@ impl TalkLayer {
                 ask: text,
                 title: filled(reading.title),
             },
+            Act::Folder => Heard::Folder { ask: text, folder: filled(reading.folder), agent: filled(reading.agent) },
             Act::Add => Heard::Add { text, thing },
             Act::Status => Heard::Status { thing },
             Act::Show => Heard::Show { thing },
@@ -304,6 +334,11 @@ impl TalkLayer {
                     "third" => Answer::Choice(2),
                     "last" => Answer::Choice(usize::MAX),
                     "redo" => Answer::Redo { text },
+                    "wait" if question.kind == super::asked::Kind::Wait => Answer::Wait,
+                    "stop" if matches!(question.kind, super::asked::Kind::Wait | super::asked::Kind::Budget) => {
+                        Answer::Stop
+                    }
+                    "raise" if question.kind == super::asked::Kind::Budget => Answer::Raise,
                     _ => return None,
                 };
                 Heard::Answer { work: question.work, question: question.kind, again: question.again, answer }
@@ -346,6 +381,8 @@ mod tests {
                 title: None,
                 face: None,
                 answer: None,
+                folder: None,
+                agent: None,
             })
         );
         assert_eq!(choice("Вот: {\"act\": \"close\"}", None).map(|reading| reading.act), Some(Act::Close));
@@ -390,7 +427,16 @@ mod tests {
     #[test]
     fn a_reading_is_what_the_rules_hear_and_conversation_is_none() {
         let layer = TalkLayer::new(None, EventBus::new());
-        let read = |act: Act| Reading { act, thing: None, text: None, title: None, face: None, answer: None };
+        let read = |act: Act| Reading {
+            act,
+            thing: None,
+            text: None,
+            title: None,
+            face: None,
+            answer: None,
+            folder: None,
+            agent: None,
+        };
         let new = Reading {
             text: Some("виджет с курсом доллара к рублю".into()),
             title: Some("Курс доллара".into()),
@@ -413,6 +459,19 @@ mod tests {
         assert_eq!(layer.heard_of(COMPUTER, "Выйди из режима мастерской", read(Act::Close)), Some(Heard::DoorClose));
         assert_eq!(layer.heard_of(COMPUTER, "Ос", read(Act::Noise)), Some(Heard::Noise));
         assert_eq!(layer.heard_of(COMPUTER, "Спасибо", read(Act::Talk)), None);
+        // A work for an agent in a work folder (router-and-works, stage 5): the task, the folder and the agent said.
+        let folder = Reading {
+            text: Some("поправь опечатку в README".into()),
+            folder: Some(" Сайт ".into()),
+            agent: Some(String::new()),
+            ..read(Act::Folder)
+        };
+        assert_eq!(
+            layer.heard_of(COMPUTER, "В папке Сайт поправь опечатку в README", folder),
+            Some(Heard::Folder {
+                ask: "поправь опечатку в README".into(), folder: Some("Сайт".into()), agent: None
+            })
+        );
         let yes = Reading { answer: Some("yes".into()), ..read(Act::Answer) };
         assert_eq!(layer.heard_of(COMPUTER, "Давай", yes.clone()), None, "nothing asked: not an answer");
         let id = work(&layer, "Часы");

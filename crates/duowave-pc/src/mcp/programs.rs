@@ -201,7 +201,7 @@ async fn start(spec: &ConnectionSpec, command: &str, log: &LogSink, lifecycle: C
         #[cfg(unix)]
         group,
     };
-    over((stdout, stdin), lifecycle, Box::new(program)).await
+    over((stdout, stdin), lifecycle, Box::new(program), crate::mcp::mcp_connection::Asking::of(spec)).await
 }
 
 /// The computer's runner of programs (`duowave_pc::install` gives it to the connections).

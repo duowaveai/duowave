@@ -153,6 +153,23 @@ pub enum LiveMessage {
         #[serde(skip_serializing_if = "Option::is_none")]
         message: Option<Value>,
     },
+    /// The computer's own ear (src/channel): what it does now, for the strip. `parked` — the thought left hanging —
+    /// only to those who may read the journal.
+    #[serde(rename_all = "camelCase")]
+    Voice {
+        device: String,
+        state: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        level: Option<f32>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        why: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        wait: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        request: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        parked: Option<String>,
+    },
 }
 
 impl LiveMessage {
@@ -164,6 +181,7 @@ impl LiveMessage {
             LiveMessage::Presence { .. } => "presence",
             LiveMessage::Changed { .. } => "changed",
             LiveMessage::Station { .. } => "station",
+            LiveMessage::Voice { .. } => "voice",
         }
     }
 
@@ -262,6 +280,9 @@ struct Listener {
     sink: Box<dyn LiveSink>,
 }
 
+/// Who hears the stations' messages in this gateway itself (`LiveHub::watch_stations`): the station's key, its message.
+pub type StationWatcher = Box<dyn Fn(&str, &Value) + Send + Sync>;
+
 pub struct LiveHub {
     me: Weak<LiveHub>,
     requests: Arc<RequestsService>,
@@ -271,6 +292,8 @@ pub struct LiveHub {
     next: AtomicU64,
     /// The live socket's tickets (ws.rs).
     pub tickets: ws::Tickets,
+    /// The stations' messages for this gateway's own parts: no panel, not counted as one (`size`).
+    watchers: Mutex<Vec<StationWatcher>>,
 }
 
 /// A listener's place in the hub: dropping it leaves.
@@ -297,7 +320,14 @@ impl LiveHub {
             listeners: Mutex::new(Vec::new()),
             next: AtomicU64::new(1),
             tickets: ws::Tickets::default(),
+            watchers: Mutex::new(Vec::new()),
         })
+    }
+
+    /// Hears every station's message this gateway relays, as it comes, with the words (the computer's voice channel:
+    /// the «Готово» of the hub's works, computer/voice.rs). It must not wait: what it does takes its own task.
+    pub fn watch_stations(&self, watcher: StationWatcher) {
+        self.watchers.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).push(watcher);
     }
 
     /// The stations' presence for the hello, once the stations module is there.
@@ -376,6 +406,11 @@ impl LiveHub {
     /// A station's message, relayed (placement/relay.rs), to the panels that hear the stations — the words of its
     /// requests only to those who may read the journal. `None`: the station's channel is lost.
     pub fn relay(&self, station: &str, message: Option<&Value>) {
+        if let Some(message) = message {
+            for watcher in self.watchers.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).iter() {
+                watcher(station, message);
+            }
+        }
         let mut listeners = self.lock();
         if !listeners.iter().any(|listener| listener.stations) {
             return;
@@ -417,6 +452,17 @@ impl LiveHub {
             }
             GatewayEvent::StationPresenceChanged { presence } => {
                 deliver(&mut listeners, &|_| LiveMessage::Presence { presence: presence.clone() });
+            }
+            GatewayEvent::VoiceChannel { device, state, level, why, wait, request, parked } => {
+                deliver(&mut listeners, &|listener| LiveMessage::Voice {
+                    device: device.clone(),
+                    state: state.clone(),
+                    level: *level,
+                    why: why.clone(),
+                    wait: *wait,
+                    request: request.clone(),
+                    parked: if listener.words { parked.clone() } else { None },
+                });
             }
             other if RELAYED.contains(&other.name()) => {
                 let (subject, change) = subject_of(other);
@@ -747,6 +793,21 @@ mod tests {
         fn snapshots(&self) -> Vec<(String, Value)> {
             self.0.clone()
         }
+    }
+
+    #[tokio::test]
+    async fn the_gateway_s_own_parts_hear_the_stations_messages_and_are_no_panel() {
+        let (live, _, _) = hub();
+        let heard: Arc<Mutex<Vec<(String, Value)>>> = Arc::default();
+        let keep = heard.clone();
+        live.watch_stations(Box::new(move |station, message| {
+            keep.lock().unwrap().push((station.to_string(), message.clone()));
+        }));
+        let ready = serde_json::json!({"type": "changed", "name": "work.changed", "subject": "7", "change": "ready"});
+        live.relay("h:kitchen", Some(&ready));
+        live.relay("h:kitchen", None);
+        assert_eq!(*heard.lock().unwrap(), [("h:kitchen".to_string(), ready)]);
+        assert_eq!(live.size(), 0, "no panel is open");
     }
 
     #[tokio::test]

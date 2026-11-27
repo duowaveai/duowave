@@ -26,6 +26,9 @@ pub struct Pack {
     pub work: &'static WorkWords,
     /// MagicPlace by voice (talk/store.rs).
     pub store: &'static StoreWords,
+    /// Said when an answer broke off on an error, before the door's `end` (talk/thinking.rs): the details are the
+    /// panel's.
+    pub failed: &'static str,
 }
 
 /// MagicPlace by voice (talk/store.rs, docs/plans/magicplace.md, «Голос»): regular expressions over the normalized
@@ -207,6 +210,37 @@ pub struct WorkWords {
     /// case, «ё» as «е», no punctuation. Named groups: `thing` (what it is about), `text` (the words added), `what`
     /// (the face asked for), `ask` (the wish).
     pub rules: RuleWords,
+    /// The work systems' phrases (docs/plans/work-systems.md, stage 3): Claude Code run by hand, bb, T3 Code.
+    pub system: SystemWords,
+}
+
+/// The work systems' phrases: `{system}` is the system's title, `{title}` the work's.
+pub struct SystemWords {
+    /// «{system} спрашивает: {what}. Разрешить?» — a question of rights, said aloud: it holds the work.
+    pub permission_q: &'static str,
+    /// «{system} спрашивает: {what}» — a question that is one already (it ends with «?»): an agent's yes or no.
+    pub asks_q: &'static str,
+    pub allowed: &'static str,
+    pub denied: &'static str,
+    /// A dangerous one is approved only by a tap (D3).
+    pub tap_only: &'static str,
+    pub admin_only: &'static str,
+    pub gone: &'static str,
+    /// A system that takes no words on the way.
+    pub no_tell: &'static str,
+    /// A system that cannot be stopped from here.
+    pub no_stop: &'static str,
+    /// The system refused the stop: `{system}`, `{title}`, `{why}` in its words.
+    pub not_stopped: &'static str,
+    /// «Следи за этой»: its end is said aloud.
+    pub watched: &'static str,
+    pub unwatched: &'static str,
+    /// A work given to a system (owner decision 8): `{folder}`, `{system}`, `{title}`.
+    pub started: &'static str,
+    /// The system has no place for the work folder.
+    pub no_place: &'static str,
+    /// A work of the same system goes on in the folder: `{title}`.
+    pub add_or_new: &'static str,
 }
 
 /// The background works' phrases: the frame is the gateway's, the result in it is the model's retelling.
@@ -279,6 +313,43 @@ pub struct FolderWords {
     pub limit_q: &'static str,
     /// «Подождать» to the limit's question.
     pub waiting: &'static str,
+    /// `{agent} {until} {choices}`: the limit's question with more than waiting and stopping (stage 5 of
+    /// docs/plans/work-systems.md): only what is possible now.
+    pub limit_q_choices: &'static str,
+    /// `{until}`: its part «до 15:00».
+    pub limit_until: &'static str,
+    /// `{title} {limit} {spent} {choices}`: the budget's question with more than adding and stopping.
+    pub budget_q_choices: &'static str,
+    /// The choices: «Подождать», «Добавить ещё {limit}», «остановить», «перейти на «{set}»», «передать {system}», and the
+    /// word before the last one.
+    pub choice_wait: &'static str,
+    pub choice_raise: &'static str,
+    pub choice_stop: &'static str,
+    pub choice_switch: &'static str,
+    pub choice_hand: &'static str,
+    pub choice_or: &'static str,
+    /// `{set}`: the work goes on with a cheaper set.
+    pub switched: &'static str,
+    pub no_switch: &'static str,
+    /// `{system} {title}`: the work went to another system; here it stopped.
+    pub handed: &'static str,
+    /// `{name}`: no such system.
+    pub no_system: &'static str,
+    /// The head of what was done, given with the task to the other system.
+    pub handed_note: &'static str,
+    /// The words of a phrase that choose a set («сделай подешевле …»), taken out of the task: the cheapest, the best.
+    pub set_economy: &'static [&'static str],
+    pub set_quality: &'static [&'static str],
+    /// The bundled sets' titles: «Экономно», «Обычно», «Качество».
+    pub set_titles: [&'static str; 3],
+    /// `{title} {limit} {spent}`: the budget's question before the next run — add as much again, or stop?
+    pub budget_q: &'static str,
+    /// `{limit}`: «добавить» to the budget's question.
+    pub budget_added: &'static str,
+    /// `{n}`: an amount of tokens.
+    pub tokens: &'static str,
+    /// What it is at while the budget's question waits.
+    pub waits_budget: &'static str,
     /// `{branch}`: the result's parts.
     pub branch: &'static str,
     pub no_changes: &'static str,
@@ -302,6 +373,8 @@ pub struct FolderWords {
     pub why_auth: &'static str,
     pub why_billing: &'static str,
     pub why_budget: &'static str,
+    /// `{agent}`: the regulator «Что может уходить из дома» keeps the agent's model in.
+    pub why_closed: &'static str,
     pub why_turns: &'static str,
     pub why_refused: &'static str,
     pub why_limit: &'static str,
@@ -309,12 +382,42 @@ pub struct FolderWords {
     pub why_folder: &'static str,
     pub why_git: &'static str,
     pub why_failed: &'static str,
+    /// `{why}`: the review's blocking remarks were not fixed in its rounds (stage 6 of docs/plans/work-systems.md).
+    pub why_review: &'static str,
+    /// The review's part of «Готово»: no remarks; `{n}` remarks fixed after it.
+    pub review_clean: &'static str,
+    pub review_fixed: &'static str,
+    /// `{title} {plan}`: «с планом» — the plan, and «Делаю?».
+    pub plan_q: &'static str,
+    /// «Да» to the plan.
+    pub plan_go: &'static str,
+    /// What it is at while the plan waits for «да».
+    pub waits_plan: &'static str,
+    /// The words of a phrase that choose a way: «с проверкой», «сначала план».
+    pub way_review: &'static [&'static str],
+    pub way_plan: &'static [&'static str],
     /// Said to the agent to go on in its session: after a restart, after a plan's limit.
     pub resume_prompt: &'static str,
     /// No helper does works in folders here.
     pub no_computer: &'static str,
     /// The work has nothing to go on with (its folder is gone).
     pub no_again: &'static str,
+    /// After «Готово» with the agent's last message: «подробнее» reads it.
+    pub more_q: &'static str,
+    /// After «Готово» without one.
+    pub in_panel: &'static str,
+    /// Begun by voice (stage 5): only the home's admin may.
+    pub only_admin: &'static str,
+    /// No work folder was added yet.
+    pub no_folders: &'static str,
+    /// `{folders}`: more than one, none said — which?
+    pub which_folder: &'static str,
+    /// `{name} {folders}`: no folder by that name.
+    pub no_folder: &'static str,
+    /// `{name} {agents}`: no agent by that name.
+    pub no_agent: &'static str,
+    /// The beginnings of the words that make a phrase about a work folder («папке», «репозиторий»): it is read first.
+    pub cues: &'static [&'static str],
 }
 
 /// The rules' words.
@@ -348,6 +451,12 @@ pub struct RuleWords {
     pub for_us: &'static [&'static str],
     /// The answers to the layer's question, said without the wake word.
     pub answers: AnswerWords,
+    /// «следи за этой», «скажи, когда закончит»: a work begun outside is said aloud like ours; `thing` when named.
+    pub watch: &'static [&'static str],
+    /// «не следи», «хватит следить»: quiet again; `thing` when named.
+    pub unwatch: &'static [&'static str],
+    /// «запомни глянь значит как там»: one's own words (`words`) for what the pack's words name (`what`), stage 7.
+    pub learn: &'static [&'static str],
 }
 
 /// A command in any order of its words: every group has a word that begins with one of its stems, and at most `extra`
@@ -393,8 +502,18 @@ pub struct AnswerWords {
     pub drop: &'static [&'static str],
     /// «новую», «другую»: to «Поправить … или новую?» — a new thing.
     pub new: &'static [&'static str],
+    /// «подожди», «пусть ждёт»: to a work's «подождать или остановить?» — it waits.
+    pub wait: &'static [&'static str],
+    /// «остановить», «стоп»: to the same question, or to a work's budget question — it stops.
+    pub stop: &'static [&'static str],
+    /// «добавь», «добавить ещё»: to a work's «бюджет кончился: добавить ещё или остановить?» — as much again.
+    pub raise: &'static [&'static str],
     /// «поправь», «эту»: to «Поправить … или новую?» — a new version of that thing.
     pub edit: &'static [&'static str],
+    /// «перейди на экономно», «давай подешевле»: to a limit's question — the cheaper set offered.
+    pub switch: &'static [&'static str],
+    /// «передай bb»: to a limit's question — the work goes to that system (`to`).
+    pub hand: &'static [&'static str],
     /// To «Какую: … или …?»: the first, the second, the third, the last named.
     pub choices: [&'static str; 4],
     /// To «Что-то ещё добавить?»: the words a «nothing to add» is made of — «нет», «не надо», «ничего», «так оставь»,
@@ -447,6 +566,9 @@ pub struct SayWords {
     /// The panel opened «Примерка»; no panel is open — the tile waits on the desk.
     pub shown: &'static str,
     pub tile_waits: &'static str,
+    /// `{system}`: a work system's work opened in the system itself; one that cannot show its works from here.
+    pub opened_in: &'static str,
+    pub no_open: &'static str,
     /// In the drafts.
     pub parked: &'static str,
     /// Put on the desk only in the panel: its window is open, or the tile waits.
@@ -478,6 +600,9 @@ pub struct SayWords {
     pub waiting: &'static str,
     /// `{title}`: a thing alike of the last half hour — change it, or make a new one?
     pub similar: &'static str,
+    /// `{words} {what}`: one's own words kept; `{what}`: a meaning not understood.
+    pub learned: &'static str,
+    pub not_learned: &'static str,
     /// `{list}`: which of these; `or` joins them.
     pub which: &'static str,
     pub or: &'static str,
@@ -498,6 +623,8 @@ pub struct SayWords {
     pub theme_or_fit: &'static str,
     /// `{title}`: the run ended half-way.
     pub unfinished_line: &'static str,
+    /// `{title}`: the run ended half-way because the model's thinking took its whole answer again.
+    pub overthought_line: &'static str,
     /// `{title}`: it did not work out.
     pub failed_line: &'static str,
     /// `{title} {why}`: it did not work out for a plain cause the person can fix (one of the `why_*` below).
@@ -665,6 +792,7 @@ mod tests {
                 ("say.ready_line", work.say.ready_line, &["title"]),
                 ("say.hosts", work.say.hosts, &["hosts"]),
                 ("say.unfinished_line", work.say.unfinished_line, &["title"]),
+                ("say.overthought_line", work.say.overthought_line, &["title"]),
                 ("say.unchanged_line", work.say.unchanged_line, &["title"]),
                 ("say.queued_next", work.say.queued_next, &["title"]),
                 ("say.gone", work.say.gone, &["title"]),

@@ -92,6 +92,24 @@ python3 scripts/release/fetch-uv.py     # uv для своей системы �
 голосовая лаборатория. Без `silero` (конец фразы шлюз слышит по энергии) и без звонков (`livekit`, `webrtc`):
 им нужны готовые библиотеки, которые скачиваются при сборке.
 
+## The computer's own ear and voice
+
+Stage 3 of the audio interface (docs/plans/audio-interface-3.md, part К). The app gives the gateway its audio port
+(`src/audio_port.rs`): one AVAudioEngine, the capture a tap on its input brought to 16 kHz mono, the speech through its
+player node, so macOS's voice processing (the echo cancelling FaceTime uses) knows what is played; it switches on while
+the computer listens or speaks and the engine stops 3 s after both end. The orange dot of the microphone shows while
+it hears. The microphone's access is asked at the first press; `Info.plist` explains it as the talk.
+
+- **The key** (`src/hotkey.rs`): the key «Сказать» is kept by the gateway (`talk_key`, ⌥Space by default) and
+  registered with the system — pressed, the computer listens; let go after holding, the thought ends. Another program
+  may hold it: the panel says so. In the mode «Колонка» the key brings the window and the panel's own microphone.
+- **The strip** (`src/strip.rs`): a window without a frame at the top of the screen, over the others, never taking
+  the focus, showing the panel's `#/voice-strip` while the computer talks.
+- **The echo check**: «Настройки» → «Микрофон» → «Проверить» — the computer says a phrase and listens to itself; when
+  it does not hear its own words, speaking over it stops it.
+- **The word**: with an activator app on the computer, «Слушать слово» keeps the capture on, plain, and gives its
+  sound only to the word's program on 127.0.0.1, by the station's own protocol.
+
 ## Где данные и журнал
 
 | | Данные (`DATA_DIR`, там же `.env`) | Журнал шлюза |

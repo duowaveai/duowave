@@ -84,6 +84,9 @@ const MAX_SAMPLES: usize = 3;
 /// A preview that did not come (no network, a timeout, a full disk) is asked again at a later read of its feed, not
 /// sooner than this: «check now» pressed again and again does not ask it each time.
 const PREVIEW_AGAIN: Duration = Duration::from_secs(15 * 60);
+/// Previews fetched at once, and how long a read waits for its previews before it answers: the rest come behind it.
+const PREVIEWS_AT_ONCE: usize = 4;
+const PREVIEWS_WAIT: Duration = Duration::from_secs(3);
 const ARCHIVE_TIMEOUT: Duration = Duration::from_secs(120);
 /// The extra feeds the main one may name.
 const MAX_FEEDS: usize = 4;
@@ -1221,6 +1224,8 @@ pub struct CatalogView {
     pub packages: Vec<CatalogEntryView>,
     /// The extra feeds the main one names, in its order, then the own sources added here.
     pub feeds: Vec<FeedView>,
+    /// Previews are still coming behind the read: the panel asks again in a while for their pictures.
+    pub previews_coming: bool,
 }
 
 #[derive(Default)]
@@ -1242,6 +1247,17 @@ struct Miss {
     url: String,
     at: std::time::Instant,
     lasting: bool,
+}
+
+/// A preview to fetch: the package's id (for the journal), its key in `misses`, its folder, its file's name without
+/// the extension, its address and how large it may be.
+struct PreviewJob {
+    id: String,
+    key: (PathBuf, PathBuf),
+    dir: PathBuf,
+    name: String,
+    url: url::Url,
+    max: u64,
 }
 
 /// How an extra feed's last read went.
@@ -1296,6 +1312,10 @@ pub struct PackageCatalog {
     /// The previews that did not come, by their feed's folder and their file without its extension. In memory only:
     /// nothing written on a station's small disk, and a start asks each one again.
     misses: Mutex<HashMap<(PathBuf, PathBuf), Miss>>,
+    /// The previews being fetched now, by their file without its extension: some come behind a read (`previews`).
+    fetching: Mutex<HashSet<PathBuf>>,
+    /// The catalog itself, for the previews that come behind a read.
+    me: std::sync::Weak<PackageCatalog>,
     /// One install, update or removal at a time.
     installing: tokio::sync::Mutex<()>,
     /// Where our Node lies, and a Node of one's own (DUOWAVE_NODE): whether an app on Node downloads it first.
@@ -1369,7 +1389,7 @@ impl PackageCatalog {
                 Vec::new()
             }
         };
-        Arc::new(PackageCatalog {
+        Arc::new_cyclic(|me| PackageCatalog {
             source,
             home: deps.home.clone(),
             apps: deps.apps.clone(),
@@ -1383,6 +1403,8 @@ impl PackageCatalog {
             status: Mutex::new(Status::default()),
             reading: tokio::sync::Mutex::new(()),
             misses: Mutex::new(HashMap::new()),
+            fetching: Mutex::new(HashSet::new()),
+            me: me.clone(),
             installing: tokio::sync::Mutex::new(()),
             node_dir: deps.config.node_dir.clone(),
             own_node: deps.config.own_node.clone(),
@@ -2206,16 +2228,22 @@ impl PackageCatalog {
 
     /// The previews of a feed's packages that are not here yet, in its folder; the ones of versions it no longer
     /// names go. One that did not come waits `PREVIEW_AGAIN`; one that cannot come waits for a new version or address.
+    ///
+    /// They come `PREVIEWS_AT_ONCE` at a time, and the read waits for them `PREVIEWS_WAIT` at most: the rest come
+    /// behind it, and the view says so (`previews_coming`) — the panel shows the list and asks again for the pictures
+    /// (test 26.11: a first look at MagicPlace waited over a minute for a demo feed's previews, one by one, through
+    /// its mirror). A file being fetched already, for a read before, is not fetched twice.
     async fn previews(&self, root: &Path, feed: &Feed) {
         let mut kept: HashSet<PathBuf> = HashSet::new();
+        let mut wanted = Vec::new();
         for entry in feed.newest() {
             let dir = root.join(&entry.id).join(entry.version.to_string());
             kept.insert(dir.clone());
-            let wanted =
+            let files =
                 entry.image.iter().map(|url| ("image".to_string(), url, MAX_IMAGE)).chain(
                     entry.samples.iter().enumerate().map(|(n, url)| (format!("sample-{}", n + 1), url, MAX_SAMPLE)),
                 );
-            for (name, url, max) in wanted {
+            for (name, url, max) in files {
                 if self.preview_file(&dir, &name).is_some() {
                     continue;
                 }
@@ -2223,40 +2251,87 @@ impl PackageCatalog {
                 let resting = lock(&self.misses).get(&key).is_some_and(|miss| {
                     miss.url == url.as_str() && (miss.lasting || miss.at.elapsed() < PREVIEW_AGAIN)
                 });
-                if resting {
-                    continue;
+                if !resting {
+                    wanted.push(PreviewJob {
+                        id: entry.id.clone(),
+                        key,
+                        dir: dir.clone(),
+                        name,
+                        url: url.clone(),
+                        max,
+                    });
                 }
-                let lasting = match self.fetch_through(url, max, FEED_TIMEOUT).await {
-                    Ok(bytes) => match preview_kind(&bytes) {
-                        Some(extension) if (name == "image") == (extension != "ogg") => {
-                            match write_whole(&dir.join(format!("{name}.{extension}")), &bytes) {
-                                Ok(()) => {
-                                    lock(&self.misses).remove(&key);
-                                    continue;
-                                }
-                                Err(error) => {
-                                    tracing::warn!(target: "plugins", "packages catalog: {}: {error}", dir.display());
-                                    false
-                                }
-                            }
-                        }
-                        _ => {
-                            tracing::warn!(target: "plugins", "packages catalog: {} {name}: not WebP, PNG or Opus", entry.id);
-                            true
-                        }
-                    },
-                    Err(failed) => {
-                        tracing::warn!(target: "plugins", "packages catalog: {} {name}: {}", entry.id, failed.message);
-                        failed.missing || failed.too_big
-                    }
-                };
-                let miss = Miss { url: url.to_string(), at: std::time::Instant::now(), lasting };
-                lock(&self.misses).insert(key, miss);
             }
         }
         // What this feed no longer names is not remembered either.
         lock(&self.misses)
             .retain(|(feed, file), _| feed != root || file.parent().is_some_and(|dir| kept.contains(dir)));
+        self.forget_old_previews(root, &kept);
+
+        let jobs: Vec<PreviewJob> = {
+            let mut fetching = lock(&self.fetching);
+            wanted.into_iter().filter(|job| fetching.insert(job.key.1.clone())).collect()
+        };
+        if jobs.is_empty() {
+            return;
+        }
+        match self.me.upgrade() {
+            Some(me) => {
+                let behind = tokio::spawn(async move { me.fetch_previews(jobs).await });
+                // Past the wait the task goes on by itself: a dropped handle does not stop it.
+                let _ = tokio::time::timeout(PREVIEWS_WAIT, behind).await;
+            }
+            None => self.fetch_previews(jobs).await,
+        }
+    }
+
+    /// Whether previews are still coming behind a read.
+    fn previews_coming(&self) -> bool {
+        !lock(&self.fetching).is_empty()
+    }
+
+    async fn fetch_previews(&self, jobs: Vec<PreviewJob>) {
+        use futures::StreamExt;
+        futures::stream::iter(jobs)
+            .for_each_concurrent(PREVIEWS_AT_ONCE, |job| async move {
+                self.fetch_preview(&job).await;
+                lock(&self.fetching).remove(&job.key.1);
+            })
+            .await;
+    }
+
+    async fn fetch_preview(&self, job: &PreviewJob) {
+        let PreviewJob { id, key, dir, name, url, max } = job;
+        let lasting = match self.fetch_through(url, *max, FEED_TIMEOUT).await {
+            Ok(bytes) => match preview_kind(&bytes) {
+                Some(extension) if (name == "image") == (extension != "ogg") => {
+                    match write_whole(&dir.join(format!("{name}.{extension}")), &bytes) {
+                        Ok(()) => {
+                            lock(&self.misses).remove(key);
+                            return;
+                        }
+                        Err(error) => {
+                            tracing::warn!(target: "plugins", "packages catalog: {}: {error}", dir.display());
+                            false
+                        }
+                    }
+                }
+                _ => {
+                    tracing::warn!(target: "plugins", "packages catalog: {id} {name}: not WebP, PNG or Opus");
+                    true
+                }
+            },
+            Err(failed) => {
+                tracing::warn!(target: "plugins", "packages catalog: {id} {name}: {}", failed.message);
+                failed.missing || failed.too_big
+            }
+        };
+        let miss = Miss { url: url.to_string(), at: std::time::Instant::now(), lasting };
+        lock(&self.misses).insert(key.clone(), miss);
+    }
+
+    /// The folders of packages and versions a feed no longer has, in its folder.
+    fn forget_old_previews(&self, root: &Path, kept: &HashSet<PathBuf>) {
         // Folders of packages and versions the feed no longer has.
         for package in std::fs::read_dir(root).into_iter().flatten().flatten() {
             if !package.file_type().is_ok_and(|kind| kind.is_dir()) {
@@ -2475,6 +2550,7 @@ impl PackageCatalog {
             problem,
             packages,
             feeds,
+            previews_coming: self.previews_coming(),
         }
     }
 
@@ -3731,6 +3807,32 @@ pub mod tests {
         for miss in lock(&catalog.misses).values_mut() {
             miss.at = long_ago;
         }
+    }
+
+    #[tokio::test]
+    async fn the_list_does_not_wait_for_previews_that_stall_they_come_behind_it() {
+        // An own source whose files start and stall, as the demo feed's did through a cut connection (test 26.11).
+        let (main, own) = (site().await, site().await);
+        main.publish(&[character("arthur", "1.0.0")]);
+        own.publish(&[character("jarvis-demo", "1.0.0")]);
+        own.stall.store(true, Ordering::SeqCst);
+        let fixture = fixture(FeedSource::Url(main.url.clone()), Placement::Pc);
+        let catalog = &fixture.catalog;
+        let started = std::time::Instant::now();
+        catalog.add_source(&own.url, None).await.unwrap();
+        let view = catalog.view(false).await;
+        assert!(started.elapsed() < PREVIEWS_WAIT * 2 + Duration::from_secs(2), "{:?}", started.elapsed());
+        assert_eq!(ids(&view), ["arthur", "jarvis-demo"]);
+        let demo = view.packages.iter().find(|entry| entry.id == "jarvis-demo").unwrap();
+        assert!(demo.preview.image.is_none(), "{demo:?}");
+        assert!(view.previews_coming);
+
+        // A look again while they come: the files on their way are not asked twice, and the look does not wait.
+        let started = std::time::Instant::now();
+        let view = catalog.view(true).await;
+        assert!(started.elapsed() < Duration::from_secs(2), "{:?}", started.elapsed());
+        assert!(view.previews_coming);
+        assert_eq!(own.asked("previews/arthur.webp"), 1);
     }
 
     #[tokio::test]

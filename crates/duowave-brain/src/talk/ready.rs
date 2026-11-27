@@ -55,6 +55,18 @@ pub enum Answer {
     Edit,
     /// To «Какую: … или …?»: the thing named so (0 — the first; `usize::MAX` — the last).
     Choice(usize),
+    /// To a work's «подождать или остановить?»: it waits.
+    Wait,
+    /// To the same question, or to a work's budget question: it stops.
+    Stop,
+    /// To a work's «бюджет кончился: добавить ещё или остановить?»: as much again.
+    Raise,
+    /// To a limit's question: the cheaper set offered (stage 5 of docs/plans/work-systems.md).
+    Switch,
+    /// To a limit's question: the work goes to that system, with what is done.
+    HandTo {
+        to: String,
+    },
 }
 
 /// What the pack reads in a phrase said to the question; None — not the question's.
@@ -73,11 +85,30 @@ pub fn answer_of(pack: &Pack, normalized: &str) -> Option<Answer> {
     if let Some(at) = answers.choices.iter().position(|pattern| any(&[pattern])) {
         return Some(Answer::Choice(if at == 3 { usize::MAX } else { at }));
     }
+    if any(answers.switch) {
+        return Some(Answer::Switch);
+    }
+    let hand = answers.hand.iter().find_map(|pattern| {
+        let found = regex::Regex::new(pattern).ok()?.captures(text)?;
+        Some(found.name("to")?.as_str().trim().to_string())
+    });
+    if let Some(to) = hand.filter(|to| !to.is_empty()) {
+        return Some(Answer::HandTo { to });
+    }
     if any(answers.new) {
         return Some(Answer::New);
     }
     if any(answers.edit) {
         return Some(Answer::Edit);
+    }
+    if any(answers.wait) {
+        return Some(Answer::Wait);
+    }
+    if any(answers.stop) {
+        return Some(Answer::Stop);
+    }
+    if any(answers.raise) {
+        return Some(Answer::Raise);
     }
     if any(answers.yes) {
         return Some(Answer::Yes);
@@ -166,6 +197,8 @@ fn desk_words(say: &super::pack::SayWords, put: Put, theme: bool) -> (String, bo
         Put::Shown { open } => (if open { say.shown } else { say.tile_waits }.to_string(), false),
         Put::Parked => (say.parked.to_string(), false),
         Put::Deleted => (say.deleted.to_string(), false),
+        Put::InSystem { system } => (fill(say.opened_in, &[("system", &system)]), false),
+        Put::NoOpen { system } => (fill(say.no_open, &[("system", &system)]), false),
     }
 }
 
@@ -186,7 +219,8 @@ impl TalkLayer {
         let say = &pack.work.say;
         let title = work.title.clone();
         let Some(executor) = self.executor(&work.executor) else { return };
-        if matches!(work.kind.as_str(), super::works::TOOL | super::works::TASK) {
+        // A work system's work ends as a background one: its summary from the system, «подробнее» for the rest.
+        if matches!(work.kind.as_str(), super::works::TOOL | super::works::TASK | super::works::SYSTEM) {
             return self.finish_background(work, executor);
         }
         if work.kind == super::works::FOLDER {
@@ -202,11 +236,19 @@ impl TalkLayer {
                 };
                 (line, None, None)
             }
-            // A run that changed nothing is no «не доделано» either: what to do is asked, the next phrase says it.
-            WorkState::Unfinished if executor.facts(&work).await.unchanged => {
-                (fill(say.unchanged_line, &[("title", &title)]), None, None)
+            WorkState::Unfinished => {
+                let facts = executor.facts(&work).await;
+                if facts.overthought {
+                    // The model's thinking took its answer whole: «не доделано», and why.
+                    (fill(say.overthought_line, &[("title", &title)]), Some(Kind::Unfinished), None)
+                } else if facts.unchanged {
+                    // A run that changed nothing is no «не доделано» either: what to do is asked, the next phrase
+                    // says it.
+                    (fill(say.unchanged_line, &[("title", &title)]), None, None)
+                } else {
+                    (fill(say.unfinished_line, &[("title", &title)]), Some(Kind::Unfinished), None)
+                }
             }
-            WorkState::Unfinished => (fill(say.unfinished_line, &[("title", &title)]), Some(Kind::Unfinished), None),
             // «На стол» was said while it was being made: there now, nothing asked.
             _ if planned && !work.again => {
                 let by = ByVoice { device: work.device().to_string(), who: work.origin.who.clone() };
@@ -264,7 +306,7 @@ impl TalkLayer {
             return;
         };
         self.told(&work, if end.is_some() { "done" } else { state.as_str() });
-        if work.device() != COMPUTER {
+        if touched_on(&work) != COMPUTER {
             self.say_on_station(work.id.clone(), true);
         }
     }
@@ -276,10 +318,19 @@ impl TalkLayer {
         let words = &pack::of(self.lang(work.device())).work.background;
         let told = executor.told(&work).unwrap_or_default();
         let title = work.title.clone();
+        // A work begun outside is quiet unless watched (D1 of docs/plans/work-systems.md): its end is kept, not said.
+        let quiet = work.outside && !work.watched;
         let (line, kind) = match (work.state, told.summary.as_deref()) {
             (WorkState::Failed, _) => {
-                let why =
-                    told.error.clone().unwrap_or_else(|| words.waiting_answer.trim_end_matches('.').to_lowercase());
+                // A system that refused to begin says why in the end it reported (T3 Code «the project has no default
+                // model», the hand check of 27.11); «жду ответа сервиса» only when nobody said anything.
+                let reported =
+                    work.result.as_ref().map(|result| result.line.trim().to_string()).filter(|line| !line.is_empty());
+                let why = told
+                    .error
+                    .clone()
+                    .or(reported)
+                    .unwrap_or_else(|| words.waiting_answer.trim_end_matches('.').to_lowercase());
                 (fill(words.failed, &[("title", &title), ("why", &why)]), None)
             }
             (_, Some(summary)) if told.more.is_some() => {
@@ -290,7 +341,7 @@ impl TalkLayer {
             (_, None) => (fill(words.ready_bare, &[("title", &title)]), None),
         };
         let until = now_ms() + ANSWER_FOR.as_millis() as u64;
-        let question = kind.map(|kind| Question::new(line.clone(), until, kind));
+        let question = kind.filter(|_| !quiet).map(|kind| Question::new(line.clone(), until, kind));
         let failed = work.state == WorkState::Failed;
         let Some(work) = self.works.update(&work.id, |work| {
             work.result = Some(WorkResult {
@@ -308,8 +359,12 @@ impl TalkLayer {
         }) else {
             return;
         };
+        if quiet {
+            self.told(&work, "quiet");
+            return;
+        }
         self.told(&work, if failed { "failed" } else { "ready" });
-        if work.device() != COMPUTER {
+        if touched_on(&work) != COMPUTER {
             self.say_on_station(work.id.clone(), true);
         }
     }
@@ -355,7 +410,8 @@ impl TalkLayer {
         let Some(work) = self.works.get(&id) else { return };
         let layer = self.clone();
         handle.spawn(async move {
-            let device = work.device().to_string();
+            // Where it was touched last (Н1): the device its last phrase came from, else where it began.
+            let device = touched_on(&work).to_string();
             let line = work.result.as_ref().map(|result| result.line.clone()).unwrap_or_default();
             let began = Instant::now();
             while turns.busy(&device) {
@@ -441,10 +497,36 @@ impl TalkLayer {
                     None => say.what.to_string(),
                 };
             }
+            // «… спрашивает: …. Разрешить?» — a work system's question of rights: «да» allows, «нет» refuses; only the
+            // home's admin answers, and a dangerous one only by a tap (D3 of docs/plans/work-systems.md).
+            (Kind::Permission, answer) => {
+                let words = &pack.work.system;
+                let Some(work) = self.works.get(id) else { return words.gone.to_string() };
+                if !origin.admin() {
+                    return words.admin_only.to_string();
+                }
+                let Some(executor) = self.executor(&work.executor) else { return words.gone.to_string() };
+                let yes = matches!(answer, Answer::Yes | Answer::Fit);
+                let by_voice = origin.via == super::origin::Via::Voice;
+                return match executor.answer_question(&work, yes, by_voice) {
+                    Ok(()) => {
+                        if let Some(work) = self.works.update(id, |work| work.question = None) {
+                            self.told(&work, "answered");
+                        }
+                        (if yes { words.allowed } else { words.denied }).to_string()
+                    }
+                    Err(super::executor::NotAnswered::Dangerous) => words.tap_only.to_string(),
+                    Err(super::executor::NotAnswered::Gone) => {
+                        if let Some(work) = self.works.update(id, |work| work.question = None) {
+                            self.told(&work, "answered");
+                        }
+                        words.gone.to_string()
+                    }
+                };
+            }
             (Kind::More, Answer::Yes | Answer::Details | Answer::Fit) => {
                 let words = &pack.work.background;
-                let more =
-                    self.works.get(id).and_then(|work| self.background().and_then(|executor| executor.more(&work)));
+                let more = self.works.get(id).and_then(|work| self.more_of(&work));
                 return more.unwrap_or_else(|| words.no_more.to_string());
             }
             (Kind::More, _) => return pack.work.background.fine.to_string(),
@@ -464,7 +546,23 @@ impl TalkLayer {
             }
             (Kind::Extra, _) => return say.going_on.to_string(),
             // A plan's limit holds a work in a folder: «подождать» — it waits and goes on by itself; «остановить».
-            (Kind::Wait, Answer::No | Answer::Drop) => {
+            // A limit's question with more than waiting (stage 5): a cheaper set, another system.
+            (Kind::Wait, Answer::Switch) => {
+                return self.folder_switch(id).unwrap_or_else(|| pack.work.folder.no_switch.to_string());
+            }
+            (Kind::Wait | Kind::Budget, Answer::HandTo { to }) => {
+                return self.hand_over(origin, id, &to).await.unwrap_or_else(refused);
+            }
+            // «С планом»: «да» — by the plan; «нет» — stop.
+            (Kind::Plan, Answer::Yes | Answer::Fit | Answer::Edit) => {
+                return self.folder_plan_go(id).unwrap_or_else(|| say.what.to_string());
+            }
+            (Kind::Plan, Answer::No | Answer::Drop | Answer::Stop) => {
+                let label = format!("{}{id}", pack.work.label);
+                return self.act(&origin, "stop", Some(&label)).await.unwrap_or_else(refused);
+            }
+            (Kind::Plan, _) => return say.what.to_string(),
+            (Kind::Wait, Answer::No | Answer::Drop | Answer::Stop) => {
                 let label = format!("{}{id}", pack.work.label);
                 return self.act(&origin, "stop", Some(&label)).await.unwrap_or_else(refused);
             }
@@ -474,11 +572,26 @@ impl TalkLayer {
                 }
                 return pack.work.folder.waiting.to_string();
             }
+            // A work's budget is used up: «добавить» — as much again, and it goes on; «остановить».
+            (Kind::Budget, Answer::No | Answer::Drop | Answer::Stop) => {
+                let label = format!("{}{id}", pack.work.label);
+                return self.act(&origin, "stop", Some(&label)).await.unwrap_or_else(refused);
+            }
+            (Kind::Budget, Answer::Yes | Answer::Raise) => {
+                return self.folder_raise(id).unwrap_or_else(|| say.what.to_string());
+            }
+            (Kind::Budget, _) => return say.what.to_string(),
             (Kind::Similar, Answer::New | Answer::No) => {
                 let Some(wish) = pending else { return say.what.to_string() };
+                // «Добавить туда или начать новую?» of a work system: the new work begins in that system and folder.
+                if let Some(begin) = &wish.in_system {
+                    return self
+                        .start_in_system(origin, &begin.system, &begin.folder, &begin.folder_name, &wish.text, true)
+                        .unwrap_or_else(refused);
+                }
                 return self.start(origin, &wish.text, wish.face, wish.title.as_deref(), true).unwrap_or_else(refused);
             }
-            (Kind::Similar, Answer::Edit | Answer::Yes | Answer::Redo { .. }) => {
+            (Kind::Similar, Answer::Edit | Answer::Yes | Answer::Raise | Answer::Redo { .. }) => {
                 let text = match (answer, pending) {
                     (Answer::Redo { text }, _) => text,
                     (_, Some(wish)) => wish.text,
@@ -576,7 +689,17 @@ impl TalkLayer {
                 say.delete_q.to_string()
             }
             // «Новую», «поправь», «первая» without saying what, to a question about a ready thing.
-            (_, Answer::New | Answer::Edit | Answer::Choice(_)) => say.what.to_string(),
+            (
+                _,
+                Answer::New
+                | Answer::Edit
+                | Answer::Choice(_)
+                | Answer::Wait
+                | Answer::Stop
+                | Answer::Raise
+                | Answer::Switch
+                | Answer::HandTo { .. },
+            ) => say.what.to_string(),
         }
     }
 
@@ -590,6 +713,10 @@ impl TalkLayer {
         let kind = match question.kind? {
             // A work in a folder going on asks it: wait for the limit, or stop.
             Kind::Wait if work.going() => Kind::Wait,
+            Kind::Plan if work.going() => Kind::Plan,
+            // A system's question of rights holds its going work (docs/plans/work-systems.md, stage 3): the panel's buttons.
+            Kind::Permission if work.going() => Kind::Permission,
+            Kind::Budget if work.going() => Kind::Budget,
             kind @ (Kind::Ready | Kind::Unfinished | Kind::Apply | Kind::Delete | Kind::More) if work.awaiting() => {
                 kind
             }
@@ -604,4 +731,15 @@ impl TalkLayer {
         let executor = self.executor(&work.executor).ok_or_else(|| Refusal::Failed("its executor is gone".into()))?;
         executor.put(work, end, ByVoice { device: device.to_string(), who: None }).await.map_err(Refusal::Failed)
     }
+}
+
+/// The device a work was touched on last (docs/plans/audio-interface-3.md, «Н1»): where its last phrase came from —
+/// its start, a note, «и ещё…» —, so that its «Готово» is said there; where it began, when nothing came after.
+pub fn touched_on(work: &Work) -> &str {
+    work.notes
+        .iter()
+        .map(|note| (note.origin.device.as_str(), note.at))
+        .chain([(work.device(), work.started_at)])
+        .max_by_key(|(_, at)| *at)
+        .map_or(work.device(), |(device, _)| device)
 }

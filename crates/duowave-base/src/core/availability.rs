@@ -581,6 +581,7 @@ pub fn no_helper_with(ability: Ability) -> &'static str {
         Ability::Catalog => "нет Турбо с каталогом",
         Ability::Devices => "нет Турбо с устройствами",
         Ability::Files => "нет Турбо с папками",
+        Ability::Works => "нет компьютера с работами в папках",
         // The later blocks' abilities: no feature needs them yet.
         Ability::Tasks | Ability::Vault | Ability::Vectors | Ability::Panel => "нет Турбо с этим умением",
     }

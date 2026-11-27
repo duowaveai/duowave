@@ -17,6 +17,7 @@ import { Switch } from '../ui/switch';
 import { useVoiceAction } from '../voice/phrases';
 import { VIA } from '../via';
 import { openOnboarding } from './onboarding';
+import { PermissionRows, usePermissions } from '../ui/permissions';
 
 export type SettingsSectionTab = 'access' | 'look';
 
@@ -54,6 +55,8 @@ export function SettingsScreen({
                     {can('users.manage') && <Keys catalog={catalog} />}
                     {can('plugins.manage') && <BusCard />}
                     <Account onSignOut={onSignOut} />
+                    {/* Пульт колонки через компьютер: разрешения — этого компьютера, не колонки. */}
+                    {!VIA && <PermissionsCard />}
                     {can('audit.view') && <History />}
                 </>
             )}
@@ -68,6 +71,27 @@ export function SettingsScreen({
                 </>
             )}
         </>
+    );
+}
+
+/**
+ * «Разрешения этого компьютера» (docs/plans/permissions.md): что система должна разрешить приложению DuoWave, с кнопкой у
+ * каждой строки. Только в приложении на компьютере: у сервера, колонки и Docker список пуст, и карточки нет.
+ */
+function PermissionsCard() {
+    const perms = usePermissions();
+    const view = perms.view;
+    if (!view?.app || view.items.length === 0) return null;
+    return (
+        <section class="card glass card-list" aria-labelledby="perm-h">
+            <div class="section-head">
+                <h2 id="perm-h" class="t-title-xs m-0">
+                    {tr.permissions.sectionTitle}
+                </h2>
+            </div>
+            <p class="w-cap m-0">{tr.permissions.sectionAbout}</p>
+            <PermissionRows perms={perms} />
+        </section>
     );
 }
 

@@ -88,4 +88,10 @@ export default {
     // strip.tsx
     hideStrip: 'Скрыть полосу',
     canSay: 'Можно сказать:',
+
+    // Ухо приложения этого компьютера (voice/app-voice.ts, screens/voice-strip.tsx).
+    appRecognizing: 'Распознаю…',
+    appParked: 'Жду продолжения',
+    appSpeaking: 'Отвечаю',
+    appQuiet: 'Готов слушать',
 };

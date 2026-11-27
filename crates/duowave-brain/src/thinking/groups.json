@@ -1,0 +1,28 @@
+{
+  "ask": "Tools come in groups. When the group you need is not offered, call open with its ids, and its tools come in your next step. The groups:",
+  "always": ["recall"],
+  "groups": [
+    {"id": "weather", "line": "the weather now and the forecast", "tools": ["get_weather", "weather_now"]},
+    {"id": "news", "line": "today's headlines", "tools": ["get_news", "news_headlines"]},
+    {"id": "smart_home", "line": "lights, plugs and other devices of the home", "tools": ["smart_home"]},
+    {"id": "reminders", "line": "a reminder at a time", "tools": ["set_reminder"]},
+    {"id": "games", "line": "Alice's games", "tools": ["start_game"]},
+    {"id": "yandex", "line": "Yandex skills and the person's Yandex account", "tools": ["yandex_skill", "yandex_account"]},
+    {"id": "memory", "line": "remember or forget something about the person", "tools": ["remember", "forget"]},
+    {"id": "works", "line": "make or change a widget, a game or an app, and how it goes", "tools": ["work_start", "work_add", "work_do", "app_card"]},
+    {"id": "screen", "line": "the computer's windows: list, close, keep, pause, resume", "tools": ["screen_windows", "screen_close", "screen_keep", "screen_pause", "screen_resume"]},
+    {"id": "devices", "line": "the home's devices and computers", "tools": ["home_devices", "home_device_use", "home_device_place", "wake_computer"]},
+    {"id": "volume", "line": "the speaker's volume", "tools": ["set_volume"], "hands": true},
+    {"id": "playback", "line": "pause, resume, next or previous of what plays", "tools": ["control_playback"], "hands": true},
+    {"id": "bluetooth", "line": "the speaker's Bluetooth", "tools": ["bluetooth"], "hands": true},
+    {"id": "timers", "line": "start, stop or list timers", "tools": ["set_timer", "manage_timer"], "hands": true},
+    {"id": "alarms", "line": "set, stop or list alarms", "tools": ["set_alarm", "manage_alarm"], "hands": true},
+    {"id": "do_not_disturb", "line": "do not disturb", "tools": ["do_not_disturb"], "hands": true},
+    {"id": "radio", "line": "play a radio station", "tools": ["play_radio"], "hands": true},
+    {"id": "music", "line": "play music by name, artist or mood", "tools": ["play_music"], "hands": true},
+    {"id": "tales", "line": "fairy tales and audiobooks", "tools": ["tell_tale"], "hands": true},
+    {"id": "calls", "line": "calls and voice messages", "tools": ["phone_call", "send_voice_message"], "hands": true},
+    {"id": "music_recognition", "line": "recognise the song that plays", "tools": ["recognize_music"], "hands": true},
+    {"id": "morning_show", "line": "Alice's morning show", "tools": ["morning_show"], "hands": true}
+  ]
+}

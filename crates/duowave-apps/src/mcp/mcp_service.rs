@@ -45,6 +45,8 @@ use crate::utils::time::now_iso;
 pub const TOOLS_LIMIT: usize = 40;
 /// A call's longest wait: a spoken answer cannot wait longer.
 const CALL_TIMEOUT: Duration = Duration::from_secs(15);
+/// The most of a tool's answer a work system reads.
+const SYSTEM_ANSWER_MAX: usize = 256 * 1024;
 /// A background tool's call waits this long for its server (docs/plans/long-tools.md, the owner's default 5).
 pub const BACKGROUND_WAIT: Duration = Duration::from_secs(10 * 60);
 /// Pauses before reconnecting a server that failed: quick at first, then rarely.
@@ -498,7 +500,13 @@ pub struct McpService {
     dialog: RwLock<Option<Arc<dyn AskDialog>>>,
     /// Who takes the background tools' calls: the talk layer, linked at the build.
     runner: RwLock<Option<super::mcp_background::Runner>>,
+    /// Who answers each server's questions now, by its id: a background work of its tool, while it runs.
+    askers: Arc<Mutex<HashMap<String, Asker>>>,
 }
+
+/// Asks the person a server's question: its message and the schema of the answer → the answer, or None.
+pub type Asker =
+    Arc<dyn Fn(String, Value) -> futures::future::BoxFuture<'static, Option<Map<String, Value>>> + Send + Sync>;
 
 impl McpService {
     pub fn new(
@@ -543,6 +551,7 @@ impl McpService {
             me: me.clone(),
             dialog: RwLock::new(None),
             runner: RwLock::new(None),
+            askers: Arc::new(Mutex::new(HashMap::new())),
         });
         {
             let mut inner = service.lock();
@@ -977,6 +986,81 @@ impl McpService {
                 Ok(TryResult { content: self.secrets.redact(&error.to_string()), is_error: true, ms: ms(started) })
             }
         }
+    }
+
+    /// Who answers this server's questions from now on (a background work of its tool); none — nobody, they are
+    /// declined (docs/plans/work-systems.md, stage 8).
+    pub fn ask_through(&self, server: &str, asker: Option<Asker>) {
+        let mut askers = self.askers.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        match asker {
+            Some(asker) => askers.insert(server.to_string(), asker),
+            None => askers.remove(server),
+        };
+    }
+
+    /// A server's question as its connection hands it over, for the tests: the answer, or None.
+    #[cfg(any(test, feature = "testing"))]
+    pub async fn elicit_for_tests(&self, server: &str, message: &str, schema: Value) -> Option<Map<String, Value>> {
+        (self.elicit())(server.to_string(), message.to_string(), schema).await
+    }
+
+    /// The connections' way to ask: by the server's id, whoever answers its questions now.
+    fn elicit(&self) -> super::mcp_connection::Elicit {
+        let askers = self.askers.clone();
+        Arc::new(move |server: String, message: String, schema: Value| {
+            let asker = askers.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).get(&server).cloned();
+            Box::pin(async move {
+                match asker {
+                    Some(asker) => asker(message, schema).await,
+                    None => None,
+                }
+            })
+        })
+    }
+
+    /// A server by its id or its title, as a work system's card names it (docs/plans/work-systems.md, the MCP plug).
+    fn server_named(&self, named: &str) -> Option<String> {
+        let named = named.trim().to_lowercase();
+        let inner = self.lock();
+        let row = inner.rows.iter().find(|row| row.id.to_lowercase() == named || row.title.to_lowercase() == named)?;
+        Some(row.id.clone())
+    }
+
+    /// The server is on and connected: a work system may call it.
+    pub fn on_line(&self, named: &str) -> bool {
+        let Some(id) = self.server_named(named) else { return false };
+        let inner = self.lock();
+        let enabled = inner.row(&id).is_some_and(|row| row.enabled);
+        enabled && inner.live.get(&id).is_some_and(|live| live.state == ServerState::Ready && live.connection.is_some())
+    }
+
+    /// A tool for a work system: any tool the server lists, its arguments as the card fills them. Its answer as JSON:
+    /// the structured content, else the text read as JSON, else the text; an error in words, secrets taken out.
+    pub async fn call_for_system(
+        &self,
+        named: &str,
+        tool: &str,
+        arguments: Map<String, Value>,
+    ) -> Result<Value, String> {
+        let id = self.server_named(named).ok_or_else(|| crate::tr!("MCP-сервера «{name}» нет.", name = named))?;
+        let connection = {
+            let inner = self.lock();
+            inner.live.get(&id).filter(|live| live.state == ServerState::Ready).and_then(|live| live.connection.clone())
+        };
+        let connection = connection.ok_or_else(|| crate::tr!("Сервер не на связи."))?;
+        let never = CancellationToken::new();
+        let result = connection
+            .call(tool, arguments, &never, CALL_TIMEOUT)
+            .await
+            .map_err(|error| self.secrets.redact(&error.to_string()))?;
+        let text = result_text(&result, SYSTEM_ANSWER_MAX).content;
+        if result.is_error {
+            return Err(self.secrets.redact(&text.chars().take(300).collect::<String>()));
+        }
+        if let Some(structured) = result.structured_content.filter(|value| !value.is_null()) {
+            return Ok(structured);
+        }
+        Ok(serde_json::from_str(&text).unwrap_or(Value::String(text)))
     }
 
     /// «Войти»: the page of the service to send the owner to. Already signed in — nothing to open, the server
@@ -1625,6 +1709,7 @@ impl McpService {
                 url: None,
                 headers: Vec::new(),
                 auth,
+                elicit: Some(self.elicit()),
             },
             TransportKind::Http => ConnectionSpec {
                 id: row.id.clone(),
@@ -1636,6 +1721,7 @@ impl McpService {
                 url: row.config.url.clone(),
                 headers: values("header", &row.config.header_names),
                 auth,
+                elicit: Some(self.elicit()),
             },
         }
     }
@@ -2299,6 +2385,32 @@ pub mod tests {
             .add(&input(json!({ "transport": "http", "title": "Modern", "url": format!("{base}/mcp") })), None)
             .unwrap();
         finds_the_modern_server(&s.mcp, &server.id).await;
+        s.mcp.shutdown().await;
+    }
+
+    /// A server that makes a long call a task (SEP-2663, stage 8 of docs/plans/work-systems.md): the call follows
+    /// the task to its result with no mapping, and a stop cancels it at the server.
+    #[tokio::test]
+    async fn follows_a_task_the_server_makes_of_a_call_and_cancels_it_on_a_stop() {
+        let s = setup();
+        let (router, counted) = fixtures::tasks_http();
+        let base = fixtures::spawn(router).await;
+        let server = s
+            .mcp
+            .add(&input(json!({ "transport": "http", "title": "Tasks", "url": format!("{base}/mcp") })), None)
+            .unwrap();
+        ready(&s.mcp, &server.id).await;
+        assert_eq!(s.mcp.try_tool(&server.id, "long", None).await.unwrap().content, "long done");
+        let cancel = CancellationToken::new();
+        let stop = cancel.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            stop.cancel();
+        });
+        let call = s.mcp.call_in_background(&server.id, "long", Map::new(), &cancel, Duration::from_secs(5)).await;
+        assert!(call.is_err(), "{call:?}");
+        let cancelled = || counted.cancels.load(std::sync::atomic::Ordering::SeqCst) == 1;
+        until("the server hears tasks/cancel", cancelled, READY).await;
         s.mcp.shutdown().await;
     }
 

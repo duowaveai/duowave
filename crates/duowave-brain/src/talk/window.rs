@@ -3,7 +3,7 @@
 //!
 //! 1. the answer to the layer's question on the device — a work's or MagicPlace's (the pack, then the reader with
 //!    the answers' acts only);
-//! 2. a word that closes the window, the whole phrase («нет», «хватит», «спасибо»; words.rs): the question is
+//! 2. a word that closes the window, the whole phrase («нет», «хватит», «спасибо»; «Чутьё»'s kind `window`): the question is
 //!    declined, nothing is said;
 //! 3. the answer to the brain's own question: the brain's, as before;
 //! 4. about the work in focus: «и ещё…», «как там», «подробнее» (the rules), or the reader with the acts of a work
@@ -71,7 +71,7 @@ pub fn sift(parts: &Parts, text: &str, device: &str) -> Sift {
     if let Some(heard) = rules.answer_on(&normalized, device) {
         return Sift::Rules(heard);
     }
-    if super::words::household().closes(text) {
+    if crate::sense::home().window(text, None) == crate::sense::Window::Close {
         return Sift::Close;
     }
     if layer.asked.open(device).is_some() {
@@ -142,7 +142,7 @@ fn read(parts: &Parts, principal: &Principal, turn: &Turn, acts: &'static [Act])
     let cancel = CancellationToken::new();
     let (parts, turn, answering) = (parts.clone(), turn.clone(), cancel.clone());
     let key = format!("panel:{}", principal.id);
-    let origin = turn.origin.clone().by(Some(principal.name.clone()));
+    let origin = turn.origin.clone().of(principal);
     tokio::spawn(async move {
         let started = Instant::now();
         let since = now_ms();
@@ -151,6 +151,7 @@ fn read(parts: &Parts, principal: &Principal, turn: &Turn, acts: &'static [Act])
             profile: Some(ModelProfile::Fast),
             channel: crate::dialog::Channel::Computer,
             max_tokens: Some(crate::dialog::SPEECH_MAX_TOKENS),
+            timezone: crate::dialog::llm::limits::home_timezone(),
             ..DialogContext::default()
         };
         let reader = parts.talk.reader();

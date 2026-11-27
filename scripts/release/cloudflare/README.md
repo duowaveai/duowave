@@ -1,4 +1,11 @@
-# get.duowave.app
+# Cloudflare Workers
+
+Два Worker'а без зависимостей, у каждого свой адрес на duowave.app и своя проверка без Cloudflare (их гоняет CI):
+
+- [get.duowave.app](#getduowaveapp) — установка одной командой на колонке;
+- [metadata.duowave.app](#metadataduowaveapp) — документ OAuth-клиента DuoWave для входа в MCP-серверы.
+
+## get.duowave.app
 
 Адрес установки одной командой на самой колонке:
 
@@ -17,7 +24,7 @@ wget -qO- http://get.duowave.app/station.sh | sh
 
 Проверка без Cloudflare: `node scripts/release/cloudflare/get-worker-check.mjs` (её же гоняет CI).
 
-## Поставить (один раз)
+### Поставить (один раз)
 
 Названия кнопок взяты из справки Cloudflare на 22.11.2026. Где справка их не описывает, это сказано.
 
@@ -54,3 +61,37 @@ wget -qO- http://get.duowave.app/station.sh | sh
    ```
 
    показывает новую версию.
+
+## metadata.duowave.app
+
+Документ клиента OAuth (CIMD, SEP-991): `https://metadata.duowave.app/oauth/client-metadata.json`. Им шлюз входит в
+MCP-серверы, у которых нет регистрации клиентов (облачный MCP ElevenLabs): адрес документа и есть `client_id`. Шлюз
+шлёт этот адрес (`CLIENT_METADATA_URL` в `crates/duowave-apps/src/mcp/mcp_oauth.rs`), и он зашит в каждый выпуск.
+Поэтому документ лежит не на сайте `duowave.ai`, а на своём адресе: пересборка или переезд сайта не должны разлогинить
+всех из их MCP-серверов.
+
+Worker [metadata-worker.mjs](metadata-worker.mjs) держит документ в себе, никуда не ходит. На `GET` и `HEAD`
+`/oauth/client-metadata.json` отвечает `200`, `content-type: application/json`, `cache-control: public, max-age=3600`,
+без переадресации. На другие пути — `404`, на другие методы — `405`. В документе один адрес возврата:
+`http://localhost:7780/api/v1/mcp/oauth/callback` (порт шлюза по умолчанию). Меняется документ — меняется этот файл и
+Worker ставится заново; `client_id` всегда равен адресу, по которому документ отдаётся.
+
+Проверка без Cloudflare: `node scripts/release/cloudflare/metadata-worker-check.mjs`. Она же сверяет адрес с
+константой шлюза.
+
+### Поставить (один раз)
+
+1. **Worker.** dash.cloudflare.com → **Workers & Pages** → **Create application**, как для `duowave-get` выше: пустой
+   Worker с именем `duowave-metadata`, **Deploy**, потом **Edit code**, заменить весь код содержимым
+   `metadata-worker.mjs` и снова **Deploy**.
+2. **Адрес.** **Workers & Pages** → **Overview** → `duowave-metadata` → **Settings** → **Domains & Routes** → **Add**
+   → **Custom Domain** → `metadata.duowave.app` → **Add Custom Domain**. Записи DNS для `metadata.duowave.app` до этого
+   быть не должно: Cloudflare заведёт её сам вместе с сертификатом.
+3. **Проверка** (с любого компьютера, через пару минут после шага 2):
+
+   ```sh
+   curl -sS -D - https://metadata.duowave.app/oauth/client-metadata.json
+   ```
+
+   Ответ `200`, `content-type: application/json`, без `location`, в теле `"client_id":
+   "https://metadata.duowave.app/oauth/client-metadata.json"`. `curl -sI https://metadata.duowave.app/` отвечает `404`.

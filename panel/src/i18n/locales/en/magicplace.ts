@@ -31,6 +31,8 @@ const en: Translation<typeof ru> = {
     agentNoQuestions: "In this mode the agent does everything without asking: it does not ask about the work folder's allowed commands and may, say, push a branch.",
     agentViaDuowave: "The agent's model goes through DuoWave: its spending is counted exactly.",
     agentTerms: (title: string) => `${title}'s terms`,
+    // A work system's card (docs/plans/work-systems.md, stage 4): what it can, before it is installed
+    systemCan: (list: string) => `As a work system it can: ${list}.`,
     kindGroup: 'What to show',
     faceLabel: 'Look',
     faceAny: 'Any look',
@@ -82,6 +84,8 @@ const en: Translation<typeof ru> = {
     installed: 'Installed',
     charactersLink: 'Catalog in MagicPlace',
     emptyCatalog: 'MagicPlace is empty for now.',
+    reading: 'Loading MagicPlace…',
+    readingNote: 'The first time this can take up to a minute.',
 };
 
 export default en;

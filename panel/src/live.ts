@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
 
-import { LiveMessage, RequestView, StationPresence, liveHeaders } from './api';
+import { LiveMessage, LiveVoice, RequestView, StationPresence, liveHeaders } from './api';
 import { VIA } from './via';
+import { heardAppVoice } from './voice/app-voice';
 
 // Живой канал шлюза (/api/v1/live/ws, docs/plans/desk-after-station.md, А): присутствие колонок, запросы на ходу и имена
 // перемен, после которых пульт перечитывает своё. Это WebSocket: одно соединение на вкладку. Заголовок входа сокету не
@@ -225,6 +226,41 @@ function fromHelper(channel: Channel): () => void {
  * (onStationMessage). В окне колонки (`?via=`) канал — её: во фрейме его пересказывает страница помощника, а открытое
  * само по себе окно берёт его из своего сокета к компьютеру.
  */
+/** Кто ещё слушает сообщения уха приложения: полоса поверх окон (screens/voice-strip.tsx). */
+const voiceListeners = new Set<(message: LiveVoice) => void>();
+
+/**
+ * This computer's own requests as its gateway's channel tells them: its ear's trips (and its chat's). On a Турбо the
+ * station's dashboard lives in the station's window, whose channel is the station's; the window gets these too, so its
+ * orbit follows the question asked at this computer's ear (the owner, 27.11: any ear of the home).
+ */
+let ownRequests: RequestView[] = [];
+const ownListeners = new Set<(request: RequestView) => void>();
+
+export function onOwnRequest(listener: (request: RequestView) => void): () => void {
+    ownListeners.add(listener);
+    return () => void ownListeners.delete(listener);
+}
+
+/** What is known of this computer's own requests now: for a station's window that has just opened. */
+export function ownRequestsNow(): RequestView[] {
+    return ownRequests;
+}
+
+/**
+ * A station's window (`?via=`) with this computer's own requests merged in: the station's hello starts its feed anew,
+ * and they are the home's questions too. The helper's page keeps them in its own feed already.
+ */
+function withOwn(state: LiveState): LiveState {
+    if (!VIA) return state;
+    return { ...state, requests: ownRequests.reduce((list, request) => mergeRequest(list, request), state.requests) };
+}
+
+export function onAppVoice(listener: (message: LiveVoice) => void): () => void {
+    voiceListeners.add(listener);
+    return () => void voiceListeners.delete(listener);
+}
+
 export function useLive(enabled: boolean, onChanged?: (name: string, subject?: string, change?: string) => void): LiveState {
     const [state, setState] = useState<LiveState>(EMPTY);
     const changed = useRef(onChanged);
@@ -235,10 +271,17 @@ export function useLive(enabled: boolean, onChanged?: (name: string, subject?: s
         const heard = (message: LiveMessage): void => {
             switch (message.type) {
                 case 'hello':
-                    setState(reduce(EMPTY, message));
+                    setState(withOwn(reduce(EMPTY, message)));
+                    if (!VIA) ownRequests = reduce(EMPTY, message).requests;
                     changed.current?.('hello');
                     return;
                 case 'request':
+                    setState((now) => reduce(now, message));
+                    if (!VIA) {
+                        ownRequests = mergeRequest(ownRequests, message.request);
+                        ownListeners.forEach((listener) => listener(message.request));
+                    }
+                    return;
                 case 'presence':
                     setState((now) => reduce(now, message));
                     return;
@@ -248,11 +291,35 @@ export function useLive(enabled: boolean, onChanged?: (name: string, subject?: s
                 case 'station':
                     if (!VIA) heardStation(message.station, message.message ?? null);
                     return;
+                case 'voice':
+                    // Ухо приложения этого компьютера (voice/app-voice.ts): полоса пульта и полоса поверх окон.
+                    if (!VIA) heardAppVoice(message);
+                    voiceListeners.forEach((listener) => listener(message));
+                    return;
             }
         };
         const lost = (): void => setState((now) => (now.connected ? { ...now, connected: false } : now));
         // Окно колонки, открытое само по себе (не во фрейме): из сокета компьютера — только её канал.
         const ofVia = (message: LiveMessage): void => {
+            // Ухо приложения — этого компьютера, не колонки: и в её окне полоса и «Готово» знают о нём.
+            if (message.type === 'voice') {
+                heardAppVoice(message);
+                voiceListeners.forEach((listener) => listener(message));
+                return;
+            }
+            // This computer's own requests, its ear's trips, are the home's questions too: the window's orbit follows
+            // them (the owner, 27.11). Its own hello brings the ones it knows, and each change comes by itself. The
+            // station's hello does not drop them (`withOwn`).
+            if (message.type === 'hello') {
+                ownRequests = reduce(EMPTY, message).requests;
+                setState((now) => withOwn(now));
+                return;
+            }
+            if (message.type === 'request') {
+                ownRequests = mergeRequest(ownRequests, message.request);
+                setState((now) => reduce(now, message));
+                return;
+            }
             if (message.type !== 'station' || message.station !== VIA) return;
             if (message.message) heard(message.message);
             else lost();

@@ -53,12 +53,36 @@ mod connect {
     }
 
     /// Stations that answer mDNS on the home network (none inside a container's bridge: type the address).
+    /// `?asked=1`: the person started this search (the first steps' «Где», the speaker's connect screen, «Искать
+    /// снова»), not a card looking around by itself.
+    #[derive(Debug, Default, serde::Deserialize)]
+    #[serde(default)]
+    pub(super) struct DiscoverQuery {
+        asked: Option<String>,
+    }
+
     pub(super) async fn discover(
         Uses(station_connect): Uses<Arc<StationConnectService>>,
         Uses(identity): Uses<Arc<crate::core::identity::home::Identity>>,
+        axum::extract::Query(query): axum::extract::Query<DiscoverQuery>,
         caller: Caller,
     ) -> ApiResult<Discovered> {
         caller.permitted(STATIONS_MANAGE)?;
+        // A search the person started asks about the home network by itself (macOS' window): the announcer waiting for
+        // that goes on (src/permissions). A search a card starts by itself (the desk's «Помогать колонке», «Состояние
+        // дома» — under the first steps they start right after the password) waits with an empty answer while a fresh
+        // Mac app has not asked yet: else macOS' window came before the step «Разрешения» (hand check 27.11).
+        if query.asked.as_deref().is_some_and(|asked| asked != "0" && asked != "false") {
+            crate::permissions::network_asked();
+        } else if crate::permissions::network_waiting() {
+            return Ok(ok(Discovered {
+                stations: Vec::new(),
+                homes: Vec::new(),
+                gateway: Vec::new(),
+                port: station_connect.port(),
+                why_none: None,
+            }));
+        }
         let (stations, homes) =
             tokio::join!(station_connect.discover(), crate::stations::connect::discovery::discover_homes(2000));
         let interfaces = host_interfaces();

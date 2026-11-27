@@ -1,4 +1,4 @@
-//! The talk's word lists by language (docs/plans/audio-interface-2.md, «Слова — в пакете языка»): the words that end
+//! «Чутьё»'s word lists by language (its words step, mod.rs; they were the talk layer's until 27.11.2026) (docs/plans/audio-interface-2.md, «Слова — в пакете языка»): the words that end
 //! a thought at once («да», «стоп»), that leave it hanging («и», «чтобы»), that ask to wait («подожди»), and that close
 //! the window after our question («хватит», «спасибо»). The frame knows none of them.
 //!

@@ -38,6 +38,7 @@ mod talk_listen;
 mod talk_ready;
 mod talk_ready_gateway;
 mod talk_rules_gateway;
+mod thinking;
 mod workshop;
 mod workshop_agent;
 mod workshop_routes;

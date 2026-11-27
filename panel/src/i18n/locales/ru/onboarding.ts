@@ -12,6 +12,7 @@ export default {
     stepOf: (n: number, all: number) => `${n} из ${all}`,
     steps: {
         password: 'Пароль',
+        allow: 'Разрешения',
         answer: 'Кто отвечает',
         where: 'Где работает',
         brain: 'Кто отвечает',

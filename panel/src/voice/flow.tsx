@@ -18,9 +18,13 @@ import { answering, onAnswering, sayAloud } from './speak';
 import { hideStrip, showStrip, stripNow } from './strip';
 import { setWorkShower } from './waiting';
 import { SAID_ON, askedHere, onWorkChange, readWork, speaksHere, workHead } from './works';
+import { appVoiceHere } from './app-voice';
+import { answersOf } from '../screens/works';
 
 /** Перемены работы, после которых её вопрос отвечен (gateway talk/layer.rs, ready.rs, works.rs `told`). */
 const ANSWERED_ON = ['answered', 'declined', 'decided', 'removed', 'closed'];
+/** Вопросы, что держат идущую работу: на полосе с кнопками ответа сразу. */
+const HOLDING: string[] = ['permission', 'plan', 'wait', 'budget'];
 
 /** Сколько пульт слушает ответ на «Готово», если работа — его. */
 export const ANSWER_SECONDS = 6;
@@ -70,13 +74,20 @@ export function CreationFlow() {
         return onWorkChange((id, change) => {
             if (id && change === 'decided') void themeOn(id);
             if (id && ANSWERED_ON.includes(change) && stripNow()?.work === id) return void settle(id);
+            // Вопрос, что держит идущую работу (docs/plans/work-systems.md): разрешение системы (этап 3), «Делаю?» плана
+            // (этап 6) — на полосе с кнопками ответа сразу, и вслух, где этот пульт говорит.
+            if (id && change === 'asks') return void readWork(id).then((work) => work && askHolding(work));
             if (!id || !SAID_ON.includes(change)) return;
             void readWork(id).then((work) => work && announce(work));
         });
     }, []);
     // «Ждёт вас»: работа показывается на полосе с кнопками ответа, без голоса. Не показалась — пилюля откроет её страницу.
     useEffect(() => {
-        setWorkShower((work) => announce(work, true));
+        // Вопрос, что держит идущую работу (лимит, разрешение, план), — на полосе с его кнопками, без голоса.
+        setWorkShower(async (work) => {
+            if (work.question && HOLDING.includes(work.question.kind ?? '')) return askHolding(work, true).then(() => true);
+            return announce(work, true);
+        });
         return () => setWorkShower(null);
     }, []);
     /**
@@ -99,6 +110,28 @@ export function CreationFlow() {
         const line = work?.result?.end === 'desk' ? work.result.line : '';
         if (line) showStrip({ kind: 'done', head: tr.voice.done, text: line }, 8000);
         else hideStrip();
+    };
+    /**
+     * Вопрос, что держит идущую работу, на полосе: кнопки — те же ответы, что в «Работах»; ответ шлюза — строкой. Такую
+     * работу нельзя показать как черновик мастерской: у неё нет черновика (проверка руками 27.11 — полоса молчала).
+     */
+    const askHolding = async (work: WorkView, quiet = false): Promise<void> => {
+        const question = work.question;
+        // Лимит подписки и кончившийся бюджет держат работу так же (этап 5, проверка руками 27.11: кнопки были только
+        // на странице работы).
+        if (!question || !HOLDING.includes(question.kind ?? '')) return;
+        const left = Math.max(5_000, (question.until ?? 0) - Date.now());
+        const chips = answersOf(work).map((entry) => ({
+            label: entry.label,
+            act: () =>
+                void api
+                    .workAnswer(work.id, entry.answer, entry.to)
+                    .then((reply) => showStrip({ kind: 'done', head: workHead(work), text: reply.said }, 6000))
+                    .catch((e) => showStrip({ kind: 'note', head: tr.voice.failedHead, text: failed(e) }, 6000)),
+        }));
+        showStrip({ kind: 'ready', head: work.title, text: question.text, chips, work: work.id }, Math.min(left, 150_000));
+        if (quiet || !speaksHere(work) || appVoiceHere()) return;
+        if (await sayAloud(question.text)) listenFor(ANSWER_SECONDS * 1000, 'ready');
     };
     /**
      * Строка итога работы на полосе — и голосом, когда это работа этого компьютера в режиме «Микрофон». `quiet` — только
@@ -145,6 +178,8 @@ export function CreationFlow() {
             );
         }
         if (quiet || !speaksHere(work) || !askedHere(work)) return true;
+        // Ухо приложения на этом компьютере говорит «Готово» само (этап 3, «К6»): пульт только показывает.
+        if (appVoiceHere()) return true;
         // Компьютер говорит «Готово…» сам, но не перебивает: ждёт, пока пульт не слушает и не говорит. Договорил —
         // шлюз открывает вопрос, пульт слушает ответ.
         const turn = saying.then(async () => {

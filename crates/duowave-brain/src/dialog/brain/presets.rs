@@ -146,6 +146,9 @@ pub struct ProviderPreset {
     /// How the service's refusals are said: DuoWave's own codes in words, the rest as they come.
     #[serde(skip)]
     pub errors: ErrorWords,
+    /// Its chat takes `reasoning_effort` (DuoWave's): a turn its thinking took whole is asked again thinking less.
+    #[serde(skip)]
+    pub reasoning_effort: bool,
     /// Where the owner sees and sets how much of a plan DuoWave may spend (ChatGPT's «Usage»).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub usage_url: Option<&'static str>,
@@ -180,6 +183,7 @@ const BLANK: ProviderPreset = ProviderPreset {
     sign_in: None,
     api: LlmApi::Chat,
     errors: ErrorWords::Plain,
+    reasoning_effort: false,
     usage_url: None,
     fields: &[],
     suggested: None,
@@ -217,6 +221,7 @@ pub const PROVIDER_PRESETS: &[ProviderPreset] = &[
         sign_in: Some(DUOWAVE_SIGN_IN),
         usage_url: Some("https://my.duowave.app"),
         errors: ErrorWords::DuoWave,
+        reasoning_effort: true,
         brand: Some("duowave"),
         order: 0,
         ..BLANK

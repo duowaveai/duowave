@@ -56,6 +56,7 @@ async fn follows_the_cards_and_a_restart_interrupts_the_work_going_on() {
         kept: true,
         work: None,
         unchanged: false,
+        overthought: false,
     };
     app.workshop.keep_card("golos-vidzhet-1", card, Some("made")).unwrap();
     let work = app.talk.works().of_target("workshop", "golos-vidzhet-1").expect("a work for the run");
@@ -70,7 +71,9 @@ async fn follows_the_cards_and_a_restart_interrupts_the_work_going_on() {
     assert_eq!(changes, ["1:kitchen:started"]);
     let now = app.talk.now("kitchen", crate::memory::text::Lang::Ru);
     assert!(now.contains("- В работе [р1]: виджет «Испанский»"), "{now}");
-    assert_eq!(app.talk.now("hall", crate::memory::text::Lang::Ru), "", "another device knows nothing of it");
+    // Begun at the kitchen's station, it goes on at another device (docs/plans/audio-interface-3.md, «Н2»).
+    let hall = app.talk.now("hall", crate::memory::text::Lang::Ru);
+    assert!(hall.contains("- В работе [р1]: виджет «Испанский»"), "the home's works reach every device: {hall}");
     drop(app);
 
     let app = crate::app::App::build(Config::for_tests(&env(dir.path()))).unwrap();

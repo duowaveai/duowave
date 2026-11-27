@@ -72,6 +72,15 @@ pub enum Kind {
     /// owner 20.11, 5). The question's `work` is empty and `pending.thing` the Турбо; the answer is read by its sense —
     /// «давай», «ага, буди», «не надо, я сам» —, not by a list of words.
     Wake,
+    /// «…: бюджет $5 кончился, потрачено $5.10. Добавить ещё $5 или остановить?»: a work in a folder waits before its
+    /// next run; silence waits too, and spends nothing (docs/plans/router-and-works.md, 5).
+    Budget,
+    /// «Claude Code спрашивает: …. Разрешить?»: a work system's question of rights (docs/plans/work-systems.md, stage
+    /// 3); «да» allows, «нет» refuses, a dangerous one only by a tap (D3).
+    Permission,
+    /// «План для «…»: … Делаю?»: our system's way «с планом» (stage 6); «да» — the work goes on by the plan, «нет» —
+    /// it stops; silence waits.
+    Plan,
 }
 
 /// What was asked for before the question, done once it is answered: the wish of «Поправить … или новую?», the change
@@ -88,6 +97,16 @@ pub struct Pending {
     pub choices: Vec<String>,
     /// The question as it was said, for the reader.
     pub question: Option<String>,
+    /// «Добавить туда или начать новую?» of a work system: where the new work begins.
+    pub in_system: Option<InSystem>,
+}
+
+/// Where a work of a system begins: the system, the work folder, and its name as said.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct InSystem {
+    pub system: String,
+    pub folder: String,
+    pub folder_name: String,
 }
 
 /// One device's question.
@@ -141,7 +160,20 @@ impl Asked {
 
     fn put(&self, device: &str, question: Question) {
         let asked = question.asked;
-        self.questions().insert(device.to_string(), question);
+        let mut questions = self.questions();
+        // One window for the home (docs/plans/audio-interface-3.md, part Н, «Н3»): a window opened on one device
+        // closes the others — a phrase without the word goes to the one spoken with last. A question so closed was
+        // not answered: it ends silent, and its reminder comes after the next talk as for any other.
+        let others: Vec<String> = questions.keys().filter(|other| other.as_str() != device).cloned().collect();
+        let closed: Vec<(String, Question)> =
+            others.into_iter().filter_map(|other| questions.remove(&other).map(|question| (other, question))).collect();
+        questions.insert(device.to_string(), question);
+        drop(questions);
+        if let Some(hear) = self.silence.get() {
+            for (other, question) in &closed {
+                hear(other, question);
+            }
+        }
         self.expire_later(device, asked);
     }
 
@@ -255,5 +287,24 @@ mod tests {
         tokio::task::yield_now().await;
         assert_eq!(*silent.lock().unwrap(), [("kitchen".to_string(), "3".to_string())]);
         assert_eq!(asked.open("kitchen"), None);
+    }
+
+    #[test]
+    fn one_window_for_the_home_a_question_on_one_device_closes_the_others() {
+        let asked = Asked::default();
+        let silent: Arc<Mutex<Vec<String>>> = Arc::default();
+        let heard = silent.clone();
+        asked.on_silence(Arc::new(move |device: &str, _question: &Question| {
+            heard.lock().unwrap().push(device.to_string())
+        }));
+        asked.ask("kitchen", "3", Kind::Ready, false);
+        asked.ask(crate::talk::COMPUTER, "4", Kind::Extra, false);
+        assert_eq!(asked.open("kitchen"), None, "the window went to the computer");
+        assert_eq!(asked.open(crate::talk::COMPUTER).map(|question| question.work), Some("4".into()));
+        assert_eq!(
+            *silent.lock().unwrap(),
+            ["kitchen"],
+            "the station's question was not answered: it is reminded later"
+        );
     }
 }

@@ -30,6 +30,8 @@ import { bannerOffer } from '../src/update-offer.ts';
 import { inviteCode } from '../src/invite-code.ts';
 import { blockedOf, sameFeed } from '../src/magicplace/pending-feed.ts';
 import type { CatalogSource } from '../src/api.ts';
+import { tripOfHome } from '../src/screens/trip-of-home.ts';
+import type { RequestView } from '../src/api.ts';
 
 const checks: Array<[string, () => void]> = [];
 const check = (name: string, run: () => void): void => void checks.push([name, run]);
@@ -50,6 +52,38 @@ function sources(folder: string): string[] {
 }
 
 // ─── The theme's backdrop in a page of the computer inside the station's panel (`?own=`) ─────────────────────────────
+
+// 27.11, the owner: the orbit moved for the station's questions and not for the computer's ear. It follows any ear of
+// the home now; a hub's half of a Турбо's question is folded into the ear's trip; another station keeps its own scene.
+check('the_orbit_follows_any_ear_of_the_home_and_folds_a_hub_s_half_into_the_ear_s_trip', () => {
+    const request = (id: string, device: string, status: RequestView['status'], extra: Partial<RequestView> = {}): RequestView =>
+        ({ id, device, status, kind: 'voice', mode: 'own', startedAt: '2026-11-27T12:00:00Z', steps: [], ...extra }) as RequestView;
+    const feed = [
+        request('hub-7', 'computer', 'active'),
+        request('ear-1', 'computer', 'active', { thoughtIn: 'hub-7' }),
+        request('bedroom-3', 'bedroom', 'active'),
+        request('kitchen-2', 'kitchen', 'answered'),
+    ];
+    const home = tripOfHome(feed, { onComputer: false, station: 'kitchen', stations: ['kitchen', 'bedroom'] });
+    expect(home.trip?.id === 'ear-1', `the computer's ear's trip: ${home.trip?.id}`);
+    expect(!home.ofHome.some((entry) => entry.id === 'hub-7'), "the hub's half is folded");
+    expect(!home.ofHome.some((entry) => entry.id === 'bedroom-3'), "another station's question is its own scene's");
+    const ended = tripOfHome([request('ear-1', 'computer', 'answered'), request('kitchen-2', 'kitchen', 'answered')], {
+        onComputer: false,
+        station: 'kitchen',
+        stations: ['kitchen'],
+    });
+    expect(ended.trip?.id === 'ear-1', 'nothing going: the last ended, whichever ear');
+    const station = tripOfHome([request('kitchen-4', 'kitchen', 'active')], { onComputer: false, station: 'kitchen', stations: ['kitchen'] });
+    expect(station.trip?.id === 'kitchen-4', "the station's own question, as before");
+    // A hub that lists a computer among its devices: the computer's ear is still the home's, never another station.
+    const listed = tripOfHome([request('ear-5', 'computer', 'active')], {
+        onComputer: false,
+        station: 'kitchen',
+        stations: ['kitchen', 'computer'],
+    });
+    expect(listed.trip?.id === 'ear-5', "the computer's ear even where the hub lists a computer");
+});
 
 check('a_frame_skips_the_backdrop_only_when_the_page_around_paints_the_same', () => {
     const around = { backdrop: 'on', themeId: 'stars', theme: 'dark' };
@@ -703,6 +737,34 @@ check('a_choice_whose_feed_the_speaker_cannot_read_says_why_instead_of_waiting_f
     const pending = source('src/magicplace/pending-install.tsx');
     expect(pending.includes('blockedOf(view?.feeds, chosen.url') && pending.includes('BLOCKED_RETRY_MS'), 'the wait asks it and tries again rarely');
     expect(source('src/magicplace/wizard.tsx').includes('t.pillBlocked('), 'the pill says it');
+});
+
+check('the_stations_window_on_a_turbo_asks_this_computers_ear_not_the_station', () => {
+    // 27.11 (stage 3, Н1 on a Турбо): the station's window asked the station about the app's ear, which it has not, so
+    // the panel would say a work's «Готово» itself while the computer's channel said it too.
+    const api = source('src/api.ts');
+    for (const call of ['talkVoice', 'setTalkVoice', 'voicePress', 'voiceRelease', 'voiceStop', 'voiceCheck', 'voicePanel']) {
+        expect(new RegExp(`${call}: \\([^)]*\\) => ear<`).test(api), `${call} goes to this computer's gateway`);
+    }
+    expect(api.includes('VIA ? ownCall<T>(method, path, body) : call<T>(method, path, body)'), 'past the pass in the station’s window');
+    expect(/message\.type === 'voice'\) \{\s*heardAppVoice\(message\)/.test(source('src/live.ts')), 'the station’s window hears the ear’s messages');
+});
+
+check('a_turbo_computer_page_shows_the_app_ear_s_card_and_its_key', () => {
+    // 27.11 (the trial of main): on a Турбо of a station hub the key «Сказать», «слышит ли себя» and the strip's switch
+    // were only on «Микрофон», the hub-computer's page — nowhere to change them.
+    const pc = source('src/screens/helper-pc.tsx');
+    expect(/export function ThisComputer\(\) \{[\s\S]*?<ComputerEar \/>/.test(pc), 'the Турбо page shows the ear');
+    const places = source('src/screens/places.tsx');
+    expect(/export function ComputerEar\(\)[\s\S]*?<AppVoiceCard \/>[\s\S]*?<TalkKeyChoice \/>/.test(places), 'the ear: its card and its key');
+});
+
+check('the_key_card_offers_handy_s_three_modes', () => {
+    // 27.11, the owner: the key «Сказать» works as Handy's does — hold or tap, while held, two presses.
+    const choice = source('src/screens/voice-input.tsx');
+    expect(/export function TalkKeyChoice\(\)[\s\S]*?<KeyActivationChoice /.test(choice), 'the key card holds the choice');
+    expect(/'hold_or_toggle', 'push_to_talk', 'toggle'/.test(choice), 'the three modes');
+    expect(/activation\?: KeyActivation;/.test(source('src/api.ts')), 'the gateway’s field');
 });
 
 let failed = 0;

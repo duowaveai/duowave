@@ -128,6 +128,7 @@ async fn a_drafts_card_says_who_asked_and_where_it_is_and_the_panel_hears_which_
         kept: true,
         work: None,
         unchanged: false,
+        overthought: false,
     };
     app.workshop.keep_card("widget-1", card, Some("made")).unwrap();
     let run = app.workshop.activity().begin("widget-1", By::Panel, "мои дела", &CancellationToken::new());

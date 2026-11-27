@@ -6,9 +6,9 @@
 import { ComponentChildren, FunctionComponent } from 'preact';
 import { useEffect, useState } from 'preact/hooks';
 
-import { api, can, problemOf, type CatalogView, type HomeDevice } from '../api';
+import { api, can, problemOf, type CatalogView, type HomeDevice, type ThinkingSettingsView, type ThinkingStats } from '../api';
 import { ask } from '../ui/confirm';
-import { tr } from '../i18n';
+import { formatNumber, tr } from '../i18n';
 import {
     IconChevronLeft,
     IconChevronRight,
@@ -38,6 +38,8 @@ import { SetupSheet } from './stations';
 import { TOP_VIA, VIA, VIA_LINK } from '../via';
 import { useHomeStationName } from '../station-name';
 import { JournalScreen } from './journal';
+import { seconds } from './trip';
+import { tokensShort } from './works';
 import { StationMemoryCard } from './memory';
 import type { SettingsTab } from './mind';
 import { HearingPage, VoicePage } from './voice-home';
@@ -46,8 +48,9 @@ import { useVoiceAttention } from '../voice/pending-voice';
 import { EgressScreen } from './egress';
 import { PlacementCard } from './placement';
 import { SettingsScreen } from './settings';
-import { MicCheck, Readiness, TalkChoice, TalkKeyChoice, useTalkChoiceHere } from './voice-input';
+import { MicCheck, Readiness, TalkChoice, TalkKeyChoice, useTalkChoiceHere, AppVoiceCard } from './voice-input';
 import { onComputer, useOnComputer } from '../voice-input';
+import { useAppVoice } from '../voice/app-voice';
 
 type Icon = FunctionComponent<{ size?: number }>;
 
@@ -84,14 +87,15 @@ interface SettingsPage {
     go?: string;
 }
 
-/** Карточка страницы «Настроек» с заголовком — для того, у чего своего заголовка нет (виджеты). */
-function Card({ id, title, children }: { id: string; title: string; children: ComponentChildren }) {
+/** Карточка страницы «Настроек» с заголовком — для того, у чего своего заголовка нет (виджеты). `note` — подпись справа. */
+function Card({ id, title, note, children }: { id: string; title: string; note?: string; children: ComponentChildren }) {
     return (
         <section class="card glass px-16 pt-4 pb-14 flex flex-col gap-10" aria-labelledby={`set-${id}`}>
             <div class="section-head">
                 <h2 id={`set-${id}`} class="t-title-xs m-0">
                     {title}
                 </h2>
+                {note && <span class="t-caption">{note}</span>}
             </div>
             {children}
         </section>
@@ -154,11 +158,18 @@ export function StationDevice() {
 }
 
 export function ComputerMic() {
+    const voice = useAppVoice();
     return (
         <>
             <Card id="talk" title={tr.places.talkTitle}>
                 <TalkChoice />
             </Card>
+            {/* Голос компьютера: ухо и голос приложения DuoWave на этом Mac (этап 3 аудиоинтерфейса). */}
+            {voice?.port && (
+                <Card id="app-voice" title={tr.voiceInput.appCardTitle}>
+                    <AppVoiceCard />
+                </Card>
+            )}
             <Card id="ready" title={tr.places.readyTitle}>
                 <Readiness />
             </Card>
@@ -166,6 +177,26 @@ export function ComputerMic() {
             {can('models.manage') && <VoiceHearingBrief />}
             <Card id="mic-check" title={tr.places.micTitle}>
                 <MicCheck />
+            </Card>
+            <Card id="talk-key" title={tr.voiceInput.keyTitle}>
+                <TalkKeyChoice />
+            </Card>
+        </>
+    );
+}
+
+/**
+ * The computer's own ear where the computer is a Турбо of a station hub (27.11, the trial of main): «Микрофон» is the
+ * hub-computer's page, so a Турбо had no key to change, no «слышит ли себя» and no switch of the strip. Shown while the
+ * app has an ear.
+ */
+export function ComputerEar() {
+    const voice = useAppVoice();
+    if (!voice?.port) return null;
+    return (
+        <>
+            <Card id="app-voice" title={tr.voiceInput.appCardTitle}>
+                <AppVoiceCard />
             </Card>
             <Card id="talk-key" title={tr.voiceInput.keyTitle}>
                 <TalkKeyChoice />
@@ -283,6 +314,7 @@ function DevPage() {
                 </label>
             </Card>
             {hidden && <HiddenDevOptions />}
+            {hidden && <ThinkingOptions />}
         </>
     );
 }
@@ -342,6 +374,142 @@ function HiddenDevOptions() {
             <button class="w-btn" onClick={() => setHiddenDevOptions(false)}>
                 {tr.places.hiddenClose}
             </button>
+        </Card>
+    );
+}
+
+/** Доля строкой: «62 %»; нет — прочерк. */
+const percent = (share: number | undefined): string => (share === undefined ? '—' : formatNumber(share, { style: 'percent', maximumFractionDigits: 0 }));
+
+/**
+ * «Мышление» в скрытых возможностях (docs/plans/thinking.md, D5 и «Everything is a setting»): его настройка `thinking`
+ * JSON-ом и числа ходов рядом. Настройку видит и меняет тот, кому можно менять настройки шлюза, числа — тот, у кого
+ * право на журнал. Сохранённое действует со следующей фразы; «Как было по умолчанию» убирает настройку совсем.
+ */
+function ThinkingOptions() {
+    const editable = can('settings.edit');
+    const numbers = can('journal.view');
+    const [text, setText] = useState<string | null>(null);
+    const [mark, setMark] = useState<string | undefined>(undefined);
+    const [busy, setBusy] = useState(false);
+    const [note, setNote] = useState<{ ok: boolean; text: string } | null>(null);
+    const [stats, setStats] = useState<ThinkingStats | null>(null);
+    const [statsProblem, setStatsProblem] = useState<string | null>(null);
+    const show = (view: ThinkingSettingsView) => {
+        setText(JSON.stringify(view.settings, null, 2));
+        setMark(view.mark);
+    };
+    useEffect(() => {
+        let alive = true;
+        if (editable) {
+            api.thinkingSettings()
+                .then((view) => alive && show(view))
+                .catch((error) => alive && setNote({ ok: false, text: problemOf(error) }));
+        }
+        if (numbers) {
+            api.thinkingStats()
+                .then((next) => alive && setStats(next))
+                .catch((error) => alive && setStatsProblem(problemOf(error)));
+        }
+        return () => {
+            alive = false;
+        };
+    }, []);
+    // Ответ шлюза — настройка, как она теперь действует: поле показывает её целиком, с умолчаниями.
+    const apply = async (settings: Record<string, unknown>, done: string) => {
+        setBusy(true);
+        setNote(null);
+        try {
+            show(await api.setThinkingSettings(settings));
+            setNote({ ok: true, text: done });
+        } catch (error) {
+            setNote({ ok: false, text: problemOf(error) });
+        } finally {
+            setBusy(false);
+        }
+    };
+    const save = () => {
+        let parsed: unknown;
+        try {
+            parsed = JSON.parse(text ?? '');
+        } catch (error) {
+            setNote({ ok: false, text: tr.places.thinkingNotJson(error instanceof Error ? error.message : String(error)) });
+            return;
+        }
+        // Настройка — объект: `null` шлюз понял бы как «по умолчанию», а список — как настройку из одних умолчаний.
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+            setNote({ ok: false, text: tr.places.thinkingNotObject });
+            return;
+        }
+        void apply(parsed as Record<string, unknown>, tr.places.thinkingSaved);
+    };
+    if (!editable && !numbers) return null;
+    const rows: Array<[string, string]> = stats
+        ? [
+              [tr.places.thinkingTurns, formatNumber(stats.turns)],
+              [tr.places.thinkingFirstWord, stats.firstWordMs === undefined ? '—' : seconds(stats.firstWordMs)],
+              [tr.places.thinkingRounds, stats.rounds === undefined ? '—' : formatNumber(stats.rounds)],
+              [tr.places.thinkingCardTokens, stats.cardTokens === undefined ? '—' : tokensShort(stats.cardTokens)],
+              [tr.places.thinkingCache, percent(stats.cacheShare)],
+              [tr.places.thinkingShadowHit, percent(stats.hitRate)],
+              [tr.places.thinkingCut, percent(stats.cutShare)],
+              [tr.places.thinkingRepeated, percent(stats.repeatedShare)],
+          ]
+        : [];
+    return (
+        <Card id="dev-thinking" title={tr.places.thinkingTitle} note={mark}>
+            {editable && (
+                <>
+                    <p class="w-cap m-0">{tr.places.thinkingAbout}</p>
+                    {text !== null && (
+                        <textarea
+                            class="field font-mono ws-code"
+                            rows={Math.min(18, Math.max(6, text.split('\n').length))}
+                            spellcheck={false}
+                            autocapitalize="off"
+                            autocomplete="off"
+                            aria-label={tr.places.thinkingField}
+                            value={text}
+                            onInput={(event) => setText((event.target as HTMLTextAreaElement).value)}
+                        />
+                    )}
+                    {text === null && !note && <p class="w-cap m-0">{tr.common.loading}</p>}
+                    <div class="w-actions">
+                        <button class="w-btn w-btn-ink" disabled={busy || text === null} onClick={save}>
+                            {tr.places.thinkingSave}
+                        </button>
+                        <button class="w-btn" disabled={busy || text === null} onClick={() => void apply({}, tr.places.thinkingReset)}>
+                            {tr.places.thinkingDefaults}
+                        </button>
+                    </div>
+                    {note && (
+                        <p role={note.ok ? 'status' : 'alert'} class={`w-cap m-0 ${note.ok ? 'c-text' : 'c-dot-offline'}`}>
+                            {note.text}
+                        </p>
+                    )}
+                </>
+            )}
+            {numbers && (
+                <>
+                    <span class="w-strong">{tr.places.thinkingNumbers}</span>
+                    {statsProblem ? (
+                        <p class="w-cap m-0 c-dot-offline" role="alert">
+                            {statsProblem}
+                        </p>
+                    ) : !stats ? (
+                        <p class="w-cap m-0">{tr.common.loading}</p>
+                    ) : (
+                        <div class="w-rows">
+                            {rows.map(([label, value]) => (
+                                <div key={label} class="w-row">
+                                    <span class="w-text">{label}</span>
+                                    <span class="w-cap">{value}</span>
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                </>
+            )}
         </Card>
     );
 }

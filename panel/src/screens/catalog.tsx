@@ -83,6 +83,9 @@ export const isInstalled = (entry: CatalogEntry): boolean => !!entry.installed |
 /** Можно ли его поставить: не пойдёт здесь и плагины без подписи — нет (серым, с причиной). */
 export const isBlocked = (entry: CatalogEntry): boolean => entry.state === 'incompatible' || entry.state === 'needsSignature';
 
+/** Как скоро спросить каталог снова, пока его картинки докачиваются. */
+const PREVIEWS_AGAIN_MS = 3000;
+
 export interface CatalogState {
     view: CatalogView | null;
     /** Шлюз без каталога (постарше): экраны показывают только то, что стоит. */
@@ -119,6 +122,12 @@ export function useCatalog(station?: string): CatalogState {
     useEffect(() => {
         if (!absent) void reload();
     }, [panel.version, station]);
+    // Картинки и звуки ещё идут (шлюз отдал список, не дождавшись их): перечитать, пока идут, — они появятся на плитках.
+    useEffect(() => {
+        if (!view?.previewsComing || absent) return;
+        const timer = setTimeout(() => void reload(), PREVIEWS_AGAIN_MS);
+        return () => clearTimeout(timer);
+    }, [view]);
     return { view, absent, error, refreshing, reload, setView };
 }
 
@@ -557,7 +566,8 @@ export function CatalogEntrySheet({
                             {pill.text}
                         </span>
                     ))}
-                    <span class="win-chip">{KIND_TITLES[entry.kind] ?? entry.kind}</span>
+                    {/* Где работает — как на плитке (тест 26.11: у YouTube Lite для колонки окно писало «на компьютере»). */}
+                    <span class="win-chip">{placeOf(entry.kind, entry.runtime, entry.runs, entry.place)}</span>
                     {entry.version && <span class="win-chip">{entry.version}</span>}
                 </>
             }

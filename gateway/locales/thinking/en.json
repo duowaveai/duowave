@@ -1,0 +1,125 @@
+{
+  "not_that": [
+    "not that",
+    "that's not what i asked",
+    "not what i meant",
+    "you got it wrong",
+    "wrong",
+    "no, i meant"
+  ],
+  "groups": {
+    "weather": [
+      "weather",
+      "rain",
+      "snow",
+      "degrees",
+      "forecast",
+      "umbrella"
+    ],
+    "news": [
+      "news",
+      "headlines"
+    ],
+    "smart_home": [
+      "light",
+      "lamp",
+      "plug",
+      "smart home",
+      "air conditioner",
+      "heater"
+    ],
+    "reminders": [
+      "remind",
+      "reminder"
+    ],
+    "games": [
+      "game",
+      "play a game",
+      "riddle"
+    ],
+    "yandex": [
+      "skill",
+      "yandex"
+    ],
+    "memory": [
+      "remember",
+      "forget",
+      "what do you remember",
+      "what do you know about me"
+    ],
+    "works": [
+      "widget",
+      "make a game",
+      "app",
+      "write a skill",
+      "on the desk",
+      "try it on"
+    ],
+    "calendar": [
+      "calendar",
+      "meeting",
+      "schedule",
+      "tomorrow i have",
+      "what do i have"
+    ],
+    "timers": [
+      "timer"
+    ],
+    "alarms": [
+      "alarm",
+      "wake me"
+    ],
+    "volume": [
+      "louder",
+      "quieter",
+      "volume",
+      "sound"
+    ],
+    "playback": [
+      "pause",
+      "resume",
+      "next",
+      "previous",
+      "stop the music"
+    ],
+    "radio": [
+      "radio"
+    ],
+    "music": [
+      "music",
+      "song",
+      "play track",
+      "playlist"
+    ],
+    "tales": [
+      "tale",
+      "story"
+    ]
+  },
+  "yes": [
+    "yes",
+    "yeah",
+    "sure",
+    "ok",
+    "okay",
+    "go ahead",
+    "do it",
+    "yes please",
+    "right"
+  ],
+  "no": [
+    "no",
+    "no thanks",
+    "don't",
+    "cancel",
+    "stop",
+    "not now"
+  ],
+  "hands": {
+    "ask_first": "Ask the person first: say what you will do and ask yes or no. Do not call it again until they answer.",
+    "done": "Done.",
+    "refused": "All right, I won't.",
+    "no_answer": "The device did not answer.",
+    "no_device": "There is no such device here."
+  }
+}

@@ -34,14 +34,30 @@ export function startedHere(work: string): void {
 /** Чем кончилась работа так, что о ней говорят: готово, не доделано, не вышло, правка уже на столе. */
 export const SAID_ON: string[] = ['ready', 'unfinished', 'failed', 'done'];
 
-/** Строку итога работы этого компьютера говорит пульт: в режиме «Микрофон», работа — компьютера. */
+/**
+ * Где работу трогали последней (docs/plans/audio-interface-3.md, «Н1»): откуда пришла её последняя фраза — начало,
+ * заметка, «и ещё…»; там и звучит её «Готово».
+ */
+export function touchedOn(work: WorkView): string {
+    let device = work.origin.device;
+    let at = work.startedAt;
+    for (const note of work.notes) {
+        if (note.at >= at) {
+            at = note.at;
+            device = note.origin.device;
+        }
+    }
+    return device;
+}
+
+/** Строку итога работы этого компьютера говорит пульт: в режиме «Микрофон», работу последней трогали здесь. */
 export function speaksHere(work: WorkView): boolean {
-    return onComputer() && work.origin.device === 'computer' && !!work.result?.line;
+    return onComputer() && touchedOn(work) === 'computer' && !!work.result?.line;
 }
 
 /** Работа этого пульта: её ждут здесь — после «Готово» слушать ответ. */
 export function askedHere(work: WorkView): boolean {
-    return here.has(work.id) || work.origin.device === 'computer';
+    return here.has(work.id) || touchedOn(work) === 'computer';
 }
 
 /** Прочитать работу; нет права — нет и работы. */

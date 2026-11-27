@@ -27,7 +27,7 @@ use serde_json::json;
 use super::layer::TalkLayer;
 use super::origin::Origin;
 use super::pack::{self, Pack};
-use super::work_tools::Found;
+use super::work_tools::{Begin, Found};
 use super::works::{Face, Focus};
 use crate::memory::text::Lang;
 use crate::skills::capabilities::{CapabilityName, Intent};
@@ -64,6 +64,19 @@ pub enum Heard {
     Stop {
         thing: Option<String>,
     },
+    /// «Следи за этой»: a work begun outside is said aloud like ours (docs/plans/work-systems.md, D1).
+    Watch {
+        thing: Option<String>,
+    },
+    /// «Не следи»: quiet again.
+    Unwatch {
+        thing: Option<String>,
+    },
+    /// «Запомни: «глянь» значит «как там»»: one's own words for an action on works (stage 7).
+    Learn {
+        words: String,
+        meaning: String,
+    },
     DoorOpen,
     DoorClose,
     Start {
@@ -72,6 +85,15 @@ pub enum Heard {
         /// Its short name, when the reader gave one («Курс доллара»); else the face's word until the agent names it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         title: Option<String>,
+    },
+    /// A work for an agent in a work folder (docs/plans/router-and-works.md, stage 5): the task, the folder and the agent
+    /// as they were said — none: the only folder (or asked which), the folder's agent.
+    Folder {
+        ask: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        folder: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        agent: Option<String>,
     },
     /// A phrase through the open door: a request, or an addition to the thing in work or waiting.
     Door {
@@ -104,6 +126,9 @@ struct Compiled {
     desk: Vec<Regex>,
     details: Vec<Regex>,
     stop: Vec<Regex>,
+    watch: Vec<Regex>,
+    unwatch: Vec<Regex>,
+    learn: Vec<Regex>,
     door_open: Vec<Regex>,
     door_close: Vec<Regex>,
     start: Vec<Regex>,
@@ -123,6 +148,9 @@ impl Compiled {
             desk: compile(rules.desk),
             details: compile(rules.details),
             stop: compile(rules.stop),
+            watch: compile(rules.watch),
+            unwatch: compile(rules.unwatch),
+            learn: compile(rules.learn),
             door_open: compile(rules.door_open),
             door_close: compile(rules.door_close),
             start: compile(rules.start),
@@ -206,6 +234,27 @@ impl TalkRules {
         ours.then(|| Some(thing.to_string()))
     }
 
+    /// Which of the works' actions the pack's words name: «как там» — `status`, «стоп» — `stop`; a meaning taught by
+    /// «запомни». None — none of them.
+    pub fn action_named(lang: Lang, meaning: &str) -> Option<&'static str> {
+        let rules = compiled(lang);
+        let words = words_of(&crate::memory::text::normalize(meaning));
+        let text = words.as_str();
+        if first(&rules.unwatch, text, "thing").is_some() {
+            return Some("unwatch");
+        }
+        if first(&rules.watch, text, "thing").is_some() {
+            return Some("watch");
+        }
+        if first(&rules.stop, text, "thing").is_some() {
+            return Some("stop");
+        }
+        if first(&rules.details, text, "").is_some() {
+            return Some("details");
+        }
+        first(&rules.status, text, "thing").map(|_| "status")
+    }
+
     /// What the layer's rules hear in a phrase (normalized) on a device; None — not the layer's.
     pub fn hear(&self, normalized: &str, device: &str) -> Option<Heard> {
         let layer = self.layer.upgrade()?;
@@ -214,6 +263,11 @@ impl TalkRules {
         let rules = compiled(lang);
         let words = words_of(normalized);
         let text = words.as_str();
+        layer
+            .last_heard
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(device.to_string(), text.to_string());
         // The exit before the entry: «выйди из мастерской» has the workshop's word too.
         let words = &pack.work.rules;
         if first(&rules.door_close, text, "").is_some() || words.door_close_any.matches(text) {
@@ -221,6 +275,22 @@ impl TalkRules {
         }
         if first(&rules.door_open, text, "").is_some() || words.door_open_any.matches(text) {
             return Some(Heard::DoorOpen);
+        }
+        // One's own words for an action on works (stage 7 of docs/plans/work-systems.md): taught first, heard before
+        // the pack's patterns — the words step of «Чутьё»'s kind `work`.
+        if let Some(found) = rules.learn.iter().find_map(|rule| rule.captures(text)) {
+            let (Some(learned), Some(meaning)) = (found.name("words"), found.name("what")) else { return None };
+            return Some(Heard::Learn { words: learned.as_str().to_string(), meaning: meaning.as_str().to_string() });
+        }
+        if let Some((action, rest)) = super::own_words::heard(&layer.own_words(), text) {
+            let thing = self.ours(&layer, pack, device, rest.as_deref()).flatten();
+            return Some(match action.as_str() {
+                "stop" => Heard::Stop { thing },
+                "details" => Heard::Details,
+                "watch" => Heard::Watch { thing },
+                "unwatch" => Heard::Unwatch { thing },
+                _ => Heard::Status { thing },
+            });
         }
         // MagicPlace before «покажи …» and «поставь …» of the works: those let go of what is not theirs, and «покажи
         // магазин», «поставь ленту» would end there. A thing of the layer in play named after «поставь» stays the
@@ -262,6 +332,13 @@ impl TalkRules {
         }
         if let Some(thing) = first(&rules.stop, text, "thing") {
             return self.ours(&layer, pack, device, thing).map(|thing| Heard::Stop { thing });
+        }
+        // «Не следи» before «следи»: the one has the other's word.
+        if let Some(thing) = first(&rules.unwatch, text, "thing") {
+            return self.ours(&layer, pack, device, thing).map(|thing| Heard::Unwatch { thing });
+        }
+        if let Some(thing) = first(&rules.watch, text, "thing") {
+            return self.ours(&layer, pack, device, thing).map(|thing| Heard::Watch { thing });
         }
         if let Some(thing) = first(&rules.status, text, "thing") {
             // «Долго ещё?» without a thing is about the work going on.
@@ -340,6 +417,18 @@ impl TalkRules {
             return Some(Heard::Answer { work: question.work, question: question.kind, again: false, answer });
         }
         let answer = super::ready::answer_of(pack, &words)?;
+        // «Подожди» answers only a work's «подождать или остановить?», «добавь» only its «бюджет кончился: добавить ещё
+        // или остановить?», «стоп» — either: to another question they are not its.
+        use super::{asked::Kind, ready::Answer};
+        let its = match answer {
+            Answer::Wait => question.kind == Kind::Wait,
+            Answer::Stop => matches!(question.kind, Kind::Wait | Kind::Budget),
+            Answer::Raise => question.kind == Kind::Budget,
+            _ => true,
+        };
+        if !its {
+            return None;
+        }
         Some(Heard::Answer { work: question.work, question: question.kind, again: question.again, answer })
     }
 
@@ -368,6 +457,9 @@ impl TalkRules {
             Heard::Desk { thing } => layer.act(&origin, "desk", thing.as_deref()).await,
             Heard::Details => layer.act(&origin, "details", None).await,
             Heard::Stop { thing } => layer.act(&origin, "stop", thing.as_deref()).await,
+            Heard::Watch { thing } => layer.act(&origin, "watch", thing.as_deref()).await,
+            Heard::Unwatch { thing } => layer.act(&origin, "unwatch", thing.as_deref()).await,
+            Heard::Learn { words, meaning } => Ok(layer.learn_words(&device, &words, &meaning)),
             Heard::DoorOpen => {
                 layer.door.open(&device);
                 Ok(pack.work.say.door_open.to_string())
@@ -377,6 +469,9 @@ impl TalkRules {
                 Ok(pack.work.say.door_closed.to_string())
             }
             Heard::Start { face, ask, title } => layer.start(origin, &ask, face, title.as_deref(), false),
+            Heard::Folder { ask, folder, agent } => {
+                layer.begin(origin, &ask, Begin::Folder { folder: folder.as_deref(), agent: agent.as_deref() })
+            }
             Heard::Door { text } => {
                 // Without a reader: the thing in work or waiting for an answer takes the words; else they are a new
                 // thing's wish. Words that say nothing to do — a scrap of speech, a lone question word — are neither.
@@ -426,8 +521,10 @@ impl TalkRules {
     ) -> BoxFuture<'a, anyhow::Result<Outcome>> {
         Box::pin(async move {
             let heard: Heard = serde_json::from_value(intent.params.get("heard").cloned().unwrap_or_default())?;
-            let speaker = context.speaker.as_ref().map(|speaker| speaker.name.clone());
-            let origin = Origin::station(&context.device_tag, true).by(speaker);
+            let origin = match context.speaker.as_ref() {
+                Some(speaker) => Origin::station(&context.device_tag, true).of(speaker),
+                None => Origin::station(&context.device_tag, true),
+            };
             let since = now_ms();
             let Some(said) = self.act(heard, origin).await else { return Ok(Outcome::default()) };
             let listen = said.trim_end().ends_with('?');
@@ -533,6 +630,10 @@ mod tests {
             })
         );
         assert_eq!(hear("а также крупнее"), Some(Heard::Add { text: "крупнее".into(), thing: None }));
+        assert_eq!(
+            hear("добавь ещё в конце слово конец"),
+            Some(Heard::Add { text: "в конце слово конец".into(), thing: None })
+        );
         assert_eq!(hear("примерить"), Some(Heard::Show { thing: None }));
         assert_eq!(hear("покажи погоду"), None);
         assert_eq!(hear("на стол"), Some(Heard::Desk { thing: None }));

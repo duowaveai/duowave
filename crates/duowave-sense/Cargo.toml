@@ -1,0 +1,20 @@
+[package]
+name = "duowave-sense"
+description = "DuoWave's «Чутьё»: one judge of phrases for both sides of the door to Thinking — is the thought over, is it ours, what a phrase in the window is — with steps behind one interface: the language pack's words today, a small model and the big one later (docs/plans/audio-thinking-contract.md)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+testing = ["duowave-base/testing"]
+
+[dependencies]
+# The languages: the home's language and the codes' normal form (locale).
+duowave-base = { path = "../duowave-base" }
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+duowave-base = { path = "../duowave-base", features = ["testing"] }

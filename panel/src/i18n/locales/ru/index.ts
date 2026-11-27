@@ -21,6 +21,7 @@ import deskAsk from './deskAsk';
 import onbCharacter from './onbCharacter';
 import onbConnect from './onbConnect';
 import onbTry from './onbTry';
+import permissions from './permissions';
 import onbStore from './onbStore';
 import stations from './stations';
 import workshop from './workshop';
@@ -91,6 +92,7 @@ const ru = {
     onbCharacter,
     onbConnect,
     onbTry,
+    permissions,
     onbStore,
     stations,
     workshop,

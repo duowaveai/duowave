@@ -858,3 +858,27 @@ async fn the_page_of_works_groups_them_says_why_one_waits_and_answers_a_question
     assert_eq!(status, StatusCode::NOT_FOUND);
     gateway.stop().await;
 }
+
+/// 27.11, a widget on GLM 5.3: the model's thinking took its whole answer four times running, six and a half minutes,
+/// and the work said «ничего не поменялось» as if the agent had chosen to do nothing. Now the agent asks again once,
+/// and the work says why it is not finished.
+#[tokio::test]
+async fn a_run_the_thinking_took_whole_is_asked_again_once_and_says_why_it_is_not_finished() {
+    let llm = ChatStub::start().await;
+    llm.set_responder(|request| by_agent(request).then(Scripted::thought_away));
+    let (gateway, admin) = with_brain(&llm).await;
+
+    assert!(talk(&gateway, &admin, "Сделай виджет: цитата").await.starts_with("Делаю: цитата."));
+    assert!(until(10_000, || gateway.app.talk.works().get("1").is_some_and(|work| work.result.is_some())).await);
+    let work = message(gateway.get("/api/v1/works/1").signed(&admin), StatusCode::OK).await;
+    assert_eq!(work["state"], "unfinished", "{work}");
+    assert_eq!(
+        work["result"]["line"],
+        "Цитата: не доделано. Модель думала слишком долго и не успела написать код. Продолжить?"
+    );
+    let draft = work["target"].as_str().unwrap().to_string();
+    let card = gateway.app.workshop.card(&draft);
+    assert!(card.overthought && !card.unchanged, "the card says why, not «ничего не поменялось»");
+    assert_eq!(llm.requests().iter().filter(|request| by_agent(request)).count(), 2, "asked again once");
+    gateway.stop().await;
+}

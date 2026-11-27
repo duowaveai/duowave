@@ -36,6 +36,10 @@ const BASE: &[(&str, &str)] = &[
     ("PLUGINS_BUNDLED", "false"),
     // A computer's link port: a free one (src/helpers/link_serve.rs), never PORT + 1.
     ("LINK_PORT", "0"),
+    // The work systems (docs/plans/work-systems.md): no test lists this computer's own sessions or finds a system's
+    // program it happens to have (bb, T3 Code); a test sets the path when it needs one.
+    ("WORK_SYSTEMS_POLL", "false"),
+    ("WORK_SYSTEMS_FIND", "false"),
 ];
 
 pub struct Gateway {

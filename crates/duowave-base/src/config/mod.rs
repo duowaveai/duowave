@@ -172,6 +172,14 @@ pub struct AppConfig {
     /// answers cross that hop unencrypted and any address in it may say whom a link came for (anything wider than a /24,
     /// an IPv6 /64, is warned of at the start). A proxy on this computer itself needs nothing.
     pub link_proxy_from: Vec<String>,
+    /// WORK_SYSTEMS_POLL: the work systems that list their works (Claude Code run by hand, bb) are asked every minute
+    /// for those begun by hand (docs/plans/work-systems.md). On by default; tests turn it off, so that a test never
+    /// lists this computer's own sessions.
+    pub poll_systems: bool,
+    /// WORK_SYSTEMS_FIND: the programs of the systems that come with DuoWave (bb, T3 Code) are looked for on the
+    /// search path, as an agent's are. On by default; tests turn it off, so that a test never runs or offers a
+    /// program this computer happens to have: only a path set in the settings counts there.
+    pub find_systems: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -874,6 +882,13 @@ impl Config {
         if env.get("LINK_PORT").is_none() {
             config.app.link_port = Some(0);
         }
+        // A test lists none of this computer's own sessions (Claude Code run by hand).
+        if env.get("WORK_SYSTEMS_POLL").is_none() {
+            config.app.poll_systems = false;
+        }
+        if env.get("WORK_SYSTEMS_FIND").is_none() {
+            config.app.find_systems = false;
+        }
         // A test's session journals stay in memory unless it names where they go: the default `data/sessions` is
         // relative to the working folder, and the test runs from gateway/ wrote them into the repository (six of them
         // reached the 0.18.0 tree, 22.11; 12d9c10a).
@@ -937,6 +952,8 @@ fn build(env: &Env) -> Config {
                 Some(given) => given.parse().ok(),
             },
             link_proxy_from: env.list("LINK_PROXY_FROM", &[]),
+            poll_systems: env.flag("WORK_SYSTEMS_POLL", true),
+            find_systems: env.flag("WORK_SYSTEMS_FIND", true),
         },
         gateway: GatewayConfig {
             uniproxy_path: socket_path(&env.string("UNIPROXY_PATH", "/uni.ws")),

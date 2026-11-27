@@ -135,6 +135,8 @@ pub const LOCAL_SETTINGS: &[&str] = &[
     "package_history",
     // «Как говорить с DuoWave»: the computer's choice of its own microphone (src/talk/input.rs).
     "voice_input",
+    // Whether this Mac asked its person about the home network (src/permissions): the computer's own.
+    "local_network_asked",
     // This gateway itself, its id and name (src/core/identity/home.rs): the home travels, each gateway stays itself.
     "gateway_self",
     // Who this computer helps as a helper, and its address from outside (docs/plans/home-and-helpers.md, stage 7):
@@ -155,6 +157,9 @@ pub const LOCAL_SETTINGS: &[&str] = &[
     "turbo_voice_engines",
     // What a Турбо gives its home of its devices and folders (docs/plans/turbo-devices.md): the computer's own.
     "turbo_shares",
+    // The computer's own ear and its key (src/channel, docs/plans/audio-interface-3.md, part К): this computer's.
+    "talk_voice",
+    "talk_key",
 ];
 
 /// Of each side's own settings (`LOCAL_SETTINGS`), what a schema brought: an import of an earlier schema does not know

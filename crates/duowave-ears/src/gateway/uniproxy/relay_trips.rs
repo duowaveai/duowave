@@ -300,6 +300,8 @@ mod tests {
                 parent: None,
                 tokens: None,
                 origin: None,
+                thinking: None,
+                thought_in: None,
             };
             views.push(view.clone());
             Arc::new(RequestHandle::new(view, Arc::new(Keep { views: self.views.clone(), index }), monotonic_clock()))

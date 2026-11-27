@@ -1,14 +1,16 @@
 {
   "_": "The gateway's floors, bottom up (docs/ARCHITECTURE.md, «Этажи»; docs/plans/modular-gateway.md). A module of gateway/src may use its own floor and those below; scripts/check-layers.mjs (CI) fails on a link up a floor that is not in \"exceptions\". Since 24.11.2026 there are none (step 6 of the plan): what a module needs from a floor above comes down as a word, a small trait or a hook. A line added on purpose says why in its commit; a line no longer needed fails too (--update strikes it off). `lib`: the crate root's own items (VERSION).",
   "floors": [
+    { "name": "door", "title": "Дверь", "modules": ["door"] },
     { "name": "base", "title": "Основание", "modules": ["config", "storage", "secrets", "utils", "locale", "platform", "core", "settings", "operations", "lib"] },
+    { "name": "sense", "title": "Чутьё", "modules": ["sense"] },
     { "name": "rights", "title": "Права", "modules": ["rights", "access"] },
     { "name": "voice", "title": "Голос", "modules": ["speech", "voice_lab", "models", "ear"] },
-    { "name": "brain", "title": "Мозг", "modules": ["dialog", "router", "oauth", "talk", "memory", "characters", "skills", "tasks", "sleep"] },
-    { "name": "ears", "title": "Уши", "modules": ["gateway", "stations", "activator", "live", "requests"] },
+    { "name": "brain", "title": "Мозг", "modules": ["dialog", "router", "oauth", "talk", "thinking", "memory", "characters", "skills", "tasks", "sleep"] },
+    { "name": "ears", "title": "Уши", "modules": ["gateway", "stations", "activator", "live", "requests", "channel"] },
     { "name": "apps", "title": "Приложения", "modules": ["plugins", "apps", "bus", "capabilities", "connectors", "mcp", "screen", "midi"] },
     { "name": "home", "title": "Дом", "modules": ["placement", "helpers", "home", "home_server", "egress", "updates", "health_status"] },
-    { "name": "pc", "title": "Только компьютер", "modules": ["calls", "works"] },
+    { "name": "pc", "title": "Только компьютер", "modules": ["calls", "works", "permissions"] },
     { "name": "program", "title": "Программа", "modules": ["app", "computer", "links", "panel", "tools", "whole_tests"] }
   ],
   "exceptions": []

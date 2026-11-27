@@ -17,11 +17,14 @@ use super::harness::{
     cut_to, environment, Chore, Ended, Harness, NotOpened, NotReady, Open, Out, RunEnd, Step, ToolKind, ToolState,
 };
 use super::runs::{self, RunLog, What};
+use super::ways;
 use super::workspace::{Opened, Place};
 use super::{folders, git, locked, FolderWorks, Going, Record, State};
 use crate::config::DialogProvider;
+use crate::router::budgets::Act;
 use crate::router::pool::PriceSource;
-use crate::router::{Answerer, Bill, Billing, Outcome, Reason, Seat, Spent, Tokens};
+use crate::router::{Answerer, Bill, Billing, Outcome, Reason, Seat, Spent, Tokens, WorkerAsk, WorkerDeal};
+use crate::settings::definitions::WorkFolder;
 use crate::talk::folder::{deal_key, FolderCheck, FolderDoing, FolderEnd, FolderWhy, PortEvent};
 use crate::utils::time::now_ms;
 
@@ -110,6 +113,13 @@ impl FolderWorks {
             let (why, words) = not_ready_words(not);
             return Came::why(State::Failed, why, Some(words).filter(|words| !words.is_empty()));
         }
+        // The router's door before the first run: the regulator, the budget's step, the model and the ceiling.
+        let untouched = record.runs == 0;
+        let mut deal =
+            match self.through_door(id, &mut record, &folder, harness.as_ref(), going, false, untouched).await {
+                Ok(deal) => deal,
+                Err(came) => return came,
+            };
         let folder_path = std::path::PathBuf::from(&folder.path);
         // The first run of the work: its base and a branch nobody has.
         if record.base_commit.is_none() {
@@ -133,7 +143,12 @@ impl FolderWorks {
         };
         let mut text = first;
         let mut what = what;
-        let (mut run, mut log) = match self.begin_run(id, what, &record, going) {
+        // The model of the session: the door's, else the work's own.
+        let mut model = deal.as_ref().map_or(record.model.clone(), |deal| deal.model.clone());
+        // «С планом»: its first run is the plan's (the copy is made in it), the work's own comes after the «да».
+        let planning = what == What::Work && record.way.as_deref() == Some(ways::PLAN) && record.plan.is_none();
+        let first = if planning { What::Plan } else { what };
+        let (mut run, mut log) = match self.begin_run(id, first, &record, model.as_deref(), going) {
             Ok(begun) => begun,
             Err(error) => return Came::why(State::Failed, FolderWhy::Failed, Some(error.to_string())),
         };
@@ -185,15 +200,55 @@ impl FolderWorks {
                 }
             }
         }
+        // «С планом» (works/ways.rs, stage 6): the plan first, in a session that changes nothing; the work waits for the
+        // person's «да», then goes by it.
+        if planning {
+            let prompt = ways::plan_prompt(&record.task);
+            let plan = self
+                .read_only_session(id, (&run, &log), &folder, harness.as_ref(), &copy, &prompt, model.clone(), going)
+                .await;
+            let Some(plan) = plan.filter(|plan| !plan.trim().is_empty()) else {
+                if going.stop.is_cancelled() {
+                    return Came::of(State::Stopped);
+                }
+                return Came::why(State::Failed, FolderWhy::Failed, Some(crate::tr!("план не пришёл")));
+            };
+            if let Some(mut fresh) = self.record(id) {
+                fresh.plan = Some(plan.clone());
+                self.keep(&mut fresh);
+                record = fresh;
+            }
+            if !self.wait_plan(id, &mut record, &plan, going).await {
+                return Came::of(State::Stopped);
+            }
+            text = ways::with_plan(&text, &plan);
+            match self.begin_run(id, What::Work, &record, model.as_deref(), going) {
+                Ok((next_run, next_log)) => {
+                    run = next_run;
+                    log = next_log;
+                }
+                Err(error) => return Came::why(State::Failed, FolderWhy::Failed, Some(error.to_string())),
+            }
+        }
+        // Its session goes on only on the model it was opened with: on another one (a budget's step) it is a new one,
+        // told the task and the last result.
+        let fresh = record.session.is_some() && model != record.session_model();
+        if fresh {
+            text = switched(&record, &text);
+        }
         let open = Open {
             copy: copy.clone(),
-            model: record.model.clone(),
-            max_usd: folder.max_usd,
+            model: model.clone(),
+            max_usd: match &deal {
+                Some(deal) => ceiling(deal),
+                None => folder.max_usd,
+            },
             allow: folder.allow.clone(),
-            session: record.session.clone(),
+            session: if fresh { None } else { record.session.clone() },
             recap: record.last.clone(),
+            read_only: false,
         };
-        let mut session = match harness.open(open).await {
+        let session = match harness.open(open).await {
             Ok(session) => session,
             Err(not) => {
                 log.step(
@@ -203,6 +258,7 @@ impl FolderWorks {
                         text: None,
                         error: Some(format!("{not:?}")),
                         usd_micro: None,
+                        unknown: None,
                     },
                 );
                 self.end_run(id, &run, "failed", None, None, &log);
@@ -214,84 +270,189 @@ impl FolderWorks {
                 };
             }
         };
+        self.opened_on(&mut record, model.as_deref());
+        let mut session = Some(session);
         let mut busy = 0usize;
         let mut limits = 0u32;
-        let came = loop {
-            *locked(&going.doing) = Some(FolderDoing::Begins);
-            self.told(id, run.n, "started");
-            let end = session.prompt(&text, log.clone(), going.stop.clone()).await;
-            let session_id = end.session.clone().or_else(|| session.id());
-            self.end_run(id, &run, end.ended.as_str(), end.model.as_deref(), session_id.as_deref(), &log);
-            if let Some(mut fresh) = self.record(id) {
-                fresh.session = session_id.clone().or(fresh.session);
-                fresh.billing = end.billing.clone().or(fresh.billing);
-                if let Some(usd) = end.usd_micro {
-                    fresh.usd_micro = Some(fresh.usd_micro.unwrap_or(0) + usd);
-                }
-                fresh.last = end.text.clone().or(fresh.last);
-                fresh.runs = run.n;
-                fresh.state = State::Working;
-                fresh.wait_until = None;
-                self.keep(&mut fresh);
-                record = fresh;
-            }
-            self.tell(PortEvent::Ran {
-                id: id.to_string(),
-                n: run.n,
-                spent: spent_of(id, harness.as_ref(), &record, &end),
-            });
-            let next = match &end.ended {
-                Ended::Ok => {
-                    let notes = std::mem::take(&mut *locked(&going.notes));
-                    if notes.is_empty() {
-                        break Came::of(State::Ready);
+        // «С проверкой» and «с планом»: the review's rounds (works/ways.rs).
+        let reviewer = {
+            let all = self.settings.get(&crate::router::sets::WORK_SETS, None).unwrap_or_default();
+            ways::reviewer_model(&all, record.model_set.as_deref(), &record.agent)
+        };
+        let mut reviews = 0u32;
+        let came = 'work: loop {
+            let came = loop {
+                let Some(current) = session.as_mut() else {
+                    break Came::why(State::Unfinished, FolderWhy::Failed, None);
+                };
+                *locked(&going.doing) = Some(FolderDoing::Begins);
+                self.told(id, run.n, "started");
+                let end = current.prompt(&text, log.clone(), going.stop.clone()).await;
+                let session_id = end.session.clone().or_else(|| current.id());
+                self.end_run(id, &run, end.ended.as_str(), end.model.as_deref(), session_id.as_deref(), &log);
+                if let Some(mut fresh) = self.record(id) {
+                    fresh.session = session_id.clone().or(fresh.session);
+                    fresh.billing = end.billing.clone().or(fresh.billing);
+                    if let Some(usd) = end.usd_micro {
+                        fresh.usd_micro = Some(fresh.usd_micro.unwrap_or(0) + usd);
                     }
-                    self.tell(PortEvent::Taken { id: id.to_string() });
-                    Some((notes.join("\n\n"), What::Note))
+                    fresh.last = end.text.clone().or(fresh.last);
+                    fresh.runs = run.n;
+                    fresh.state = State::Working;
+                    fresh.wait_until = None;
+                    self.keep(&mut fresh);
+                    record = fresh;
                 }
-                Ended::Stopped => break Came::of(State::Stopped),
-                Ended::Limit { until } => {
-                    limits += 1;
-                    if limits > LIMIT_TIMES {
-                        break Came::why(State::Unfinished, FolderWhy::Limit, end.error.clone());
+                self.tell(PortEvent::Ran {
+                    id: id.to_string(),
+                    n: run.n,
+                    spent: spent_of(id, harness.as_ref(), model.as_deref(), deal.as_ref(), &end),
+                });
+                // Its ceiling reached: the door is asked whether the budget is used up; if it says not, the work ends.
+                let hit = end.ended == Ended::Budget && self.door.get().is_some();
+                let next = match &end.ended {
+                    Ended::Ok => {
+                        let notes = std::mem::take(&mut *locked(&going.notes));
+                        if notes.is_empty() {
+                            break Came::of(State::Ready);
+                        }
+                        self.tell(PortEvent::Taken { id: id.to_string() });
+                        Some((notes.join("\n\n"), What::Note))
                     }
-                    let until = until.filter(|until| *until > now_ms());
-                    if !self.wait_limit(id, &mut record, until, harness.as_ref(), going).await {
-                        break Came::of(State::Stopped);
+                    Ended::Stopped => break Came::of(State::Stopped),
+                    Ended::Limit { until } => {
+                        limits += 1;
+                        if limits > LIMIT_TIMES {
+                            break Came::why(State::Unfinished, FolderWhy::Limit, end.error.clone());
+                        }
+                        let until = until.filter(|until| *until > now_ms());
+                        if !self.wait_limit(id, &mut record, until, harness.as_ref(), going).await {
+                            break Came::of(State::Stopped);
+                        }
+                        Some((resume.to_string(), What::Resume))
                     }
-                    Some((resume.to_string(), What::Resume))
+                    Ended::Busy => {
+                        let Some(wait) = BUSY_WAITS.get(busy).copied() else {
+                            break Came::why(State::Unfinished, FolderWhy::Limit, end.error.clone());
+                        };
+                        busy += 1;
+                        *locked(&going.doing) = Some(FolderDoing::Waits(Some(now_ms() + wait.as_millis() as u64)));
+                        tokio::select! {
+                            _ = tokio::time::sleep(wait) => {}
+                            _ = going.stop.cancelled() => break Came::of(State::Stopped),
+                        }
+                        Some((resume.to_string(), What::Resume))
+                    }
+                    Ended::Billing => break Came::why(State::Unfinished, FolderWhy::Billing, end.error.clone()),
+                    Ended::Auth => break Came::why(State::Unfinished, FolderWhy::Auth, end.error.clone()),
+                    Ended::Budget if hit => Some((resume.to_string(), What::Resume)),
+                    Ended::Budget => break Came::why(State::Unfinished, FolderWhy::Budget, end.error.clone()),
+                    Ended::Turns => break Came::why(State::Unfinished, FolderWhy::Turns, end.error.clone()),
+                    Ended::Refused => break Came::why(State::Unfinished, FolderWhy::Refused, end.error.clone()),
+                    Ended::Failed => break Came::why(State::Unfinished, FolderWhy::Failed, end.error.clone()),
+                };
+                let Some((next_text, next_what)) = next else { break Came::of(State::Ready) };
+                text = next_text;
+                what = next_what;
+                // The door before the next run: the budget's step may want a cheaper model, a question, a stop. Without a
+                // door, the work's own model: a set switched while it waited changes it.
+                let door = self.door.get().is_some();
+                if door || record.model != model {
+                    let next =
+                        match self.through_door(id, &mut record, &folder, harness.as_ref(), going, hit, false).await {
+                            Ok(next) => next,
+                            Err(came) => break came,
+                        };
+                    let next_model =
+                        if door { next.as_ref().and_then(|deal| deal.model.clone()) } else { record.model.clone() };
+                    if next_model != model {
+                        // Another model is another session (the model never changes in the middle of one): told the task
+                        // and the last result, in the same copy.
+                        if let Some(old) = session.take() {
+                            old.close().await;
+                        }
+                        let open = Open {
+                            copy: copy.clone(),
+                            model: next_model.clone(),
+                            max_usd: next.as_ref().and_then(ceiling),
+                            allow: folder.allow.clone(),
+                            session: None,
+                            recap: None,
+                            read_only: false,
+                        };
+                        match harness.open(open).await {
+                            Ok(opened) => session = Some(opened),
+                            Err(not) => {
+                                break Came::why(State::Unfinished, FolderWhy::NoAgent, Some(format!("{not:?}")))
+                            }
+                        }
+                        self.opened_on(&mut record, next_model.as_deref());
+                        text = switched(&record, &text);
+                        tracing::info!(
+                            target: "works",
+                            "work {id}: a new session on {} ({})",
+                            next_model.as_deref().unwrap_or("the agent's own model"),
+                            next.as_ref().map_or("seat".into(), |deal| deal.reason.as_str())
+                        );
+                        model = next_model;
+                    } else if let Some(current) = session.as_mut() {
+                        current.ceiling(next.as_ref().and_then(ceiling));
+                    }
+                    deal = next;
                 }
-                Ended::Busy => {
-                    let Some(wait) = BUSY_WAITS.get(busy).copied() else {
-                        break Came::why(State::Unfinished, FolderWhy::Limit, end.error.clone());
-                    };
-                    busy += 1;
-                    *locked(&going.doing) = Some(FolderDoing::Waits(Some(now_ms() + wait.as_millis() as u64)));
-                    tokio::select! {
-                        _ = tokio::time::sleep(wait) => {}
-                        _ = going.stop.cancelled() => break Came::of(State::Stopped),
+                match self.begin_run(id, what, &record, model.as_deref(), going) {
+                    Ok((next_run, next_log)) => {
+                        run = next_run;
+                        log = next_log;
                     }
-                    Some((resume.to_string(), What::Resume))
+                    Err(error) => break Came::why(State::Unfinished, FolderWhy::Failed, Some(error.to_string())),
                 }
-                Ended::Billing => break Came::why(State::Unfinished, FolderWhy::Billing, end.error.clone()),
-                Ended::Auth => break Came::why(State::Unfinished, FolderWhy::Auth, end.error.clone()),
-                Ended::Budget => break Came::why(State::Unfinished, FolderWhy::Budget, end.error.clone()),
-                Ended::Turns => break Came::why(State::Unfinished, FolderWhy::Turns, end.error.clone()),
-                Ended::Refused => break Came::why(State::Unfinished, FolderWhy::Refused, end.error.clone()),
-                Ended::Failed => break Came::why(State::Unfinished, FolderWhy::Failed, end.error.clone()),
             };
-            let Some((next_text, next_what)) = next else { break Came::of(State::Ready) };
-            text = next_text;
-            what = next_what;
-            match self.begin_run(id, what, &record, going) {
+            // The work done is reviewed in a fresh session on another model, read only; its blocking remarks go back to
+            // the writer's session, two rounds at most, then the person decides.
+            if came.state != State::Ready || !ways::reviews(record.way.as_deref()) || going.stop.is_cancelled() {
+                break 'work came;
+            }
+            let prompt = ways::review_prompt(&record.task, record.base_commit.as_deref(), record.plan.as_deref());
+            let said = self
+                .read_only_run(
+                    id,
+                    What::Review,
+                    &record,
+                    &folder,
+                    harness.as_ref(),
+                    &copy,
+                    &prompt,
+                    reviewer.clone(),
+                    going,
+                )
+                .await;
+            let Some(verdict) = said.as_deref().and_then(ways::verdict_of) else {
+                // A review that says nothing readable leaves the work as it is.
+                break 'work came;
+            };
+            if verdict.clean() {
+                self.reviewed(id, if reviews == 0 { "clean".to_string() } else { format!("fixed:{reviews}") });
+                break 'work came;
+            }
+            if reviews >= ways::REVIEW_ROUNDS {
+                let left = verdict.blocking.join("; ");
+                self.reviewed(id, left.clone());
+                break 'work Came::why(State::Unfinished, FolderWhy::Review, Some(cut_to(&left, 300)));
+            }
+            reviews += 1;
+            text = ways::fix_prompt(&verdict.blocking);
+            match self.begin_run(id, What::Note, &record, model.as_deref(), going) {
                 Ok((next_run, next_log)) => {
                     run = next_run;
                     log = next_log;
                 }
-                Err(error) => break Came::why(State::Unfinished, FolderWhy::Failed, Some(error.to_string())),
+                Err(error) => break 'work Came::why(State::Unfinished, FolderWhy::Failed, Some(error.to_string())),
             }
         };
-        session.close().await;
+        if let Some(session) = session {
+            session.close().await;
+        }
         // What was done goes to the person, even when it was stopped: committed, the branch in the folder.
         *locked(&going.doing) = Some(FolderDoing::Hands);
         let handed = self.workspace.hand_over(&place, &record.title).await;
@@ -367,9 +528,10 @@ impl FolderWorks {
         id: &str,
         what: What,
         record: &Record,
+        model: Option<&str>,
         going: &Arc<Going>,
     ) -> std::io::Result<(runs::Run, Arc<RunLog>)> {
-        let run = runs::begin(&self.db, id, what, record.model.as_deref(), record.session.as_deref())
+        let run = runs::begin(&self.db, id, what, model, record.session.as_deref())
             .map_err(|error| std::io::Error::other(error.to_string()))?;
         let me: Weak<FolderWorks> = self.me.clone();
         let (work, n, going) = (id.to_string(), run.n, going.clone());
@@ -401,6 +563,177 @@ impl FolderWorks {
         runs::end(&self.db, id, run.n, outcome, model, session, log.was_cut());
     }
 
+    /// The router's door before a run (docs/plans/router-and-works.md, 5): the regulator may keep the agent's model in;
+    /// the narrowest budget's step may stop the work, or ask the person — then the work waits for «добавить» (its
+    /// budget grew: the door is asked again) or «остановить». `hit` — the last run reached its ceiling: a door that
+    /// sees no step to stop at ends the work rather than run it again. `untouched` — no run of the work ever went: a
+    /// work cut before it failed rather than stayed unfinished. None — no door: as before it.
+    #[allow(clippy::too_many_arguments)]
+    async fn through_door(
+        &self,
+        id: &str,
+        record: &mut Record,
+        folder: &WorkFolder,
+        harness: &dyn Harness,
+        going: &Going,
+        mut hit: bool,
+        untouched: bool,
+    ) -> Result<Option<WorkerDeal>, Came> {
+        let Some(door) = self.door.get() else { return Ok(None) };
+        let cut = if untouched { State::Failed } else { State::Unfinished };
+        loop {
+            let ask = WorkerAsk {
+                agent: record.agent.clone(),
+                model: record.model.clone(),
+                cloud: harness.cloud(),
+                folder: folders::budget_of(folder),
+                ..WorkerAsk::default()
+            };
+            let deal = door(&deal_key(id), ask);
+            if deal.closed {
+                return Err(Came::why(cut, FolderWhy::Closed, None));
+            }
+            match deal.step {
+                Some(Act::Stop) => return Err(Came::why(cut, FolderWhy::Budget, None)),
+                Some(Act::Ask) => {
+                    if !self.wait_budget(id, record, &deal, going).await {
+                        return Err(Came::of(State::Stopped));
+                    }
+                    hit = false;
+                }
+                _ if hit => return Err(Came::why(State::Unfinished, FolderWhy::Budget, None)),
+                _ => return Ok(Some(deal)),
+            }
+        }
+    }
+
+    /// A run in a session that changes nothing (the plan, the review of stage 6): its own row and journal, a fresh
+    /// session on `model`, the copy's history readable; the agent's last words, or None.
+    #[allow(clippy::too_many_arguments)]
+    async fn read_only_run(
+        &self,
+        id: &str,
+        what: What,
+        record: &Record,
+        folder: &WorkFolder,
+        harness: &dyn Harness,
+        copy: &Path,
+        prompt: &str,
+        model: Option<String>,
+        going: &Arc<Going>,
+    ) -> Option<String> {
+        let (run, log) = self.begin_run(id, what, record, model.as_deref(), going).ok()?;
+        self.read_only_session(id, (&run, &log), folder, harness, copy, prompt, model, going).await
+    }
+
+    /// The same in a run already begun.
+    #[allow(clippy::too_many_arguments)]
+    async fn read_only_session(
+        &self,
+        id: &str,
+        (run, log): (&runs::Run, &Arc<RunLog>),
+        folder: &WorkFolder,
+        harness: &dyn Harness,
+        copy: &Path,
+        prompt: &str,
+        model: Option<String>,
+        going: &Arc<Going>,
+    ) -> Option<String> {
+        let mut allow: Vec<String> = ways::READ_ONLY.iter().map(|rule| rule.to_string()).collect();
+        allow.extend(folder.allow.iter().filter(|rule| rule.starts_with("WebFetch")).cloned());
+        let open = Open {
+            copy: copy.to_path_buf(),
+            model: model.clone(),
+            max_usd: folder.max_usd,
+            allow,
+            session: None,
+            recap: None,
+            read_only: true,
+        };
+        let mut session = match harness.open(open).await {
+            Ok(session) => session,
+            Err(_) => {
+                self.end_run(id, run, "failed", None, None, log);
+                return None;
+            }
+        };
+        *locked(&going.doing) = Some(FolderDoing::Thinks);
+        let end = session.prompt(prompt, log.clone(), going.stop.clone()).await;
+        let session_id = end.session.clone().or_else(|| session.id());
+        self.end_run(id, run, end.ended.as_str(), end.model.as_deref(), session_id.as_deref(), log);
+        self.tell(PortEvent::Ran {
+            id: id.to_string(),
+            n: run.n,
+            spent: spent_of(id, harness, model.as_deref(), None, &end),
+        });
+        session.close().await;
+        (end.ended == Ended::Ok).then_some(end.text).flatten()
+    }
+
+    /// «С планом»: the plan to the person, then the wait for «да» (a nudge) or a stop. False — stopped.
+    async fn wait_plan(&self, id: &str, record: &mut Record, plan: &str, going: &Going) -> bool {
+        record.state = State::Waiting;
+        self.keep(record);
+        *locked(&going.doing) = Some(FolderDoing::WaitsPlan);
+        self.tell(PortEvent::Plan { id: id.to_string(), plan: plan.to_string() });
+        let yes = tokio::select! {
+            _ = going.nudge.notified() => true,
+            _ = going.stop.cancelled() => false,
+        };
+        if yes {
+            record.state = State::Working;
+            self.keep(record);
+            *locked(&going.doing) = Some(FolderDoing::Begins);
+        }
+        yes
+    }
+
+    /// What the review came to, kept with the work for its «Готово».
+    fn reviewed(&self, id: &str, review: String) {
+        if let Some(mut fresh) = self.record(id) {
+            fresh.review = Some(review);
+            self.keep(&mut fresh);
+        }
+    }
+
+    /// The work's model and set as kept now: a set switched while it waited (stage 5 of docs/plans/work-systems.md).
+    fn refresh_model(&self, record: &mut Record) {
+        if let Some(fresh) = self.record(&record.id) {
+            record.model = fresh.model;
+            record.model_set = fresh.model_set;
+        }
+    }
+
+    /// A session was opened on this model (none — the agent's own): kept, so «продолжай» knows whether it may go on in
+    /// it.
+    fn opened_on(&self, record: &mut Record, model: Option<&str>) {
+        if let Some(mut fresh) = self.record(&record.id) {
+            fresh.session_model = Some(model.unwrap_or_default().to_string());
+            self.keep(&mut fresh);
+            *record = fresh;
+        }
+    }
+
+    /// The budget's question to the person, then the wait: for its budget to grow, or for a stop. False — stopped.
+    async fn wait_budget(&self, id: &str, record: &mut Record, deal: &WorkerDeal, going: &Going) -> bool {
+        record.state = State::Waiting;
+        record.wait_until = None;
+        self.keep(record);
+        *locked(&going.doing) = Some(FolderDoing::WaitsBudget);
+        self.tell(PortEvent::Budget { id: id.to_string(), deal: Box::new(deal.clone()) });
+        let grew = tokio::select! {
+            _ = going.nudge.notified() => true,
+            _ = going.stop.cancelled() => false,
+        };
+        if grew {
+            self.refresh_model(record);
+            record.state = State::Working;
+            self.keep(record);
+            *locked(&going.doing) = Some(FolderDoing::Begins);
+        }
+        grew
+    }
+
     /// A plan's limit: the question to the person, then the wait — until its time, or half an hour without one. False
     /// — stopped meanwhile.
     async fn wait_limit(
@@ -420,9 +753,12 @@ impl FolderWorks {
             until.map(|until| Duration::from_millis(until.saturating_sub(now_ms()) + 5_000)).unwrap_or(LIMIT_RETRY);
         let waited = tokio::select! {
             _ = tokio::time::sleep(wait) => true,
+            // «Перейти на «Экономно»» or «Продолжить»: it goes on now.
+            _ = going.nudge.notified() => true,
             _ = going.stop.cancelled() => false,
         };
         if waited {
+            self.refresh_model(record);
             record.state = State::Working;
             record.wait_until = None;
             self.keep(record);
@@ -554,13 +890,29 @@ fn doing_of(step: &Step) -> Option<FolderDoing> {
     }
 }
 
-/// A run as a deal: the agent's seat «Исполнитель», its way, its model, its tokens, its own dollars.
-fn spent_of(id: &str, harness: &dyn Harness, record: &Record, end: &RunEnd) -> Spent {
+/// What a run may spend in dollars, as the door said: at least a cent — a ceiling of nothing would be none at all.
+fn ceiling(deal: &WorkerDeal) -> Option<f64> {
+    deal.ceiling_usd.map(|usd| usd.max(0.01))
+}
+
+/// The prompt of a new session on another model: the task and the last result, then what goes on.
+fn switched(record: &Record, text: &str) -> String {
+    let last = record.last.as_deref().unwrap_or("—");
+    format!(
+        "{}\n\n{}\n\n{}\n\n{last}\n\n---\n\n{text}",
+        crate::tr!("Это продолжение работы, начатой на другой модели, в той же рабочей копии. Задание было:"),
+        record.task,
+        crate::tr!("Последний итог:"),
+    )
+}
+
+/// A run as a deal: the agent's seat «Исполнитель», its way, its model, why it, its tokens, its own dollars.
+fn spent_of(id: &str, harness: &dyn Harness, model: Option<&str>, deal: Option<&WorkerDeal>, end: &RunEnd) -> Spent {
     let via = harness.via();
     let builtin = via.starts_with("harness:");
     let billing =
         end.billing.as_deref().and_then(Billing::parse).unwrap_or(if builtin { Billing::Plan } else { Billing::Agent });
-    let model = end.model.clone().or(record.model.clone()).unwrap_or_else(|| "default".into());
+    let model = end.model.clone().or(model.map(str::to_string)).unwrap_or_else(|| "default".into());
     let tokens: Tokens = end.tokens();
     Spent {
         key: deal_key(id),
@@ -570,7 +922,7 @@ fn spent_of(id: &str, harness: &dyn Harness, record: &Record, end: &RunEnd) -> S
             kind: if builtin { DialogProvider::Anthropic } else { DialogProvider::OpenAi },
             cloud: true,
             seat: Seat::Worker,
-            reason: Reason::Seat,
+            reason: deal.map_or(Reason::Seat, |deal| deal.reason.clone()),
         },
         tokens,
         rounds: 1,

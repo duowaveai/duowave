@@ -8,9 +8,14 @@
 pub use duowave_apps::{apps, bus, connectors, midi, plugins, screen};
 pub use duowave_base::{config, core, locale, operations, secrets, storage, utils};
 pub use duowave_base::{init_logging, log_file, route_needs, tr, VERSION};
-pub use duowave_brain::{dialog, memory, oauth, router, skills, sleep, talk, tasks};
+pub use duowave_brain::{dialog, door, memory, oauth, router, skills, sleep, talk, tasks};
+// Thinking behind the door (docs/plans/thinking.md).
+pub use duowave_brain::thinking;
 #[cfg(feature = "yandex-station")]
 pub use duowave_ears::activator;
+/// The computer's own voice channel (docs/plans/audio-interface-3.md, part К): the computer's build only.
+#[cfg(feature = "pc")]
+pub use duowave_ears::channel;
 pub use duowave_ears::{gateway, live, requests};
 pub use duowave_home::{egress, health_status, updates};
 pub use duowave_rights::{access, rights};

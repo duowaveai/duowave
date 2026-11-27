@@ -41,6 +41,7 @@ import { drawingOf } from '../stations';
 import { IconChevronDown, IconHome } from '../icons';
 import { ModelsScreen } from './models';
 import { PlacementCard } from './placement';
+import { ComputerEar } from './places';
 import { seconds } from './trip';
 import { VoiceHearingBrief } from './voice-brief';
 import { WorkshopScreen } from './workshop';
@@ -205,6 +206,7 @@ export function DeviceShares() {
 export function ThisComputer() {
     return (
         <>
+            <ComputerEar />
             <TurboPowers />
             <DeviceShares />
             <KeepAwake />

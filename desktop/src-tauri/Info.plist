@@ -6,7 +6,7 @@
 <plist version="1.0">
 <dict>
     <key>NSMicrophoneUsageDescription</key>
-    <string>Пульт записывает ваш голос, чтобы колонка научилась говорить им.</string>
+    <string>DuoWave слышит вас, когда вы нажимаете «Сказать» или клавишу разговора, и записывает голос для своего голоса.</string>
     <key>NSLocalNetworkUsageDescription</key>
     <string>Шлюз находит колонку в домашней сети и разговаривает с ней.</string>
 </dict>

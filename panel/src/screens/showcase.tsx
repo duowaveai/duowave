@@ -547,7 +547,7 @@ export function ShowcaseWidget() {
             {locked ? (
                 <span class="sc-chip is-lock">
                     <Lock />
-                    {t.makeLocked}
+                    {phase === 'switch' ? t.makeLockedSwitch : t.makeLocked}
                 </span>
             ) : (
                 <button type="button" class="sc-say" title={t.pressNote} onClick={() => say(t.makeSay, 'make')}>

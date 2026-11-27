@@ -65,9 +65,151 @@ fn session_with(
         rescue: None,
         talk: None,
         characters,
+        door: Arc::new(crate::talk::thinking::DialogThinking::new(app.dialog.clone(), app.personas.clone())),
+        thinking: None,
     });
     let handshake = Handshake { headers: HeaderMap::new(), remote_address: "192.168.1.50".into() };
     StationSession::new(&handshake, deps)
+}
+
+/// A door to Thinking that answers every phrase with `events` and its end — but the phrase `hold`, which it goes on
+/// thinking about after them — and keeps what it was given and told.
+struct Door {
+    events: Vec<crate::door::What>,
+    hold: &'static str,
+    phrases: std::sync::Mutex<Vec<crate::door::Phrase>>,
+    told: std::sync::Mutex<Vec<crate::door::Told>>,
+}
+
+impl Door {
+    fn new(events: Vec<crate::door::What>, hold: &'static str) -> Arc<Door> {
+        Arc::new(Door { events, hold, phrases: Default::default(), told: Default::default() })
+    }
+}
+
+impl crate::door::Thinking for Door {
+    fn phrase(&self, phrase: crate::door::Phrase) -> crate::door::Events {
+        use futures::StreamExt;
+        let (turn, hold) = (phrase.turn.clone(), phrase.text == self.hold);
+        self.phrases.lock().unwrap().push(phrase);
+        let mut events: Vec<crate::door::What> = self.events.clone();
+        if !hold {
+            let said = String::new();
+            events.push(crate::door::What::End {
+                outcome: crate::door::Outcome::Answered,
+                reason: None,
+                said,
+                ms: 0,
+                error: None,
+            });
+        }
+        let events = futures::stream::iter(
+            events.into_iter().map(move |what| crate::door::Event::new(&turn, None, what)).collect::<Vec<_>>(),
+        );
+        if hold {
+            events.chain(futures::stream::pending()).boxed()
+        } else {
+            events.boxed()
+        }
+    }
+
+    fn tell(&self, news: crate::door::News) {
+        self.told.lock().unwrap().push(news.what);
+    }
+
+    fn notices(&self) -> crate::door::Notices {
+        use futures::StreamExt;
+        futures::stream::empty().boxed()
+    }
+}
+
+/// A session whose phrases Thinking takes, through `door`.
+fn session_thinking(app: &App, door: Arc<Door>) -> (Arc<StationSession>, mpsc::UnboundedReceiver<Outgoing>) {
+    let deps = Arc::new(SessionDeps {
+        codec: Arc::new(AapiCodec::new()),
+        config: Arc::new(app.config.gateway.clone()),
+        speech: app.speech.clone(),
+        dialog: app.dialog.clone(),
+        skills: app.skills.clone(),
+        voice: app.voice.clone(),
+        modes: app.modes.clone(),
+        household: app.access.household.clone(),
+        events: app.events.clone(),
+        requests: None,
+        mcp: None,
+        tools: None,
+        rescue: None,
+        talk: None,
+        characters: None,
+        door: Arc::new(crate::talk::thinking::DialogThinking::new(app.dialog.clone(), app.personas.clone())),
+        thinking: Some(StationThinking {
+            door,
+            takes: Arc::new(|| true),
+            offers: Arc::new(crate::core::requests::RequestOffers::default()),
+        }),
+    });
+    let handshake = Handshake { headers: HeaderMap::new(), remote_address: "192.168.1.50".into() };
+    StationSession::new(&handshake, deps)
+}
+
+/// While Thinking takes the station, our skills' phrases go to it plain — the station's hands, no assistant when Yandex
+/// is not on the line — its words reach the station, and a new phrase stops a turn still going on: Thinking is told.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn while_thinking_takes_the_station_a_phrase_goes_to_it_plain_and_a_new_one_stops_it() {
+    use crate::door::{Kind, StopWhy, Told, What};
+    let app = memory_gateway();
+    let door = Door::new(vec![What::Say { text: "Сейчас расскажу.".into() }], "громче");
+    let (session, mut outgoing) = session_thinking(&app, door.clone());
+    {
+        let mut inner = session.lock();
+        session.handle_request(&mut inner, "r-1", &unknown_request(), "расскажи сказку", false);
+    }
+    let phrase = door.phrases.lock().unwrap().first().cloned().expect("the phrase went to Thinking");
+    assert_eq!((phrase.text.as_str(), phrase.place.kind), ("расскажи сказку", Kind::Station));
+    assert!(phrase.hands.iter().any(|group| group == "volume"), "the station's hands: {:?}", phrase.hands);
+    assert!(!phrase.hands.iter().any(|group| group == "assistant"), "no Yandex on the line: {:?}", phrase.hands);
+    // Its words go to the station.
+    let said = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            match outgoing.recv().await {
+                Some(Outgoing::Message(Message::Binary(frame))) => {
+                    let decoded = session.deps.codec.decode_server_frame(&frame).unwrap();
+                    if decoded.to_string().contains("Сейчас расскажу.") {
+                        return true;
+                    }
+                }
+                Some(_) => {}
+                None => return false,
+            }
+        }
+    })
+    .await;
+    assert_eq!(said, Ok(true), "Thinking's words reach the station");
+    {
+        let mut inner = session.lock();
+        session.handle_request(&mut inner, "r-2", &unknown_request(), "громче", false);
+    }
+    let phrase = door.phrases.lock().unwrap().last().cloned().expect("the next phrase went to Thinking");
+    assert_eq!(phrase.text, "громче");
+    {
+        let mut inner = session.lock();
+        session.handle_request(&mut inner, "r-3", &unknown_request(), "тише", false);
+    }
+    let stopped = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let told = door.told.lock().unwrap().clone();
+            if let Some(why) = told.iter().find_map(|told| match told {
+                Told::Stop { turn, why, .. } if *turn == phrase.turn => Some(*why),
+                _ => None,
+            }) {
+                return why;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    assert_eq!(stopped, Ok(StopWhy::New), "the new phrase stopped the turn: {:?}", door.told.lock().unwrap());
+    assert_eq!(door.phrases.lock().unwrap().len(), 3, "every phrase went to Thinking");
 }
 
 /// Nothing on disk: no database, no session journal folder (the latest events stay in memory).

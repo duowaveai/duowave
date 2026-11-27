@@ -74,9 +74,12 @@ struct ShowcaseAsr {
     badge: Option<String>,
     license: Option<String>,
     source: Option<String>,
-    /// Shown in «Советуем»: the models we advise (GigaAM v3, the best Russian hearing); the rest behind «ещё».
+    /// Shown in «Советуем»: the models we advise (GigaAM v4, and v3 where v4 does not run yet); the rest behind «ещё».
     #[serde(default)]
     recommended: bool,
+    /// The model that takes this one's place in «Советуем» wherever it runs: on a recognition server at once, on this
+    /// computer once it has a GGUF (GigaAM v3 → v4).
+    successor: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -537,18 +540,23 @@ pub struct AsrCard {
     pub local: Option<LocalCard>,
 }
 
-/// Whether we advise a recognition model («Советуем»): the showcase's advice, and with a language wanted on this
-/// computer — only the models here that know it, the language's own model among them.
-fn advised(card: &AsrModelRecord, language: Option<&str>) -> bool {
-    let showcase = SHOWCASE.asr.iter().find(|entry| entry.id == card.id).is_some_and(|entry| entry.recommended);
-    let Some(language) = language else { return showcase };
-    match local_catalog::find(&card.model) {
-        Some(gguf) => {
-            gguf.knows(language)
-                && (showcase || local_catalog::default_for(language).is_some_and(|own| own.model == gguf.model))
-        }
-        None => false,
+/// Whether we advise a recognition model («Советуем»): the showcase's advice, unless its successor runs where the
+/// recognition runs. A recognition server runs every model; this computer (`on_computer`) only the ones with a GGUF,
+/// and with a language wanted only those that know it, the language's own model among them.
+fn advised(card: &AsrModelRecord, on_computer: bool, language: Option<&str>) -> bool {
+    let runs = |model: &str| !on_computer || local_catalog::find(model).is_some();
+    let showcase = SHOWCASE
+        .asr
+        .iter()
+        .find(|entry| entry.id == card.id)
+        .is_some_and(|entry| entry.recommended && !entry.successor.as_deref().is_some_and(runs));
+    if !on_computer {
+        return showcase;
     }
+    let Some(gguf) = local_catalog::find(&card.model) else { return false };
+    let Some(language) = language else { return showcase };
+    gguf.knows(language)
+        && (showcase || local_catalog::default_for(language).is_some_and(|own| own.model == gguf.model))
 }
 
 /// A recognition model as this computer's own engine sees it.
@@ -1138,7 +1146,7 @@ impl ModelsService {
             asr: asr_cards
                 .into_iter()
                 .map(|entry| AsrCard {
-                    recommended: advised(&entry, language.as_deref()),
+                    recommended: advised(&entry, local_asr.is_some(), language.as_deref()),
                     active: asr_loaded.as_deref() == Some(entry.model.as_str()),
                     pending: asr_chosen.as_deref() == Some(entry.model.as_str())
                         && asr_loaded.as_deref() != Some(entry.model.as_str()),
@@ -2646,7 +2654,7 @@ mod tests {
 
     #[test]
     fn the_advised_recognition_models_are_the_ones_that_know_the_household_s_language() {
-        let advised_ids = |language: Option<&str>| -> Vec<String> {
+        let advised_ids = |on_computer: bool, language: Option<&str>| -> Vec<String> {
             SHOWCASE
                 .asr
                 .iter()
@@ -2659,15 +2667,28 @@ mod tests {
                     license: None,
                     source: None,
                 })
-                .filter(|card| advised(card, language))
+                .filter(|card| advised(card, on_computer, language))
                 .map(|card| card.id)
                 .collect()
         };
+        // A recognition server runs GigaAM v4: it takes v3's place.
+        assert_eq!(advised_ids(false, None), ["gigaam-v4", "gigaam-v4-ctc", "gigaam-multilingual-v2"]);
+        // This computer has no GGUF of v4 yet: v3 stays, and a model it cannot run is never advised.
         let gigaam = ["gigaam-v3-e2e", "gigaam-v3-e2e-ctc", "gigaam-v3-rnnt", "gigaam-v3-ctc"];
-        assert_eq!(advised_ids(None), gigaam);
-        assert_eq!(advised_ids(Some("ru")), gigaam);
-        assert_eq!(advised_ids(Some("en")), ["parakeet-v3"]);
-        assert_eq!(advised_ids(Some("ja")), ["whisper-large-v3-turbo"]);
+        assert_eq!(advised_ids(true, None), gigaam);
+        assert_eq!(advised_ids(true, Some("ru")), gigaam);
+        assert_eq!(advised_ids(true, Some("en")), ["parakeet-v3"]);
+        assert_eq!(advised_ids(true, Some("ja")), ["whisper-large-v3-turbo"]);
+    }
+
+    #[test]
+    fn a_successor_is_a_model_of_the_showcase() {
+        for entry in &SHOWCASE.asr {
+            if let Some(successor) = &entry.successor {
+                assert!(SHOWCASE.asr.iter().any(|other| &other.model == successor), "{}: {successor}", entry.id);
+                assert_ne!(successor, &entry.model, "{}", entry.id);
+            }
+        }
     }
 
     /// Every Russian word of the showcase's cards has its English (locales/en/models.json): the panel shows them as
@@ -3169,8 +3190,8 @@ mod tests {
 
     #[test]
     fn reads_the_built_in_showcase() {
-        assert_eq!(SHOWCASE.asr.len(), 18);
-        assert_eq!(SHOWCASE.asr.iter().filter(|card| card.recommended).count(), 4);
+        assert_eq!(SHOWCASE.asr.len(), 21);
+        assert_eq!(SHOWCASE.asr.iter().filter(|card| card.recommended).count(), 7);
         assert_eq!(SHOWCASE.tts.iter().filter(|card| card.engine == SILERO).count(), 2);
     }
 
@@ -3224,9 +3245,10 @@ mod tests {
         let alan = view.tts.iter().find(|card| card.id == "piper-en_GB-alan-low").unwrap();
         assert_eq!(alan.size.as_deref(), Some("1 МБ"), "never 0 МБ");
 
-        assert_eq!(view.asr.len(), 17, "Yandex's recognition is the mode, not a card");
+        assert_eq!(view.asr.len(), 20, "Yandex's recognition is the mode, not a card");
+        assert_eq!(view.asr[0].record.id, "gigaam-v4");
         assert!(view.asr[0].recommended);
-        assert!(view.asr[0].active, "the server serves v3_e2e_rnnt");
+        assert!(view.asr[3].active, "the server serves v3_e2e_rnnt");
         assert!(!view.asr.iter().find(|card| card.record.id == "whisper-tiny").unwrap().recommended);
         assert_eq!(view.asr_loaded.as_deref(), Some("v3_e2e_rnnt"));
         assert_eq!(view.tts_active, ids("yandex", ""));
@@ -3243,16 +3265,16 @@ mod tests {
         assert_eq!(json["mode"], "relay");
         assert_eq!(json["voice"], "yandex");
         assert_eq!(
-            json["asr"][0],
+            json["asr"][3],
             json!({
                 "id": "gigaam-v3-e2e",
                 "model": "v3_e2e_rnnt",
                 "title": "GigaAM v3 e2e RNNT",
                 "description": "Распознаёт русскую речь и сразу ставит знаки препинания и заглавные буквы.",
-                "badge": "рекомендуем",
                 "license": "MIT · Сбер",
                 "source": "huggingface:salute-developers/GigaAM",
-                "recommended": true,
+                // It serves, and a server runs GigaAM v4: v4 is the one advised.
+                "recommended": false,
                 "active": true,
                 "pending": false,
             })

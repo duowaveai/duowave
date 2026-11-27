@@ -22,3 +22,4 @@ pub mod http;
 pub mod playback;
 pub mod plugins;
 pub mod stations;
+pub mod thinking;

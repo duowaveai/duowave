@@ -188,6 +188,89 @@ pub fn modern(message: &Value) -> Handled {
     }
 }
 
+/// A 2026-07-28 server that makes its long call a task (SEP-2663): `long` answers with a task, `tasks/get` says
+/// «working» the first time and the result after; `tasks/cancel` is counted.
+pub struct Tasks {
+    polls: std::sync::atomic::AtomicUsize,
+    pub cancels: std::sync::atomic::AtomicUsize,
+}
+
+impl Tasks {
+    fn handle(&self, message: &Value) -> Handled {
+        use std::sync::atomic::Ordering;
+        if message.get("id").is_none() {
+            return Handled::default();
+        }
+        let reply = |value| Handled { reply: Some(result(message, value)), ..Default::default() };
+        let task = |status: &str| {
+            json!({ "taskId": "task-1", "status": status, "createdAt": "2026-11-27T00:00:00Z",
+                "lastUpdatedAt": "2026-11-27T00:00:01Z", "ttlMs": null, "pollIntervalMs": 50 })
+        };
+        match message["method"].as_str().unwrap_or_default() {
+            "server/discover" => reply(json!({
+                "resultType": "complete",
+                "supportedVersions": ["2026-07-28"],
+                "capabilities": { "tools": {}, "extensions": { "io.modelcontextprotocol/tasks": {} } },
+                "ttlMs": 0,
+                "cacheScope": "private",
+                "_meta": { "io.modelcontextprotocol/serverInfo": { "name": "tasks-fixture", "version": "1.0.0" } },
+            })),
+            "ping" => reply(json!({})),
+            "tools/list" => reply(json!({
+                "resultType": "complete",
+                "tools": [{ "name": "long", "description": "A long job.", "inputSchema": { "type": "object" } }],
+            })),
+            "tools/call" => {
+                let mut created = task("working");
+                created["resultType"] = json!("task");
+                reply(created)
+            }
+            "tasks/get" => {
+                let polls = self.polls.fetch_add(1, Ordering::SeqCst);
+                let mut got = task(if polls == 0 { "working" } else { "completed" });
+                got["resultType"] = json!("complete");
+                if polls > 0 {
+                    got["result"] = json!({ "content": [{ "type": "text", "text": "long done" }], "isError": false });
+                }
+                reply(got)
+            }
+            "tasks/cancel" => {
+                self.cancels.fetch_add(1, Ordering::SeqCst);
+                reply(json!({ "resultType": "complete" }))
+            }
+            other => Handled {
+                reply: Some(failure(message, -32601, &format!("Method not found: {other}"))),
+                ..Default::default()
+            },
+        }
+    }
+}
+
+/// The tasks server over Streamable HTTP at `/mcp`, and what it counts.
+pub fn tasks_http() -> (Router, Arc<Tasks>) {
+    let state = Arc::new(Tasks { polls: Default::default(), cancels: Default::default() });
+    let served = state.clone();
+    let router = Router::new().route(
+        "/mcp",
+        any(move |method: Method, body: Bytes| {
+            let served = served.clone();
+            async move {
+                if method != Method::POST {
+                    return StatusCode::METHOD_NOT_ALLOWED.into_response();
+                }
+                let Ok(message) = serde_json::from_slice::<Value>(&body) else {
+                    return StatusCode::BAD_REQUEST.into_response();
+                };
+                match served.handle(&message).reply {
+                    Some(reply) => json_body(&reply),
+                    None => StatusCode::ACCEPTED.into_response(),
+                }
+            }
+        }),
+    );
+    (router, state)
+}
+
 // Programs: this test binary run again as a server over stdio.
 
 /// The test that is a fixture program: `program(...)` runs the binary with its name.
@@ -456,6 +539,8 @@ pub struct Cloud {
     pub base: String,
     /// The access tokens it gave out.
     pub issued: Arc<Mutex<Vec<String>>>,
+    /// The client ids it was asked for: at the authorization page, then at the exchange.
+    pub clients: Arc<Mutex<Vec<String>>>,
 }
 
 /// The cloud's base address and the tokens it gave out, for its handlers.
@@ -467,16 +552,28 @@ pub async fn cloud() -> Cloud {
 
 /// The same service, slow to exchange a code for tokens: a sign-in's return takes long enough to be left half-way.
 pub async fn cloud_exchanging_after(pause: Duration) -> Cloud {
+    serve_cloud(pause, false).await
+}
+
+/// The same service with no registration: it takes a client document's address for the client id (CIMD), as
+/// ElevenLabs does.
+pub async fn cloud_reading_client_documents() -> Cloud {
+    serve_cloud(Duration::ZERO, true).await
+}
+
+async fn serve_cloud(pause: Duration, documents: bool) -> Cloud {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("a free port");
     let base = format!("http://{}", listener.local_addr().expect("an address"));
     let issued = Arc::new(Mutex::new(Vec::new()));
+    let clients = Arc::new(Mutex::new(Vec::<String>::new()));
+    let (asked, exchanged) = (clients.clone(), clients.clone());
     let state: CloudState = Arc::new((base.clone(), issued.clone()));
     let protected = |State(state): State<CloudState>| async move {
         Json(json!({ "resource": format!("{}/mcp", state.0), "authorization_servers": [state.0] }))
     };
-    let metadata = |State(state): State<CloudState>| async move {
+    let metadata = move |State(state): State<CloudState>| async move {
         let base = &state.0;
-        Json(json!({
+        let mut metadata = json!({
             "issuer": base,
             "authorization_endpoint": format!("{base}/authorize"),
             "token_endpoint": format!("{base}/token"),
@@ -485,7 +582,12 @@ pub async fn cloud_exchanging_after(pause: Duration) -> Cloud {
             "grant_types_supported": ["authorization_code", "refresh_token"],
             "code_challenge_methods_supported": ["S256"],
             "token_endpoint_auth_methods_supported": ["none"],
-        }))
+        });
+        if documents {
+            metadata.as_object_mut().unwrap().remove("registration_endpoint");
+            metadata["client_id_metadata_document_supported"] = json!(true);
+        }
+        Json(metadata)
     };
     let router = Router::new()
         .route("/.well-known/oauth-protected-resource", get(protected))
@@ -501,7 +603,9 @@ pub async fn cloud_exchanging_after(pause: Duration) -> Cloud {
         )
         .route(
             "/authorize",
-            get(|State(state): State<CloudState>, Query(query): Query<HashMap<String, String>>| async move {
+            get(move |State(state): State<CloudState>, Query(query): Query<HashMap<String, String>>| {
+                asked.lock().unwrap().push(query.get("client_id").cloned().unwrap_or_default());
+                async move {
                 // The owner signed in: back to the redirect address with the code and the state.
                 let Some(mut back) = query.get("redirect_uri").and_then(|uri| url::Url::parse(uri).ok()) else {
                     return StatusCode::BAD_REQUEST.into_response();
@@ -511,19 +615,23 @@ pub async fn cloud_exchanging_after(pause: Duration) -> Cloud {
                     .append_pair("state", query.get("state").map(String::as_str).unwrap_or_default())
                     .append_pair("iss", &state.0);
                 (StatusCode::FOUND, [(header::LOCATION, back.to_string())]).into_response()
+                }
             }),
         )
         .route(
             "/token",
-            post(move |State(state): State<CloudState>, body: Bytes| async move {
-                tokio::time::sleep(pause).await;
+            post(move |State(state): State<CloudState>, body: Bytes| {
                 let form: HashMap<String, String> = url::form_urlencoded::parse(&body).into_owned().collect();
+                exchanged.lock().unwrap().push(form.get("client_id").cloned().unwrap_or_default());
+                async move {
+                tokio::time::sleep(pause).await;
                 if form.get("code").map(String::as_str) != Some("code-1") || !form.contains_key("code_verifier") {
                     return (StatusCode::BAD_REQUEST, Json(json!({ "error": "invalid_grant" }))).into_response();
                 }
                 state.1.lock().unwrap().push("token-1".into());
                 Json(json!({ "access_token": "token-1", "token_type": "Bearer", "expires_in": 3600, "refresh_token": "refresh-1" }))
                     .into_response()
+                }
             }),
         )
         .route(
@@ -559,5 +667,5 @@ pub async fn cloud_exchanging_after(pause: Duration) -> Cloud {
     tokio::spawn(async move {
         let _ = axum::serve(listener, router).await;
     });
-    Cloud { base, issued }
+    Cloud { base, issued, clients }
 }

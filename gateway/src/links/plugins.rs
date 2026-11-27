@@ -46,6 +46,8 @@ pub struct PluginServices {
     egress: OnceLock<Weak<crate::egress::Egress>>,
     /// The station's microphone and its Alice, for the apps that hear a word of their own (src/activator).
     activator: OnceLock<Arc<Activator>>,
+    /// The gateway, once it stands: the computer's own ear for the word's apps (stage 3, «К10»).
+    app: OnceLock<Weak<crate::app::App>>,
 }
 
 /// The Station's microphone and its Alice (src/activator, part of the Station's adapter).
@@ -71,6 +73,30 @@ impl Activator {
     ) -> Result<Value, String> {
         match *self {}
     }
+}
+
+/// An app's word heard on the computer (К10): not while «Слушать слово» is off, not in the mode «Колонка» (there the
+/// word is the station's, decision 11), not when it is older than five seconds; otherwise the thought opens with the
+/// sound before the word.
+#[cfg(all(feature = "pc", feature = "yandex-station"))]
+fn wake_computer(
+    channel: &crate::channel::VoiceChannel,
+    app: &str,
+    words: &[crate::ear::word::ActivatorSpec],
+    input: &Value,
+) -> Result<Value, String> {
+    let now = crate::utils::time::now_ms() as i64;
+    let wake = crate::activator::read_wake(app, words, input, now)?;
+    let skipped = |reason: &str| Ok(serde_json::json!({ "started": false, "reason": reason }));
+    if !channel.settings().word {
+        return skipped("word off");
+    }
+    if now - wake.at_ms > crate::activator::STALE_MS {
+        return skipped("stale");
+    }
+    let before = wake.preroll().map(|(pcm, _)| pcm).unwrap_or_default();
+    channel.woken(crate::channel::Woken { word: wake.title, heard: wake.heard, agent: wake.character, before });
+    Ok(serde_json::json!({ "started": true }))
 }
 
 /// The words an interest is found by in the memory: likes, pastimes, what one watches and reads.
@@ -140,7 +166,21 @@ impl PluginServices {
             publishers: OnceLock::new(),
             egress: OnceLock::new(),
             activator: OnceLock::new(),
+            app: OnceLock::new(),
         })
+    }
+
+    /// The gateway built: the computer's ear, when it has one, answers the word's apps here (К10).
+    pub fn set_app(&self, app: &Arc<crate::app::App>) {
+        let _ = self.app.set(Arc::downgrade(app));
+    }
+
+    /// The computer's own ear and the port of its sound, when the app gave one (part К).
+    #[cfg(feature = "pc")]
+    fn computer_ear(&self) -> Option<(Arc<crate::channel::VoiceChannel>, Option<u16>)> {
+        let app = self.app.get()?.upgrade()?;
+        let channel = app.pc.voice.get()?.clone();
+        Some((channel, app.pc.voice_share.get().copied()))
     }
 
     /// The activators' service, once the station's sessions stand.
@@ -797,6 +837,18 @@ impl HostServices for PluginServices {
     }
 
     fn mic(&self, caller: &str) -> Result<Value, String> {
+        // On the computer: the ear's own sound, the station's protocol on a port of its own (К10).
+        #[cfg(feature = "pc")]
+        if let Some((_, share)) = self.computer_ear() {
+            let port = share.ok_or_else(|| crate::tr!("звук уха компьютера ещё не готов: попробуйте через секунду"))?;
+            tracing::info!(target: "plugins", "{caller}: opens the computer's microphone for its word");
+            return Ok(serde_json::json!({
+                "port": port,
+                "channel": crate::channel::share::CHANNEL,
+                "rate": crate::channel::endpoint::RATE,
+                "computer": true,
+            }));
+        }
         let activator =
             self.activator.get().ok_or_else(|| crate::tr!("микрофон колонки слышит только хаб на самой колонке"))?;
         tracing::info!(target: "plugins", "{caller}: opens the station's microphone");
@@ -813,6 +865,11 @@ impl HostServices for PluginServices {
             .map(|package| package.manifest.contributes.activators.clone())
             .unwrap_or_default();
         let caller = caller.to_string();
+        // On the computer: its word opens the computer's own thought, as its key does (К10).
+        #[cfg(all(feature = "pc", feature = "yandex-station"))]
+        if let Some((channel, _)) = self.computer_ear() {
+            return Box::pin(async move { wake_computer(&channel, &caller, &words, &input) });
+        }
         Box::pin(async move {
             let activator = activator.ok_or_else(|| crate::tr!("будить колонку может только хаб на самой колонке"))?;
             activator.wake(&caller, &words, &input).await

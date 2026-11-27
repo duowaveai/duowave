@@ -640,6 +640,8 @@ pub struct Scripted {
     pub delay_ms: u64,
     pub call: Option<(String, Value)>,
     pub reply: Option<String>,
+    /// The answer's whole limit went to the model's thinking: no word, no call, `finish_reason: length`.
+    pub thought_away: bool,
 }
 
 impl Scripted {
@@ -649,6 +651,11 @@ impl Scripted {
 
     pub fn call(name: &str, arguments: Value) -> Scripted {
         Scripted { call: Some((name.to_string(), arguments)), ..Scripted::default() }
+    }
+
+    /// A model whose thinking took the whole answer (27.11, GLM 5.3): nothing but the end of the limit.
+    pub fn thought_away() -> Scripted {
+        Scripted { thought_away: true, ..Scripted::default() }
     }
 
     pub fn after(mut self, ms: u64) -> Scripted {
@@ -696,6 +703,13 @@ async fn chat(State(state): State<ChatState>, body: AxumBytes) -> Response {
             sleep(scripted.delay_ms).await;
         }
         let mut events = String::new();
+        if scripted.thought_away {
+            events
+                .push_str(&format!("data: {}\n\n", json!({ "choices": [{ "delta": {}, "finish_reason": "length" }] })));
+            events.push_str(&usage_chunk());
+            events.push_str("data: [DONE]\n\n");
+            return ([("content-type", "text/event-stream")], events).into_response();
+        }
         match (scripted.call, scripted.reply) {
             (Some((name, arguments)), _) => {
                 let call = json!({ "index": 0, "id": format!("call_{}", lock(&state.requests).len()), "function": { "name": name, "arguments": arguments.to_string() } });

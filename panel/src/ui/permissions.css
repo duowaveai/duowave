@@ -1,0 +1,88 @@
+/* «Разрешения» (ui/permissions.tsx): строки с кнопкой и нарисованное окно macOS. Цвета — из окружения (первые шаги,
+   пульт, окно-подсказка), с запасными значениями. */
+
+.perm-rows { display: flex; flex-direction: column; gap: 10px; }
+.perm-row {
+  display: flex; align-items: center; gap: 14px; padding: 14px 16px;
+  border: 1px solid var(--line, rgba(127, 127, 127, .22)); border-radius: var(--radius-inner, 12px);
+  background: var(--paper, var(--surface, transparent));
+}
+.perm-icon {
+  width: 40px; height: 40px; flex: none; display: grid; place-items: center; border-radius: 10px;
+  background: var(--chip, rgba(127, 127, 127, .12)); color: var(--text, currentColor);
+}
+/* Разрешено: цвет «готово» берётся из оформления (в тёмном — салатовый, в светлом — тёмно-зелёный): постоянный
+   тёмно-зелёный в тёмном пульте не читался (снимок владельца 28.11). */
+.perm-row.is-ok .perm-icon { background: rgba(132, 204, 22, .16); color: var(--accent-text, #3f6212); }
+.perm-ico { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.perm-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; font-size: 14px; line-height: 20px; }
+.perm-text b { font-weight: 600; font-size: 15px; }
+.perm-why { color: var(--sub, rgba(127, 127, 127, .9)); }
+.perm-hint { color: var(--sub, rgba(127, 127, 127, .9)); font-size: 13px; line-height: 18px; margin-top: 4px; }
+.perm-side { flex: none; display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+.perm-btn { white-space: nowrap; }
+.perm-link { align-self: flex-start; height: 28px; margin: 6px 0 0 -8px; padding: 0 8px; font-size: 13px; }
+/* Колонка шага «Разрешения»: строки не уже 460 px, пока есть место. */
+.perm-step-col { flex: 1 1 460px; min-width: min(100%, 460px); }
+.perm-ok { display: inline-flex; align-items: center; gap: 6px; font-size: 14px; font-weight: 500; color: var(--accent-text, #3f6212); }
+.perm-ok svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
+.perm-wait { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: var(--sub, rgba(127, 127, 127, .9)); }
+.perm-spin {
+  width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--line, rgba(127, 127, 127, .3));
+  border-top-color: var(--own, #84cc16); animation: perm-spin .9s linear infinite;
+}
+@keyframes perm-spin { to { transform: rotate(360deg); } }
+.perm-note { margin: 0; color: var(--sub, rgba(127, 127, 127, .9)); }
+
+@media (max-width: 560px) {
+  .perm-row { flex-wrap: wrap; }
+  .perm-side { width: 100%; align-items: stretch; }
+  .perm-btn { width: 100%; }
+}
+
+/* Нарисованное окно macOS — по настоящим окнам macOS 26 (снимки владельца 27.11): светлое и тёмное, как сама система
+   (окно macOS следует оформлению системы, не пульта). Значок 64 pt со скруглением, синяя ладонь в углу, кнопки-капсулы,
+   рамка фокуса на «Не разрешать», курсор на «Разрешить». */
+.perm-picture { margin: 0; display: flex; flex-direction: column; align-items: center; gap: 14px; }
+.perm-alert {
+  --pa-bg: #f3f2f1; --pa-line: rgba(0, 0, 0, .14); --pa-title: #1d1d1f; --pa-body: #3a3a3c;
+  --pa-btn: rgba(0, 0, 0, .07); --pa-btn-text: #1d1d1f; --pa-focus: #0a84ff; --pa-help: rgba(0, 0, 0, .07);
+  position: relative; box-sizing: border-box; width: 300px; padding: 22px 22px 20px; border-radius: 26px;
+  background: var(--pa-bg); color: var(--pa-title); border: 1px solid var(--pa-line);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, .22), 0 2px 8px rgba(0, 0, 0, .08);
+  display: flex; flex-direction: column; align-items: flex-start; gap: 10px;
+  font: 400 13.5px/18px -apple-system, BlinkMacSystemFont, var(--font-ui, system-ui), sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  .perm-alert {
+    --pa-bg: #232324; --pa-line: rgba(255, 255, 255, .2); --pa-title: #f2f2f3; --pa-body: #dcdcde;
+    --pa-btn: rgba(255, 255, 255, .11); --pa-btn-text: #f2f2f3; --pa-focus: #3b82d6; --pa-help: rgba(255, 255, 255, .1);
+    box-shadow: 0 24px 60px rgba(0, 0, 0, .55), 0 2px 8px rgba(0, 0, 0, .3);
+  }
+}
+.perm-alert b { font-size: 14px; line-height: 19px; font-weight: 700; margin-top: 4px; }
+.perm-alert-body { color: var(--pa-body); }
+.perm-alert-help {
+  position: absolute; top: 16px; right: 16px; width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center;
+  background: var(--pa-help); color: var(--pa-title); font-size: 15px; font-weight: 500;
+}
+.perm-alert-icon { position: relative; width: 64px; height: 64px; border-radius: 15px; display: grid; place-items: center; color: #fff; }
+.perm-alert-icon.is-localNetwork { background: linear-gradient(180deg, #5fb0ff 0%, #1f74ea 100%); }
+.perm-alert-icon.is-microphone { background: linear-gradient(180deg, #a7a7ac 0%, #77777c 100%); }
+.perm-alert-icon > svg { width: 46px; height: 46px; fill: none; stroke: currentColor; stroke-width: 2.6; stroke-linecap: round; stroke-linejoin: round; }
+.perm-alert-badge {
+  position: absolute; right: -7px; bottom: -6px; width: 26px; height: 26px; border-radius: 7px; display: grid; place-items: center;
+  background: linear-gradient(180deg, #2f8cff 0%, #1667e0 100%); box-shadow: 0 0 0 2px var(--pa-bg);
+}
+.perm-alert-badge svg { width: 18px; height: 18px; fill: #fff; }
+.perm-alert-buttons { align-self: stretch; display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 8px; }
+.perm-alert-buttons i {
+  position: relative; font-style: normal; text-align: center; padding: 7px 6px; border-radius: 999px;
+  background: var(--pa-btn); color: var(--pa-btn-text); font-size: 14px; font-weight: 400;
+}
+.perm-alert-buttons i.is-focus { box-shadow: 0 0 0 3px var(--pa-focus); }
+.perm-cursor {
+  position: absolute; right: 18px; bottom: -18px; width: 24px; height: 24px;
+  fill: #111; stroke: #fff; stroke-width: 1.4; stroke-linejoin: round; filter: drop-shadow(0 1px 1px rgba(0, 0, 0, .35));
+}
+.perm-picture figcaption { text-align: center; max-width: 300px; color: var(--sub, rgba(127, 127, 127, .9)); }

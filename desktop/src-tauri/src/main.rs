@@ -1,12 +1,24 @@
 // The desktop app: the gateway (the Rust engine, in this process), its panel in a window, a tray icon to run it all.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+// The computer's own ear and voice on a Mac (docs/plans/audio-interface-3.md, «К3»).
+#[cfg(target_os = "macos")]
+mod audio_port;
 mod awake;
 mod engine;
 mod envfile;
+// The guide window beside System Settings («Разрешения», docs/plans/permissions.md).
+#[cfg(target_os = "macos")]
+mod guide;
+// The key «Сказать» from any program («К4»).
+mod hotkey;
 mod lang;
+// «Разрешения»: the microphone as the system sees it, the guide window (docs/plans/permissions.md).
+mod permissions;
 mod place;
 mod screen;
+// The strip over the windows while a talk goes on («К8»).
+mod strip;
 mod updates;
 
 use std::path::PathBuf;
@@ -101,6 +113,8 @@ fn main() {
         .plugin(tauri_plugin_notification::init())
         // «Подключить папку…» in the panel opens the system's window to pick a folder (docs/plans/shared-folders.md).
         .plugin(tauri_plugin_dialog::init())
+        // The key «Сказать» from any program (hotkey.rs).
+        .plugin(hotkey::plugin())
         .invoke_handler(tauri::generate_handler![
             gateway_status,
             gateway_restart,
@@ -146,6 +160,14 @@ fn main() {
             build_tray(&handle)?;
             // The computer's screen: a window of its own for each photo, video or sound the gateway shows.
             screen::follow(&handle);
+            // The computer's own ear and voice: the gateway's voice channel stands on this port (audio_port.rs).
+            #[cfg(target_os = "macos")]
+            duowave::ear::port::set_port(audio_port::MacPort::new(handle.clone()));
+            // «Разрешения»: what only the app can tell the gateway's list — the microphone, the guide window.
+            duowave::computer::permissions::set_port(permissions::AppPermissions::new(handle.clone()));
+            // The key «Сказать» from any program, and the strip over the windows while a talk goes on.
+            hotkey::follow(&handle);
+            strip::follow(&handle);
             // The panel's «Подключить папку…»: the gateway asks this app for the system's window to pick a folder.
             let picker = handle.clone();
             duowave::bus::providers::files::routes::set_picker(Arc::new(move |title: String| -> Picked {

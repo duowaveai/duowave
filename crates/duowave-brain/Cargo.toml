@@ -11,12 +11,17 @@ publish.workspace = true
 # computer's floor's (crates/duowave-pc).
 station = ["duowave-base/station", "duowave-voice/station"]
 # What the tests of the crates above take from this one (the brain's, the dialog's and the sign-in's stand-ins).
-testing = ["duowave-base/testing", "duowave-voice/testing"]
+testing = ["duowave-base/testing", "duowave-door/testing", "duowave-sense/testing", "duowave-voice/testing"]
 
 [dependencies]
+# The door to the audio side: Thinking's first implementation of it is the talk layer (talk/thinking.rs).
+duowave-door = { path = "../duowave-door" }
 duowave-base = { path = "../duowave-base" }
+# «Чутьё»: the words of the thought and of the window (talk/listen.rs, talk/window.rs).
+duowave-sense = { path = "../duowave-sense" }
 duowave-voice = { path = "../duowave-voice" }
 anyhow.workspace = true
+async-trait.workspace = true
 axum.workspace = true
 base64.workspace = true
 bytes.workspace = true
@@ -39,6 +44,8 @@ uuid.workspace = true
 
 [dev-dependencies]
 duowave-base = { path = "../duowave-base", features = ["testing"] }
+duowave-door = { path = "../duowave-door", features = ["testing"] }
+duowave-sense = { path = "../duowave-sense", features = ["testing"] }
 duowave-voice = { path = "../duowave-voice", features = ["testing"] }
 http-body-util.workspace = true
 tempfile.workspace = true

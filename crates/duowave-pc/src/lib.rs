@@ -31,6 +31,7 @@ pub mod home;
 pub mod home_server;
 pub mod mcp;
 pub mod models;
+pub mod permissions;
 pub mod placement;
 pub mod platform;
 pub mod settings;

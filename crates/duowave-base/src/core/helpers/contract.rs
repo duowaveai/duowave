@@ -72,6 +72,10 @@ pub enum Ability {
     /// What is plugged into the computer, for its home: a MIDI keyboard, its screen, a flash drive
     /// (docs/plans/turbo-devices.md, `/home/v1/devices/*`). Its details say what and where.
     Devices,
+    /// Works of people in work folders: an agent in its copy of a folder (docs/plans/router-and-works.md, stage 5).
+    /// Given by the built-in helper only: the link does not carry it yet (block В of that plan), so a gateway takes it
+    /// from itself — `details`: the agents there are, how many folders, how many works at once.
+    Works,
 }
 
 impl Ability {
@@ -87,7 +91,7 @@ impl Ability {
     ];
 
     /// Every ability this gateway knows.
-    pub const ALL: [Ability; 13] = [
+    pub const ALL: [Ability; 14] = [
         Ability::Hearing,
         Ability::Voice,
         Ability::Model,
@@ -101,11 +105,16 @@ impl Ability {
         Ability::Files,
         Ability::Panel,
         Ability::Devices,
+        Ability::Works,
     ];
 
     /// What came with contract 3 (docs/plans/turbo-devices.md): a computer gives them its own home by default, another
     /// home only when ticked on «Этот компьютер» (owner 20.11, 9).
     pub const V3: [Ability; 2] = [Ability::Devices, Ability::Files];
+
+    /// Given to a home over the link on the owner's word (docs/plans/work-systems.md, stage 9): the work systems of
+    /// this computer, led from the hub.
+    pub const V4: [Ability; 1] = [Ability::Works];
 
     /// By its name or its old part's ("asr", "tts", "llm"); unknown → None.
     pub fn parse(name: &str) -> Option<Ability> {
@@ -127,6 +136,7 @@ impl Ability {
             Ability::Files => "files",
             Ability::Panel => "panel",
             Ability::Devices => "devices",
+            Ability::Works => "works",
         }
     }
 

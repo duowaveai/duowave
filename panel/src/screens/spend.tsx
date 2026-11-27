@@ -38,6 +38,8 @@ export function seatWord(seat: string): string {
             return tr.router.seatMemory;
         case 'app':
             return tr.router.seatApp;
+        case 'background':
+            return tr.router.seatBackground;
         case 'worker':
             return tr.router.seatWorker;
         default:
@@ -57,8 +59,11 @@ export function reasonWord(reason: string): string {
             return tr.router.reasonHard;
         case 'rule:short':
             return tr.router.reasonShort;
+        case 'budget:cheaper':
+            return tr.router.reasonCheaper;
         default:
-            return reason;
+            // A rule of the router's table: `table:<rule>`.
+            return reason.startsWith('table:') ? tr.router.reasonTable(reason.slice('table:'.length)) : reason;
     }
 }
 

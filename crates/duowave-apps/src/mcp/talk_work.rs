@@ -76,7 +76,31 @@ pub struct ToolExecutor {
     runs: Mutex<HashMap<String, Arc<Run>>>,
     /// What the ended ones came to: by the target.
     told: Mutex<HashMap<String, Told>>,
+    /// A server's question waiting for the person's yes or no (elicitation, stage 8 of docs/plans/work-systems.md):
+    /// by the target.
+    waiting: Mutex<HashMap<String, tokio::sync::oneshot::Sender<bool>>>,
+    /// The server whose questions a work answers while it runs: by the target.
+    asking: Mutex<HashMap<String, String>>,
     next: AtomicU64,
+}
+
+/// How long a server's question waits for the person's answer.
+const ELICIT_WAIT: Duration = Duration::from_secs(120);
+
+/// A server's question as a yes or no: a schema with no field (a confirmation) — None inside; with one boolean field —
+/// its name. Anything else is not asked by voice.
+fn yes_no_field(schema: &Value) -> Option<Option<String>> {
+    let properties = schema.get("properties").and_then(Value::as_object);
+    match properties.map(|properties| properties.iter().collect::<Vec<_>>()) {
+        None => Some(None),
+        Some(fields) if fields.is_empty() => Some(None),
+        Some(fields) => match fields.as_slice() {
+            [(name, field)] if field.get("type").and_then(Value::as_str) == Some("boolean") => {
+                Some(Some(name.to_string()))
+            }
+            _ => None,
+        },
+    }
 }
 
 fn locked<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -101,6 +125,8 @@ impl ToolExecutor {
             asked: Mutex::new(HashMap::new()),
             runs: Mutex::new(HashMap::new()),
             told: Mutex::new(HashMap::new()),
+            waiting: Mutex::new(HashMap::new()),
+            asking: Mutex::new(HashMap::new()),
             next: AtomicU64::new(1),
         });
         layer.add_executor(executor.clone());
@@ -170,6 +196,9 @@ impl ToolExecutor {
         let words = &pack::of(lang).work.background;
         *locked(&run.step) = Some(words.waiting_answer.to_string());
         let Some(mcp) = self.mcp.upgrade() else { return };
+        // The server's questions during the call go to this work: asked by voice, yes or no.
+        mcp.ask_through(&call.server_id, Some(self.asker(&target, &call.server_title)));
+        locked(&self.asking).insert(target.clone(), call.server_id.clone());
         let first = tokio::select! {
             outcome = mcp.call_in_background(&call.server_id, &call.tool, call.input.clone(), &cancel, BACKGROUND_WAIT) => outcome,
             _ = tokio::time::sleep_until(deadline) => Err(time_words(lang).to_string()),
@@ -194,7 +223,38 @@ impl ToolExecutor {
         self.end(&target, WorkState::Ready, Told { summary, more, data, error: None });
     }
 
+    /// The way a server's question reaches the person while this work runs: its question, said aloud, answered by
+    /// the home's admin; a question that is not a yes or no is declined.
+    fn asker(&self, target: &str, server: &str) -> super::mcp_service::Asker {
+        let (me, target, who) = (self.me.clone(), target.to_string(), server.to_string());
+        Arc::new(move |message: String, schema: Value| {
+            let (me, target, who) = (me.clone(), target.clone(), who.clone());
+            Box::pin(async move {
+                let field = yes_no_field(&schema)?;
+                let me = me.upgrade()?;
+                let layer = me.layer.upgrade()?;
+                let (answer, answered) = tokio::sync::oneshot::channel();
+                locked(&me.waiting).insert(target.clone(), answer);
+                layer.ask_yes_no_on(TOOL_EXECUTOR, &target, &who, &message);
+                let yes = tokio::time::timeout(ELICIT_WAIT, answered).await;
+                locked(&me.waiting).remove(&target);
+                let yes = yes.ok()?.ok()?;
+                match field {
+                    Some(name) => Some(serde_json::Map::from_iter([(name, Value::Bool(yes))])),
+                    None if yes => Some(serde_json::Map::new()),
+                    None => None,
+                }
+            }) as BoxFuture<'static, Option<serde_json::Map<String, Value>>>
+        })
+    }
+
     fn end(&self, target: &str, state: WorkState, told: Told) {
+        if let Some(server) = locked(&self.asking).remove(target) {
+            if let Some(mcp) = self.mcp.upgrade() {
+                mcp.ask_through(&server, None);
+            }
+        }
+        locked(&self.waiting).remove(target);
         locked(&self.runs).remove(target);
         locked(&self.told).insert(target.to_string(), told);
         self.report(Report::Ended { target: target.to_string(), state, line: None, title: None });
@@ -408,6 +468,18 @@ impl Executor for ToolExecutor {
 
     fn told(&self, work: &Work) -> Option<Told> {
         locked(&self.told).get(work.target.as_deref()?).cloned()
+    }
+
+    /// The person's yes or no to the server's question the work waits on.
+    fn answer_question(
+        &self,
+        work: &Work,
+        yes: bool,
+        _by_voice: bool,
+    ) -> Result<(), crate::talk::executor::NotAnswered> {
+        let target = work.target.as_deref().ok_or(crate::talk::executor::NotAnswered::Gone)?;
+        let waiting = locked(&self.waiting).remove(target).ok_or(crate::talk::executor::NotAnswered::Gone)?;
+        waiting.send(yes).map_err(|_| crate::talk::executor::NotAnswered::Gone)
     }
 }
 
@@ -635,6 +707,52 @@ mod tests {
         let stopped = || layer.works().get(&id).is_some_and(|work| work.state == WorkState::Stopped);
         until("the work is stopped", stopped, Duration::from_secs(5)).await;
         s.mcp.shutdown().await;
+    }
+
+    /// A server's question during a background call (elicitation, stage 8 of docs/plans/work-systems.md): the work's
+    /// question by voice, the admin's «да» goes back as the answer; with no background work on the server, or a
+    /// question that is not a yes or no, it is declined.
+    #[tokio::test]
+    async fn a_servers_question_during_a_background_call_is_the_works_question() {
+        let (s, layer) = background(json!({ "background": true })).await;
+        let server = s.mcp.view().servers[0].id.clone();
+        let schema = json!({ "type": "object", "properties": { "go": { "type": "boolean" } } });
+        assert_eq!(s.mcp.elicit_for_tests(&server, "Продолжить?", schema.clone()).await, None, "no work waits");
+        let origin = Origin::computer(Activator::Text);
+        offer(&s).run(&slow_call(), &CancellationToken::new(), Some(origin.clone())).await.unwrap();
+        let work = layer.works().all(None, None).remove(0);
+        let mcp = s.mcp.clone();
+        let (at, ask) = (server.clone(), schema.clone());
+        let asked =
+            tokio::spawn(async move { mcp.elicit_for_tests(&at, "Взять платный тариф?", ask).await });
+        let id = work.id.clone();
+        let asks = || {
+            layer
+                .works()
+                .get(&id)
+                .and_then(|work| work.question)
+                .is_some_and(|question| question.kind == Some(Kind::Permission))
+        };
+        until("the question is the work's", asks, Duration::from_secs(5)).await;
+        let question = layer.works().get(&work.id).unwrap().question.unwrap();
+        assert_eq!(question.text, "Fixture спрашивает: Взять платный тариф?");
+        let mut admin = origin.clone();
+        admin.role = Some(Role::Admin);
+        layer.answer(admin, &work.id, Kind::Permission, false, Answer::Yes).await;
+        assert_eq!(asked.await.unwrap(), Some(serde_json::Map::from_iter([("go".to_string(), json!(true))])));
+        let free = json!({ "type": "object", "properties": { "city": { "type": "string" } } });
+        assert_eq!(s.mcp.elicit_for_tests(&server, "Какой город?", free).await, None, "not a yes or no");
+        s.mcp.shutdown().await;
+    }
+
+    #[test]
+    fn a_question_is_a_yes_or_no_with_no_field_or_one_boolean() {
+        assert_eq!(yes_no_field(&json!({ "type": "object", "properties": {} })), Some(None));
+        assert_eq!(yes_no_field(&json!({ "type": "object" })), Some(None));
+        let one = json!({ "type": "object", "properties": { "ok": { "type": "boolean" } } });
+        assert_eq!(yes_no_field(&one), Some(Some("ok".into())));
+        let two = json!({ "properties": { "ok": { "type": "boolean" }, "why": { "type": "string" } } });
+        assert_eq!(yes_no_field(&two), None);
     }
 
     #[test]

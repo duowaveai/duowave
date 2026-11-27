@@ -11,6 +11,7 @@ use super::git;
 use super::workspace::inside;
 use crate::core::events::Actor;
 use crate::platform::http::ApiError;
+use crate::router::budgets::{Budget, Measure};
 use crate::settings::definitions::{WorkFolder, WORK_FOLDERS};
 use crate::settings::SettingsService;
 
@@ -35,7 +36,14 @@ pub struct Asked {
     pub path: Option<String>,
     pub agent: Option<String>,
     pub model: Option<String>,
+    /// The folder's set; empty — none.
+    pub set: Option<String>,
+    /// Stage 3's ceiling, read from stage 2 as the folder's budget in dollars: more than 0 sets its limit, 0 takes it
+    /// away.
     pub max_usd: Option<f64>,
+    /// The folder's budget `{measure, limit, steps}`; `null` takes it away.
+    #[serde(default, deserialize_with = "some_value")]
+    pub budget: Option<serde_json::Value>,
     pub prepare: Option<Vec<String>>,
     pub checks: Option<Vec<String>>,
     pub allow: Option<Vec<String>>,
@@ -82,6 +90,8 @@ pub async fn add(
         agent: None,
         model: None,
         max_usd: None,
+        budget: None,
+        set: None,
         prepare: Vec::new(),
         checks: Vec::new(),
         allow: Vec::new(),
@@ -163,11 +173,40 @@ fn apply(folder: &mut WorkFolder, asked: Asked) -> Result<(), ApiError> {
     if let Some(model) = asked.model {
         folder.model = Some(model.trim().to_string()).filter(|model| !model.is_empty());
     }
+    if let Some(set) = asked.set {
+        folder.set = Some(set.trim().to_string()).filter(|set| !set.is_empty());
+    }
+    let budget_touched = asked.max_usd.is_some() || asked.budget.is_some();
     if let Some(usd) = asked.max_usd {
         if !usd.is_finite() || usd < 0.0 || usd > 1000.0 {
-            return Err(ApiError::field("maxUsd", crate::tr!("Потолок запуска — от 0 до 1000 долларов.")));
+            return Err(ApiError::field("maxUsd", crate::tr!("Бюджет папки — от 0 до 1000 долларов.")));
         }
-        folder.max_usd = (usd > 0.0).then_some(usd);
+        // The panel of stage 3 sends its dollars: the folder's budget in dollars, its steps as they were. Its empty
+        // field (0) takes a budget in dollars away and leaves one in tokens, which it does not show.
+        let had = budget_of(folder);
+        folder.budget = match had {
+            Some(budget) if usd > 0.0 && budget.measure == Measure::Usd => Some(Budget { limit: usd, ..budget }),
+            _ if usd > 0.0 => Some(Budget::usd(usd)),
+            Some(budget) if budget.measure == Measure::Tokens => Some(budget),
+            _ => None,
+        };
+    }
+    if let Some(budget) = asked.budget {
+        folder.budget = match budget {
+            serde_json::Value::Null => None,
+            given => {
+                let budget: Budget = serde_json::from_value(given).map_err(|_| {
+                    ApiError::field("budget", crate::tr!("Бюджет — объект с полями measure, limit и steps."))
+                })?;
+                budget.check().map_err(|why| ApiError::field("budget", why))?;
+                Some(budget)
+            }
+        };
+    }
+    if budget_touched {
+        // Stage 3's field follows the budget's dollars, for the panel that shows it.
+        folder.max_usd =
+            folder.budget.as_ref().filter(|budget| budget.measure == Measure::Usd).map(|budget| budget.limit);
     }
     if let Some(prepare) = asked.prepare {
         folder.prepare = commands("prepare", prepare)?;
@@ -179,6 +218,17 @@ fn apply(folder: &mut WorkFolder, asked: Asked) -> Result<(), ApiError> {
         folder.allow = commands("allow", allow)?;
     }
     Ok(())
+}
+
+/// A folder's budget: its own, else stage 3's ceiling of one run read as a budget in dollars with the default steps —
+/// an older folder keeps its dollars.
+pub fn budget_of(folder: &WorkFolder) -> Option<Budget> {
+    folder.budget.clone().or_else(|| folder.max_usd.filter(|usd| *usd > 0.0).map(Budget::usd))
+}
+
+/// A field that may be `null`: given (`Some(Null)`) is not the same as left out (`None`).
+fn some_value<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<serde_json::Value>, D::Error> {
+    serde_json::Value::deserialize(deserializer).map(Some)
 }
 
 fn commands(field: &str, list: Vec<String>) -> Result<Vec<String>, ApiError> {
@@ -285,6 +335,23 @@ mod tests {
         )
         .unwrap();
         assert_eq!((changed.allow.len(), changed.max_usd), (1, Some(3.0)));
+        // Stage 3's dollars are the folder's budget now.
+        assert_eq!(changed.budget, Some(Budget::usd(3.0)));
+        let tokens = serde_json::json!({"measure": "tokens", "limit": 200000, "steps": [{"at": 1, "do": "stop"}]});
+        let changed = update(&settings, "sayt", Asked { budget: Some(tokens), ..Asked::default() }, None).unwrap();
+        assert_eq!(
+            (changed.budget.as_ref().map(|budget| budget.measure), changed.max_usd),
+            (Some(Measure::Tokens), None)
+        );
+        let wrong = serde_json::json!({"limit": -1});
+        assert!(update(&settings, "sayt", Asked { budget: Some(wrong), ..Asked::default() }, None).is_err());
+        let changed =
+            update(&settings, "sayt", Asked { budget: Some(serde_json::Value::Null), ..Asked::default() }, None)
+                .unwrap();
+        assert_eq!((changed.budget.clone(), budget_of(&changed)), (None, None));
+        // A folder of stage 3 kept its ceiling: read as a budget in dollars.
+        let old = WorkFolder { max_usd: Some(2.5), budget: None, ..changed };
+        assert_eq!(budget_of(&old), Some(Budget::usd(2.5)));
         assert_eq!(list(&settings).len(), 1);
         remove(&settings, "sayt", None).unwrap();
         assert!(list(&settings).is_empty());

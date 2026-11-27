@@ -114,6 +114,7 @@ impl PluginRuntime for McpRuntime {
                     Some(token) => ConnectionAuth::Token(Arc::new(move || Some(token.clone()))),
                     None => ConnectionAuth::None,
                 },
+                elicit: None,
             };
             let log_host = host.clone();
             let opened = tokio::time::timeout(

@@ -3,6 +3,122 @@
 What a gateway user can see, release by release. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versions follow [SemVer](https://semver.org/).
 
+## 0.20.0 — 28.11.2026
+
+- **Permissions asked at the right moment.** In the app on a Mac, the first steps have a new step "Permissions"
+  before the speaker search: Local network, then the microphone. Each row has "Allow", and beside it is a picture of
+  the macOS window that comes next. A new Mac app no longer goes onto the home network before this step, so the macOS
+  window comes after the explanation, not at the very first start. If something was refused, "Open settings" opens
+  the right page of System Settings with a small hint window beside it. The row ticks itself once the switch is on,
+  and the speaker search then runs again by itself. On Windows the step shows only what is off: the firewall, a
+  public network, the microphone for desktop programs. The same rows are in Settings → Access, and the local network
+  notice on the home screen has "Open settings".
+- **GigaAM v4 and GigaAM Multilingual v2 on a recognition server.** The model shop has GigaAM v4 RNNT and CTC
+  (Russian and English, punctuation and capitals, noticeably more accurate than v3) and Multilingual v2 (21
+  languages, told the home's language when it knows it). On a recognition server (asr-server) "We advise" now shows
+  them in place of v3, and a new recognition server starts with GigaAM v4 RNNT; one that already has a model chosen
+  keeps it. The app on a computer keeps advising v3: it runs GGUF files, and there are none for v4 yet.
+- **Your own words for works.** Say "remember peek means how is it going", and from then on "peek at the dark
+  theme" asks how that work goes, with no model. It works for "how is it going", "stop", "more details", "watch
+  this one" and "stop watching".
+- **The speaker can start works on the computer.** Say to the speaker "in the folder Site make a dark theme", and the
+  work starts on the computer that has that folder, with bb, T3 Code or DuoWave as that computer is set up. "How is
+  it going?", "stop" and "done" come back to the speaker. The computer gives the speaker its works under "This
+  computer"; a speaker paired before needs "Works" turned on there.
+- **Works in folders can be planned and reviewed.** "With a review" has a work checked after it, in a fresh session
+  on a stronger model that changes nothing; what it finds goes back to the agent, at most twice. "With a plan" has
+  the agent write a plan first; DuoWave reads it to you and asks "Shall I do it?", then the work goes by the plan
+  and is reviewed. Say "first make a plan" or "with a review" in the phrase, or choose "How to do it" in "New work".
+  "At once" stays the default.
+- **Agents can talk to the home.** DuoWave has an MCP server of its own, `/mcp/home`, for an agent on this computer
+  (Hermes, OpenClaw and others). With an access key that has the new rights it can say a line aloud, ask "yes or
+  no" by voice, write to your phone, and show its own tasks in "Works", where "how is it going?" answers for them.
+  "Do not disturb" holds its voice, and its question then goes to the phone.
+- **MCP servers can ask, and run long jobs as tasks.** When a server asks a yes or no question during a background
+  job, DuoWave asks you aloud and gives the server your answer. A server that runs a long call as a task is followed
+  until the task ends, and "stop" cancels it at the server.
+- **A system's card can use MCP.** A step of a work system can be a tool of an MCP server you added under "Brain" →
+  "MCP"; a system can even work through MCP alone. Such a step is offered only while its server is connected. T3
+  Code stops through its MCP server this way.
+- **Model sets for works.** "Economy", "Standard" and "Quality" decide which model the agent does a work on (for
+  Claude Code: haiku, sonnet, opus). Choose the home's set under "Work folders" → "Model sets", a folder's set in
+  its settings, or a set for one work in "New work". "In the folder Site, do it cheaper: a dark theme" starts on
+  "Economy". When a subscription limit holds a work, the question offers what is possible now: wait, stop, switch to
+  "Economy", or hand the work to bb. Switching goes on at once on the cheaper model. Handing over starts the work in
+  bb with what is done and stops it here.
+- **bb and T3 Code take works.** When bb or T3 Code is installed on the computer, DuoWave finds it. Under "Work
+  folders" → "Work systems" you choose what to give each: all works, the works in its projects, or only when you
+  name it. A folder's row says who does its works. Then "in the folder Site make a dark theme" starts in bb when bb
+  does that folder's works, and "give this one to T3 Code" gives one work to another system. While a work of that
+  system goes on in the folder, DuoWave asks "Add it to … or start a new one?". "How is it going?", words added on
+  the way, "stop" and "done" work as far as the system allows, and DuoWave says so when it does not. "Open it" opens
+  the work in bb itself, and the work's page has "Open in bb". A card in
+  MagicPlace can bring a system of its own and shows what it can before you install it.
+- **The Mac app hears and speaks by itself.** In the mode "Microphone", press the key "Say" (⌥Space unless you chose
+  another) in any program, with the DuoWave window closed: the computer listens, answers aloud from its own speakers,
+  and a thin strip at the top of the screen shows what it heard and answered. Hold the key and speak with pauses: the
+  thought ends when you let go. The key is chosen in "Settings" → "Microphone", and the panel tells when another
+  program holds it.
+- **The computer says "Done" itself.** A work started at the computer is announced by the computer when it is free,
+  and it listens for the answer. During a call or at night (23:00–8:00) it shows a notification instead, and the work
+  waits in "Waiting for you".
+- **Talk over the computer.** After "Check whether the computer hears itself" in "Settings" → "Microphone" passes, say
+  "enough" or a new question while it speaks: it stops. Its own echo does not stop it.
+- **The word on the computer.** With an activator app on the computer, "Listen for the word" wakes the computer by the
+  app's word, as on the speaker. Off by default; while it is on, only the word's program gets the sound.
+- **Several devices, one home.** A work's "Done" is said where you touched the work last. A work begun at the speaker
+  can be asked about at the computer. A question asked on one device closes the listening window on the others. The
+  computer never says the speaker's wake word aloud, so it does not wake the speaker beside it.
+- **A computer that helps the speaker** hears and speaks by itself too: its phrases go to the speaker's talk, and it
+  says "Done" of the works they started. Its key goes straight to its ear, and the DuoWave window does not come
+  forward. The computer's voice and the key are on its page "This computer".
+- **The key works as in Handy.** "How the key works" offers three ways: "Hold or tap" (the default: hold it while you
+  speak, or tap it and speak), "While held" (it listens only while the key is down) and "Two presses" (the first
+  press starts, the second sends). "Notice when I am done" sends a tapped phrase by itself after a pause; switched
+  off, only the next press sends it.
+- **The question's path follows every ear.** The orbit on the dashboard and "Recent requests" show a question asked
+  at the computer's own ear too, from listening to the last word of the answer, as they do for the speaker's.
+- **A widget the model never got to write says so.** When the model spends its whole answer thinking, the workshop
+  asks it once more instead of three times, and the draft says "Not finished: the model thought too long and wrote
+  no code" instead of "Nothing changed".
+- **DuoWave's own Thinking answers the computer and the panel's chat.** In "Journal", each request it answered shows
+  its "Thinking": the rounds with their times, tokens and calls. Its settings are in the hidden developer options. The
+  speaker keeps its own chain until it is switched there.
+- **Works in work folders have a budget.** An agent's work in a folder now has a budget for the whole work instead
+  of a ceiling for one run: 5 dollars a work by default. At 80% the next run goes to a cheaper model (Claude Code
+  moves to `haiku`, in a new session that gets a retelling of the task and of what was done). At 100% the work asks
+  "The budget of $5 is used up. Add $5 more or stop?" and waits without spending anything. "Add" gives the same
+  amount again and the work goes on. "Stop" stops it. A work's own budget holds over its folder's, and a folder's
+  over the general one. A folder's old "ceiling of one run" became its budget in dollars.
+- **"What may leave the home" holds agents too.** With "Home only" or "Home and my cloud", a work with Claude Code
+  or with an agent on a cloud model does not start, and it says why.
+- **One door for the models.** The conversation, the workshop, memory, apps and background jobs take their model
+  through one door. The models are the same as before. Each deal in "Spending" now says why its model was taken
+  ("budget: a cheaper model", "table: …"). Background rounds are written under a seat of their own, "Background".
+  The seat "Worker" (the agent and model for works in folders that have none of their own), the rules table and the
+  general budget can be changed through the router's API.
+- **Claude Code sessions you start in a terminal show up in "Works".** "How is it going?" answers for them too.
+  With DuoWave's plugin for Claude Code (two commands in a terminal, shown under "Work folders" → "Claude Code in a
+  terminal"), a question of rights is asked aloud and "yes" or "no" answers it, words you add go in after the turn,
+  and the end of a turn comes back with its last message. Such a work ends quietly unless you say "watch this one".
+- **Agents on version 2 of the Agent Client Protocol.** DuoWave speaks versions 1 and 2 and goes on in the one the
+  agent answers with. An agent's card says which version to ask: the cards in MagicPlace still ask version 1.
+- **A work in a folder by voice.** Say "in the folder Site fix the typo in README", and the agent takes the work in
+  that work folder, as with "New work". If there is only one folder, you can leave its name out. Otherwise Deevi
+  asks which one. "How is the typo going?" answers with the work's latest step. When a subscription limit holds the
+  work, the answer asks "Wait or stop?", and "wait" or "stop" answer it. "Done" names the branch, the checks and the
+  dollars, and offers to tell what the agent wrote. Only the home's admin can start a work in a folder by voice.
+- **Sign in to ElevenLabs' cloud MCP server.** "Sign in" now works with servers that take no client registration and
+  read a client document instead (ElevenLabs): DuoWave signs in as the client described at metadata.duowave.app. Other servers
+  sign in as before.
+- **DuoWave models think less on a retry.** When a model spends its whole answer thinking, the retry asks it to think
+  less, and requests never ask for a longer answer than the plan gives the model.
+- **MagicPlace opens at once.** The store answers before all its pictures are in: they come in behind it, and while
+  the catalog is read MagicPlace shows "Loading MagicPlace…". The first time this can take up to a minute.
+- **First steps offer the store's characters.** "Who will talk with you?" lists the characters from MagicPlace that
+  are not installed yet, recommended first, each with "Install".
+- **"Make your own" on the desk says what opens it:** "Opens once you connect an AI".
+
 ## 0.19.2 — 27.11.2026
 
 - **After DuoWave asks you something, music and weather that Alice answers work again.** The answer no longer ends

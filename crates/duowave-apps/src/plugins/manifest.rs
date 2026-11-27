@@ -538,7 +538,9 @@ pub struct Manifest {
 /// arguments that answer exit 0 when the person is signed in, and what to tell them; `model` — whether a model can be
 /// chosen and where the agent's model goes (`agent` — the agent's cloud, `duowave` — through our router, block Б);
 /// `resume` — the command that opens a session in a terminal (`{session}`); `asks` — whether in this mode it asks
-/// before its commands (false — it does everything without questions); `site`, `terms` — its pages.
+/// before its commands (false — it does everything without questions); `site`, `terms` — its pages; `system` — the
+/// block of a work system (docs/plans/work-systems.md, «The system card»): which command does what, read by the
+/// command plug.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentCard {
@@ -554,6 +556,167 @@ pub struct AgentCard {
     pub resume: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub asks: Option<bool>,
+    /// The block `system`, as checked (`system_block`): plain data the command plug reads.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub system: Option<Value>,
+}
+
+/// The verbs of a card's block `system` (docs/plans/work-systems.md, «The system card»).
+pub const SYSTEM_VERBS: [&str; 9] = ["ready", "places", "start", "list", "status", "tell", "stop", "result", "open"];
+/// What an argument of a verb may be as a whole placeholder.
+const SYSTEM_PLACEHOLDERS: [&str; 3] = ["{place}", "{work}", "{when}"];
+/// The contract's states a system's own words map to.
+const SYSTEM_STATES: [&str; 9] =
+    ["queued", "working", "waits_person", "waits_limit", "ready", "unfinished", "failed", "stopped", "interrupted"];
+/// The plugs that lead a system by its card.
+const SYSTEM_PLUGS: [&str; 2] = ["command", "mcp"];
+/// What a value of a verb's MCP arguments may be as a whole placeholder: there the person's words may go too, as an
+/// argument of a tool is plain JSON.
+const SYSTEM_MCP_PLACEHOLDERS: [&str; 5] = ["{place}", "{work}", "{when}", "{task}", "{text}"];
+/// The most a block `system` may be, as JSON.
+const SYSTEM_MAX: usize = 16 * 1024;
+
+/// A card's block `system`, checked: the plug is one we have, the contract 1; each verb is a list of arguments in which
+/// a placeholder is a whole argument (`{place}`, `{work}`, `{when}`) — never a part of one, so a value never becomes a
+/// flag or a shell; the person's words go by stdin only (`task`, `text`); the paths into answers are plain words; the
+/// states map to the nine of the contract.
+pub fn system_block(value: &Value, problems: &mut Vec<String>) -> Option<Value> {
+    let start = problems.len();
+    let Some(block) = value.as_object() else {
+        problems.push(crate::tr!("system: блок системы — объект"));
+        return None;
+    };
+    if serde_json::to_string(value).map(|text| text.len()).unwrap_or(usize::MAX) > SYSTEM_MAX {
+        problems.push(crate::tr!("system: блок системы — до 16 КБ"));
+        return None;
+    }
+    let plug = block.get("plug").and_then(Value::as_str).unwrap_or_default();
+    if !SYSTEM_PLUGS.contains(&plug) {
+        problems.push(crate::tr!("system.plug: command или mcp"));
+    }
+    let short = |value: &Value| value.as_str().is_some_and(|text| !text.trim().is_empty() && text.len() <= 100);
+    if block.get("server").is_some_and(|server| !short(server)) {
+        problems.push(crate::tr!("system.server: имя или id MCP-сервера, до 100 знаков"));
+    }
+    if block.get("contract").and_then(Value::as_u64).unwrap_or(1) != 1 {
+        problems.push(crate::tr!("system.contract: 1"));
+    }
+    let word = |value: &Value| value.as_str().is_some_and(|word| word.len() <= 100 && !word.contains('\n'));
+    let paths = |value: &Value| match value {
+        Value::String(_) => word(value),
+        Value::Array(items) => items.len() <= 8 && items.iter().all(word),
+        _ => false,
+    };
+    for verb in SYSTEM_VERBS {
+        let Some(found) = block.get(verb) else { continue };
+        let Some(found) = found.as_object() else {
+            problems.push(crate::tr!("system.{verb}: объект с полем run", verb = verb));
+            continue;
+        };
+        // A tool of an MCP server (stage 8): its name, its server, its arguments; a placeholder a whole value.
+        if let Some(via) = found.get("via") {
+            if via.as_str() != Some("mcp") {
+                problems.push(crate::tr!("system.{verb}.via: mcp", verb = verb));
+                continue;
+            }
+            let tool = found.get("tool").and_then(Value::as_str);
+            if !tool.is_some_and(|tool| !tool.is_empty() && tool.len() <= 100 && !tool.contains(char::is_whitespace)) {
+                problems.push(crate::tr!("system.{verb}.tool: имя инструмента без пробелов", verb = verb));
+            }
+            let named = found.get("server").or(block.get("server"));
+            if !named.is_some_and(short) {
+                problems.push(crate::tr!("system.{verb}.server: какой MCP-сервер", verb = verb));
+            }
+            let args = found.get("args").map(|args| {
+                args.as_object().is_some_and(|args| {
+                    args.len() <= 16
+                        && args.iter().all(|(key, value)| {
+                            key.len() <= 60
+                                && match value {
+                                    Value::String(text) => {
+                                        text.len() <= 200
+                                            && (!text.contains('{') || SYSTEM_MCP_PLACEHOLDERS.contains(&text.as_str()))
+                                    }
+                                    Value::Number(_) | Value::Bool(_) => true,
+                                    _ => false,
+                                }
+                        })
+                })
+            });
+            if args == Some(false) {
+                problems.push(crate::tr!(
+                    "system.{verb}.args: до 16 значений; значение в фигурных скобках — только целиком",
+                    verb = verb
+                ));
+            }
+            continue;
+        }
+        if plug == "mcp" {
+            problems.push(crate::tr!("system.{verb}: у системы через MCP каждый шаг — via mcp", verb = verb));
+            continue;
+        }
+        let run = found.get("run").and_then(Value::as_array);
+        let whole = run.is_some_and(|run| {
+            run.len() <= 16
+                && run.iter().all(|arg| {
+                    arg.as_str().is_some_and(|arg| {
+                        !arg.is_empty()
+                            && arg.len() <= 100
+                            && !arg.contains('\n')
+                            && (!arg.contains('{') || SYSTEM_PLACEHOLDERS.contains(&arg))
+                    })
+                })
+        });
+        if !whole {
+            problems.push(crate::tr!(
+                "system.{verb}.run: до 16 аргументов; значение — только целым аргументом: place, work или when в фигурных скобках",
+                verb = verb
+            ));
+        }
+        if let Some(stdin) = found.get("stdin") {
+            if !matches!(stdin.as_str(), Some("task" | "text")) {
+                problems.push(crate::tr!("system.{verb}.stdin: task или text", verb = verb));
+            }
+        }
+        for key in ["each", "id", "title", "state", "line", "path"] {
+            if found.get(key).is_some_and(|value| !paths(value)) {
+                problems.push(crate::tr!("system.{verb}.{key}: путь словами или список путей", verb = verb, key = key));
+            }
+        }
+        if let Some(when) = found.get("when") {
+            let fits = when.as_object().is_some_and(|when| {
+                when.iter().all(|(key, value)| matches!(key.as_str(), "now" | "after") && word(value))
+            });
+            if !fits {
+                problems.push(crate::tr!("system.{verb}.when: now и after — словами системы", verb = verb));
+            }
+        }
+    }
+    if let Some(states) = block.get("states") {
+        let fits = states.as_object().is_some_and(|states| {
+            states.len() <= 40
+                && states.iter().all(|(key, value)| {
+                    key.len() <= 40 && value.as_str().is_some_and(|state| SYSTEM_STATES.contains(&state))
+                })
+        });
+        if !fits {
+            problems.push(crate::tr!("system.states: слова системы → состояния договора"));
+        }
+    }
+    if let Some(names) = block.get("names") {
+        let fits = names.as_object().is_some_and(|names| {
+            names.values().all(|said| {
+                said.as_array().is_some_and(|said| {
+                    said.len() <= 10
+                        && said.iter().all(|name| name.as_str().is_some_and(|name| name.chars().count() <= 40))
+                })
+            })
+        });
+        if !fits {
+            problems.push(crate::tr!("system.names: имена по языкам, до 10 по 40 знаков"));
+        }
+    }
+    (problems.len() == start).then(|| value.clone())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -730,7 +893,8 @@ pub fn agent_card(root: &Map<String, Value>, problems: &mut Vec<String>) -> Opti
         problems.push(crate::tr!("resume: в команде нужно место для номера сессии — слово session в фигурных скобках"));
     }
     let asks = root.get("asks").and_then(Value::as_bool);
-    Some(AgentCard { site, terms, program, acp: AgentAcp { command, protocol }, signin, model, resume, asks })
+    let system = root.get("system").and_then(|system| system_block(system, problems));
+    Some(AgentCard { site, terms, program, acp: AgentAcp { command, protocol }, signin, model, resume, asks, system })
 }
 
 /// A package's texts in one language (`locales.<code>` of its manifest). What is missing is said in the next language
@@ -2395,6 +2559,58 @@ mod tests {
         assert!(Permission::parse("net:*.ru").is_none(), "a whole zone is too much");
     }
 
+    /// A card's block `system` (docs/plans/work-systems.md, «The system card»): a placeholder is a whole argument, the
+    /// person's words go by stdin, the states are the contract's; anything else is refused before the card is shown.
+    #[test]
+    fn a_cards_system_block_is_checked_strictly() {
+        let mut card = json!({
+            "schema": 1, "kind": "agent", "id": "bb", "version": "1.0.0", "title": "bb", "api": "^1", "runs": ["pc"],
+            "program": { "name": "bb" },
+            "signin": {}, "model": {},
+            "system": {
+                "contract": 1, "plug": "command",
+                "names": { "ru": ["бэбэ"] },
+                "start": { "run": ["thread", "spawn", "--project", "{place}", "--prompt-file", "-"], "stdin": "task",
+                    "id": ["thread.id", "id"] },
+                "stop": { "run": ["thread", "stop", "{work}"] },
+                "tell": { "run": ["thread", "tell", "{work}", "--mode", "{when}"], "stdin": "text",
+                    "when": { "now": "steer", "after": "queue" } },
+                "states": { "active": "working", "done": "ready" }
+            }
+        });
+        let manifest = check(&card).unwrap();
+        let system = manifest.agent.unwrap().system.expect("the block");
+        assert_eq!(system["start"]["stdin"], "task");
+        let refused = |card: &Value| check(card).map(|_| Vec::new()).unwrap_or_else(|error| error.problems);
+        card["system"]["stop"]["run"] = json!(["thread", "stop", "--id={work}"]);
+        assert!(refused(&card).iter().any(|problem| problem.starts_with("system.stop.run")), "a part of an argument");
+        card["system"]["stop"]["run"] = json!(["thread", "stop", "{task}"]);
+        assert!(!refused(&card).is_empty(), "the words never go into an argument");
+        card["system"]["stop"]["run"] = json!(["thread", "stop", "{work}"]);
+        card["system"]["start"]["stdin"] = json!("everything");
+        assert!(refused(&card).iter().any(|problem| problem.starts_with("system.start.stdin")));
+        card["system"]["start"]["stdin"] = json!("task");
+        card["system"]["states"]["done"] = json!("finished");
+        assert!(refused(&card).iter().any(|problem| problem.starts_with("system.states")));
+        card["system"]["states"]["done"] = json!("ready");
+        card["system"]["plug"] = json!("shell");
+        assert!(refused(&card).iter().any(|problem| problem.starts_with("system.plug")));
+        // A verb through MCP: a tool and its server; the person's words may be a whole value there, nothing else.
+        card["system"]["plug"] = json!("command");
+        card["system"]["stop"] = json!({ "via": "mcp", "server": "T3 Code", "tool": "t3_thread_interrupt",
+            "args": { "threadId": "{work}", "force": true } });
+        assert!(check(&card).is_ok(), "{:?}", refused(&card));
+        card["system"]["stop"]["args"]["threadId"] = json!("id-{work}");
+        assert!(refused(&card).iter().any(|problem| problem.starts_with("system.stop.args")));
+        card["system"]["stop"]["args"]["threadId"] = json!("{work}");
+        card["system"]["stop"]["tool"] = json!("rm -rf");
+        assert!(refused(&card).iter().any(|problem| problem.starts_with("system.stop.tool")));
+        card["system"]["stop"]["tool"] = json!("t3_thread_interrupt");
+        // A system wholly through MCP: every verb `via: mcp`.
+        card["system"]["plug"] = json!("mcp");
+        assert!(refused(&card).iter().any(|problem| problem.starts_with("system.start")), "start is a command");
+    }
+
     /// An agent's card is data: its program by name, its command over ACP, its sign-in — never a shell, never code.
     #[test]
     fn an_agents_card_is_data_and_names_only_its_program() {
@@ -2424,6 +2640,27 @@ mod tests {
         card["resume"] = Value::Null;
         card["contributes"] = json!({ "tools": [{ "name": "x" }] });
         assert!(check(&card).is_err(), "no code in a card");
+    }
+
+    /// The card of Junie (JetBrains) as the catalog carries it: `junie --acp true`, version 1 of the protocol, a model
+    /// of the agent's own, the terminal command with the session's place.
+    #[test]
+    fn the_card_of_junie_is_read_as_data() {
+        let card = json!({
+            "schema": 1, "kind": "agent", "id": "p-b0b62ae09a9c", "version": "1.0.0", "title": "Junie", "api": "^1",
+            "runs": ["pc"], "site": "https://junie.jetbrains.com", "terms": "https://jb.gg/ai-tos",
+            "program": { "name": "junie", "install": "curl -fsSL https://junie.jetbrains.com/install.sh | bash",
+                "check": ["--version"] },
+            "acp": { "command": ["--acp", "true", "--skip-update-check"], "protocol": 1 },
+            "signin": { "hint": "junie — войдите в JetBrains-аккаунт или выберите свою модель командой /model" },
+            "model": { "choose": false, "via": "agent" },
+            "resume": "junie --resume --session-id {session}"
+        });
+        let agent = check(&card).unwrap().agent.unwrap();
+        assert_eq!(agent.program.name, "junie");
+        assert_eq!(agent.acp.command, ["--acp", "true", "--skip-update-check"]);
+        assert_eq!((agent.acp.protocol, agent.model.choose, agent.asks), (1, false, None));
+        assert_eq!(agent.resume.as_deref(), Some("junie --resume --session-id {session}"));
     }
 
     #[test]

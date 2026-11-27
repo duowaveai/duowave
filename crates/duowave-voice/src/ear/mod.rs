@@ -7,9 +7,13 @@
 
 pub mod centre;
 pub mod command;
+/// What each kind of ear can do, in the door's words (docs/plans/audio-thinking-contract.md, «Hands»).
+pub mod hands;
 pub mod input;
 pub mod media;
 pub mod mode;
+/// A device's own sound for the gateway's voice channel (stage 3, «К2», «К3»).
+pub mod port;
 pub mod state;
 pub mod word;
 

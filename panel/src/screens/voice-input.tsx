@@ -6,7 +6,7 @@
 
 import { useEffect, useRef, useState } from 'preact/hooks';
 
-import { ModelsView, VoiceInput, api, can, problemOf } from '../api';
+import { KeyActivation, ModelsView, TalkVoiceChange, TalkVoiceView, VoiceInput, api, can, problemOf } from '../api';
 import { IconCheck, IconLaptop, IconMic, IconSpeaker } from '../icons';
 import { Recorder, recordingSupport } from '../recorder';
 import { usePanel } from '../shell/context';
@@ -17,7 +17,8 @@ import { noteVoiceInput, useOnComputer } from '../voice-input';
 import { startRecorder } from '../voice/mic';
 import { AudioDevice, audioDevices, chosenInput, chosenOutput, outputChoosable, setChosenInput, setChosenOutput } from '../voice/devices';
 import { micSounds, playTone, rerouteTones, setMicSounds } from '../voice/tones';
-import { DEFAULT_TALK_KEY, keyLabel, keyOf, same, setChoosingTalkKey, setTalkKey, useTalkKeyChoice } from '../voice/talk-key';
+import { DEFAULT_TALK_KEY, TalkKey, keyLabel, keyOf, same, setChoosingTalkKey, setTalkKey, useTalkKeyChoice } from '../voice/talk-key';
+import { keyName, readAppVoice, useAppVoice } from '../voice/app-voice';
 import { tr } from '../i18n';
 import { languageName, localAsrNeedsCard, useLocalAsr } from './local-asr';
 
@@ -411,6 +412,21 @@ export function TalkKeyChoice() {
     const key = useTalkKeyChoice();
     const [waiting, setWaiting] = useState(false);
     const [problem, setProblem] = useState<string | null>(null);
+    // С ухом приложения клавиша — для всех программ: она хранится в шлюзе, приложение ставит её в системе (К4).
+    const voice = useAppVoice();
+    const everywhere = !!voice?.port && voice.here;
+    const choose = (next: TalkKey) => {
+        if (everywhere) {
+            const name = keyName(next);
+            if (!name) return setProblem(tr.voiceInput.keyNotGlobal);
+            void api
+                .setTalkVoice({ key: name })
+                .then(() => readAppVoice())
+                .catch((error) => setProblem(problemOf(error)));
+        }
+        setTalkKey(next);
+        setProblem(null);
+    };
     useEffect(() => {
         if (!waiting) return;
         setChoosingTalkKey(true);
@@ -421,8 +437,7 @@ export function TalkKeyChoice() {
             const next = keyOf(event);
             if (!next) return;
             if ('problem' in next) return setProblem(next.problem);
-            setTalkKey(next);
-            setProblem(null);
+            choose(next);
             setWaiting(false);
         };
         window.addEventListener('keydown', onKey, true);
@@ -437,10 +452,12 @@ export function TalkKeyChoice() {
             <div class="w-row">
                 <span class="flex-1 min-w-0 flex flex-col">
                     <span class="w-strong">{waiting ? tr.voiceInput.keyPress : label}</span>
-                    <span class="w-cap">{waiting ? tr.voiceInput.keyPressSub : tr.voiceInput.keyAbout(label)}</span>
+                    <span class="w-cap">
+                        {waiting ? tr.voiceInput.keyPressSub : everywhere ? tr.voiceInput.keyEverywhere(label) : tr.voiceInput.keyAbout(label)}
+                    </span>
                 </span>
                 {!waiting && !same(key, DEFAULT_TALK_KEY) && (
-                    <button class="w-btn" onClick={() => setTalkKey(DEFAULT_TALK_KEY)}>
+                    <button class="w-btn" onClick={() => choose(DEFAULT_TALK_KEY)}>
                         {tr.voiceInput.keyDefault(keyLabel(DEFAULT_TALK_KEY))}
                     </button>
                 )}
@@ -458,6 +475,131 @@ export function TalkKeyChoice() {
                 <p role="alert" class="w-cap m-0 c-dot-offline">
                     {problem}
                 </p>
+            )}
+            {everywhere && voice?.keyTaken && (
+                <p role="alert" class="w-cap m-0 c-dot-offline">
+                    {tr.voiceInput.keyTaken}
+                </p>
+            )}
+            {everywhere && voice && <KeyActivationChoice voice={voice} onProblem={setProblem} />}
+        </div>
+    );
+}
+
+const ACTIVATIONS: KeyActivation[] = ['hold_or_toggle', 'push_to_talk', 'toggle'];
+
+/** How the key drives a thought: Handy's three modes, taken as they are (the owner, 27.11). */
+function KeyActivationChoice({ voice, onProblem }: { voice: TalkVoiceView; onProblem: (problem: string) => void }) {
+    const now = voice.activation ?? 'hold_or_toggle';
+    const title = (mode: KeyActivation) =>
+        mode === 'push_to_talk' ? tr.voiceInput.activationPushToTalk : mode === 'toggle' ? tr.voiceInput.activationToggle : tr.voiceInput.activationHoldOrToggle;
+    const about =
+        now === 'push_to_talk' ? tr.voiceInput.activationPushToTalkAbout : now === 'toggle' ? tr.voiceInput.activationToggleAbout : tr.voiceInput.activationHoldOrToggleAbout;
+    const pick = (mode: KeyActivation) =>
+        void api
+            .setTalkVoice({ activation: mode })
+            .then(() => readAppVoice())
+            .catch((error) => onProblem(problemOf(error)));
+    return (
+        <div class="flex flex-col gap-6">
+            <span class="w-strong">{tr.voiceInput.activationTitle}</span>
+            <div role="radiogroup" aria-label={tr.voiceInput.activationTitle} class="look-seg glass">
+                {ACTIVATIONS.map((mode) => (
+                    <button key={mode} role="radio" aria-checked={now === mode} disabled={!can('station.mode')} onClick={() => pick(mode)}>
+                        {title(mode)}
+                    </button>
+                ))}
+            </div>
+            <span class="w-cap">{about}</span>
+            <ToggleRow
+                title={tr.voiceInput.autoEndTitle}
+                text={tr.voiceInput.autoEndText}
+                on={voice.autoEnd ?? true}
+                disabled={!can('station.mode')}
+                onChange={(autoEnd) =>
+                    void api
+                        .setTalkVoice({ autoEnd })
+                        .then(() => readAppVoice())
+                        .catch((error) => onProblem(problemOf(error)))
+                }
+            />
+        </div>
+    );
+}
+
+/** Строка с выключателем: заголовок, пояснение и сам выключатель. */
+function ToggleRow({ title, text, on, disabled = false, onChange }: { title: string; text: string; on: boolean; disabled?: boolean; onChange: (on: boolean) => void }) {
+    return (
+        <div class="w-row">
+            <span class="flex-1 min-w-0 flex flex-col">
+                <span class="w-strong">{title}</span>
+                <span class="w-cap">{text}</span>
+            </span>
+            <Switch on={on} label={title} disabled={disabled} onChange={onChange} />
+        </div>
+    );
+}
+
+/**
+ * Голос компьютера (docs/plans/audio-interface-3.md, «К5»): приложение DuoWave на этом Mac слышит и говорит само —
+ * при закрытом окне, по клавише из любой программы; «Готово» говорит сам компьютер. Здесь — готов ли он, звуки,
+ * перебивание голосом после проверки эха, полоса поверх окон и слово.
+ */
+export function AppVoiceCard() {
+    const voice = useAppVoice();
+    const [checking, setChecking] = useState(false);
+    const [checked, setChecked] = useState<string | null>(null);
+    if (!voice?.port) return null;
+    const admin = can('station.mode');
+    const change = (patch: TalkVoiceChange) =>
+        void api
+            .setTalkVoice(patch)
+            .then(() => readAppVoice())
+            .catch(() => undefined);
+    const status = voice.access === 'denied' ? tr.voiceInput.appNoAccess : voice.busy ? tr.voiceInput.appBusy : tr.voiceInput.appReady;
+    const echoOk = !!voice.echo?.ok;
+    const echoText = checked ?? (voice.echo ? (voice.echo.ok ? tr.voiceInput.echoOk : tr.voiceInput.echoHeard) : tr.voiceInput.echoText);
+    const check = async () => {
+        setChecking(true);
+        setChecked(null);
+        try {
+            const result = await api.voiceCheck();
+            setChecked(result.ok ? tr.voiceInput.echoOk : tr.voiceInput.echoHeard);
+        } catch (error) {
+            setChecked(problemOf(error));
+        } finally {
+            setChecking(false);
+            void readAppVoice();
+        }
+    };
+    return (
+        <div class="flex flex-col gap-10">
+            <div class="w-row">
+                <span class="flex-1 min-w-0 flex flex-col">
+                    <span class="w-strong">{tr.voiceInput.appTitle}</span>
+                    <span class="w-cap">{status}</span>
+                </span>
+            </div>
+            <ToggleRow title={tr.voiceInput.micSoundsTitle} text={tr.voiceInput.micSoundsText} on={voice.sounds} disabled={!admin} onChange={(sounds) => change({ sounds })} />
+            <div class="w-row">
+                <span class="flex-1 min-w-0 flex flex-col">
+                    <span class="w-strong">{tr.voiceInput.echoTitle}</span>
+                    <span class="w-cap">{echoText}</span>
+                </span>
+                <button class="w-btn" disabled={checking || !admin || !voice.here} onClick={() => void check()}>
+                    {checking ? tr.voiceInput.echoChecking : tr.voiceInput.echoButton}
+                </button>
+            </div>
+            <ToggleRow
+                title={tr.voiceInput.bargeTitle}
+                text={echoOk ? tr.voiceInput.bargeText : tr.voiceInput.bargeNeedsCheck}
+                on={voice.bargeIn && echoOk}
+                disabled={!admin || !echoOk}
+                onChange={(bargeIn) => change({ bargeIn })}
+            />
+            <ToggleRow title={tr.voiceInput.stripTitle} text={tr.voiceInput.stripText} on={voice.strip} disabled={!admin} onChange={(strip) => change({ strip })} />
+            {(voice.wordApp || voice.word) && (
+                <ToggleRow title={tr.voiceInput.wordTitle} text={voice.word ? tr.voiceInput.wordOnText : tr.voiceInput.wordText} on={voice.word} disabled={!admin} onChange={(word) => change({ word })} />
             )}
         </div>
     );

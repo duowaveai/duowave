@@ -452,12 +452,14 @@ impl Workshop {
                 card.stage = Stage::Working;
                 card.note = None;
                 card.unchanged = false;
+                card.overthought = false;
                 // The activity told the panel already (change `agent`).
                 None
             }
-            activity::Moment::Ended { kind, said, limited, changed } => {
+            activity::Moment::Ended { kind, said, limited, changed, thought } => {
                 card.note = said.clone();
                 card.unchanged = false;
+                card.overthought = *thought;
                 let stage = Stage::after(*kind);
                 if stage == Stage::Ready {
                     // The gateway checks what the agent made before it says «готово» (docs/plans/audio-interface.md,
@@ -511,9 +513,16 @@ impl Workshop {
             return;
         }
         card.stage = if passed && !limited && changed { Stage::Ready } else { Stage::Unfinished };
-        card.unchanged = !changed;
+        // A run its limits cut is «не доделано», whatever it wrote: «ничего не поменялось» is for an agent that ended
+        // on its own and left the draft as it was (27.11: the thinking took the answer four times, and the card said
+        // the agent finished without touching the draft).
+        card.unchanged = !changed && !limited;
         if !passed || limited || !changed {
-            tracing::info!(target: "plugins", "workshop: {id} is not finished (check passed: {passed}, cut by its limits: {limited}, changed: {changed})");
+            tracing::info!(
+                target: "plugins",
+                "workshop: {id} is not finished (check passed: {passed}, cut by its limits: {limited}, the thinking took the answer: {}, changed: {changed})",
+                card.overthought
+            );
         }
         let change = card.stage.as_str();
         if let Err(error) = self.keep_card(id, card, Some(change)) {

@@ -8,7 +8,7 @@ torch==2.15.0
 torchaudio==2.11.1
 # GigaAM (MIT, salute-developers) at a tested commit, as an archive: no git needed. [torch] pulls torch and
 # torchaudio: without them `import gigaam` fails.
-gigaam[torch] @ https://github.com/salute-developers/GigaAM/archive/7447938d791c4f3e643386ee22c33777004293a5.tar.gz
+gigaam[torch] @ https://github.com/salute-developers/GigaAM/archive/e9bbf2e773eedd217c6f0d3b89b9728c41332b7d.tar.gz
 numpy==2.5.4
 # Parakeet TDT v3 (CC BY 4.0) through transformers; its mel filters come from librosa.
 transformers==5.22.1

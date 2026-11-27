@@ -13,10 +13,13 @@ use std::time::Duration;
 use axum::http::{HeaderMap, HeaderName, HeaderValue};
 use futures::future::BoxFuture;
 use rmcp::model::{
-    CallToolRequestParams, ClientCapabilities, ClientConfig, Implementation, InitializeRequestParams, ProtocolVersion,
-    SubscriptionFilter,
+    CallToolRequestParams, CallToolResponse, CancelTaskParams, ClientCapabilities, ClientConfig, ElicitRequestParams,
+    ElicitResult, ElicitationAction, GetTaskParams, Implementation, InitializeRequestParams, ProtocolVersion,
+    SubscriptionFilter, Task, TaskPayload,
 };
-use rmcp::service::{ClientInitializeError, NotificationContext, RunningService, RunningServiceCancellationToken};
+use rmcp::service::{
+    ClientInitializeError, NotificationContext, RequestContext, RunningService, RunningServiceCancellationToken,
+};
 use rmcp::transport::auth::AuthError;
 use rmcp::transport::streamable_http_client::{StreamableHttpClientTransportConfig, StreamableHttpError};
 use rmcp::transport::{DynamicTransportError, IntoTransport, StreamableHttpClientTransport};
@@ -34,6 +37,30 @@ use super::mcp_tools::{ListedTool, ToolCallResult};
 
 const CLIENT_NAME: &str = "duowave";
 const CONNECT: Duration = Duration::from_secs(20);
+/// The tasks extension (SEP-2663): a server may make a long call a task, which the client follows.
+const TASKS: &str = "io.modelcontextprotocol/tasks";
+/// How often a task is asked how it goes, unless its server says: at least, at most.
+const TASK_POLL: Duration = Duration::from_secs(2);
+const TASK_POLL_MIN: u64 = 200;
+const TASK_POLL_MAX: u64 = 30_000;
+
+/// A server's question to the person during a call (elicitation, form mode; docs/plans/work-systems.md, stage 8): the
+/// server's id, its message and the schema of the answer → the answer when the person accepts, None when declined or
+/// when nobody waits for that server's questions now.
+pub type Elicit = Arc<dyn Fn(String, String, Value) -> BoxFuture<'static, Option<Map<String, Value>>> + Send + Sync>;
+
+/// Who answers a server's questions: its id and the way to ask; no way — every question is declined.
+#[derive(Clone, Default)]
+pub struct Asking {
+    pub server: String,
+    pub elicit: Option<Elicit>,
+}
+
+impl Asking {
+    pub fn of(spec: &ConnectionSpec) -> Asking {
+        Asking { server: spec.id.clone(), elicit: spec.elicit.clone() }
+    }
+}
 
 /// How a server by address is signed in to: nothing, a token (read when connecting), or the sealed OAuth tokens.
 #[derive(Clone)]
@@ -55,6 +82,8 @@ pub struct ConnectionSpec {
     pub url: Option<String>,
     pub headers: Vec<(String, String)>,
     pub auth: ConnectionAuth,
+    /// Who answers the server's questions during a call; none — they are declined.
+    pub elicit: Option<Elicit>,
 }
 
 /// The server's name and version as it says them.
@@ -123,6 +152,7 @@ impl From<ServiceError> for CallError {
 /// The client side of the session: our name, and the server's word that its tools changed.
 struct Hooks {
     events: mpsc::UnboundedSender<ConnectionEvent>,
+    asking: Asking,
 }
 
 impl ClientHandler for Hooks {
@@ -131,11 +161,36 @@ impl ClientHandler for Hooks {
         std::future::ready(())
     }
 
+    /// A question of the server during a call: asked by whoever waits for that server's questions (a background
+    /// work asks it by voice); a link to open, or nobody waiting — declined.
+    fn create_elicitation(
+        &self,
+        request: ElicitRequestParams,
+        _context: RequestContext<RoleClient>,
+    ) -> impl Future<Output = Result<ElicitResult, rmcp::ErrorData>> + Send + '_ {
+        let (elicit, server) = (self.asking.elicit.clone(), self.asking.server.clone());
+        async move {
+            let ElicitRequestParams::FormElicitationParams { message, requested_schema, .. } = request else {
+                return Ok(ElicitResult::new(ElicitationAction::Decline));
+            };
+            let Some(elicit) = elicit else { return Ok(ElicitResult::new(ElicitationAction::Decline)) };
+            let schema = serde_json::to_value(&requested_schema).unwrap_or_default();
+            Ok(match elicit(server, message, schema).await {
+                Some(content) => ElicitResult::new(ElicitationAction::Accept).with_content(Value::Object(content)),
+                None => ElicitResult::new(ElicitationAction::Decline),
+            })
+        }
+    }
+
+    /// Our name; tasks (SEP-2663: a long call is a task we follow); the questions by forms only when someone may
+    /// answer them.
     fn get_info(&self) -> ClientConfig {
-        InitializeRequestParams::new(
-            ClientCapabilities::default(),
-            Implementation::new(CLIENT_NAME, env!("CARGO_PKG_VERSION")),
-        )
+        let mut capabilities = serde_json::json!({ "extensions": { TASKS: {} } });
+        if self.asking.elicit.is_some() {
+            capabilities["elicitation"] = serde_json::json!({ "form": {} });
+        }
+        let capabilities: ClientCapabilities = serde_json::from_value(capabilities).unwrap_or_default();
+        InitializeRequestParams::new(capabilities, Implementation::new(CLIENT_NAME, env!("CARGO_PKG_VERSION")))
     }
 }
 
@@ -153,12 +208,13 @@ async fn handshake<T, E, A>(
     transport: T,
     lifecycle: ClientLifecycleMode,
     events: &mpsc::UnboundedSender<ConnectionEvent>,
+    asking: Asking,
 ) -> Result<Running, Failure>
 where
     T: IntoTransport<RoleClient, E, A>,
     E: std::error::Error + Send + Sync + 'static,
 {
-    let hooks = Hooks { events: events.clone() };
+    let hooks = Hooks { events: events.clone(), asking };
     match tokio::time::timeout(CONNECT, rmcp::serve_client_with_lifecycle(hooks, transport, lifecycle)).await {
         Ok(Ok(running)) => Ok(running),
         Ok(Err(error)) => Err(failure(&error)),
@@ -334,13 +390,66 @@ impl McpConnection {
         wait: Duration,
     ) -> Result<ToolCallResult, CallError> {
         let params = CallToolRequestParams::new(name.to_string()).with_arguments(arguments);
-        tokio::select! {
-            _ = cancel.cancelled() => Err(CallError::Cancelled),
-            result = tokio::time::timeout(wait, self.peer.call_tool(params)) => match result {
-                Err(_) => Err(CallError::Timeout),
-                Ok(Err(error)) => Err(CallError::from(error)),
-                Ok(Ok(result)) => Ok(ToolCallResult::from_json(&serde_json::to_value(&result).unwrap_or_default())),
+        // A stop is heard inside: a task the server made is cancelled at the server before the call gives up.
+        match tokio::time::timeout(wait, self.call_through(params, cancel)).await {
+            Err(_) => Err(CallError::Timeout),
+            Ok(result) => result,
+        }
+    }
+
+    /// A call, as the server answers it: at once; after its questions (rmcp's own rounds take them from the start);
+    /// or as a task it made (SEP-2663), asked how it goes until it ends, cancelled on a stop.
+    async fn call_through(
+        &self,
+        params: CallToolRequestParams,
+        cancel: &CancellationToken,
+    ) -> Result<ToolCallResult, CallError> {
+        fn as_result(value: &impl Serialize) -> ToolCallResult {
+            ToolCallResult::from_json(&serde_json::to_value(value).unwrap_or_default())
+        }
+        // A request dropped on a stop tells the server it is cancelled (rmcp's own).
+        let first = tokio::select! {
+            _ = cancel.cancelled() => return Err(CallError::Cancelled),
+            first = self.peer.call_tool_once(params.clone()) => first.map_err(CallError::from)?,
+        };
+        match first {
+            CallToolResponse::Complete(result) => Ok(as_result(&result)),
+            CallToolResponse::InputRequired(_) => tokio::select! {
+                _ = cancel.cancelled() => Err(CallError::Cancelled),
+                result = self.peer.call_tool(params) => Ok(as_result(&result.map_err(CallError::from)?)),
             },
+            CallToolResponse::Task(created) => self.follow_task(created.task, cancel).await,
+            _ => Err(CallError::Failed("an answer of a kind this client does not know".into())),
+        }
+    }
+
+    /// A task the server made of a call: asked how it goes at the pace it asks for, until it ends; a stop cancels it at
+    /// the server too.
+    async fn follow_task(&self, task: Task, cancel: &CancellationToken) -> Result<ToolCallResult, CallError> {
+        let pace = |ms: Option<u64>| {
+            ms.map(|ms| Duration::from_millis(ms.clamp(TASK_POLL_MIN, TASK_POLL_MAX))).unwrap_or(TASK_POLL)
+        };
+        let id = task.task_id.clone();
+        let mut every = pace(task.poll_interval_ms);
+        loop {
+            tokio::select! {
+                _ = cancel.cancelled() => {
+                    let _ = self.peer.cancel_task(CancelTaskParams::new(id.clone())).await;
+                    return Err(CallError::Cancelled);
+                }
+                _ = tokio::time::sleep(every) => {}
+            }
+            let got = self.peer.get_task(GetTaskParams::new(id.clone())).await.map_err(CallError::from)?;
+            every = pace(got.task.task.poll_interval_ms.or(task.poll_interval_ms));
+            match got.task.payload {
+                TaskPayload::Completed { result } => return Ok(ToolCallResult::from_json(&Value::Object(result))),
+                TaskPayload::Failed { error } => {
+                    let why = error.get("message").and_then(Value::as_str).unwrap_or("the task failed");
+                    return Err(CallError::Failed(why.to_string()));
+                }
+                TaskPayload::Cancelled => return Err(CallError::Cancelled),
+                _ => {}
+            }
         }
     }
 
@@ -441,12 +550,12 @@ async fn open_address(
     let oauth = matches!(spec.auth, ConnectionAuth::OAuth(_));
     let headers = header_map(&spec.headers);
     let (events, receiver) = mpsc::unbounded_channel();
-    match streamable(url, headers.clone(), &spec.auth, &events).await {
+    match streamable(url, headers.clone(), &spec.auth, &events, Asking::of(spec)).await {
         Ok(running) => Ok((connection(running, events), receiver)),
         Err(Failure::Auth(_)) => Err(if oauth { ConnectError::NeedsLogin } else { ConnectError::Refused }),
         Err(Failure::Other(error)) => {
             // A server from before Streamable HTTP answers only the old SSE transport.
-            match legacy(url, headers, &spec.auth, &events).await {
+            match legacy(url, headers, &spec.auth, &events, Asking::of(spec)).await {
                 Ok(running) => Ok((connection(running, events), receiver)),
                 Err(Failure::Auth(_)) if oauth => Err(ConnectError::NeedsLogin),
                 Err(_) => Err(error),
@@ -464,6 +573,7 @@ async fn streamable(
     headers: HeaderMap,
     auth: &ConnectionAuth,
     events: &mpsc::UnboundedSender<ConnectionEvent>,
+    asking: Asking,
 ) -> Result<Running, Failure> {
     let mut config = StreamableHttpClientTransportConfig::with_uri(url.to_string())
         .custom_headers(headers.into_iter().filter_map(|(name, value)| Some((name?, value))).collect());
@@ -473,6 +583,7 @@ async fn streamable(
                 StreamableHttpClientTransport::with_client(crate::utils::http::client(), config),
                 negotiated(),
                 events,
+                asking,
             )
             .await
         }
@@ -484,12 +595,13 @@ async fn streamable(
                 StreamableHttpClientTransport::with_client(crate::utils::http::client(), config),
                 negotiated(),
                 events,
+                asking,
             )
             .await
         }
         ConnectionAuth::OAuth(link) => {
             let client = link.client(url).await.map_err(oauth_failure)?;
-            handshake(StreamableHttpClientTransport::with_client(client, config), negotiated(), events).await
+            handshake(StreamableHttpClientTransport::with_client(client, config), negotiated(), events, asking).await
         }
     }
 }
@@ -506,6 +618,7 @@ async fn legacy(
     mut headers: HeaderMap,
     auth: &ConnectionAuth,
     events: &mpsc::UnboundedSender<ConnectionEvent>,
+    asking: Asking,
 ) -> Result<Running, Failure> {
     let token = match auth {
         ConnectionAuth::None => None,
@@ -527,7 +640,7 @@ async fn legacy(
             Err(_) => return Err(Failure::Other(ConnectError::Timeout)),
         };
     // The old transport is of the 2024 protocol: its servers know only `initialize`.
-    handshake(transport, ClientLifecycleMode::Initialize, events).await
+    handshake(transport, ClientLifecycleMode::Initialize, events, asking).await
 }
 
 /// What a sign-in found at the server: it answers already (the tokens still work), or it asks for a sign-in.
@@ -543,7 +656,7 @@ pub async fn probe_login(url: &str, link: Option<&OAuthLink>) -> Result<Probe, C
         Some(link) => ConnectionAuth::OAuth(link.clone()),
         None => ConnectionAuth::None,
     };
-    match streamable(url, HeaderMap::new(), &auth, &events).await {
+    match streamable(url, HeaderMap::new(), &auth, &events, Asking::default()).await {
         Ok(mut running) => {
             let _ = running.close().await;
             Ok(Probe::Connected)
@@ -600,13 +713,18 @@ async fn open_program(spec: &ConnectionSpec, log: LogSink) -> Opened {
 
 /// A program's connection over its pipes (the runner's): the handshake, then the connection that stops the program at
 /// its end; a failed handshake stops it at once.
-pub async fn over<T, E, A>(transport: T, lifecycle: ClientLifecycleMode, program: Box<dyn RunningProgram>) -> Opened
+pub async fn over<T, E, A>(
+    transport: T,
+    lifecycle: ClientLifecycleMode,
+    program: Box<dyn RunningProgram>,
+    asking: Asking,
+) -> Opened
 where
     T: IntoTransport<RoleClient, E, A>,
     E: std::error::Error + Send + Sync + 'static,
 {
     let (events, receiver) = mpsc::unbounded_channel();
-    match handshake(transport, lifecycle, &events).await {
+    match handshake(transport, lifecycle, &events, asking).await {
         Ok(running) => Ok((McpConnection::new(running, events, Some(program)), receiver)),
         Err(failure) => {
             program.stop().await;

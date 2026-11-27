@@ -61,6 +61,25 @@ impl Default for OffNetwork {
 /// This program's sends to the home network.
 pub static OFF_NETWORK: OffNetwork = OffNetwork::new();
 
+/// One mDNS question to the home network's group, only to see whether the system lets it out («Разрешения»,
+/// src/permissions): `Some(true)` — kept off (macOS' Local Network), `Some(false)` — it went out, None — no socket or
+/// another failure (no network at all). On a computer that has not asked the person yet, this very send brings macOS'
+/// window. A pretend gateway never knocks on the home network (src/stations/pretend.rs): it counts as let out.
+pub async fn probe_local_network() -> Option<bool> {
+    if super::super::pretend::search_targets().is_some() {
+        return Some(false);
+    }
+    let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).await.ok()?;
+    let group = std::net::SocketAddr::V4(std::net::SocketAddrV4::new(MDNS_GROUP, MDNS_PORT));
+    let sent = socket.send_to(&mdns_query(DUOWAVE_SERVICE), group).await;
+    OFF_NETWORK.note(&sent);
+    match sent {
+        Ok(_) => Some(false),
+        Err(error) if kept_off(&error) => Some(true),
+        Err(_) => None,
+    }
+}
+
 /// «No route to host» (EHOSTUNREACH, 65 on macOS): there the refusal of Local Network privacy.
 pub fn kept_off(error: &std::io::Error) -> bool {
     error.kind() == std::io::ErrorKind::HostUnreachable

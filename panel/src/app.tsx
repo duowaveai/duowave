@@ -8,6 +8,7 @@ import { IconSearch } from './icons';
 import { useLive, useStationLive } from './live';
 import { Reach, dotClass, isReachable, reachOf } from './presence';
 import { AuthScreen } from './screens/auth';
+import { tripOfHome } from './screens/trip-of-home';
 import { SaySheet } from './screens/say';
 import { ConnectSheet } from './screens/connect';
 import { OPEN_ONBOARDING, Onboarding, onboardingPending } from './screens/onboarding';
@@ -54,7 +55,8 @@ import { CreationFlow } from './voice/flow';
 import { MagicPlaceFlow, noteMagicPlaceOpen } from './magicplace/open';
 import { STORE_TAB } from './magicplace/section';
 import { noteStoreChange } from './magicplace/state';
-import { toggleListening } from './voice/mic';
+import { micOn, toggleListening } from './voice/mic';
+import { readAppVoice } from './voice/app-voice';
 import { useVoiceAction } from './voice/phrases';
 import { onTextToStation } from './voice/strip';
 import { deskActions } from './shell/widgets';
@@ -269,6 +271,18 @@ export function App() {
     useSearchKey(() => setSearchOpen(true));
     // ⌥Пробел — «Сказать»: только вошедшему и не во фрейме страницы компьютера.
     useTalkKey(() => auth === 'ok' && !OWN_PAGE && toggleListening());
+    // Клавиша «Сказать» из любой программы без уха приложения (режим «Колонка»): приложение вызвало окно и зовёт
+    // микрофон пульта (desktop/src-tauri/src/hotkey.rs); отпустили после удержания — мысль кончилась.
+    useEffect(() => {
+        const onKey = (event: Event) => {
+            const detail = (event as CustomEvent<{ what?: string; heldMs?: number }>).detail;
+            if (auth !== 'ok' || OWN_PAGE) return;
+            if (detail?.what === 'press') toggleListening();
+            else if (detail?.what === 'release' && (detail.heldMs ?? 0) >= 600 && micOn()) toggleListening();
+        };
+        window.addEventListener('duowave:talk-key', onKey);
+        return () => window.removeEventListener('duowave:talk-key', onKey);
+    }, [auth]);
     // Живой канал: присутствие колонок и запросы на ходу; перемена где-то ещё — перечитать сейчас, не ждать опроса.
     const feed = useLive(auth === 'ok' && can('station.view'), (name, subject, change) => {
         // Долгая задача приложения сдвинулась (tasks/state.ts): перечитывают только окна этого приложения. Ход идёт
@@ -277,6 +291,8 @@ export function App() {
         if (name === 'tasks.changed') return;
         // Новая версия или канал открылся заново (пока его не было, шлюз мог найти версию или поставить её).
         if (name === 'update.available' || name === 'hello') void readUpdateStatus();
+        // Ухо приложения этого компьютера: есть ли, его клавиша и выключатели (voice/app-voice.ts).
+        if (name === 'hello' || name === 'settings.changed') void readAppVoice();
         // Части плагинов меняются, когда пакеты включают, ставят, обновляют, — не когда их код загрузился или выгрузился.
         if ((name === 'packages.changed' && !runtimeOnly(change)) || name === 'hello') setPackagesVersion((value) => value + 1);
         // Виджеты плагинов перечитывают своё только по переменам своего пакета (plugins/versions.ts).
@@ -525,10 +541,12 @@ export function App() {
         : noStation
           ? tr.core.statusNoStation
           : [reachWords(reach, lastSeen), helpWords(role)].filter(Boolean).join(' · ');
-    // Путь вопроса на дашборде: идущий запрос этой колонки, иначе последний законченный. В режиме «Микрофон» — запросы
-    // разговора без колонки: их устройство — `computer`.
-    const ofStation = feed.requests.filter((request) => (computer ? request.device === 'computer' : !current || request.device === current.device));
-    const trip = ofStation.find((request) => request.status === 'active') ?? ofStation.find((request) => request.status !== 'active');
+    // The question's path on the dashboard: any ear's of this home, not one station's (screens/trip-of-home.ts).
+    const { trip, ofHome } = tripOfHome(feed.requests, {
+        onComputer: computer,
+        station: current?.device,
+        stations: (stations ?? []).map((entry) => entry.device),
+    });
     const waiting = computer ? undefined : (stations ?? []).find((entry) => needsSetup(entry) && !dismissed.includes(entry.device));
     const setupStation = setupId ? (stations ?? []).find((entry) => entry.device === setupId) : undefined;
     const later = (device: string): void => {
@@ -662,7 +680,7 @@ export function App() {
         online,
         trip,
         version,
-        recent: can('journal.view') ? ofStation.slice(0, 3) : undefined,
+        recent: can('journal.view') ? ofHome.slice(0, 3) : undefined,
         banner: (
             <>
                 {/* macOS не пускает DuoWave в домашнюю сеть: без этого его не видят колонки и другие компьютеры дома. */}

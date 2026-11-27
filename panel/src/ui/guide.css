@@ -1,0 +1,30 @@
+/* Окно-подсказка рядом с «Системными настройками» (screens/guide.tsx): всё окно — одна карточка (окно без рамки, тень
+   у него системная). Светлая и тёмная — по системе. Только на своей странице: класс `guide-page` у <html>. */
+
+html.guide-page, html.guide-page body, html.guide-page #root { height: 100%; margin: 0; overflow: hidden; }
+
+.guide {
+  --g-bg: #ffffff; --g-text: #111111; --g-sub: rgba(0, 0, 0, .55); --g-line: #e7e4e1; --g-accent: #b6f36a; --g-ok: #3f6212;
+  box-sizing: border-box; height: 100%; display: grid; grid-template-columns: 44px 1fr 28px; align-items: center; gap: 12px;
+  padding: 16px 14px 16px 16px; background: var(--g-bg); color: var(--g-text);
+  font: 500 15px/21px Inter, system-ui, -apple-system, sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  .guide { --g-bg: #1a1918; --g-text: #f5f3f1; --g-sub: rgba(245, 243, 241, .6); --g-line: #2a2826; --g-ok: #b6f36a; }
+}
+.guide p { margin: 0; }
+.guide-arrow {
+  width: 44px; height: 44px; border-radius: 12px; display: grid; place-items: center;
+  background: var(--g-accent); color: #0b0f0a; animation: guide-nudge 1.4s ease-in-out infinite;
+}
+.guide-arrow svg { width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
+.guide.is-done .guide-arrow { animation: none; }
+.guide.is-done p { color: var(--g-ok); }
+.guide-x {
+  align-self: start; width: 28px; height: 28px; border: 0; border-radius: 8px; background: transparent; color: var(--g-sub);
+  display: grid; place-items: center; cursor: pointer;
+}
+.guide-x:hover { background: var(--g-line); }
+.guide-x svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
+@keyframes guide-nudge { 0%, 100% { transform: translateX(0); } 50% { transform: translateX(-5px); } }
+@media (prefers-reduced-motion: reduce) { .guide-arrow { animation: none; } }

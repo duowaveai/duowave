@@ -2,7 +2,9 @@
 //! `claude` (`duowave-test-stub`, src/bin/test_stub.rs): the agent found and signed in, a folder added (one without git refused),
 //! «Новая работа» — its «Готово» with the branch, the checks and the dollars, its deal on the seat «Исполнитель», its
 //! runs, its journal read from a place and its raw file; one work in folders at a time; a plan's limit asked and
-//! answered from the page; a stop and «Продолжить» in the same session. Each test starts its own gateway.
+//! answered from the page; a stop and «Продолжить» in the same session. Stage 5: a phrase said to the panel begins a
+//! work in a folder — read first, or by the brain's `work_start` — and its «Готово» reads what the agent wrote. Each
+//! test starts its own gateway.
 
 mod fakes;
 mod support;
@@ -10,6 +12,7 @@ mod support;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use fakes::{ChatStub, Scripted};
 use reqwest::StatusCode;
 use serde_json::{json, Value};
 use support::{bearer, message, send, Gateway};
@@ -49,7 +52,11 @@ struct Bench {
 
 impl Bench {
     async fn new() -> Bench {
-        let gateway = Gateway::start(&[]).await;
+        Bench::with(&[]).await
+    }
+
+    async fn with(vars: &[(&str, &str)]) -> Bench {
+        let gateway = Gateway::start(vars).await;
         let setup = message(
             gateway.post("/api/v1/auth/setup").json(&json!({ "password": "admin-password-1" })),
             StatusCode::CREATED,
@@ -160,7 +167,7 @@ async fn a_work_in_a_folder_goes_from_the_panel_to_its_branch_deal_and_journal()
     let line = work["result"]["line"].as_str().unwrap_or_default();
     assert_eq!(
         line,
-        "Сделай страницу контактов с формой: готово. Ветка duowave/sdelay-stranitsu-kontaktov, проверки прошли, ≈ $1.20 по подписке. Подробности в пульте."
+        "Сделай страницу контактов с формой: готово. Ветка duowave/sdelay-stranitsu-kontaktov, проверки прошли, ≈ $1.20 по подписке. Рассказать, что написал агент?"
     );
     assert_eq!(git(&bench.folder, &["symbolic-ref", "--short", "HEAD"]), "main");
     git(&bench.folder, &["rev-parse", "--verify", "refs/heads/duowave/sdelay-stranitsu-kontaktov"]);
@@ -228,14 +235,19 @@ async fn one_at_a_time_and_a_plans_limit_asks_from_the_page() {
     let (id, _) = bench.start("третья страница").await;
     let asking = bench.work_until(&id, "asks", |work| work["group"] == "asking").await;
     let question = asking["question"]["text"].as_str().unwrap_or_default();
+    // Only what is possible (docs/plans/work-systems.md, stage 5): no other system is here, the cheaper set is.
     assert!(question.starts_with("Лимит Claude Code кончился до "), "{question}");
-    assert!(question.ends_with(": подождать или остановить?"), "{question}");
+    assert!(question.ends_with(". Подождать, остановить или перейти на «Экономно»?"), "{question}");
+    let offers = &asking["question"]["offers"];
+    assert_eq!(offers, &json!([{ "kind": "switch", "id": "economy", "title": "Экономно" }]), "{asking}");
     let waiting = bench.get("/api/v1/works?waiting=1").await;
     assert!(waiting.as_array().unwrap().iter().any(|work| work["id"] == id.as_str()));
     let said = bench.post(&format!("/api/v1/works/{id}/do"), json!({ "action": "answer", "answer": "yes" })).await;
     assert_eq!(said["said"], "Жду. Продолжу сам, когда лимит сбросится.");
     let done = bench.work_until(&id, "done", |work| work["state"] == "done").await;
-    assert!(done["question"].is_null());
+    // The limit's question went; the one of «Готово» asks whether to read what the agent wrote (stage 5).
+    let asks = done["question"]["text"].as_str().unwrap_or_default();
+    assert!(asks.ends_with(" Рассказать, что написал агент?"), "{done}");
     let runs = bench.get(&format!("/api/v1/works/{id}/runs")).await;
     let outcomes: Vec<&str> =
         runs["runs"].as_array().unwrap().iter().map(|run| run["outcome"].as_str().unwrap()).collect();
@@ -271,4 +283,93 @@ async fn a_stopped_work_goes_on_in_its_session() {
     let sessions: Vec<&str> =
         runs["runs"].as_array().unwrap().iter().filter_map(|run| run["session"].as_str()).collect();
     assert!(sessions.len() == 2 && sessions[0] == sessions[1], "{sessions:?}");
+}
+
+/// The tools a request of the model offers, by name.
+fn offered(request: &Value) -> Vec<String> {
+    let tools = request["tools"].as_array().cloned().unwrap_or_default();
+    tools.iter().filter_map(|tool| tool["function"]["name"].as_str().map(str::to_string)).collect()
+}
+
+/// Stage 5: a phrase said to the panel begins a work in a folder — read first when it names a folder, or by the
+/// brain's `work_start` with a folder; «Готово» says the result and asks to read what the agent wrote, «подробнее»
+/// reads it.
+#[tokio::test]
+async fn a_phrase_to_the_panel_begins_a_work_in_a_folder_and_more_reads_what_the_agent_wrote() {
+    let llm = ChatStub::start().await;
+    let bench =
+        Bench::with(&[("DIALOG_PROVIDER", "openai"), ("LLM_BASE_URL", llm.url.as_str()), ("LLM_MODEL", "test-llm")])
+            .await;
+    // The reader reads «в папке …» as a work in a folder; later it reads a phrase as conversation, and the brain calls
+    // `work_start` with a folder.
+    let reads_folder = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    {
+        let reads_folder = reads_folder.clone();
+        llm.set_responder(move |request| {
+            let tools = offered(request);
+            if tools.iter().any(|tool| tool == "read") {
+                return Some(if reads_folder.load(std::sync::atomic::Ordering::Relaxed) {
+                    Scripted::call(
+                        "read",
+                        json!({ "act": "folder", "text": "сделай страницу контактов с формой", "folder": "Сайт" }),
+                    )
+                } else {
+                    Scripted::call("read", json!({ "act": "talk" }))
+                });
+            }
+            let answered = request["messages"].to_string().contains("\"role\":\"tool\"");
+            if tools.iter().any(|tool| tool == "work_start") && !answered {
+                return Some(Scripted::call(
+                    "work_start",
+                    json!({ "kind": "folder", "brief": "добавь ссылку на контакты в меню", "folder": "сайт" }),
+                ));
+            }
+            None
+        });
+    }
+    // No folder yet: the computer says so.
+    let said = bench
+        .post("/api/v1/talk", json!({ "text": "В папке Сайт сделай страницу контактов с формой", "via": "button" }))
+        .await;
+    assert_eq!(
+        said["said"], "Рабочих папок пока нет. Добавьте папку в пульте, в «Рабочих папках» на странице «Работы».",
+        "{said}"
+    );
+    bench.agent_and_folder().await;
+    let said = bench
+        .post("/api/v1/talk", json!({ "text": "В папке Сайт сделай страницу контактов с формой", "via": "button" }))
+        .await;
+    assert_eq!(
+        said["said"], "Взяла в работу в папке «Сайт»: «Сделай страницу контактов с формой». Скажу, когда будет готово.",
+        "{said}"
+    );
+    let id = said["work"].as_str().expect("the work it began").to_string();
+    let work = bench.work_until(&id, "done", |work| work["state"] == "done").await;
+    assert_eq!(work["kind"], "folder");
+    assert_eq!(work["origin"]["via"], "voice");
+    assert_eq!(
+        work["result"]["line"],
+        "Сделай страницу контактов с формой: готово. Ветка duowave/sdelay-stranitsu-kontaktov, проверки прошли, ≈ $1.20 по подписке. Рассказать, что написал агент?"
+    );
+    // The panel said its line: the question opens; «подробнее» reads the agent's last message.
+    bench.post(&format!("/api/v1/works/{id}/said"), json!({})).await;
+    let more = bench.post("/api/v1/talk", json!({ "text": "Подробнее", "via": "answer" })).await;
+    assert_eq!(more["said"], "Done: the contacts page.", "{more}");
+
+    // Read as conversation: the brain's `work_start` with a folder begins it — typed, so no wait between works by voice.
+    reads_folder.store(false, std::sync::atomic::Ordering::Relaxed);
+    let said = bench.post("/api/v1/talk", json!({ "text": "Пусть агент добавит ссылку на контакты в меню" })).await;
+    assert_eq!(
+        said["said"], "Взяла в работу в папке «Сайт»: «Добавь ссылку на контакты в меню». Скажу, когда будет готово.",
+        "{said}"
+    );
+    let asked = llm.requests().into_iter().find(|request| offered(request).iter().any(|tool| tool == "work_start"));
+    let start = asked.expect("the brain was offered work_start")["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["function"]["name"] == "work_start")
+        .cloned()
+        .unwrap();
+    assert_eq!(start["function"]["parameters"]["properties"]["kind"]["enum"], json!(["thing", "folder"]));
 }

@@ -112,6 +112,27 @@ impl WindowsNetwork {
         self.networks.iter().filter(|network| self.closed_on(profile_of(&network.category))).collect()
     }
 
+    /// The «Общедоступная» networks that keep others away: the way is to make them private («Разрешения»).
+    pub fn public_closed(&self) -> Vec<&str> {
+        self.closed_networks()
+            .into_iter()
+            .filter(|network| profile_of(&network.category) == "public")
+            .map(|network| network.alias.as_str())
+            .collect()
+    }
+
+    /// Whether the firewall keeps others away on the home's kind of network — a private or domain one the computer is
+    /// on, or a private one when no network was read. A public network is a row of its own (`public_closed`): the
+    /// firewall's button allows private and domain networks only.
+    pub fn firewall_closed(&self) -> bool {
+        let home: Vec<&NetworkProfile> =
+            self.networks.iter().filter(|network| profile_of(&network.category) != "public").collect();
+        if home.is_empty() {
+            return self.networks.is_empty() && self.closed_on("private");
+        }
+        home.iter().any(|network| self.closed_on(profile_of(&network.category)))
+    }
+
     /// Whether others may well not reach this program on a network the computer is on. With no network read, a home
     /// network is judged as private.
     pub fn likely_closed(&self) -> bool {
@@ -514,5 +535,40 @@ mod tests {
             assert_eq!(look().await, None);
             assert!(allow_inbound().await.is_err());
         }
+    }
+
+    #[test]
+    fn the_permission_rows_tell_a_public_network_from_the_firewall() {
+        let public = WindowsNetwork {
+            networks: vec![NetworkProfile { alias: "Ethernet".into(), category: "Public".into() }],
+            firewall: vec![
+                FirewallProfile { name: "Public".into(), enabled: true },
+                FirewallProfile { name: "Private".into(), enabled: true },
+            ],
+            rules: vec![],
+        };
+        assert_eq!(public.public_closed(), vec!["Ethernet"]);
+        assert!(!public.firewall_closed(), "a public network is a row of its own, the firewall's row is the home's");
+        let home = WindowsNetwork {
+            networks: vec![NetworkProfile { alias: "Wi-Fi".into(), category: "Private".into() }],
+            firewall: vec![FirewallProfile { name: "Private".into(), enabled: true }],
+            rules: vec![],
+        };
+        assert!(home.firewall_closed());
+        assert!(home.public_closed().is_empty());
+        let allowed = WindowsNetwork {
+            rules: vec![FirewallRule {
+                name: "DuoWave".into(),
+                action: "Allow".into(),
+                profile: "Private, Domain".into(),
+            }],
+            ..home.clone()
+        };
+        assert!(!allowed.firewall_closed());
+        let unread = WindowsNetwork {
+            firewall: vec![FirewallProfile { name: "Private".into(), enabled: true }],
+            ..Default::default()
+        };
+        assert!(unread.firewall_closed(), "no network read: a home network is judged as private");
     }
 }

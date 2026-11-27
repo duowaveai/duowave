@@ -15,10 +15,17 @@ station = ["yandex-station", "duowave-base/station", "duowave-rights/station", "
 # to Yandex, the Station's commands; Alice's listener, src/activator). A build without it is a home without Yandex's
 # Station — the computer's microphone, the panel, the apps.
 yandex-station = []
+# The computer's own voice channel (src/channel; docs/plans/audio-interface-3.md, part К): the ear of the Mac app,
+# its voice, its window and its «Готово». Only the computer's build turns it on (the gateway's `pc`); the station's
+# carries none of it.
+computer-ear = []
 # What the tests of the crates above take from this one (the pretend station's tools, in a folder of their own).
-testing = ["duowave-base/testing", "duowave-rights/testing", "duowave-voice/testing", "duowave-brain/testing", "dep:tempfile"]
+testing = ["duowave-base/testing", "duowave-rights/testing", "duowave-voice/testing", "duowave-brain/testing", "duowave-door/testing", "duowave-sense/testing", "dep:tempfile"]
 
 [dependencies]
+# The door to Thinking and «Чутьё»: what the computer's channel talks through and judges with (src/channel).
+duowave-door = { path = "../duowave-door" }
+duowave-sense = { path = "../duowave-sense" }
 duowave-base = { path = "../duowave-base" }
 duowave-rights = { path = "../duowave-rights" }
 duowave-voice = { path = "../duowave-voice" }

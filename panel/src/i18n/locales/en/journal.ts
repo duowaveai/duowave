@@ -1,4 +1,5 @@
 // Texts: screens/journal.tsx.
+import { plural } from '../../format';
 import type { Translation } from '../../types';
 import type ru from '../ru/journal';
 
@@ -50,6 +51,37 @@ const en: Translation<typeof ru> = {
     tokens: (input: number, output: number, cached: number, rounds: number) =>
         `tokens ${input} → ${output}${cached ? `, ${cached} from the cache` : ''}${rounds > 1 ? `, ${rounds} rounds` : ''}`,
     deal: (seat: string, model: string, money: string) => [seat, model, money].filter(Boolean).join(' · '),
+
+    thinkingTitle: 'Thinking',
+    thinkingCard: (tokens: string, n: number) => `card ${tokens} ${plural(n, { one: 'token', other: 'tokens' })}`,
+    thinkingFast: (step: string) => `fast route: ${step}`,
+    thinkingOpened: (groups: string) => `opened: ${groups}`,
+    thinkingRounds: (n: number) => `${n} ${plural(n, { one: 'round', other: 'rounds' })}`,
+    thinkingFirstWord: (time: string) => `first word ${time}`,
+    thinkingShadow: {
+        hit: 'card in shadow: would be enough',
+        miss: 'card in shadow: would not be enough',
+        none: 'card in shadow: no tools needed',
+    },
+    thinkingWaits: (n: number) => `waits: ${n}`,
+    thinkingNext: {
+        cut: 'cut off',
+        repeated: 'repeated',
+        not_that: 'not that',
+        answered: 'answered the question',
+    },
+    thinkingGroups: {
+        weather: 'weather',
+        news: 'news',
+        calendar: 'calendar',
+        timers: 'timers',
+        alarms: 'alarms',
+        memory: 'memory',
+        works: 'works',
+        music: 'music',
+        radio: 'radio',
+        sound: 'sound',
+    },
 };
 
 export default en;

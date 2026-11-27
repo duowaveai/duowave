@@ -17,12 +17,13 @@ use std::sync::Arc;
 use axum::Router;
 
 pub use dialog_service::{
-    speech_cut_note, with_error_phrase, AnsweredBy, DialogContext, DialogService, Filler, Inbox, ModelChoice,
-    PhraseStream, ToolBox, ToolFilter, ToolOutcome, ToolRun, UsageSink, ERROR_PHRASE, LOOKUP_FILLER, SPEECH_MAX_TOKENS,
+    estimate_tokens, parts_of, speech_cut_note, with_error_phrase, AnsweredBy, Before, BeforeBy, DialogContext,
+    DialogService, Filler, Inbox, ModelChoice, PhraseStream, RequestParts, Seen, SeenBy, SlowBy, Steer, ToolBox,
+    ToolFilter, ToolOutcome, ToolRun, UsageSink, ERROR_PHRASE, LOOKUP_FILLER, SPEECH_MAX_TOKENS,
 };
 pub use llm::brain::{BrainProfile, BrainSource, BrainStatus, ModelSlot};
 pub use persona_service::PersonaService;
-pub use phrase_splitter::PhraseSplitter;
+pub use phrase_splitter::{split_phrases, PhraseSplitter};
 pub use system_prompt::Channel;
 
 crate::route_needs!(

@@ -45,11 +45,17 @@ pub struct TalkLayer {
     me: Weak<TalkLayer>,
     /// The works, as the executors of every floor see them (the MCP's background tools: src/mcp/talk_work.rs).
     pub works: Works,
+    /// One's own words for the actions on works, and where they are kept (talk/own_words.rs, stage 7).
+    pub(super) own_words: RwLock<Vec<super::own_words::OwnWord>>,
+    /// Each device's last phrase as heard: a work system named in it, when the model did not pass it on (the hand
+    /// check of 27.11).
+    pub(super) last_heard: std::sync::Mutex<std::collections::HashMap<String, String>>,
+    pub(super) words_kept: OnceLock<Arc<crate::settings::SettingsService>>,
     /// The workshop's door of each device (door.rs).
     pub door: super::door::Door,
     /// The question each device was just asked (asked.rs).
     pub asked: super::asked::Asked,
-    pub(super) events: EventBus,
+    pub(crate) events: EventBus,
     executors: RwLock<Vec<Arc<dyn Executor>>>,
     desk: OnceLock<Desk>,
     langs: OnceLock<Langs>,
@@ -84,6 +90,8 @@ pub struct TalkLayer {
     background: OnceLock<Weak<dyn super::executor::Background>>,
     /// The works in folders' executor (folder.rs): «Новая работа».
     folders: OnceLock<Weak<super::folder::FolderExecutor>>,
+    /// The executor of the work systems' works (talk/systems.rs), for a work given to a system.
+    systems: OnceLock<Weak<super::systems::SystemExecutor>>,
 }
 
 /// A device's conversation is remembered this long after its work last changed.
@@ -99,6 +107,9 @@ impl TalkLayer {
         let layer = Arc::new_cyclic(|me| TalkLayer {
             me: me.clone(),
             works: Works::open(db),
+            own_words: RwLock::new(Vec::new()),
+            last_heard: std::sync::Mutex::new(std::collections::HashMap::new()),
+            words_kept: OnceLock::new(),
             door: super::door::Door::default(),
             asked: super::asked::Asked::default(),
             store: super::store::Store::new(events.clone()),
@@ -120,6 +131,7 @@ impl TalkLayer {
             house: OnceLock::new(),
             background: OnceLock::new(),
             folders: OnceLock::new(),
+            systems: OnceLock::new(),
         });
         // A question nobody answered in its time ends silent: the work's question says so, and waits.
         let me = Arc::downgrade(&layer);
@@ -151,6 +163,14 @@ impl TalkLayer {
 
     pub fn folders(&self) -> Option<Arc<super::folder::FolderExecutor>> {
         self.folders.get().and_then(Weak::upgrade)
+    }
+
+    pub(super) fn set_systems(&self, executor: &Arc<super::systems::SystemExecutor>) {
+        let _ = self.systems.set(Arc::downgrade(executor));
+    }
+
+    pub fn systems(&self) -> Option<Arc<super::systems::SystemExecutor>> {
+        self.systems.get().and_then(Weak::upgrade)
     }
 
     /// An executor joins: from now on it reports here.
@@ -530,12 +550,18 @@ impl TalkLayer {
     }
 
     /// The works whose question waits for the person: ready or not finished, asked, neither answered nor declined —
-    /// «Ждёт вас»; and a work in a folder going on that a plan's limit holds («подождать или остановить?»).
+    /// «Ждёт вас»; and a work in a folder going on that a plan's limit holds («подождать или остановить?») or its
+    /// budget («добавить ещё или остановить?»).
     pub fn waiting(&self) -> Vec<Work> {
         let asks = |work: &Work| {
             let question = work.question.as_ref().filter(|question| question.waits());
             match question.and_then(|question| question.kind) {
-                Some(super::asked::Kind::Wait) => work.going(),
+                Some(super::asked::Kind::Wait | super::asked::Kind::Budget) => work.going(),
+                // A system's question of rights and «Делаю?» of a plan hold a going work too (docs/plans/work-systems.md,
+                // stages 3 and 6) — while they can be answered: the system asks in its own place after its time.
+                Some(super::asked::Kind::Permission | super::asked::Kind::Plan) => {
+                    work.going() && question.is_some_and(|question| question.until == 0 || question.until > now_ms())
+                }
                 Some(_) => work.awaiting(),
                 None => false,
             }
@@ -697,8 +723,14 @@ impl TalkLayer {
             return;
         }
         let again = self.works.of_target(executor, &began.target).is_some();
+        // A work system's work (talk/systems.rs): its system by the target, begun outside when the layer did not ask.
+        let system = (executor == super::systems::SYSTEM_EXECUTOR)
+            .then(|| super::systems::system_of(&began.target).map(str::to_string))
+            .flatten();
+        let outside = system.is_some() && began.work.is_none();
+        let kind = if system.is_some() { super::works::SYSTEM } else { APP };
         let work = self.works.create(NewWork {
-            kind: APP,
+            kind,
             face: began.face,
             executor: executor.to_string(),
             target: Some(began.target),
@@ -707,6 +739,16 @@ impl TalkLayer {
             origin: began.origin,
             again,
         });
+        let work = match system {
+            Some(system) => self
+                .works
+                .update(&work.id, |work| {
+                    work.system = Some(system);
+                    work.outside = outside;
+                })
+                .unwrap_or(work),
+            None => work,
+        };
         self.supersede(&work);
         self.told(&work, "started");
     }
@@ -745,9 +787,14 @@ impl TalkLayer {
         self.works.of_target(executor, target).map(|work| work.id)
     }
 
+    /// When a work began: what its deals and its own budget are counted from (the router, src/router/budgets.rs).
+    pub fn began_at(&self, id: &str) -> Option<u64> {
+        self.works.get(id).map(|work| work.started_at)
+    }
+
     /// The block «Сейчас» for a device, in the language given (the character's).
     pub fn now(&self, device: &str, lang: Lang) -> String {
-        let works = self.works.all(Some(device), None);
+        let works = self.home_works(device);
         let doing = |work: &Work| self.executor(&work.executor).and_then(|executor| executor.status(work));
         let words = pack::of(lang).work;
         let desk: Vec<String> = self
@@ -764,5 +811,13 @@ impl TalkLayer {
         let door = self.door.is_open(device);
         let sources = Sources { works: &works, doing: &doing, desk: &desk, door, now: now_ms() };
         now::block(pack::of(lang), &sources)
+    }
+
+    /// The works of the whole home, this device's first, each side the newest first (docs/plans/audio-interface-3.md,
+    /// «Н2»): begun at the station, it goes on at the desk — «как там виджет?» at the computer reaches it.
+    pub fn home_works(&self, device: &str) -> Vec<Work> {
+        let mut works = self.works.all(None, None);
+        works.sort_by_key(|work| work.device() != device);
+        works
     }
 }

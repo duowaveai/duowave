@@ -35,7 +35,7 @@ pub const MUSCLES: Abilities = Abilities::of(&[Ability::Hearing, Ability::Voice,
 /// (contract 3); another home only the muscles (D31, owner 20.11, 9).
 pub fn given_at_pairing(own_home: bool) -> Abilities {
     if own_home {
-        Abilities::V1.union(Abilities::of(&Ability::V3))
+        Abilities::V1.union(Abilities::of(&Ability::V3)).union(Abilities::of(&Ability::V4))
     } else {
         MUSCLES
     }
@@ -43,7 +43,7 @@ pub fn given_at_pairing(own_home: bool) -> Abilities {
 
 /// What the owner may give a home on «Этот компьютер»: contract 1's and contract 3's.
 pub fn givable(ability: Ability) -> bool {
-    Ability::V1.contains(&ability) || Ability::V3.contains(&ability)
+    Ability::V1.contains(&ability) || Ability::V3.contains(&ability) || Ability::V4.contains(&ability)
 }
 /// The gateways a client keeps; the oldest seen goes.
 pub const GATEWAYS: usize = 16;

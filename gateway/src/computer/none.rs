@@ -106,8 +106,14 @@ impl Building {
         _base: &Base<'_>,
         _folder_executor: &Arc<crate::talk::folder::FolderExecutor>,
         _plugins: &Arc<crate::plugins::PluginHost>,
+        _helpers: &Arc<crate::helpers::Helpers>,
+        _systems: &Arc<crate::talk::systems::Systems>,
+        _mcp: Arc<dyn crate::talk::system::McpCaller>,
     ) {
     }
+
+    /// No works in folders on the station: the door has no one to stand before.
+    pub fn works_door(&self, _door: crate::talk::folder::WorkerDoor) {}
 
     pub fn characters(
         &self,

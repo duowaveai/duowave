@@ -56,6 +56,9 @@ pub const TOOLS_AT_ONCE: usize = 3;
 pub const FOLDER: &str = "folder";
 /// Works in folders at once on the helper; the next one waits in the queue (decision 16).
 pub const FOLDERS_AT_ONCE: usize = 1;
+/// A work a work system leads by its own rules (docs/plans/work-systems.md): Claude Code run by hand, bb, T3 Code.
+/// It counts against none of our limits (decision 16): the system keeps its own.
+pub const SYSTEM: &str = "system";
 
 /// Which works count together against the limits: the things made (apps), the background tools, the apps' tasks, the
 /// works in folders — those have their own count, and their new ones by voice count with the apps' for the day.
@@ -64,6 +67,7 @@ fn pool(kind: &str) -> u8 {
         TOOL => 1,
         TASK => 2,
         FOLDER => 3,
+        SYSTEM => 4,
         _ => 0,
     }
 }
@@ -222,12 +226,24 @@ pub struct Question {
     /// It was asked once more after it ended silent: never a second time.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub reminded: bool,
+    /// What a limit's question offers beyond its first answers (stage 5 of docs/plans/work-systems.md): the panel's
+    /// buttons for what was said.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub offers: Vec<Offer>,
+}
+
+/// One more answer a question offers: `switch` to a cheaper set, `hand` to another system; its id and its title.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Offer {
+    pub kind: String,
+    pub id: String,
+    pub title: String,
 }
 
 impl Question {
     /// A question of a finished work, not asked aloud yet.
     pub fn new(text: String, until: u64, kind: super::asked::Kind) -> Question {
-        Question { text, until, kind: Some(kind), asked_at: None, outcome: None, reminded: false }
+        Question { text, until, kind: Some(kind), asked_at: None, outcome: None, reminded: false, offers: Vec::new() }
     }
 
     /// The question still waits for the person: nobody answered it nor said «not now».
@@ -276,6 +292,9 @@ pub struct Work {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub face: Option<Face>,
     pub executor: String,
+    /// The work system that leads it (docs/plans/work-systems.md); none — the executor's own.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub system: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub target: Option<String>,
     pub title: String,
@@ -283,6 +302,10 @@ pub struct Work {
     pub brief: String,
     /// A new version of a thing there is already (an edit, «доделай»), not a new thing.
     pub again: bool,
+    /// Begun outside DuoWave, in its system by hand: quiet unless watched (D1 of docs/plans/work-systems.md).
+    pub outside: bool,
+    /// «Следи за этой»: a work begun outside is said aloud like ours.
+    pub watched: bool,
     pub notes: Vec<Note>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<WorkResult>,
@@ -438,7 +461,7 @@ impl Works {
         let pool = pool(kind);
         let list: Vec<Work> = self.list().iter().filter(|work| self::pool(&work.kind) == pool).cloned().collect();
         match pool {
-            2 => return Ok(()),
+            2 | 4 => return Ok(()),
             1 if list.iter().filter(|work| work.going()).count() >= TOOLS_AT_ONCE => return Err(Refused::Busy),
             1 => return Ok(()),
             _ => {}
@@ -478,11 +501,14 @@ impl Works {
             kind: new.kind.to_string(),
             face: new.face,
             executor: new.executor,
+            system: None,
             target: new.target,
             title: short(&new.title, TITLE),
             state: WorkState::Working,
             brief: short(&new.brief, BRIEF),
             again: new.again,
+            outside: false,
+            watched: false,
             notes: Vec::new(),
             result: None,
             question: None,
@@ -605,10 +631,11 @@ fn save(db: &Db, work: &Work) {
         c.execute(
             "INSERT INTO works (id, kind, face, executor, target, title, state, brief, notes, result, question, origin,
                  device, said_at, tokens_in, tokens_out, tokens_cache_read, tokens_cache_write, rounds, started_at,
-                 updated_at, ended_at, again)
+                 updated_at, ended_at, again, system, outside, watched)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22,
-                 ?23)
+                 ?23, ?24, ?25, ?26)
              ON CONFLICT (id) DO UPDATE SET face = excluded.face, target = excluded.target, title = excluded.title,
+                 system = excluded.system, outside = excluded.outside, watched = excluded.watched,
                  state = excluded.state, brief = excluded.brief, notes = excluded.notes, result = excluded.result,
                  question = excluded.question, said_at = excluded.said_at, tokens_in = excluded.tokens_in,
                  tokens_out = excluded.tokens_out, tokens_cache_read = excluded.tokens_cache_read,
@@ -638,6 +665,9 @@ fn save(db: &Db, work: &Work) {
                 work.updated_at as i64,
                 work.ended_at.map(|at| at as i64),
                 work.again,
+                work.system,
+                work.outside,
+                work.watched,
             ],
         )
         .map(|_| ())
@@ -651,7 +681,8 @@ fn load(db: &Db) -> Vec<Work> {
     let read = db.with(|c| {
         let mut statement = c.prepare(
             "SELECT id, kind, face, executor, target, title, state, brief, notes, result, question, origin, said_at,
-                 tokens_in, tokens_out, tokens_cache_read, tokens_cache_write, rounds, started_at, updated_at, ended_at, again
+                 tokens_in, tokens_out, tokens_cache_read, tokens_cache_write, rounds, started_at, updated_at, ended_at, again,
+                 system, outside, watched
              FROM works ORDER BY started_at, id",
         )?;
         let rows = statement.query_map([], |row| {
@@ -672,6 +703,7 @@ fn load(db: &Db) -> Vec<Work> {
                 maybe(12)?,
                 Tokens { input: number(13)?, output: number(14)?, cache_read: number(15)?, cache_write: number(16)?, rounds: number(17)? },
                 (number(18)?, number(19)?, maybe(20)?, row.get::<_, bool>(21)?),
+                (text(22)?, row.get::<_, bool>(23)?, row.get::<_, bool>(24)?),
             ))
         })?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
@@ -699,12 +731,16 @@ fn load(db: &Db) -> Vec<Work> {
                 said_at,
                 tokens,
                 (started_at, updated_at, ended_at, again),
+                (system, outside, watched),
             )| {
                 Some(Work {
                     id,
                     kind,
                     face: face.as_deref().and_then(Face::parse),
                     executor,
+                    system,
+                    outside,
+                    watched,
                     target,
                     title,
                     state: WorkState::parse(&state)?,
@@ -729,6 +765,46 @@ fn load(db: &Db) -> Vec<Work> {
 mod tests {
     use super::*;
     use crate::talk::origin::Activator;
+
+    /// Migration 0020 on a copy of a live database (docs/plans/work-systems.md, stage 1), by the same code as the
+    /// gateway's start: the works get `system`, `outside` and `watched`; the works there read as before; a work of a
+    /// system is kept and read back, and leaves nothing behind. `DUOWAVE_DB_COPY=<the copy's state folder> cargo test
+    /// -p duowave-brain --lib talk::works -- --ignored`.
+    #[test]
+    #[ignore = "on a copy of a live database: DUOWAVE_DB_COPY=<its state folder>"]
+    fn the_work_systems_migration_on_a_copy_of_a_live_database() {
+        let Some(dir) = std::env::var_os("DUOWAVE_DB_COPY") else { return };
+        let db = Arc::new(Db::open(Some(std::path::Path::new(&dir))).expect("the copy opens and migrates"));
+        let one = |sql: &str| -> i64 { db.with(|c| c.query_row(sql, [], |row| row.get(0))).unwrap() };
+        let columns: Vec<String> = db
+            .with(|c| c.prepare("PRAGMA table_info(works)")?.query_map([], |row| row.get::<_, String>(1))?.collect())
+            .unwrap();
+        assert!(one("SELECT MAX(version) FROM schema_migrations") >= 20, "0020 applied");
+        for column in ["system", "outside", "watched"] {
+            assert!(columns.contains(&column.to_string()), "no column {column}: {columns:?}");
+        }
+        let (before, settings, people) = (
+            one("SELECT COUNT(*) FROM works"),
+            one("SELECT COUNT(*) FROM settings"),
+            one("SELECT COUNT(*) FROM users"),
+        );
+        let works = Works::open(Some(db.clone()));
+        assert_eq!(works.all(None, None).len() as i64, before, "every work there reads");
+        let mut fresh = new("computer", "Проверка копии", Via::Text);
+        fresh.kind = SYSTEM;
+        fresh.executor = "system".into();
+        let work = works.create(fresh);
+        works.update(&work.id, |work| {
+            work.system = Some("bb".into());
+            work.outside = true;
+            work.watched = true;
+        });
+        let read = Works::open(Some(db.clone())).get(&work.id).expect("kept");
+        assert_eq!((read.system.as_deref(), read.outside, read.watched), (Some("bb"), true, true));
+        db.with(|c| c.execute("DELETE FROM works WHERE id = ?1", [&work.id])).unwrap();
+        assert_eq!(one("SELECT COUNT(*) FROM works"), before, "nothing left behind");
+        eprintln!("copy: 0020 applied; works {before}, settings {settings}, people {people}; a work of a system kept");
+    }
 
     fn new(device: &str, title: &str, via: Via) -> NewWork {
         let origin = match via {
@@ -837,6 +913,66 @@ mod tests {
             works.may_start(&Origin::station("attic", true), false, now + NEW_EVERY_MS + 1000),
             Err(Refused::Enough)
         );
+    }
+}
+
+#[cfg(test)]
+mod folders {
+    use super::*;
+    use crate::talk::origin::Activator;
+
+    /// A work in a folder has its own count (decision 16, router-and-works stage 5): while it goes on the workshop
+    /// still makes its two, and a second work in folders waits; the day's new works by voice count the folders' and
+    /// the things' together.
+    #[test]
+    fn a_work_in_a_folder_holds_back_only_another_and_counts_with_the_things_for_the_day() {
+        let works = Works::open(None);
+        let typed = Origin::computer(Activator::Text);
+        let now = now_ms();
+        let folder = |device: &str| NewWork {
+            kind: FOLDER,
+            face: None,
+            executor: "folder".into(),
+            target: None,
+            title: "Опечатка".into(),
+            brief: "поправь опечатку".into(),
+            origin: Origin::station(device, true),
+            again: false,
+        };
+        let thing = |title: &str| NewWork {
+            kind: APP,
+            face: Some(Face::Widget),
+            executor: "workshop".into(),
+            target: None,
+            title: title.into(),
+            brief: title.into(),
+            origin: Origin::computer(Activator::Text),
+            again: false,
+        };
+        works.create(folder("kitchen"));
+        assert_eq!(works.may_start_kind(FOLDER, &typed, false, now), Err(Refused::Busy), "one in folders at a time");
+        assert_eq!(works.may_start(&typed, false, now), Ok(()));
+        works.create(thing("Часы"));
+        assert_eq!(works.may_start(&typed, false, now), Ok(()), "the workshop's second");
+        works.create(thing("Погода"));
+        assert_eq!(works.may_start(&typed, false, now), Err(Refused::Busy), "the workshop's two go on");
+        assert_eq!(works.may_start_kind(TOOL, &typed, false, now), Ok(()), "a background tool is not held");
+        let ids: Vec<String> = works.list().iter().map(|work| work.id.clone()).collect();
+        for id in ids {
+            works.update(&id, |work| work.state = WorkState::Done);
+        }
+        // Nine new works by voice today — one in a folder among them —, then a tenth in a folder: the next, of either
+        // kind, is refused.
+        for n in 0..8 {
+            let work = works.create(NewWork { origin: Origin::station(&format!("room-{n}"), true), ..thing("Ещё") });
+            works.update(&work.id, |work| work.state = WorkState::Done);
+        }
+        let attic = Origin::station("attic", true);
+        assert_eq!(works.may_start_kind(FOLDER, &attic, false, now), Ok(()));
+        let ninth = works.create(folder("hall"));
+        works.update(&ninth.id, |work| work.state = WorkState::Done);
+        assert_eq!(works.may_start_kind(FOLDER, &attic, false, now), Err(Refused::Enough));
+        assert_eq!(works.may_start(&attic, false, now), Err(Refused::Enough));
     }
 }
 

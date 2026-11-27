@@ -30,6 +30,7 @@ use super::phrase_splitter::PhraseSplitter;
 use super::system_prompt::time_context;
 use crate::characters::catchphrases::{Catchphrases, PhraseAt, Picker};
 use crate::config::{DialogConfig, DialogProvider, ModelProfile};
+use crate::router::policy::Ask;
 use crate::router::{Answerer, Outcome, Reason, Seat, Tally};
 
 /// Spoken when the model fails before saying anything.
@@ -63,6 +64,13 @@ const NOT_RUN: &str = "not run: one command per request";
 /// much at once will not fit the next time either.
 const MAX_CUTS: usize = 3;
 
+/// Turns whose whole answer went to the model's thinking — no word, no call — that one answer goes on after: a model
+/// that thought the answer away once is told to write at once, but asked the same again it thinks it away again
+/// (27.11, a widget on GLM 5.3: four turns of 8 190 thinking tokens out of 8 192, six and a half minutes, nothing).
+/// So the turn after it, and the rest of the answer, think less (`LlmRequest.think_less`: DuoWave's
+/// `reasoning_effort: "low"`, as its gateway advises, with the same limit); cut so again, the answer ends.
+const MAX_THOUGHT_CUTS: usize = 1;
+
 /// The pauses before a round the connection failed is asked again (`ToolBox::retries`), one per try: a moment for a
 /// network that blinked, longer for one coming back.
 const RETRY_PAUSES_MS: [u64; 3] = [3_000, 10_000, 30_000];
@@ -82,7 +90,7 @@ pub const LOOKUP_FILLER: Filler =
     Filler { phrase: Cow::Borrowed("Сейчас посмотрю."), after_ms: 1000, thinking_ms: None };
 
 /// What a tool returned: its text for the model, whether it failed, whether the text came from outside the house.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct ToolOutcome {
     pub content: String,
     pub is_error: bool,
@@ -96,6 +104,8 @@ pub struct ToolOutcome {
     /// phrase of ours in the history is a pattern the model would say next time without doing anything
     /// (docs/plans/audio-interface.md, «Доводка после проверки руками 14.11»).
     pub kept: Option<String>,
+    /// Tools the call opens: offered from the next round on (Thinking's `open`, docs/plans/thinking.md, §6).
+    pub opens: Vec<LlmTool>,
 }
 
 impl ToolOutcome {
@@ -180,9 +190,17 @@ pub struct ToolBox {
     /// Set when the answer's last round was forced by its limits — rounds or time — rather than chosen by the model:
     /// the work may have stopped half-way (the workshop's «не доделано»).
     pub limited: Option<Arc<std::sync::atomic::AtomicBool>>,
+    /// Set, with `limited`, when the answer ended because the model's thinking took its whole answer again and again
+    /// (`MAX_THOUGHT_CUTS`): the work says so («модель думала слишком долго»), not «ничего не поменялось».
+    pub thought_away: Option<Arc<std::sync::atomic::AtomicBool>>,
     /// The history of the answer is cached too, not only the stable instructions (`LlmRequest.cache_history`): every
     /// round of a long run pays in full only for what is new (the workshop's agent, on Claude).
     pub cache_history: bool,
+    /// Tools not offered in the last round with tools: what they open could not be used (Thinking's `open`).
+    pub not_last: Vec<String>,
+    /// Tools offered for the model to find, not loaded until then (`LlmRequest.deferred`), and the provider's search.
+    pub deferred: Vec<String>,
+    pub tool_search: bool,
 }
 
 impl ToolBox {
@@ -206,8 +224,126 @@ impl ToolBox {
             retries: 0,
             inbox: None,
             limited: None,
+            thought_away: None,
             cache_history: false,
+            not_last: Vec::new(),
+            deferred: Vec::new(),
+            tool_search: false,
         }
+    }
+}
+
+/// What a turn of Thinking watches and steers in an answer's rounds (docs/plans/thinking.md, «The turn's line», §8):
+/// each model round as it ended. Nothing here changes the answer.
+#[derive(Clone, Default)]
+pub struct Steer {
+    /// Each model round, once its turn is whole.
+    pub seen: Option<SeenBy>,
+    /// Before each model round: true — this round is the last, words only (the rounds policy, thinking/rounds.rs).
+    /// The policy sends its own `wait`.
+    pub before: Option<BeforeBy>,
+    /// The calls of a round still run after `slow_ms`: told once a round, in place of the toolbox's spoken filler.
+    pub slow: Option<SlowBy>,
+    pub slow_ms: u64,
+}
+
+/// Who watches the rounds.
+pub type SeenBy = Arc<dyn Fn(&Seen) + Send + Sync>;
+/// Who decides before a round whether it is the last.
+pub type BeforeBy = Arc<dyn Fn(&Before) -> bool + Send + Sync>;
+/// Who hears that a round's calls run long, by their names, and whether anything was said.
+pub type SlowBy = Arc<dyn Fn(&[String], bool) + Send + Sync>;
+
+/// Where an answer stands before a round of the model.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Before {
+    pub round: usize,
+    /// Something of the answer was said already.
+    pub said: bool,
+    /// Since the answer began.
+    pub elapsed_ms: u64,
+    pub model: String,
+}
+
+/// One model round of an answer, as Thinking's line keeps it.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Seen {
+    pub round: usize,
+    /// From the request to the turn's end.
+    pub ms: u64,
+    /// From the request to its first text or call.
+    pub first_ms: Option<u64>,
+    pub usage: Option<crate::dialog::llm::LlmUsage>,
+    /// The names of the tools it called.
+    pub calls: Vec<String>,
+    pub parts: RequestParts,
+    pub model: String,
+    pub provider: String,
+    /// The last round: words only.
+    pub words: bool,
+}
+
+/// A request's parts, in tokens as `estimate_tokens` counts them: the tools, the stable instructions, the changing
+/// ones, the messages (the history, the phrase, this answer's rounds), and how many tools were offered.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RequestParts {
+    pub tools: u32,
+    pub stable: u32,
+    pub changing: u32,
+    pub messages: u32,
+    pub offered: u32,
+}
+
+/// Tokens of a text as a model would count them, about: four Latin letters or digits a token, two and a half of any
+/// other script. The provider's own count of a round is in its usage.
+pub fn estimate_tokens(text: &str) -> u32 {
+    let (ascii, other) =
+        text.chars().fold(
+            (0u32, 0u32),
+            |(ascii, other), c| {
+                if c.is_ascii() {
+                    (ascii + 1, other)
+                } else {
+                    (ascii, other + 1)
+                }
+            },
+        );
+    ascii.div_ceil(4) + (other * 2).div_ceil(5)
+}
+
+/// The parts of a request, in tokens.
+pub fn parts_of(request: &LlmRequest) -> RequestParts {
+    let tools = request
+        .tools
+        .iter()
+        .map(|tool| {
+            estimate_tokens(&tool.name)
+                + estimate_tokens(&tool.description)
+                + estimate_tokens(&tool.parameters.to_string())
+        })
+        .sum();
+    let messages = request
+        .messages
+        .iter()
+        .map(|message| match message {
+            LlmMessage::User(text) => estimate_tokens(text),
+            LlmMessage::Assistant(turn) => {
+                estimate_tokens(&turn.content)
+                    + turn
+                        .tool_calls
+                        .iter()
+                        .map(|call| estimate_tokens(&serde_json::Value::Object(call.input.clone()).to_string()))
+                        .sum::<u32>()
+            }
+            LlmMessage::Tool(results) => results.iter().map(|result| estimate_tokens(&result.content)).sum(),
+        })
+        .sum();
+    RequestParts {
+        tools,
+        stable: estimate_tokens(&request.system),
+        changing: request.system_tail.as_deref().map_or(0, estimate_tokens),
+        messages,
+        offered: request.tools.len() as u32,
     }
 }
 
@@ -243,6 +379,11 @@ pub struct DialogContext {
     /// answer speaks of a provider's limit — the backup's one sentence, the day's 90 % (docs/plans/provider-limits.md).
     /// An app's text, a background round or the workshop never get those words, and nothing is said unasked.
     pub spoken: bool,
+    /// The agent of the turn (docs/plans/thinking.md, §11), when it is neither the room's nor the home's: its persona
+    /// as the character's prompt, its own view of memory, and the note the history keeps of its turn.
+    pub persona: Option<String>,
+    pub viewer: Option<String>,
+    pub note: Option<String>,
 }
 
 /// Who answered an exchange that is remembered without the model's words.
@@ -262,6 +403,8 @@ struct Offer {
     tools: Vec<LlmTool>,
     choice: ToolChoice,
     instructions: Option<String>,
+    deferred: Vec<String>,
+    tool_search: bool,
 }
 
 /// One model round waits for its first phrase (a sentence's worth of text or a tool call), or for any first event.
@@ -278,6 +421,7 @@ struct Ran {
     tainted: bool,
     spoken: bool,
     kept: Option<String>,
+    opens: Vec<LlmTool>,
 }
 
 /// Phrases of an answer: cut as the text comes, said through the stream, kept for the history — a ready phrase as
@@ -400,6 +544,7 @@ fn run_tool(
             tainted: false,
             spoken: false,
             kept: None,
+            opens: Vec::new(),
         };
         if let Some(content) = refused {
             return failed(id, content);
@@ -410,6 +555,7 @@ fn run_tool(
                 tainted: outcome.tainted,
                 spoken: outcome.spoken && !outcome.is_error,
                 kept: outcome.kept,
+                opens: outcome.opens,
             },
             Ok(Err(error)) => failed(id, format!("error: {error}")),
             Err(error) => failed(id, format!("error: {error}")),
@@ -437,6 +583,8 @@ pub struct DialogService {
     now: std::sync::OnceLock<NowSource>,
     /// Where each round's spending goes (the journal's requests, the works).
     usage: std::sync::OnceLock<UsageSink>,
+    /// The router's door (src/router): every answer's model goes through it once attached.
+    router: std::sync::OnceLock<Arc<crate::router::Router>>,
     /// The chosen character's catchphrases (src/characters/catchphrases.rs) and which answer gets one.
     catchphrases: std::sync::OnceLock<CatchphraseSource>,
     picker: Mutex<Picker>,
@@ -486,6 +634,7 @@ impl DialogService {
             memory: std::sync::OnceLock::new(),
             now: std::sync::OnceLock::new(),
             usage: std::sync::OnceLock::new(),
+            router: std::sync::OnceLock::new(),
             catchphrases: std::sync::OnceLock::new(),
             picker: Mutex::new(Picker::default()),
         };
@@ -578,7 +727,8 @@ impl DialogService {
             .or_else(|| self.brain.slot(ModelProfile::Fast))
             .ok_or_else(|| anyhow!("модель «Мышления» не выбрана"))?;
         // The app's deal: on the apps' seat, by what stands there for it.
-        let tally = Tally::new(self.usage.get().cloned(), "", Answerer::of(&slot, Seat::App, Reason::Seat));
+        let (slot, asked) = self.door(Ask::of(Seat::App, Reason::Seat), slot);
+        let tally = Tally::new(self.usage.get().cloned(), "", asked);
         // An app writes texts, not spoken answers (a series' script as JSON): the workshop's longer limit
         // (WORKSHOP_MAX_TOKENS), not LLM_MAX_TOKENS — a reasoning model spends part of it on thinking, and a cut JSON is
         // no JSON. A model that refuses the longer limit as too long is asked again with its own.
@@ -646,9 +796,10 @@ impl DialogService {
         cancel: CancellationToken,
     ) -> anyhow::Result<AssistantTurn> {
         let slot = self.brain.slot(ModelProfile::Fast).ok_or_else(|| anyhow!("модель «Мышления» не выбрана"))?;
-        // A background round is a deal of its own, on the fast seat (the router's journal); its own seat comes with
-        // the router's door (docs/plans/router-and-works.md).
-        let tally = Tally::new(self.usage.get().cloned(), key, Answerer::of(&slot, Seat::Fast, Reason::Seat));
+        // A background round is a deal of its own, on its own seat through the router's door: «Быстрая» stands there.
+        let ask = Ask { tools: !tools.is_empty(), ..Ask::of(Seat::Background, Reason::Seat) };
+        let (slot, asked) = self.door(ask, slot);
+        let tally = Tally::new(self.usage.get().cloned(), key, asked);
         let tools = if slot.client.tools() { tools } else { Vec::new() };
         let tool_choice = if tools.is_empty() { ToolChoice::None } else { ToolChoice::Auto };
         let request = LlmRequest {
@@ -718,7 +869,8 @@ impl DialogService {
         let instructions = instructions.to_string();
         generate(move |y| async move {
             let Some(slot) = service.brain.slot(ModelProfile::Smart) else { return };
-            let tally = service.tally("", &DialogContext::default(), &slot, Seat::Smart);
+            let (slot, asked) = service.opened(&DialogContext::default(), slot, Seat::Smart, false);
+            let tally = service.tally("", asked);
             let request = LlmRequest {
                 system: NARRATOR_PROMPT.into(),
                 messages: vec![LlmMessage::User(instructions)],
@@ -758,7 +910,8 @@ impl DialogService {
         let (key, system, text) = (key.to_string(), system.to_string(), text.to_string());
         generate(move |y| async move {
             let Some(slot) = service.brain.slot(ModelProfile::Smart) else { return };
-            let tally = service.tally(&key, &DialogContext::default(), &slot, Seat::Smart);
+            let (slot, asked) = service.opened(&DialogContext::default(), slot, Seat::Smart, false);
+            let tally = service.tally(&key, asked);
             if fresh {
                 service.forget(&key);
             }
@@ -825,10 +978,33 @@ impl DialogService {
         picker.pick(&phrases, |n| rand::random_range(0..n.max(1)))
     }
 
-    /// The tally of one answer on `slot`, which closes its deal: on the context's seat (else `seat`), by the context's
-    /// reason (else what stands on the seat).
-    fn tally(&self, key: &str, context: &DialogContext, slot: &ModelSlot, seat: Seat) -> Arc<Tally> {
-        let asked = Answerer::of(slot, context.seat.unwrap_or(seat), context.reason.unwrap_or(Reason::Seat));
+    /// The router, from now on the door every answer's model goes through (src/router): the seat's model of «Мозг»
+    /// and the models its table names. Without it the seat's model, as before the door.
+    pub fn attach_router(&self, router: Arc<crate::router::Router>) {
+        let _ = self.router.set(router);
+    }
+
+    /// A seat's model through the router's door: the slot taken and who answers, for the deal.
+    fn door(&self, ask: Ask, slot: ModelSlot) -> (ModelSlot, Answerer) {
+        match self.router.get() {
+            Some(router) => router.slot(&ask, slot, &|provider, model| self.brain.slot_of(provider, model)),
+            None => {
+                let asked = Answerer::of(&slot, ask.seat, ask.reason);
+                (slot, asked)
+            }
+        }
+    }
+
+    /// One answer's model through the door: on the context's seat (else `seat`), by the context's reason (else what
+    /// stands on the seat).
+    fn opened(&self, context: &DialogContext, slot: ModelSlot, seat: Seat, tools: bool) -> (ModelSlot, Answerer) {
+        let reason = context.reason.clone().unwrap_or(Reason::Seat);
+        let ask = Ask { tools, ..Ask::of(context.seat.unwrap_or(seat), reason) };
+        self.door(ask, slot)
+    }
+
+    /// The tally of one answer, which closes its deal.
+    fn tally(&self, key: &str, asked: Answerer) -> Arc<Tally> {
         Tally::new(self.usage.get().cloned(), key, asked)
     }
 
@@ -874,15 +1050,30 @@ impl DialogService {
         cancel: CancellationToken,
         toolbox: Option<ToolBox>,
     ) -> PhraseStream {
+        self.answer_steered(key, question, context, cancel, toolbox, Steer::default())
+    }
+
+    /// The same answer, its rounds watched by a turn of Thinking (`Steer`).
+    pub fn answer_steered(
+        self: &Arc<Self>,
+        key: &str,
+        question: &str,
+        context: DialogContext,
+        cancel: CancellationToken,
+        toolbox: Option<ToolBox>,
+        steer: Steer,
+    ) -> PhraseStream {
         let service = self.clone();
         let (key, question) = (key.to_string(), question.to_string());
         generate(move |y| async move {
             let Some(slot) = service.slot_for(&context) else { return };
-            let tally = service.tally(&key, &context, &slot, profile_seat(&context));
+            let (slot, asked) = service.opened(&context, slot, profile_seat(&context), toolbox.is_some());
+            let tally = service.tally(&key, asked);
             let mut messages = service.turns(&key);
             messages.push(LlmMessage::User(question.clone()));
-            let answered =
-                service.rounds(&slot, &tally, &key, &question, messages, &context, &cancel, toolbox, None, &y).await;
+            let answered = service
+                .rounds(&slot, &tally, &key, &question, messages, &context, &cancel, toolbox, None, &steer, &y)
+                .await;
             ended(&tally, answered, &cancel, &y).await;
         })
     }
@@ -902,6 +1093,7 @@ impl DialogService {
         cancel: &CancellationToken,
         toolbox: Option<ToolBox>,
         mut first: Option<(String, AssistantTurn)>,
+        steer: &Steer,
         y: &Yielder<anyhow::Result<String>>,
     ) -> anyhow::Result<()> {
         let mut speaker = Speaker::new(y);
@@ -931,12 +1123,25 @@ impl DialogService {
         let mut offered = toolbox.as_ref().map(|toolbox| toolbox.tools.clone()).unwrap_or_default();
         let mut filler_said = false;
         let mut cuts = 0;
+        // Of them, turns the thinking took whole (`MAX_THOUGHT_CUTS`): the rounds after one think less.
+        let mut thought_cuts = 0;
         let mut retried = 0;
         for round in 0.. {
             let given = if round == 0 { first.take() } else { None };
             let short =
                 deadline.saturating_duration_since(Instant::now()) < Duration::from_millis(LAST_ROUND_RESERVE_MS);
-            let last = given.is_none() && (round >= rounds || short);
+            // The rounds policy may make this round the last: words only.
+            let steered = given.is_none()
+                && toolbox.is_some()
+                && steer.before.as_ref().is_some_and(|before| {
+                    before(&Before {
+                        round,
+                        said: !speaker.said.is_empty(),
+                        elapsed_ms: began.elapsed().as_millis() as u64,
+                        model: slot.model.clone(),
+                    })
+                });
+            let last = given.is_none() && (round >= rounds || short || steered);
             if last {
                 if let Some(limited) = toolbox.as_ref().and_then(|toolbox| toolbox.limited.as_ref()) {
                     limited.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -956,15 +1161,27 @@ impl DialogService {
                     Some(turn)
                 }
                 None => {
+                    // The last round with tools offers nothing that only opens more.
+                    let last_with_tools = !last && round + 1 >= rounds;
                     let offer = toolbox.as_ref().map(|toolbox| Offer {
-                        tools: offered.clone(),
+                        tools: offered
+                            .iter()
+                            .filter(|tool| !(last_with_tools && toolbox.not_last.contains(&tool.name)))
+                            .cloned()
+                            .collect(),
                         choice: if last { ToolChoice::None } else { ToolChoice::Auto },
                         instructions: toolbox.instructions.clone(),
+                        deferred: toolbox.deferred.clone(),
+                        tool_search: toolbox.tool_search,
                     });
                     let mut request = self.request(slot, key, &messages, context, offer.as_ref());
                     request.cache_history = toolbox.as_ref().is_some_and(|toolbox| toolbox.cache_history);
+                    request.think_less = thought_cuts > 0;
                     let timeout_ms =
                         toolbox.as_ref().and_then(|toolbox| toolbox.round_ms).unwrap_or(self.config.timeout_ms);
+                    let parts = steer.seen.as_ref().map(|_| parts_of(&request));
+                    let asked_at = Instant::now();
+                    let mut first_at: Option<u64> = None;
                     tally.asking();
                     let mut events = self.round_within(slot, request, cancel.clone(), Until::Phrase, timeout_ms);
                     // A round that writes nothing for a while says the filler, once, while nothing has been said.
@@ -992,6 +1209,9 @@ impl DialogService {
                             None => events.next().await,
                         };
                         let Some(event) = event else { break };
+                        if first_at.is_none() && matches!(event, Ok(LlmEvent::Text(_)) | Ok(LlmEvent::Tool(_))) {
+                            first_at = Some(asked_at.elapsed().as_millis() as u64);
+                        }
                         match event {
                             Ok(LlmEvent::Text(text)) => {
                                 thinking = None;
@@ -1028,6 +1248,21 @@ impl DialogService {
                                 break;
                             }
                         }
+                    }
+                    if let (Some(seen), Some(done), Some(parts)) = (steer.seen.as_ref(), turn.as_ref(), parts) {
+                        seen(&Seen {
+                            round,
+                            ms: asked_at.elapsed().as_millis() as u64,
+                            first_ms: first_at.or_else(|| {
+                                (!done.tool_calls.is_empty()).then(|| asked_at.elapsed().as_millis() as u64)
+                            }),
+                            usage: done.usage.clone(),
+                            calls: done.tool_calls.iter().map(|call| call.name.clone()).collect(),
+                            parts,
+                            model: slot.model.clone(),
+                            provider: slot.provider.clone(),
+                            words: last,
+                        });
                     }
                     turn
                 }
@@ -1066,23 +1301,47 @@ impl DialogService {
                     // not run: only its words stay.
                     speaker.flush().await;
                     let out_of_tokens = ended.as_ref().is_some_and(|turn| turn.out_of_tokens);
+                    // Nothing came out of it but the thinking: no word, no call.
+                    let thought_only =
+                        ended.as_ref().is_some_and(|turn| turn.content.trim().is_empty() && turn.tool_calls.is_empty());
                     // The limit cut the turn before any call: the model hears it and goes on — the cut turn is
-                    // dropped, as a cut call's is. Past `MAX_CUTS` (or on the last round) the run ends half-way.
+                    // dropped, as a cut call's is. Past `MAX_CUTS` (or on the last round) the run ends half-way; a turn
+                    // the thinking took whole goes on `MAX_THOUGHT_CUTS` times only.
                     if out_of_tokens {
-                        match toolbox.cut_answer_note.filter(|_| !last && cuts < MAX_CUTS) {
+                        let again = !last && cuts < MAX_CUTS && (!thought_only || thought_cuts < MAX_THOUGHT_CUTS);
+                        match toolbox.cut_answer_note.filter(|_| again) {
                             Some(note) => {
                                 cuts += 1;
-                                tracing::info!(
-                                    target: "dialog",
-                                    "{}: the turn ran out of tokens before any call: the model goes on, told to write in parts",
-                                    slot.model
-                                );
+                                if thought_only {
+                                    thought_cuts += 1;
+                                    tracing::info!(
+                                        target: "dialog",
+                                        "{}: the thinking took the whole answer: the model goes on, thinking less",
+                                        slot.model
+                                    );
+                                } else {
+                                    tracing::info!(
+                                        target: "dialog",
+                                        "{}: the turn ran out of tokens before any call: the model goes on, told to write in parts",
+                                        slot.model
+                                    );
+                                }
                                 messages.push(LlmMessage::User(note.to_string()));
                                 continue;
                             }
                             None if toolbox.cut_answer_note.is_some() => {
                                 if let Some(limited) = toolbox.limited.as_ref() {
                                     limited.store(true, std::sync::atomic::Ordering::Relaxed);
+                                }
+                                if thought_only {
+                                    tracing::info!(
+                                        target: "dialog",
+                                        "{}: the thinking took the whole answer again: the answer ends",
+                                        slot.model
+                                    );
+                                    if let Some(thought_away) = toolbox.thought_away.as_ref() {
+                                        thought_away.store(true, std::sync::atomic::Ordering::Relaxed);
+                                    }
                                 }
                             }
                             None => {}
@@ -1117,8 +1376,20 @@ impl DialogService {
                     .boxed()
             };
             // Not part of the answer the history keeps: only what the model said.
-            let outcomes = match &toolbox.filler {
-                Some(filler) if !filler_said && speaker.said.is_empty() => {
+            let outcomes = match (&steer.slow, &toolbox.filler) {
+                // Thinking's rounds policy tells the door instead of saying a filler.
+                (Some(slow), _) => {
+                    let names: Vec<String> = turn.tool_calls.iter().map(|call| call.name.clone()).collect();
+                    let said = !speaker.said.is_empty();
+                    tokio::select! {
+                        outcomes = &mut running => outcomes,
+                        _ = tokio::time::sleep(Duration::from_millis(steer.slow_ms)) => {
+                            slow(&names, said);
+                            running.await
+                        }
+                    }
+                }
+                (None, Some(filler)) if !filler_said && speaker.said.is_empty() => {
                     tokio::select! {
                         outcomes = &mut running => outcomes,
                         _ = tokio::time::sleep(Duration::from_millis(filler.after_ms)) => {
@@ -1128,7 +1399,7 @@ impl DialogService {
                         }
                     }
                 }
-                _ => running.await,
+                (None, _) => running.await,
             };
             // Ready phrases (the works' «Делаю: …») are the answer: said as they are, no round to retell them.
             if !outcomes.is_empty() && outcomes.iter().all(|outcome| outcome.spoken) {
@@ -1143,6 +1414,12 @@ impl DialogService {
                 break;
             }
             let tainted = outcomes.iter().any(|outcome| outcome.tainted);
+            // What the calls opened is offered from the next round on.
+            for opened in outcomes.iter().flat_map(|outcome| outcome.opens.iter()) {
+                if !offered.iter().any(|tool| tool.name == opened.name) {
+                    offered.push(opened.clone());
+                }
+            }
             messages.push(LlmMessage::Assistant(turn));
             messages.push(LlmMessage::Tool(outcomes.into_iter().map(|outcome| outcome.result).collect()));
             if let (Some(filter), true) = (&toolbox.safe_after_taint, tainted) {
@@ -1156,7 +1433,12 @@ impl DialogService {
                 speaker.say(text).await;
             }
         }
-        let source = context.facts.as_deref().filter(|facts| !facts.is_empty()).map(facts_source);
+        let source = context
+            .facts
+            .as_deref()
+            .filter(|facts| !facts.is_empty())
+            .map(facts_source)
+            .or_else(|| context.note.clone());
         self.remember_turn(key, question, &speaker.answer(), source.as_deref());
         Ok(())
     }
@@ -1177,11 +1459,18 @@ impl DialogService {
             return Ok(ModelChoice { text: String::new(), calls: Vec::new(), resume: None });
         };
         // One deal for the choice and the words after it (`continue_with`, `proceed`): the last of them closes it.
-        let tally = self.tally(key, &context, &slot, profile_seat(&context));
+        let (slot, asked) = self.opened(&context, slot, profile_seat(&context), !tools.is_empty());
+        let tally = self.tally(key, asked);
         let mut messages = self.turns(key);
         messages.push(LlmMessage::User(question.to_string()));
         let offered = if slot.client.tools() { tools } else { Vec::new() };
-        let offer = (!offered.is_empty()).then_some(Offer { tools: offered, choice: ToolChoice::Auto, instructions });
+        let offer = (!offered.is_empty()).then_some(Offer {
+            tools: offered,
+            choice: ToolChoice::Auto,
+            instructions,
+            deferred: Vec::new(),
+            tool_search: false,
+        });
         let mut text = String::new();
         let mut turn = None;
         let request = self.request(&slot, key, &messages, &context, offer.as_ref());
@@ -1261,15 +1550,31 @@ impl DialogService {
 
     /// The request: the stable part of the instructions first (the character and how to use the offered tools: a
     /// provider may cache it with the tools), then what changes with every question (the time, a lookup's data).
-    fn request(
+    /// The instructions of an answer: the stable part (the character, the offered tools' own words, the memory's
+    /// block) and what changes with every question (the time, «Сейчас», a lookup's data). A live model's session takes
+    /// them whole (thinking/live.rs).
+    pub fn instructions(
         &self,
-        slot: &ModelSlot,
         key: &str,
-        messages: &[LlmMessage],
         context: &DialogContext,
-        offer: Option<&Offer>,
-    ) -> LlmRequest {
-        let prompt = self.personas.system_prompt_in(context.device.as_deref(), context.channel);
+        offered: &[LlmTool],
+        instructions: Option<&str>,
+    ) -> (String, String) {
+        let offer = Offer {
+            tools: offered.to_vec(),
+            choice: ToolChoice::Auto,
+            instructions: instructions.map(str::to_string),
+            deferred: Vec::new(),
+            tool_search: false,
+        };
+        self.system_of(key, context, Some(&offer))
+    }
+
+    fn system_of(&self, key: &str, context: &DialogContext, offer: Option<&Offer>) -> (String, String) {
+        let prompt = match &context.persona {
+            Some(text) => super::system_prompt::SystemPrompt { text: text.clone(), problem: None },
+            None => self.personas.system_prompt_in(context.device.as_deref(), context.channel),
+        };
         {
             let mut known = self.prompt_problem.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             if *known != prompt.problem {
@@ -1307,7 +1612,8 @@ impl DialogService {
             Some(memory) => {
                 let offered: Vec<&str> =
                     offer.map(|offer| offer.tools.iter().map(|tool| tool.name.as_str()).collect()).unwrap_or_default();
-                let block = memory.prompt(crate::memory::text::lang_of(&system), &offered);
+                let block =
+                    memory.prompt_as(crate::memory::text::lang_of(&system), &offered, context.viewer.as_deref());
                 if block.is_empty() {
                     system
                 } else {
@@ -1316,19 +1622,34 @@ impl DialogService {
             }
             None => system,
         };
+        (system, tail.join("\n\n"))
+    }
+
+    fn request(
+        &self,
+        slot: &ModelSlot,
+        key: &str,
+        messages: &[LlmMessage],
+        context: &DialogContext,
+        offer: Option<&Offer>,
+    ) -> LlmRequest {
+        let (system, tail) = self.system_of(key, context, offer);
         let (tools, tool_choice) = match offer.filter(|offer| !offer.tools.is_empty()) {
             Some(offer) => (offer.tools.clone(), offer.choice),
             None => (Vec::new(), ToolChoice::Auto),
         };
         LlmRequest {
             system,
-            system_tail: Some(tail.join("\n\n")),
+            system_tail: Some(tail),
             messages: messages.to_vec(),
             model: Some(slot.model.clone()),
             tools,
             tool_choice,
             max_tokens: context.max_tokens,
+            think_less: false,
             cache_history: false,
+            deferred: offer.map(|offer| offer.deferred.clone()).unwrap_or_default(),
+            tool_search: offer.is_some_and(|offer| offer.tool_search),
         }
     }
 
@@ -1568,7 +1889,19 @@ impl ModelChoice {
         let first = resume.turn.clone().map(|turn| (resume.written.clone(), turn));
         generate(move |y| async move {
             let answered = service
-                .rounds(&slot, &tally, &key, &question, messages, &context, &cancel, Some(toolbox), first, &y)
+                .rounds(
+                    &slot,
+                    &tally,
+                    &key,
+                    &question,
+                    messages,
+                    &context,
+                    &cancel,
+                    Some(toolbox),
+                    first,
+                    &Steer::default(),
+                    &y,
+                )
                 .await;
             ended(&tally, answered, &cancel, &y).await;
         })
@@ -2255,7 +2588,15 @@ pub mod tests {
         }
 
         fn status(&self) -> BrainStatus {
-            unimplemented!("not asked")
+            let model = self.model.lock().unwrap().clone();
+            BrainStatus {
+                provider: DialogProvider::OpenAi,
+                models: crate::dialog::llm::brain::BrainModels { fast: model.clone(), smart: model },
+                effort: None,
+                cloud: false,
+                profiles: crate::dialog::llm::brain::BrainProfiles { fast: None, smart: None },
+                source: BrainOrigin::Env,
+            }
         }
     }
 
@@ -2336,6 +2677,7 @@ pub mod tests {
             memory: std::sync::OnceLock::new(),
             now: std::sync::OnceLock::new(),
             usage: std::sync::OnceLock::new(),
+            router: std::sync::OnceLock::new(),
             catchphrases: std::sync::OnceLock::new(),
             picker: Mutex::new(Picker::default()),
         });
@@ -2403,6 +2745,7 @@ pub mod tests {
             memory: std::sync::OnceLock::new(),
             now: std::sync::OnceLock::new(),
             usage: std::sync::OnceLock::new(),
+            router: std::sync::OnceLock::new(),
             catchphrases: std::sync::OnceLock::new(),
             picker: Mutex::new(Picker::default()),
         });
@@ -2486,6 +2829,7 @@ pub mod tests {
             memory: std::sync::OnceLock::new(),
             now: std::sync::OnceLock::new(),
             usage: std::sync::OnceLock::new(),
+            router: std::sync::OnceLock::new(),
             catchphrases: std::sync::OnceLock::new(),
             picker: Mutex::new(Picker::default()),
         });
@@ -2570,7 +2914,7 @@ pub mod tests {
             ("device-24", "spare", "backup-model")
         );
         assert_eq!(
-            (deal.by.seat, deal.by.reason, deal.outcome, deal.rounds),
+            (deal.by.seat, deal.by.reason.clone(), deal.outcome, deal.rounds),
             (Seat::Backup, Reason::Backup, Outcome::Ok, 1)
         );
         assert!(!deal.by.cloud);
@@ -2601,7 +2945,7 @@ pub mod tests {
         {
             let deals = deals.lock().unwrap();
             assert_eq!(deals.len(), 1, "{deals:?}");
-            assert_eq!((deals[0].by.seat, deals[0].by.reason), (Seat::Smart, Reason::RuleCommand));
+            assert_eq!((deals[0].by.seat, deals[0].by.reason.clone()), (Seat::Smart, Reason::RuleCommand));
             assert_eq!((deals[0].rounds, deals[0].outcome), (2, Outcome::Ok));
         }
 
@@ -2659,6 +3003,7 @@ pub mod tests {
             memory: std::sync::OnceLock::new(),
             now: std::sync::OnceLock::new(),
             usage: std::sync::OnceLock::new(),
+            router: std::sync::OnceLock::new(),
             catchphrases: std::sync::OnceLock::new(),
             picker: Mutex::new(Picker::default()),
         });
@@ -2771,10 +3116,29 @@ pub mod tests {
             memory: std::sync::OnceLock::new(),
             now: std::sync::OnceLock::new(),
             usage: std::sync::OnceLock::new(),
+            router: std::sync::OnceLock::new(),
             catchphrases: std::sync::OnceLock::new(),
             picker: Mutex::new(Picker::default()),
         });
         (llm, service)
+    }
+
+    /// The dialog with a model of the test's own (one that waits, one that fails), as `scripted` builds it.
+    pub fn with_client(client: Arc<dyn LlmClient>) -> Arc<DialogService> {
+        let brain = Arc::new(Switching { client, model: Arc::new(Mutex::new("test-llm".into())) });
+        Arc::new(DialogService {
+            config: config(None),
+            personas: personas(),
+            brain,
+            history: Mutex::new(DialogHistory::new(2, 60_000)),
+            prompt_problem: Mutex::new(None),
+            memory: std::sync::OnceLock::new(),
+            now: std::sync::OnceLock::new(),
+            usage: std::sync::OnceLock::new(),
+            router: std::sync::OnceLock::new(),
+            catchphrases: std::sync::OnceLock::new(),
+            picker: Mutex::new(Picker::default()),
+        })
     }
 
     pub fn words(text: &str) -> Vec<anyhow::Result<LlmEvent>> {
@@ -3021,6 +3385,67 @@ pub mod tests {
         assert!(!limited.load(std::sync::atomic::Ordering::Relaxed));
     }
 
+    /// 27.11, a widget on GLM 5.3: the thinking took the whole answer four times running (8 190 tokens of 8 192, six
+    /// and a half minutes) and nothing was written. A turn of thinking only goes on `MAX_THOUGHT_CUTS` times, it and
+    /// the rounds after it thinking less (DuoWave's advice: `reasoning_effort: "low"`); taken again, the answer ends
+    /// cut by its limits and marked as thought away.
+    #[tokio::test]
+    async fn a_turn_the_thinking_took_whole_goes_on_once_then_the_answer_ends_thought_away() {
+        use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
+        let thought = || vec![Ok(LlmEvent::Turn(AssistantTurn { out_of_tokens: true, ..AssistantTurn::default() }))];
+        let flags = || (Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(false)));
+        let toolbox = |limited: &Arc<AtomicBool>, thought_away: &Arc<AtomicBool>| {
+            let mut toolbox = writer(Some(note));
+            toolbox.cut_answer_note = Some("Пиши сразу.");
+            toolbox.limited = Some(limited.clone());
+            toolbox.thought_away = Some(thought_away.clone());
+            toolbox
+        };
+
+        let (llm, service) = scripted(Box::new(move |_, _| thought()));
+        let (limited, thought_away) = flags();
+        collect(answer_with(&service, toolbox(&limited, &thought_away))).await;
+        assert_eq!(llm.requests.lock().unwrap().len(), 1 + MAX_THOUGHT_CUTS, "asked again once, not MAX_CUTS times");
+        assert!(limited.load(Relaxed), "cut by its limits");
+        assert!(thought_away.load(Relaxed), "the thinking took it");
+        let thinking_less =
+            |llm: &Scripted| llm.requests.lock().unwrap().iter().map(|r| r.think_less).collect::<Vec<_>>();
+        assert_eq!(thinking_less(&llm), [false, true], "the second try thinks less");
+
+        // Told once, the model writes, the rounds after it thinking less too: nothing is marked.
+        let (llm, service) = scripted(Box::new(move |n, _| match n {
+            0 => thought(),
+            1 => vec![Ok(LlmEvent::Turn(AssistantTurn {
+                tool_calls: vec![ToolCall {
+                    id: "1".into(),
+                    name: "write_file".into(),
+                    input: Map::new(),
+                    error: None,
+                }],
+                ..AssistantTurn::default()
+            }))],
+            _ => words("Записала."),
+        }));
+        let (limited, thought_away) = flags();
+        let said = collect(answer_with(&service, toolbox(&limited, &thought_away))).await;
+        assert_eq!(said.last().map(String::as_str), Some("Записала."));
+        assert_eq!(thinking_less(&llm), [false, true, true]);
+        assert!(!limited.load(Relaxed) && !thought_away.load(Relaxed));
+
+        // A turn its words filled (not its thinking) is no reason to think less.
+        let (llm, service) = scripted(Box::new(move |n, _| match n {
+            0 => vec![Ok(LlmEvent::Turn(AssistantTurn {
+                content: "Сейчас напишу".into(),
+                out_of_tokens: true,
+                ..AssistantTurn::default()
+            }))],
+            _ => words("Записала."),
+        }));
+        let (limited, thought_away) = flags();
+        collect(answer_with(&service, toolbox(&limited, &thought_away))).await;
+        assert_eq!(thinking_less(&llm), [false, false]);
+    }
+
     fn broken() -> anyhow::Result<LlmEvent> {
         Err(crate::dialog::llm::interrupted(
             "Anthropic stream broke: error decoding response body: Operation timed out (os error 60)",
@@ -3098,6 +3523,51 @@ pub mod tests {
         assert_eq!(llm.requests.lock().unwrap().len(), 1);
         assert!(refused_length(&anyhow!("Anthropic API 400: 400 max_tokens: 64000 > 32000, which is the maximum")));
         assert!(!refused_length(&anyhow!("Anthropic rate limit: 429 max_tokens per minute")));
+    }
+
+    /// Thinking's `open` (docs/plans/thinking.md, §6): what a call opens is offered from the next round, after a text
+    /// from outside the house only its safe tools, and `open` itself not in the last round with tools.
+    #[tokio::test]
+    async fn the_tools_a_call_opens_come_next_round_the_safe_ones_after_a_taint_and_open_not_last() {
+        let (llm, service) = scripted(Box::new(|n, _| match n {
+            0 => vec![Ok(LlmEvent::Turn(AssistantTurn {
+                tool_calls: vec![
+                    ToolCall { id: "1".into(), name: "open".into(), input: Map::new(), error: None },
+                    ToolCall { id: "2".into(), name: "news".into(), input: Map::new(), error: None },
+                ],
+                ..AssistantTurn::default()
+            }))],
+            _ => words("Вот."),
+        }));
+        let mut toolbox = ToolBox::new(vec![tool("open"), tool("news")], |call: ToolCall, _| async move {
+            Ok(match call.name.as_str() {
+                "open" => ToolOutcome {
+                    content: "Opened.".into(),
+                    opens: vec![tool("look_safe"), tool("act_unsafe")],
+                    ..ToolOutcome::default()
+                },
+                _ => ToolOutcome::tainted("Заголовки."),
+            })
+        });
+        toolbox.rounds = Some(2);
+        toolbox.not_last = vec!["open".into()];
+        toolbox.safe_after_taint = Some(Arc::new(|offered: &[LlmTool]| {
+            offered.iter().filter(|tool| matches!(tool.name.as_str(), "open" | "news" | "look_safe")).cloned().collect()
+        }));
+        let said = collect(service.answer(
+            "d",
+            "что нового?",
+            DialogContext::default(),
+            CancellationToken::new(),
+            Some(toolbox),
+        ))
+        .await;
+        assert_eq!(said, ["Вот."]);
+        let requests = llm.requests.lock().unwrap();
+        let second: Vec<&str> = requests[1].tools.iter().map(|tool| tool.name.as_str()).collect();
+        assert!(second.contains(&"look_safe"), "{second:?}");
+        assert!(!second.contains(&"act_unsafe"), "not after a text from outside the house: {second:?}");
+        assert!(!second.contains(&"open"), "the last round with tools opens nothing: {second:?}");
     }
 
     #[tokio::test]

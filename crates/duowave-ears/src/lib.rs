@@ -12,8 +12,13 @@ pub use duowave_brain::{characters, dialog, memory, oauth, router, skills, sleep
 pub use duowave_rights::{access, rights};
 pub use duowave_voice::{ear, models, speech, voice_lab};
 
+pub use duowave_door::door;
+pub use duowave_sense::sense;
 #[cfg(feature = "yandex-station")]
 pub mod activator;
+/// The computer's own voice channel (docs/plans/audio-interface-3.md, part К).
+#[cfg(feature = "computer-ear")]
+pub mod channel;
 pub mod gateway;
 pub mod live;
 pub mod requests;

@@ -137,6 +137,8 @@ pub struct Run {
     /// Set when the agent changed the draft's files (written, edited, deleted, restored): a run without a change is
     /// no «готово» (docs/plans/audio-interface.md, «Доводка после проверки руками 14.11», 4).
     pub changed: Arc<std::sync::atomic::AtomicBool>,
+    /// Set when the run ended because the model's thinking took its whole answer again (`ToolBox::thought_away`).
+    pub thought: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// How a draft's work moved: a run began, or it ended — how, and the agent's last words (what it did on its own, its
@@ -149,12 +151,13 @@ pub enum Moment {
         count: usize,
     },
     /// `limited`: its last round was forced by the run's limits (docs/plans/audio-interface.md, «Честное «Готово»»);
-    /// `changed`: the agent changed the draft's files.
+    /// `changed`: the agent changed the draft's files; `thought`: the model's thinking took its answer whole.
     Ended {
         kind: StepKind,
         said: Option<String>,
         limited: bool,
         changed: bool,
+        thought: bool,
     },
 }
 
@@ -291,7 +294,14 @@ impl Activity {
         }
         self.tell(draft);
         self.moved(draft, Moment::Began);
-        Run { draft: draft.to_string(), id, cancel, limited: Arc::default(), changed: Arc::default() }
+        Run {
+            draft: draft.to_string(),
+            id,
+            cancel,
+            limited: Arc::default(),
+            changed: Arc::default(),
+            thought: Arc::default(),
+        }
     }
 
     /// A step of a run that still goes on; a replaced or ended run's steps are dropped.
@@ -317,7 +327,8 @@ impl Activity {
         if let Some(said) = said {
             let limited = run.limited.load(std::sync::atomic::Ordering::Relaxed);
             let changed = run.changed.load(std::sync::atomic::Ordering::Relaxed);
-            self.moved(&run.draft, Moment::Ended { kind, said, limited, changed });
+            let thought = run.thought.load(std::sync::atomic::Ordering::Relaxed);
+            self.moved(&run.draft, Moment::Ended { kind, said, limited, changed, thought });
         }
         true
     }
@@ -416,7 +427,10 @@ impl Activity {
         if was {
             self.ended(draft, stopped);
             self.tell(draft);
-            self.moved(draft, Moment::Ended { kind: StepKind::Stopped, said: None, limited: false, changed: false });
+            self.moved(
+                draft,
+                Moment::Ended { kind: StepKind::Stopped, said: None, limited: false, changed: false, thought: false },
+            );
         }
         was
     }

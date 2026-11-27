@@ -222,7 +222,7 @@ impl ClaudeSession {
             "--verbose",
             "--forward-subagent-text",
             "--permission-mode",
-            "acceptEdits",
+            if self.open.read_only { "plan" } else { "acceptEdits" },
             "--permission-prompts",
             "none",
         ]
@@ -254,6 +254,10 @@ impl ClaudeSession {
 impl Session for ClaudeSession {
     fn id(&self) -> Option<String> {
         Some(self.id.clone())
+    }
+
+    fn ceiling(&mut self, usd: Option<f64>) {
+        self.open.max_usd = usd;
     }
 
     async fn prompt(&mut self, text: &str, out: Arc<dyn Out>, stop: CancellationToken) -> RunEnd {
@@ -461,6 +465,7 @@ impl Reader {
                         model: self.model.clone(),
                         billing: self.billing.clone(),
                         version: text("claude_code_version"),
+                        protocol: None,
                         prompt: Some(cut(&self.prompt)),
                     },
                 );
@@ -784,6 +789,7 @@ impl Reader {
                 text: end.text.as_deref().map(cut),
                 error: end.error.clone(),
                 usd_micro: end.usd_micro,
+                unknown: None,
             },
         );
         end

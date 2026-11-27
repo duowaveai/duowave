@@ -54,16 +54,21 @@ impl Agents {
 
     pub fn list(&self) -> Vec<Arc<AcpAgent>> {
         let paths = self.paths();
-        self.cards().into_iter().map(|card| self.agent(card, &paths)).collect()
+        self.cards().into_iter().filter(speaks_acp).map(|card| self.agent(card, &paths)).collect()
     }
 
     pub fn get(&self, id: &str) -> Option<Arc<AcpAgent>> {
         let paths = self.paths();
-        self.cards().into_iter().find(|card| card.id == id).map(|card| self.agent(card, &paths))
+        self.cards().into_iter().filter(speaks_acp).find(|card| card.id == id).map(|card| self.agent(card, &paths))
     }
 
     /// A card's program found anew (its path set or changed): what was learned of its protocol is forgotten.
     pub fn forget(&self, id: &str) {
         self.known.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).remove(id);
     }
+}
+
+/// A card of a work system alone (a block `system`, no ACP command) is led by its plug, not as an agent.
+fn speaks_acp(card: &Card) -> bool {
+    card.card.system.is_none() || !card.card.acp.command.is_empty()
 }

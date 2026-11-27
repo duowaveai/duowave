@@ -2,19 +2,26 @@
 //! of the socket for every agent with ACP, its program and its command taken from its card (a package of the kind
 //! `agent` from MagicPlace). The program is the person's own; the card only says how to run it.
 //!
-//! JSON-RPC 2.0 over the program's stdio, one message per line (agentclientprotocol.com, schema v1, read 16.11.2026):
-//! `initialize` — the protocol's version agreed (another one — «не готов», never a run on a guess); `session/new` in
-//! the work copy, or for a later run `session/load` (its history is not journaled again) or `session/resume` when the
-//! agent has them, else a new session told the last result; the model by `session/set_config_option` when the card
-//! says it can be chosen; `session/prompt` — the task, a note, a continuation; `session/cancel` — the stop.
-//! `session/update` becomes the common steps: `agent_message_chunk` → Says, `agent_thought_chunk` → Thinks,
-//! `tool_call`/`tool_call_update` → Tool (its diff too), `plan` → Plan, `usage_update` → Usage.
+//! JSON-RPC 2.0 over the program's stdio, one message per line (agentclientprotocol.com: schema v1, read 16.11.2026;
+//! version 2, in preview since 20.11.2026, read 27.11.2026). Two dialects (docs/plans/work-systems.md, stage 2): the
+//! card says which version to ask, `initialize` agrees on one, 1 or 2, for the whole connection; another one is «не
+//! готов», never a run on a guess. `session/new` in the work copy. For a later run version 1 has `session/load` (its
+//! history is not journaled again) or `session/resume` when the agent has them, and version 2 `session/resume`
+//! without a replay; else a new session told the last result. The model by `session/set_config_option` when the card
+//! says it can be chosen; `session/prompt` — the task, a note, a continuation; `session/cancel` — the stop. Version 1
+//! ends a turn with the prompt's answer and its `stopReason`; version 2 answers the prompt at once and ends the turn
+//! with an idle `state_update`.
+//!
+//! `session/update` becomes the common steps: `agent_message_chunk` (and version 2's whole `agent_message`) → Says,
+//! `agent_thought_chunk` → Thinks, `tool_call`/`tool_call_update` (and version 2's `tool_call_content_chunk`) → Tool
+//! with its diff, `plan` or version 2's `plan_update` → Plan, `usage_update` → Usage. Kinds it knows and does not need
+//! are passed over; kinds it does not know are counted in the run's end.
 //!
 //! The socket answers the agent's `session/request_permission` itself, by the folder's allowed commands: a command —
-//! when the folder's rules allow it (`git push` too only when listed, decision 21); reading, searching and changing
-//! files — only inside the work copy; a fetch — when the folder allows `WebFetch`. Allowed — `allow_once`, otherwise
-//! `reject_once`; `allow_always` never. The client offers no files and no terminal of its own: the agent works with
-//! its own tools in the copy.
+//! when the folder's rules allow it (`git push` too only when listed, decision 21), and in version 2 only when it runs
+//! in the copy; reading, searching and changing files — only inside the work copy; a fetch — when the folder allows
+//! `WebFetch`. Allowed — `allow_once`, otherwise `reject_once`; `allow_always` never. The client offers no files and no
+//! terminal of its own: the agent works with its own tools in the copy.
 //!
 //! Money: a `usage_update` with a cost in dollars is the agent's own estimate — the run's deal gets what it grew by in
 //! the run; without one the deal has no price («цена неизвестна»). How the agent pays is its own business.
@@ -39,18 +46,44 @@ use super::{
 };
 use crate::plugins::manifest::AgentCard;
 
-/// The protocol's version this client speaks.
-pub const PROTOCOL: u64 = 1;
+/// The newest version of the protocol this client speaks; it speaks 1 too.
+pub const PROTOCOL: u64 = 2;
 /// How long the agent has to answer `initialize` and to open a session.
 const OPEN_WAIT: Duration = Duration::from_secs(60);
-/// JSON-RPC's «method not found», and ACP's «authentication required».
+/// JSON-RPC's «method not found»; ACP's «authentication required» and «no such version».
 const METHOD_NOT_FOUND: i64 = -32601;
 const AUTH_REQUIRED: i64 = -32000;
+const NO_VERSION: i64 = -32022;
 /// What the journal keeps of the agent's stderr: its end.
 const STDERR_TAIL: usize = 4000;
 
 /// What is known of the agents' programs since the gateway started: a protocol of another version — by card id.
 pub type Known = Arc<Mutex<HashMap<String, String>>>;
+
+/// The protocol's version agreed at `initialize`, for the whole connection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Dialect {
+    V1,
+    V2,
+}
+
+impl Dialect {
+    fn of(version: u64) -> Option<Dialect> {
+        match version {
+            1 => Some(Dialect::V1),
+            2 => Some(Dialect::V2),
+            _ => None,
+        }
+    }
+
+    /// As the run's journal says it.
+    fn name(self) -> &'static str {
+        match self {
+            Dialect::V1 => "ACP 1",
+            Dialect::V2 => "ACP 2",
+        }
+    }
+}
 
 pub struct AcpAgent {
     id: String,
@@ -92,6 +125,10 @@ impl Harness for AcpAgent {
 
     fn via(&self) -> String {
         format!("agent:{}", self.id)
+    }
+
+    fn cloud(&self) -> bool {
+        self.card.model.via != "duowave"
     }
 
     async fn ready(&self) -> Ready {
@@ -175,16 +212,57 @@ struct ToolNow {
     state: Option<String>,
 }
 
-/// The prompt going on: where its steps go, what the agent wrote and thought in pieces, its tool calls.
+/// The prompt going on: where its steps go, what the agent wrote and thought in pieces, its tool calls; in version 2
+/// its messages by id (a whole message may follow its pieces), and the idle state that ends its turn; the updates of
+/// kinds not known.
 struct Prompting {
     out: Arc<dyn Out>,
     says: String,
     thinks: String,
     said: String,
     tools: HashMap<String, ToolNow>,
+    messages: HashMap<String, String>,
+    thoughts: HashMap<String, String>,
+    idle: Option<Value>,
+    unknown: u32,
 }
 
 impl Prompting {
+    fn new(out: Arc<dyn Out>) -> Prompting {
+        Prompting {
+            out,
+            says: String::new(),
+            thinks: String::new(),
+            said: String::new(),
+            tools: HashMap::new(),
+            messages: HashMap::new(),
+            thoughts: HashMap::new(),
+            idle: None,
+            unknown: 0,
+        }
+    }
+
+    /// The new words of an update: a piece's, or what a whole message (version 2) adds to what its pieces said; a
+    /// message said anew is all of it.
+    fn piece(&mut self, update: &Value, thought: bool) -> String {
+        let id = update.get("messageId").and_then(Value::as_str).unwrap_or_default().to_string();
+        let texts = if thought { &mut self.thoughts } else { &mut self.messages };
+        match update.get("content") {
+            Some(Value::Array(blocks)) => {
+                let whole: String =
+                    blocks.iter().filter_map(|block| block.get("text").and_then(Value::as_str)).collect();
+                let before = texts.insert(id, whole.clone()).unwrap_or_default();
+                whole.strip_prefix(before.as_str()).map(str::to_string).unwrap_or(whole)
+            }
+            Some(block) if block.is_object() => {
+                let piece = block.get("text").and_then(Value::as_str).unwrap_or_default().to_string();
+                texts.entry(id).or_default().push_str(&piece);
+                piece
+            }
+            _ => String::new(),
+        }
+    }
+
     fn flush(&mut self) {
         if !self.says.trim().is_empty() {
             self.out.step(None, Step::Says { text: cut(self.says.trim()) });
@@ -210,9 +288,13 @@ struct Shared {
     replaying: std::sync::atomic::AtomicBool,
     /// The session's cost so far as the agent said it, in dollars.
     cost: Mutex<Option<f64>>,
+    /// Version 2: a turn went idle.
+    turn: tokio::sync::Notify,
     stderr: Mutex<String>,
     allow: Vec<String>,
     copy: PathBuf,
+    /// Nothing may change (a plan, a review): every edit is refused.
+    read_only: bool,
 }
 
 impl Shared {
@@ -237,6 +319,9 @@ struct Connection {
     pid: Option<u32>,
     next: AtomicU64,
     capabilities: Mutex<Value>,
+    dialect: Mutex<Dialect>,
+    /// The agent's version as it named itself at `initialize`.
+    agent: Mutex<Option<String>>,
 }
 
 impl Connection {
@@ -265,9 +350,11 @@ impl Connection {
             early: Mutex::new(Vec::new()),
             replaying: std::sync::atomic::AtomicBool::new(false),
             cost: Mutex::new(None),
+            turn: tokio::sync::Notify::new(),
             stderr: Mutex::new(String::new()),
             allow: open.allow.clone(),
             copy: crate::utils::files::canonical(&open.copy).unwrap_or_else(|_| open.copy.clone()),
+            read_only: open.read_only,
         });
         if let Some(mut stderr) = child.stderr.take() {
             let shared = shared.clone();
@@ -297,6 +384,8 @@ impl Connection {
             pid,
             next: AtomicU64::new(1),
             capabilities: Mutex::new(Value::Null),
+            dialect: Mutex::new(Dialect::V1),
+            agent: Mutex::new(None),
         });
         let reader = Arc::downgrade(&connection);
         tokio::spawn(async move {
@@ -339,30 +428,51 @@ impl Connection {
         }
     }
 
+    /// The version agreed for the whole connection.
+    fn dialect(&self) -> Dialect {
+        *locked(&self.dialect)
+    }
+
     /// The protocol agreed, a session opened in the copy (or the earlier one gone on with), the model set.
     async fn begin(&self, card: &AgentCard, open: &Open) -> Result<String, NotOpened> {
-        let initialized = self
-            .call(
-                "initialize",
-                json!({
-                    "protocolVersion": PROTOCOL,
-                    "clientCapabilities": { "fs": { "readTextFile": false, "writeTextFile": false }, "terminal": false },
-                    "clientInfo": { "name": "duowave", "title": "DuoWave", "version": crate::VERSION },
-                }),
-                Some(OPEN_WAIT),
-            )
-            .await
-            .map_err(|(_, why)| NotOpened::Failed(self.words(&why)))?;
+        // The version the card was written for, at most this client's newest; the agent answers the one it speaks.
+        let asked = card.acp.protocol.clamp(1, PROTOCOL);
+        let info = json!({ "name": "duowave", "title": "DuoWave", "version": crate::VERSION });
+        let mut params = json!({
+            "protocolVersion": asked,
+            "clientCapabilities": { "fs": { "readTextFile": false, "writeTextFile": false }, "terminal": false },
+            "clientInfo": info,
+        });
+        // Version 2's names beside version 1's: an agent that answers 1 reads its own.
+        if asked >= 2 {
+            params["info"] = info.clone();
+            params["capabilities"] = json!({});
+        }
+        let initialized = match self.call("initialize", params, Some(OPEN_WAIT)).await {
+            Ok(initialized) => initialized,
+            Err((NO_VERSION, _)) => {
+                return Err(NotOpened::Protocol(crate::tr!(
+                    "агент не говорит на версии ACP {asked}, а DuoWave знает версии 1 и 2",
+                    asked = asked
+                )))
+            }
+            Err((_, why)) => return Err(NotOpened::Failed(self.words(&why))),
+        };
         let version = initialized.get("protocolVersion").and_then(Value::as_u64);
-        if version != Some(PROTOCOL) || card.acp.protocol != PROTOCOL {
+        let Some(dialect) = version.and_then(Dialect::of) else {
             let said = version.map(|version| version.to_string()).unwrap_or_else(|| "?".into());
             return Err(NotOpened::Protocol(crate::tr!(
-                "агент говорит на протоколе ACP версии {said}, а DuoWave знает версию {PROTOCOL}",
-                said = said,
-                PROTOCOL = PROTOCOL
+                "агент говорит на протоколе ACP версии {said}, а DuoWave знает версии 1 и 2",
+                said = said
             )));
-        }
-        let capabilities = initialized.get("agentCapabilities").cloned().unwrap_or(Value::Null);
+        };
+        *locked(&self.dialect) = dialect;
+        let (capabilities, named) = match dialect {
+            Dialect::V1 => ("agentCapabilities", "/agentInfo/version"),
+            Dialect::V2 => ("capabilities", "/info/version"),
+        };
+        let capabilities = initialized.get(capabilities).cloned().unwrap_or(Value::Null);
+        *locked(&self.agent) = initialized.pointer(named).and_then(Value::as_str).map(str::to_string);
         *locked(&self.capabilities) = capabilities.clone();
         let cwd = self.shared.copy.display().to_string();
         let opened = |result: Result<Value, (i64, String)>| -> Result<Value, NotOpened> {
@@ -373,16 +483,19 @@ impl Connection {
         let mut session = None;
         if let Some(earlier) = open.session.as_deref() {
             let params = json!({ "sessionId": earlier, "cwd": cwd, "mcpServers": [] });
-            if capabilities.get("loadSession").and_then(Value::as_bool) == Some(true) {
+            let resumes = match dialect {
+                Dialect::V1 => capabilities.pointer("/sessionCapabilities/resume").is_some(),
+                // Version 2: every agent with sessions resumes them; without `replayFrom` nothing is replayed.
+                Dialect::V2 => capabilities.get("session").is_some_and(|session| !session.is_null()),
+            };
+            if dialect == Dialect::V1 && capabilities.get("loadSession").and_then(Value::as_bool) == Some(true) {
                 self.shared.replaying.store(true, Ordering::Relaxed);
                 let loaded = self.call("session/load", params, Some(OPEN_WAIT)).await;
                 self.shared.replaying.store(false, Ordering::Relaxed);
                 if loaded.is_ok() {
                     session = Some((earlier.to_string(), Value::Null));
                 }
-            } else if capabilities.pointer("/sessionCapabilities/resume").is_some()
-                && self.call("session/resume", params, Some(OPEN_WAIT)).await.is_ok()
-            {
+            } else if resumes && self.call("session/resume", params, Some(OPEN_WAIT)).await.is_ok() {
                 session = Some((earlier.to_string(), Value::Null));
             }
         }
@@ -398,18 +511,23 @@ impl Connection {
                 (id, created)
             }
         };
-        // The model asked for, when the card says one can be chosen and the agent has the option.
+        // The model asked for, when the card says one can be chosen and the agent has the option: version 2 names an
+        // option `configId` and its kind of value.
         if let (true, Some(model)) = (card.model.choose, open.model.as_deref().filter(|model| !model.trim().is_empty()))
         {
+            let key = if dialect == Dialect::V2 { "configId" } else { "id" };
             let option = opened_session
                 .get("configOptions")
                 .and_then(Value::as_array)
                 .and_then(|options| {
                     options.iter().find(|option| option.get("category").and_then(Value::as_str) == Some("model"))
                 })
-                .and_then(|option| option.get("id").and_then(Value::as_str));
+                .and_then(|option| option.get(key).and_then(Value::as_str));
             if let Some(option) = option {
-                let set = json!({ "sessionId": id, "configId": option, "value": model.trim() });
+                let mut set = json!({ "sessionId": id, "configId": option, "value": model.trim() });
+                if dialect == Dialect::V2 {
+                    set["type"] = json!("id");
+                }
                 let _ = self.call("session/set_config_option", set, Some(OPEN_WAIT)).await;
             }
         }
@@ -472,82 +590,99 @@ impl Connection {
         }
     }
 
-    /// `session/update` as common steps.
+    /// `session/update` as common steps. The cost is kept outside a prompt too: a resumed session may say what it spent
+    /// before.
     fn update(&self, update: &Value) {
+        let kind = update.get("sessionUpdate").and_then(Value::as_str).unwrap_or_default();
+        if kind == "usage_update" {
+            if let Some(cost) = cost_of(update) {
+                *locked(&self.shared.cost) = cost;
+            }
+        }
         let mut guard = locked(&self.shared.prompting);
         let Some(prompting) = guard.as_mut() else { return };
-        let text =
-            |value: &Value| value.pointer("/content/text").and_then(Value::as_str).unwrap_or_default().to_string();
-        match update.get("sessionUpdate").and_then(Value::as_str) {
-            Some("agent_message_chunk") => {
+        match kind {
+            "agent_message_chunk" | "agent_message" => {
                 if !prompting.thinks.is_empty() {
                     prompting.flush();
                 }
-                let piece = text(update);
+                let piece = prompting.piece(update, false);
                 prompting.says.push_str(&piece);
                 prompting.said.push_str(&piece);
             }
-            Some("agent_thought_chunk") => {
+            "agent_thought_chunk" | "agent_thought" => {
                 if !prompting.says.is_empty() {
                     prompting.flush();
                 }
-                prompting.thinks.push_str(&text(update));
+                let piece = prompting.piece(update, true);
+                prompting.thinks.push_str(&piece);
             }
-            Some("tool_call") | Some("tool_call_update") => {
+            "tool_call" | "tool_call_update" | "tool_call_content_chunk" => {
                 prompting.flush();
                 let id = update.get("toolCallId").and_then(Value::as_str).unwrap_or_default().to_string();
                 let tool = prompting.tools.entry(id.clone()).or_default();
-                merge_tool(tool, update);
+                if kind == "tool_call_content_chunk" {
+                    add_content(tool, update.get("content"));
+                } else {
+                    merge_tool(tool, update);
+                }
                 let step = tool_step(&id, tool);
                 prompting.out.step(None, step);
             }
-            Some("plan") => {
+            "plan" | "plan_update" => {
                 prompting.flush();
-                let entries = update
-                    .get("entries")
-                    .and_then(Value::as_array)
-                    .map(|entries| {
-                        entries
-                            .iter()
-                            .map(|entry| PlanEntry {
-                                text: entry.get("content").and_then(Value::as_str).unwrap_or_default().to_string(),
-                                state: entry.get("status").and_then(Value::as_str).unwrap_or("pending").to_string(),
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                prompting.out.step(None, Step::Plan { entries });
+                prompting.out.step(None, Step::Plan { entries: plan_entries(update) });
             }
-            Some("usage_update") => {
-                let usd = update
-                    .get("cost")
-                    .filter(|cost| {
-                        cost.get("currency")
-                            .and_then(Value::as_str)
-                            .is_none_or(|currency| currency.eq_ignore_ascii_case("USD"))
-                    })
-                    .and_then(|cost| cost.get("amount").and_then(Value::as_f64));
-                if let Some(usd) = usd {
-                    *locked(&self.shared.cost) = Some(usd);
-                }
+            "usage_update" => {
                 prompting.out.step(
                     None,
                     Step::Usage {
                         tokens: None,
-                        usd_micro: usd.map(|usd| (usd * 1_000_000.0).round() as u64),
+                        usd_micro: cost_of(update).flatten().map(|usd| (usd * 1_000_000.0).round() as u64),
                         used: update.get("used").and_then(Value::as_u64),
                         size: update.get("size").and_then(Value::as_u64),
                     },
                 );
             }
-            _ => {}
+            // Version 2: the first idle state since the prompt went is the end of its turn.
+            "state_update" => {
+                if update.get("state").and_then(Value::as_str) == Some("idle") && prompting.idle.is_none() {
+                    prompting.idle = Some(update.clone());
+                    self.shared.turn.notify_one();
+                }
+            }
+            // Known, and not a step of the journal.
+            "user_message_chunk"
+            | "user_message"
+            | "available_commands_update"
+            | "config_option_update"
+            | "current_mode_update"
+            | "session_info_update"
+            | "replay_complete"
+            | "plan_removed"
+            | "notice"
+            | "compaction_update"
+            | "compaction_summary_chunk"
+            | "terminal_update"
+            | "terminal_output_chunk"
+            | "subagent_update"
+            | "session_message"
+            | "session_message_chunk" => {}
+            _ => prompting.unknown += 1,
         }
     }
 
     /// The answer to a question of rights: `allow_once` when the folder's rules allow what it asks, else
     /// `reject_once`; `allow_always` never. The question and the answer go to the journal.
     fn permission(&self, params: &Value) -> Value {
-        let call = params.get("toolCall").cloned().unwrap_or(Value::Null);
+        // Version 1 names the call; version 2 a subject: the call, or a command and the folder it runs in.
+        let subject = params.get("subject").filter(|subject| !subject.is_null());
+        let of = |kind: &str| subject.filter(|subject| subject.get("type").and_then(Value::as_str) == Some(kind));
+        let call = params
+            .get("toolCall")
+            .or_else(|| of("tool_call").and_then(|subject| subject.get("toolCall")))
+            .cloned()
+            .unwrap_or(Value::Null);
         let mut tool = ToolNow::default();
         let known = call.get("toolCallId").and_then(Value::as_str).and_then(|id| {
             locked(&self.shared.prompting).as_ref().and_then(|prompting| prompting.tools.get(id).cloned())
@@ -556,7 +691,17 @@ impl Connection {
             tool = known;
         }
         merge_tool(&mut tool, &call);
-        let allowed = self.allows(&tool);
+        let mut where_ok = true;
+        if let Some(command) = of("command") {
+            tool.kind = Some("execute".into());
+            tool.command = command.get("command").and_then(Value::as_str).map(str::to_string);
+            // A command runs in the folder it names: only the copy.
+            where_ok = command.get("cwd").and_then(Value::as_str).is_some_and(|cwd| self.inside(cwd));
+        }
+        if tool.title.is_empty() {
+            tool.title = params.get("title").and_then(Value::as_str).unwrap_or_default().to_string();
+        }
+        let allowed = where_ok && self.allows(&tool);
         let options = params.get("options").and_then(Value::as_array).cloned().unwrap_or_default();
         let pick = |kind: &str| {
             options
@@ -582,24 +727,14 @@ impl Connection {
     /// Whether the folder's rules allow a call: a command by the allowed commands, files only inside the copy, a fetch
     /// when `WebFetch` is allowed; anything else not.
     fn allows(&self, tool: &ToolNow) -> bool {
-        let inside = |path: &Option<String>| {
-            path.as_deref().is_none_or(|path| {
-                let path = Path::new(path);
-                // Rooted is not relative: on Windows «/etc/hosts» (no drive) is that drive's root, not the copy's
-                // — joined to the copy it was taken for a file inside it, and allowed.
-                let path = if path.has_root() { path.to_path_buf() } else { self.shared.copy.join(path) };
-                let real = crate::utils::files::canonical(&path)
-                    .or_else(|_| path.parent().map(crate::utils::files::canonical).unwrap_or(Ok(path.clone())))
-                    .unwrap_or(path);
-                real.starts_with(&self.shared.copy)
-            })
-        };
+        let inside = |path: &Option<String>| path.as_deref().is_none_or(|path| self.inside(path));
         match tool.kind.as_deref() {
             Some("execute") => tool
                 .command
                 .as_deref()
                 .or(Some(tool.title.as_str()))
                 .is_some_and(|command| command_allowed(&self.shared.allow, command)),
+            Some("edit" | "delete" | "move") if self.shared.read_only => false,
             Some("read" | "edit" | "delete" | "move" | "search") => inside(&tool.path),
             Some("think" | "switch_mode") => true,
             Some("fetch") => {
@@ -607,6 +742,18 @@ impl Connection {
             }
             _ => false,
         }
+    }
+
+    /// A path inside the work copy, relative to it or not.
+    fn inside(&self, path: &str) -> bool {
+        let path = Path::new(path);
+        // Rooted is not relative: on Windows «/etc/hosts» (no drive) is that drive's root, not the copy's — joined to
+        // the copy it was taken for a file inside it, and allowed.
+        let path = if path.has_root() { path.to_path_buf() } else { self.shared.copy.join(path) };
+        let real = crate::utils::files::canonical(&path)
+            .or_else(|_| path.parent().map(crate::utils::files::canonical).unwrap_or(Ok(path.clone())))
+            .unwrap_or(path);
+        real.starts_with(&self.shared.copy)
     }
 
     async fn close(&self) {
@@ -647,7 +794,12 @@ fn merge_tool(tool: &mut ToolNow, update: &Value) {
         tool.title = title;
     }
     if let Some(status) = text("status") {
-        tool.state = Some(status);
+        // Version 2's `paused` goes on; its `cancelled` did not come to pass.
+        tool.state = Some(match status.as_str() {
+            "paused" => "in_progress".into(),
+            "cancelled" => "failed".into(),
+            _ => status,
+        });
     }
     if let Some(path) = update.pointer("/locations/0/path").and_then(Value::as_str) {
         tool.path = Some(path.to_string());
@@ -677,11 +829,26 @@ fn merge_tool(tool: &mut ToolNow, update: &Value) {
                         said.push(text.to_string());
                     }
                 }
-                Some("diff") => diff.push(Diff {
-                    path: item.get("path").and_then(Value::as_str).unwrap_or_default().to_string(),
-                    old: item.get("oldText").and_then(Value::as_str).map(cut),
-                    new: cut(item.get("newText").and_then(Value::as_str).unwrap_or_default()),
-                }),
+                Some("diff") => match item.get("changes").and_then(Value::as_array) {
+                    // Version 2: what changed, file by file, and the change as a patch when it is given (with the
+                    // first file); no old text, so a file that was there has an empty one.
+                    Some(changes) => {
+                        let patch = item.pointer("/patch/text").and_then(Value::as_str).unwrap_or_default();
+                        for (n, change) in changes.iter().enumerate() {
+                            let added = change.get("operation").and_then(Value::as_str) == Some("add");
+                            diff.push(Diff {
+                                path: change.get("path").and_then(Value::as_str).unwrap_or_default().to_string(),
+                                old: (!added).then(String::new),
+                                new: if n == 0 { cut(patch) } else { String::new() },
+                            });
+                        }
+                    }
+                    None => diff.push(Diff {
+                        path: item.get("path").and_then(Value::as_str).unwrap_or_default().to_string(),
+                        old: item.get("oldText").and_then(Value::as_str).map(cut),
+                        new: cut(item.get("newText").and_then(Value::as_str).unwrap_or_default()),
+                    }),
+                },
                 _ => {}
             }
         }
@@ -695,6 +862,59 @@ fn merge_tool(tool: &mut ToolNow, update: &Value) {
     if tool.output.is_none() {
         if let Some(Value::String(output)) = update.get("rawOutput") {
             tool.output = Some(cut(output));
+        }
+    }
+}
+
+/// A piece of a call's content (version 2's `tool_call_content_chunk`): its words go after the earlier ones, a diff
+/// beside the earlier.
+fn add_content(tool: &mut ToolNow, item: Option<&Value>) {
+    let Some(item) = item else { return };
+    let mut piece = ToolNow::default();
+    merge_tool(&mut piece, &json!({ "content": [item] }));
+    if let Some(output) = piece.output {
+        let joined = match tool.output.take() {
+            Some(before) => format!("{before}{output}"),
+            None => output,
+        };
+        tool.output = Some(cut(&joined));
+    }
+    tool.diff.extend(piece.diff);
+}
+
+/// A plan's entries: version 1's `entries`; version 2's `plan` — its items, or its markdown as one entry.
+fn plan_entries(update: &Value) -> Vec<PlanEntry> {
+    let plan = update.get("plan").unwrap_or(update);
+    if plan.get("type").and_then(Value::as_str) == Some("markdown") {
+        let text = plan.get("content").and_then(Value::as_str).unwrap_or_default();
+        return vec![PlanEntry { text: cut(text), state: "pending".into() }];
+    }
+    plan.get("entries")
+        .and_then(Value::as_array)
+        .map(|entries| {
+            entries
+                .iter()
+                .map(|entry| PlanEntry {
+                    text: entry.get("content").and_then(Value::as_str).unwrap_or_default().to_string(),
+                    state: entry.get("status").and_then(Value::as_str).unwrap_or("pending").to_string(),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// What a `usage_update` says of the session's cost in dollars: nothing (no `cost`, or another currency), taken away
+/// (`null`, version 2), or the amount.
+fn cost_of(update: &Value) -> Option<Option<f64>> {
+    match update.get("cost")? {
+        Value::Null => Some(None),
+        cost => {
+            let dollars = cost
+                .get("currency")
+                .and_then(Value::as_str)
+                .is_none_or(|currency| currency.eq_ignore_ascii_case("USD"));
+            let amount = cost.get("amount").and_then(Value::as_f64);
+            dollars.then_some(amount).flatten().map(Some)
         }
     }
 }
@@ -738,31 +958,47 @@ impl Session for AcpSession {
             _ => text.to_string(),
         };
         self.open.recap = None;
+        let dialect = self.connection.dialect();
         out.step(
             None,
             Step::Begin {
                 session: Some(self.id.clone()),
                 model: self.open.model.clone(),
                 billing: Some("agent".into()),
-                version: None,
+                version: locked(&self.connection.agent).clone(),
+                protocol: Some(dialect.name().into()),
                 prompt: Some(cut(&text)),
             },
         );
         let cost_before = *locked(&shared.cost);
-        *locked(&shared.prompting) = Some(Prompting {
-            out: out.clone(),
-            says: String::new(),
-            thinks: String::new(),
-            said: String::new(),
-            tools: HashMap::new(),
-        });
+        *locked(&shared.prompting) = Some(Prompting::new(out.clone()));
         let params = json!({ "sessionId": self.id, "prompt": [{ "type": "text", "text": text }] });
         let connection = self.connection.clone();
         let mut answer = Box::pin(async move { connection.call("session/prompt", params, None).await });
+        // Version 2: the prompt's answer says it was taken; its turn ends with the idle state.
+        let mut taken: Option<Answer> = None;
         let mut stopped = false;
         let result = loop {
+            if matches!(taken, Some(Err(_))) {
+                // Not taken at all.
+                break taken.take();
+            }
+            if matches!(taken, Some(Ok(_))) {
+                let idle = locked(&shared.prompting).as_ref().and_then(|prompting| prompting.idle.clone());
+                if let Some(idle) = idle {
+                    break Some(Ok(idle));
+                }
+            }
             tokio::select! {
-                result = &mut answer => break Some(result),
+                result = &mut answer, if taken.is_none() => {
+                    // Version 1 ends the turn with the answer, and so does an answer with a `stopReason` from an agent
+                    // between the two versions.
+                    if dialect == Dialect::V1 || result.as_ref().is_ok_and(|answer| answer.get("stopReason").is_some()) {
+                        break Some(result);
+                    }
+                    taken = Some(result);
+                }
+                _ = shared.turn.notified(), if dialect == Dialect::V2 => {}
                 _ = stop.cancelled(), if !stopped => {
                     stopped = true;
                     let cancel = json!({ "jsonrpc": "2.0", "method": "session/cancel", "params": { "sessionId": self.id } });
@@ -772,10 +1008,13 @@ impl Session for AcpSession {
             }
         };
         let prompting = locked(&shared.prompting).take();
-        let said = prompting.map(|mut prompting| {
-            prompting.flush();
-            prompting.said
-        });
+        let (said, unknown) = match prompting {
+            Some(mut prompting) => {
+                prompting.flush();
+                (Some(prompting.said), prompting.unknown)
+            }
+            None => (None, 0),
+        };
         let cost_after = *locked(&shared.cost);
         let usd_micro = match (cost_before, cost_after) {
             (Some(before), Some(after)) => Some((((after - before).max(0.0)) * 1_000_000.0).round() as u64),
@@ -789,6 +1028,12 @@ impl Session for AcpSession {
                 Some("cancelled") => (Ended::Stopped, None),
                 Some("refusal") => (Ended::Refused, None),
                 Some("max_tokens" | "max_turn_requests") => (Ended::Turns, None),
+                Some("error") => {
+                    let why = answer.pointer("/error/message").and_then(Value::as_str).unwrap_or("error");
+                    (Ended::Failed, Some(self.connection.words(why)))
+                }
+                // Version 2: idle is the end of the turn, whatever reason it gives or does not.
+                _ if dialect == Dialect::V2 => (Ended::Ok, None),
                 other => (Ended::Failed, Some(format!("stopReason {}", other.unwrap_or("?")))),
             },
             Some(Err((code, why))) if code == AUTH_REQUIRED => (Ended::Auth, Some(why)),
@@ -813,6 +1058,7 @@ impl Session for AcpSession {
                 text: end.text.as_deref().map(cut),
                 error: end.error.clone(),
                 usd_micro: end.usd_micro,
+                unknown: (unknown > 0).then_some(unknown),
             },
         );
         end

@@ -30,7 +30,7 @@ const NOT_ALLOWED: &str =
     "Not allowed for this person: tell the user in one short sentence that this is not permitted.";
 
 /// What one talk's tools need: the talk's parts, who speaks, the phrase, the request's trip and the talk's events.
-pub(super) struct Deps {
+pub(crate) struct Deps {
     pub parts: Parts,
     pub principal: Principal,
     pub text: String,
@@ -39,6 +39,8 @@ pub(super) struct Deps {
     pub trip: Arc<RequestHandle>,
     pub events: mpsc::UnboundedSender<TalkEvent>,
     pub brain: Brain,
+    /// The tools of the place: a device with hands gets its commands too.
+    pub kind: ToolsKind,
 }
 
 /// Whether a capability's route lets our side serve it: a server or an app bound to one is offered only then.
@@ -76,15 +78,28 @@ pub trait McpTools: Send + Sync {
     ) -> Option<Arc<dyn ServerTools>>;
 }
 
+/// Where a toolbox's tools come from: the MCP servers open to the voice, the connectors' (the apps', the memory's,
+/// the works'); the rest are ours (`TOOLS`). Thinking's catalog groups them by it (thinking/catalog.rs).
+#[derive(Clone, Default)]
+pub struct Sources {
+    pub mcp: Option<Arc<dyn ServerTools>>,
+    pub contributed: Option<Arc<ContributedOffer>>,
+}
+
 /// The talk's toolbox; None when the model takes no tools or there is nothing to offer.
-pub(super) fn toolbox(deps: Deps) -> Option<ToolBox> {
+pub(crate) fn toolbox(deps: Deps) -> Option<ToolBox> {
+    toolbox_with(deps).map(|(toolbox, _)| toolbox)
+}
+
+/// The talk's toolbox and where its tools come from.
+pub(crate) fn toolbox_with(deps: Deps) -> Option<(ToolBox, Sources)> {
     let parts = &deps.parts;
     if !parts.dialog.tools_enabled() {
         return None;
     }
     let allowed = ours(parts);
     let mcp = parts.mcp.offer_by_voice(&deps.principal, &allowed);
-    let mut tools = tools_for(ToolsKind::Conversation, Some(&deps.principal));
+    let mut tools = tools_for(deps.kind, Some(&deps.principal));
     if let Some(mcp) = &mcp {
         tools.extend(mcp.tools().iter().cloned());
     }
@@ -117,6 +132,7 @@ pub(super) fn toolbox(deps: Deps) -> Option<ToolBox> {
     } else if contributed.is_some() {
         toolbox.rounds = Some(3);
     }
+    let sources = Sources { mcp: mcp.clone(), contributed: contributed.clone() };
     toolbox.safe_after_taint = Some(Arc::new(move |offered: &[LlmTool]| {
         offered
             .iter()
@@ -128,7 +144,7 @@ pub(super) fn toolbox(deps: Deps) -> Option<ToolBox> {
             .cloned()
             .collect()
     }));
-    Some(toolbox)
+    Some((toolbox, sources))
 }
 
 /// One call of the model's: the trip and the talk's events show which tool works — never its arguments — and the

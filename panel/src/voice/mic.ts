@@ -20,6 +20,7 @@ import { ANSWER_WAIT_MS, answerTo, sayAloud, stopAnswer } from './speak';
 import { StripMessage, hideStrip, onStripClosed, showStrip, stripNow, updateStrip } from './strip';
 import { computerVoice, onComputer } from '../voice-input';
 import { chosenInput } from './devices';
+import { appVoiceHere, pressAppVoice } from './app-voice';
 import { LISTEN_TONE_MS, playTone } from './tones';
 
 /** «Слух» шлюза ждёт 16 кГц моно. */
@@ -107,6 +108,8 @@ function held(): boolean {
 
 /** «Сказать» в доке: начать слушать, а если уже слушаем — закончить мысль сейчас. */
 export function toggleListening(): void {
+    // Ухо приложения на этом компьютере слушает само (этап 3, «К5»): пульт только зовёт его.
+    if (appVoiceHere()) return pressAppVoice();
     if (session) return void finish(session, 'button');
     void listen(false, START_WAIT_MS);
 }

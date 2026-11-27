@@ -45,8 +45,8 @@ use super::device_tag::device_tag_of;
 use super::relay_session::recorded_headers;
 use super::relay_trips::{yandex_heard, yandex_recognized};
 use super::spoken_answer::{
-    describe, ends_with_question, without_markup, AnswerObserver, AnswerOutcome, AnswerOutput, AnswerPart, AnswerParts,
-    ResponseHeader, SpokenAnswer, SpokenAnswerOptions, Synthesize,
+    describe, without_markup, AnswerObserver, AnswerOutcome, AnswerOutput, AnswerPart, AnswerParts, ResponseHeader,
+    SpokenAnswer, SpokenAnswerOptions, Synthesize,
 };
 use super::summaries::{summarize_client, summarize_server};
 use super::uniproxy_server::{pump, Handshake, Liveness, Outbox, Outgoing, SocketEnd};
@@ -64,7 +64,7 @@ use crate::core::requests::{
 };
 use crate::dialog::connectors::{ContributedOffer, ContributedTools};
 use crate::dialog::generator::generate;
-use crate::dialog::llm::{ToolCall, ToolResult};
+use crate::dialog::llm::ToolCall;
 use crate::dialog::{
     with_error_phrase, AnsweredBy, DialogContext, DialogService, PhraseStream, ToolBox, ToolOutcome, LOOKUP_FILLER,
 };
@@ -137,6 +137,24 @@ pub struct SessionDeps {
     /// Who answers a request an activator's word began (src/activator): today the word's character becomes the
     /// house's. None: the house's character answers every request.
     pub characters: Option<Arc<dyn crate::activator::WordCharacter>>,
+    /// The door to Thinking for the station's chain (docs/plans/audio-interface-3.md, part Н): its skills, its reader,
+    /// a command by the model and its conversation go through it, the turn's work prepared by the session.
+    pub door: Arc<crate::talk::thinking::DialogThinking>,
+    /// Thinking for the station's phrases (docs/plans/thinking.md, «The station behind the door»): while it takes the
+    /// station, a phrase goes to it plain and the station does what comes back. None: the chain above, as before.
+    pub thinking: Option<StationThinking>,
+}
+
+/// The door the station's phrases go through when Thinking takes the station (the setting `thinking.implementation`
+/// for `station`: `ours`).
+#[derive(Clone)]
+pub struct StationThinking {
+    /// The switch in front of our Thinking: it picks who answers, as for the computer.
+    pub door: Arc<dyn crate::door::Thinking>,
+    /// Whether it takes the station now: the setting, read per phrase.
+    pub takes: Arc<dyn Fn() -> bool + Send + Sync>,
+    /// Where the station's request is offered for the brain to go on in: one request per phrase.
+    pub offers: Arc<crate::core::requests::RequestOffers>,
 }
 
 /// The station's model and firmware, as the debug API shows them.
@@ -285,6 +303,40 @@ pub fn callback_capability(name: &str) -> CapabilityName {
     CapabilityName::Skills
 }
 
+/// What became of a station's hand, told at once: ok — the command is in the answer (the station does it when the
+/// answer comes, and tells nothing later); else why it is not.
+fn hands_done(door: &dyn crate::door::Thinking, call: String, done: Result<(), String>) {
+    let (ok, error) = match done {
+        Ok(()) => (true, None),
+        Err(error) => (false, Some(error)),
+    };
+    crate::door::Thinking::tell(
+        door,
+        crate::door::News::new(crate::door::Told::HandsDone { call, ok, note: None, error }),
+    );
+}
+
+/// How the station answers a turn Thinking takes, as its own chain answers the same decision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Answering {
+    /// Our skill: `early` — one that sends the station no commands answers early with the jingle when slow to speak
+    /// (later for a display's skill, whose command joins the response).
+    Skill { early: bool, display: bool },
+    /// The model's conversation: the response and the jingle at once.
+    Conversation,
+    /// A command the model picks: its commands join the response.
+    Command,
+}
+
+/// What a handoff to Alice needs of the request (`hand_to_yandex`). The capability is the skill's: for a command by
+/// the model, the one its call resolved to (`command_work`).
+struct Handoff {
+    r#ref: String,
+    request: AliceRequest,
+    text: String,
+    capability: Arc<Mutex<CapabilityName>>,
+}
+
 fn seconds(ms: f64) -> String {
     format!("{:.2}", ms / 1000.0)
 }
@@ -311,13 +363,28 @@ fn single(text: impl Into<String>) -> AnswerParts {
     futures::stream::iter([AnswerPart::Text(text.into())]).boxed()
 }
 
-/// Below this a text is synthesized whole: one intonation, one request.
-const ONE_PHRASE_CHARS: usize = 140;
 /// How long our skill may take to its first words before the response goes out early, with the jingle.
 const OWN_EARLY_MS: u64 = 300;
 /// The same for a skill that shows its result on the display (the weather): the display command can only go with
 /// the response, and the forecast takes ~0,8 s (a city seen before) to ~1,7 s.
 const OWN_DISPLAY_EARLY_MS: u64 = 2000;
+
+/// How long Thinking's question waits for its answer in the station's window.
+const THINKING_ASKED_MS: u64 = 30_000;
+
+/// The reason an answer stops when Yandex takes its request.
+const HANDED_TO_YANDEX: &str = "handed to Yandex";
+
+/// Why the station's answer stopped, in the door's words (its cancel's reason).
+fn stop_why(reason: Option<&str>) -> crate::door::StopWhy {
+    use crate::door::StopWhy;
+    match reason {
+        Some("superseded") => StopWhy::New,
+        Some("«стоп»") => StopWhy::Word,
+        Some("disconnected" | "the station's session closed") => StopWhy::Gone,
+        _ => StopWhy::Other,
+    }
+}
 /// How long the answer to the model's question about a command («На сколько поставить таймер?») stays a command.
 const COMMAND_QUESTION_MS: u64 = 30_000;
 /// How long «Пока передавать вопросы Алисе?» waits for its «да» or «нет» (docs/plans/provider-limits.md).
@@ -369,17 +436,8 @@ pub fn is_player_continue(request: &AliceRequest) -> bool {
     matches!(get_string(analytics, 3), Ok(Some(purpose)) if purpose == "player_continue")
 }
 
-/// A whole text as phrases, so long ones are synthesized in parallel.
-pub fn split_phrases(text: &str) -> Vec<String> {
-    if text.encode_utf16().count() <= ONE_PHRASE_CHARS {
-        let trimmed = text.trim_matches(is_js_space);
-        return if trimmed.is_empty() { Vec::new() } else { vec![trimmed.to_string()] };
-    }
-    let mut splitter = crate::dialog::PhraseSplitter::new();
-    let mut phrases = splitter.push(text);
-    phrases.extend(splitter.flush());
-    phrases
-}
+/// A whole text as phrases (Thinking's splitter: the station's skills speak it too).
+pub use crate::dialog::split_phrases;
 
 fn phrase_stream(phrases: Vec<String>) -> PhraseStream {
     futures::stream::iter(phrases.into_iter().map(Ok)).boxed()
@@ -646,6 +704,9 @@ pub struct Inner {
     continuation: Option<Continuation>,
     /// Until when the next request answers the model's question about a command, and so is a command too.
     command_question_until: u64,
+    /// Thinking's question the station listens for the answer to (`ask`), and until when: the next phrase heard in
+    /// the window gives it back (`context.answer_to`).
+    thinking_asked: Option<(String, u64)>,
     /// «Пока передавать вопросы Алисе?» was asked (a limit, no backup, «Вместе»): the question it was asked for, and
     /// until when the answer counts. «Да» gives that question to Alice.
     limit_question: Option<(String, u64)>,
@@ -934,6 +995,7 @@ impl StationSession {
                 answer: None,
                 continuation: None,
                 command_question_until: 0,
+                thinking_asked: None,
                 limit_question: None,
                 whispered: None,
                 trips: Vec::new(),
@@ -2430,6 +2492,11 @@ impl StationSession {
         {
             inner.continuation = None;
         }
+        // Thinking takes the station (docs/plans/thinking.md, «The station behind the door»): our skills' phrases and
+        // the model's go to it plain (below), routed and journaled as today. Where the station's routes send a phrase
+        // stays the station's: Yandex (its route, its own dialog going on, no model to ask in «Вместе»), a route that
+        // is off; and what it asks about the model itself (its limit, its server).
+        let thinking = self.deps.thinking.clone().filter(|thinking| (thinking.takes)());
         match decision {
             Decision::Intent { intent, source, rule, resolution } => {
                 self.record_route(text, intent.capability, &resolution, source.as_str(), rule);
@@ -2443,6 +2510,18 @@ impl StationSession {
                         trip.app_step(RequestPhase::Think, Some(Place::Own), None, app);
                     }
                 }
+                if let (Some(thinking), Resolution::Own(_)) = (&thinking, &resolution) {
+                    // «стоп» with nothing else to stop: the answers still to be said later are not wanted either.
+                    if intent.capability == CapabilityName::Playback && intent.action == "silence" {
+                        for answer in &inner.deferred {
+                            answer.cancel("«стоп»");
+                        }
+                    }
+                    let info = intent.capability.info();
+                    let early = !info.station && self.deps.dialog.config.early_response;
+                    let answering = Answering::Skill { early, display: info.display };
+                    return self.think(inner, r#ref, request, text, thinking, answering);
+                }
                 self.serve_intent(inner, r#ref, request, text, intent, resolution);
             }
             Decision::YandexDialog { capability } => {
@@ -2453,8 +2532,10 @@ impl StationSession {
                 self.ask_yandex(inner, r#ref, request, text, capability, false);
             }
             Decision::Model { command: chosen, profile } => {
-                // «Поставь таймер» → «На сколько?» → «На две минуты»: the answer needs the command's tools.
-                let command = chosen || inner.command_question_until > now_ms();
+                // «Поставь таймер» → «На сколько?» → «На две минуты»: the answer needs the command's tools. So does the
+                // answer to Thinking's question, which may be a command's too: its commands join the response.
+                let answers_thinking = inner.thinking_asked.as_ref().is_some_and(|(_, until)| *until > now_ms());
+                let command = chosen || inner.command_question_until > now_ms() || answers_thinking;
                 inner.command_question_until = 0;
                 let kind = if command { "a command: its choice first" } else { "a conversation" };
                 let answering = if command && !chosen { ", answering its question" } else { "" };
@@ -2499,6 +2580,10 @@ impl StationSession {
                         false,
                     );
                     return self.ask_yandex(inner, r#ref, request, text, CapabilityName::Chat, false);
+                }
+                if let Some(thinking) = &thinking {
+                    let answering = if command { Answering::Command } else { Answering::Conversation };
+                    return self.think(inner, r#ref, request, text, thinking, answering);
                 }
                 // A phrase about the works is read first: the layer does and says it (src/talk/reader.rs).
                 if let Some(reader) = self.reader_for(text) {
@@ -2621,8 +2706,16 @@ impl StationSession {
 
     fn route_input(&self, inner: &Inner, r#ref: &str, text: &str, request: &AliceRequest) -> RouteInput {
         let now = now_ms();
-        // What the station holds now — its player, its timers — for the panel between requests.
+        // What the station holds now — its player, its timers — for the panel between requests; where it is — its
+        // time zone, where it fetches our /media — for Thinking, which hears no request of its own.
         self.deps.skills.note_device_state(&self.device_tag, request.device_state.as_ref(), now);
+        self.deps.skills.note_device_context(
+            &self.device_tag,
+            crate::skills::DeviceContext {
+                timezone: self.timezone(inner, request),
+                media_base_url: self.deps.skills.media_base_url(self.host.as_deref()),
+            },
+        );
         RouteInput {
             text: text.to_string(),
             device_tag: self.device_tag.clone(),
@@ -2676,7 +2769,8 @@ impl StationSession {
     }
 
     /// Our implementation: its commands and its speech in one answer. One that sends the station no commands
-    /// (weather, news) and is slow to speak answers early with the jingle, as a conversation does.
+    /// (weather, news) and is slow to speak answers early with the jingle, as a conversation does. The skill runs
+    /// behind the door (part Н): the session prepares it and puts what comes back into its answer (`door_answer`).
     fn run_own(
         self: &Arc<Self>,
         inner: &mut Inner,
@@ -2708,46 +2802,34 @@ impl StationSession {
             });
         }
         let context = self.execution_context(inner, text, request, answer.token());
-        let session = self.clone();
-        let phrases_answer = answer.clone();
-        let phrases_early = early.clone();
-        let (request, text) = (request.clone(), text.to_string());
-        let question = text.clone();
-        let own_ref = r#ref.to_string();
-        let phrases: PhraseStream = generate(move |y| async move {
-            let answer = phrases_answer;
-            let mut outcome = match skill.execute(&intent, &context).await {
-                Ok(outcome) => outcome,
-                Err(error) => return y.send(Err(error)).await,
-            };
-            if outcome.to_yandex && session.hand_to_yandex(&answer, &own_ref, &request, &text, intent.capability) {
-                return;
-            }
-            if may_answer_early && !outcome.commands.is_empty() {
-                // The display's command joins the response, which goes at once: the model still has to word the
-                // result. A response already out (a slow forecast) goes without it.
-                let directives = crate::gateway::commands::directives_of(&std::mem::take(&mut outcome.commands));
-                let names: Vec<String> = directives.iter().map(|directive| directive.name.clone()).collect();
-                if answer.add_directives(directives).is_err() {
-                    session.note(
-                        "displayLate",
-                        &format!("{}: answered early, {} not sent", intent.capability, names.join(", ")),
-                        None,
-                    );
-                } else {
-                    phrases_early.cancel();
-                    answer.respond_early();
-                }
-            }
-            let mut phrases = session.apply_outcome(&answer, &request, &text, outcome, None);
-            while let Some(phrase) = phrases.next().await {
-                // The first words are ready: the response goes with them (a clock's answer needs no jingle).
-                phrases_early.cancel();
-                y.send(phrase).await;
-            }
-        });
+        let turn = self.door_turn(r#ref);
+        let activation = inner.activation(r#ref);
+        self.deps.door.prepare(
+            &turn,
+            crate::talk::thinking::Prepared {
+                key: self.device_tag.clone(),
+                context: self.words_context(inner, request),
+                cancel: answer.token(),
+                work: crate::talk::thinking::StationWork::Skill {
+                    skill,
+                    intent: intent.clone(),
+                    context: Box::new(context),
+                },
+                wording: Some(self.wording(inner, r#ref)),
+            },
+        );
+        let phrase = self.door_phrase(&turn, request, text, activation.as_ref());
+        let handoff = Handoff {
+            r#ref: r#ref.to_string(),
+            request: request.clone(),
+            text: text.to_string(),
+            capability: Arc::new(Mutex::new(intent.capability)),
+        };
+        let phrases =
+            self.door_answer(None, &answer, turn, phrase, Some(handoff), Some((may_answer_early, early.clone())));
         let parts = self.with_errors(&answer, phrases);
         let session = self.clone();
+        let question = text.to_string();
         tokio::spawn(async move {
             session.play_answer(answer, parts, question).await;
             early.cancel();
@@ -2756,6 +2838,7 @@ impl StationSession {
 
     /// Our skill found it is not ours (an empty «Своя музыка»): with Yandex up, our answer ends silently and Yandex
     /// answers the request. False: Yandex is not there — our words are said.
+    #[allow(clippy::too_many_arguments)]
     fn hand_to_yandex(
         self: &Arc<Self>,
         answer: &Arc<SpokenAnswer>,
@@ -2763,14 +2846,15 @@ impl StationSession {
         request: &AliceRequest,
         text: &str,
         capability: CapabilityName,
+        text_only: bool,
     ) -> bool {
         let mut inner = self.lock();
         if !self.yandex_available(&inner) {
             return false;
         }
-        answer.cancel("handed to Yandex");
+        answer.cancel(HANDED_TO_YANDEX);
         self.note("toYandex", &format!("{capability}: nothing of ours — Yandex answers"), None);
-        self.ask_yandex(&mut inner, r#ref, request, text, capability, false);
+        self.ask_yandex(&mut inner, r#ref, request, text, capability, text_only);
         true
     }
 
@@ -2866,6 +2950,7 @@ impl StationSession {
 
     /// A phrase about the works: the reader reads it and the layer does and says it; read as conversation, it goes on
     /// as it would have — a command's choice or the conversation, in the same answer (the jingle already playing).
+    /// All of it behind the door (part Н).
     #[allow(clippy::too_many_arguments)]
     fn read_first(
         self: &Arc<Self>,
@@ -2884,53 +2969,41 @@ impl StationSession {
         let mut options = self.answer_options(inner, r#ref, request);
         options.early = self.deps.dialog.config.early_response;
         let answer = self.start_answer(inner, options);
-        let context = DialogContext {
-            spoken: true,
-            timezone: self.timezone(inner, request),
-            profile: Some(profile),
-            // A spoken answer: a few sentences (docs/plans/audio-interface.md, decision 14).
-            max_tokens: Some(crate::dialog::SPEECH_MAX_TOKENS),
-            // Who answers in this station's room (docs/plans/home-and-devices.md, «Комнаты»).
-            device: Some(self.device_tag.clone()),
-            // Why the rule gave this model, for the deal (src/router).
-            reason: Some(crate::skills::quick_commands::profile_reason(text, profile)),
-            ..DialogContext::default()
-        };
+        let context = self.model_context(inner, request, text, profile);
         let activation = inner.activation(r#ref);
-        let origin = self.origin(activation.as_ref(), request).by(Some(self.speaker(text).name.clone()));
-        let session = self.clone();
-        let reading = answer.clone();
-        let question = text.to_string();
-        let (r#ref, request, text) = (r#ref.to_string(), request.clone(), text.to_string());
-        let phrases = generate(move |y| async move {
-            let read = reader.read(&session.device_tag, origin, &text, context.clone(), reading.token()).await;
-            if let Some(read) = read {
-                if read.listen {
-                    let _ = reading.set_listen(ListenMode::Always);
-                }
-                for phrase in split_phrases(&read.said) {
-                    y.send(Ok(phrase)).await;
-                }
-                return;
+        let origin = self.origin(activation.as_ref(), request).of(&self.speaker(text));
+        let capability = Arc::new(Mutex::new(CapabilityName::Chat));
+        let then = if command {
+            self.command_work(inner, &answer, r#ref, request, text, profile, capability.clone())
+        } else {
+            let toolbox = self.lookup_toolbox(r#ref, request, text, &answer, profile, None, activation.as_ref());
+            let session = self.clone();
+            crate::talk::thinking::StationWork::Converse {
+                toolbox,
+                start: Some(Box::new(move || session.deps.skills.stats.count(CapabilityName::Chat, Executor::Own))),
             }
-            let mut phrases = if command {
-                let inner = session.lock();
-                session.model_command(&inner, &reading, &r#ref, &request, &text, profile)
-            } else {
-                session.deps.skills.stats.count(CapabilityName::Chat, Executor::Own);
-                let toolbox =
-                    session.lookup_toolbox(&r#ref, &request, &text, &reading, profile, None, activation.as_ref());
-                session.deps.dialog.answer(&session.device_tag, &text, context, reading.token(), toolbox)
-            };
-            while let Some(phrase) = phrases.next().await {
-                y.send(phrase).await;
-            }
-        });
+        };
+        let turn = self.door_turn(r#ref);
+        self.deps.door.prepare(
+            &turn,
+            crate::talk::thinking::Prepared {
+                key: self.device_tag.clone(),
+                context,
+                cancel: answer.token(),
+                work: crate::talk::thinking::StationWork::Read { reader, origin, then: Box::new(then) },
+                wording: Some(self.wording(inner, r#ref)),
+            },
+        );
+        let phrase = self.door_phrase(&turn, request, text, activation.as_ref());
+        let handoff =
+            Handoff { r#ref: r#ref.to_string(), request: request.clone(), text: text.to_string(), capability };
+        let phrases = self.door_answer(None, &answer, turn, phrase, Some(handoff), None);
         let parts = self.with_errors(&answer, phrases);
-        self.spawn_answer(answer, parts, question);
+        self.spawn_answer(answer, parts, text.to_string());
     }
 
-    /// A command the quick rules do not know: the model picks a tool before anything is said.
+    /// A command the quick rules do not know: the model picks a tool before anything is said — behind the door
+    /// (part Н).
     fn command_by_model(
         self: &Arc<Self>,
         inner: &mut Inner,
@@ -2945,21 +3018,31 @@ impl StationSession {
         }
         let options = self.answer_options(inner, r#ref, request);
         let answer = self.start_answer(inner, options);
-        let phrases = self.model_command(inner, &answer, r#ref, request, text, profile);
+        let capability = Arc::new(Mutex::new(CapabilityName::Chat));
+        let work = self.command_work(inner, &answer, r#ref, request, text, profile, capability.clone());
+        let turn = self.door_turn(r#ref);
+        let activation = inner.activation(r#ref);
+        self.deps.door.prepare(
+            &turn,
+            crate::talk::thinking::Prepared {
+                key: self.device_tag.clone(),
+                context: self.model_context(inner, request, text, profile),
+                cancel: answer.token(),
+                work,
+                wording: Some(self.wording(inner, r#ref)),
+            },
+        );
+        let phrase = self.door_phrase(&turn, request, text, activation.as_ref());
+        let handoff =
+            Handoff { r#ref: r#ref.to_string(), request: request.clone(), text: text.to_string(), capability };
+        let phrases = self.door_answer(None, &answer, turn, phrase, Some(handoff), None);
         let parts = self.with_errors(&answer, phrases);
         self.spawn_answer(answer, parts, text.to_string());
     }
 
-    fn model_command(
-        self: &Arc<Self>,
-        inner: &Inner,
-        answer: &Arc<SpokenAnswer>,
-        r#ref: &str,
-        request: &AliceRequest,
-        text: &str,
-        profile: ModelProfile,
-    ) -> PhraseStream {
-        let context = DialogContext {
+    /// The context of the model's words on this station.
+    fn model_context(&self, inner: &Inner, request: &AliceRequest, text: &str, profile: ModelProfile) -> DialogContext {
+        DialogContext {
             spoken: true,
             timezone: self.timezone(inner, request),
             profile: Some(profile),
@@ -2973,97 +3056,92 @@ impl StationSession {
             // Why the rule gave this model, for the deal (src/router).
             reason: Some(crate::skills::quick_commands::profile_reason(text, profile)),
             ..DialogContext::default()
-        };
-        let session = self.clone();
-        let answer = answer.clone();
-        let (r#ref, request, text) = (r#ref.to_string(), request.clone(), text.to_string());
-        generate(move |y| async move {
-            let principal = session.speaker(&text);
-            let mcp = session.mcp_offer(&principal);
-            let mut tools = tools_for(ToolsKind::Command, Some(&principal));
-            if let Some(mcp) = &mcp {
-                tools.extend(mcp.tools().iter().cloned());
+        }
+    }
+
+    /// The context a skill's data is put into words in (Thinking adds the facts).
+    fn words_context(&self, inner: &Inner, request: &AliceRequest) -> DialogContext {
+        DialogContext {
+            spoken: true,
+            timezone: self.timezone(inner, request),
+            profile: Some(ModelProfile::Fast),
+            facts: None,
+            system: None,
+            model: None,
+            max_tokens: Some(crate::dialog::SPEECH_MAX_TOKENS),
+            device: Some(self.device_tag.clone()),
+            ..DialogContext::default()
+        }
+    }
+
+    /// The journal's step when the model puts a skill's data into words.
+    fn wording(&self, inner: &Inner, r#ref: &str) -> Box<dyn FnOnce() + Send + Sync> {
+        let trip = inner.trip(r#ref);
+        let brain = self.brain_of(None);
+        Box::new(move || {
+            if let Some(trip) = trip {
+                trip.step(RequestPhase::Think, Some(brain.by), Some(&brain.what));
             }
-            let contributed = session.contributed_offer(&principal, &tools);
-            if let Some(contributed) = &contributed {
-                tools.extend(contributed.tools.iter().cloned());
-            }
-            without_doubles(&mut tools);
-            let instructions = mcp.as_ref().map(|mcp| mcp.instructions().to_string());
-            let dialog = session.deps.dialog.clone();
-            let choice =
-                match dialog.decide(&session.device_tag, &text, context, answer.token(), tools, instructions).await {
-                    Ok(choice) => choice,
-                    Err(error) => return y.send(Err(error)).await,
-                };
-            let aside = choice.calls.iter().any(|made| {
-                mcp.as_ref().is_some_and(|mcp| mcp.owns(&made.name))
-                    || contributed.as_ref().is_some_and(|contributed| contributed.owns(&made.name))
-            });
-            if aside {
-                // «Найди», «добавь в Todoist», a plugin's search: a connected server or a plugin answers, so this
-                // goes on as a conversation — the jingle now, «Сейчас посмотрю» while it works, then the model's
-                // words.
-                if session.deps.dialog.config.early_response {
-                    answer.respond_early();
-                }
-                let activation = session.lock().activation(&r#ref);
-                let toolbox = session.lookup_toolbox(
-                    &r#ref,
-                    &request,
-                    &text,
-                    &answer,
-                    profile,
-                    Some(mcp.clone()),
-                    activation.as_ref(),
-                );
-                let Some(toolbox) = toolbox else { return };
-                let mut phrases = choice.proceed(toolbox, answer.token());
-                while let Some(phrase) = phrases.next().await {
-                    y.send(phrase).await;
-                }
-                return;
-            }
-            let mut calls = choice.calls.clone().into_iter();
-            let Some(call) = calls.next() else {
-                if !choice.text.is_empty() {
-                    session.deps.dialog.remember(&session.device_tag, &text, &choice.text, AnsweredBy::Model, None);
-                }
-                // A question about the command: its answer comes back here, with the tools.
-                if ends_with_question(&choice.text) {
-                    session.lock().command_question_until = now_ms() + COMMAND_QUESTION_MS;
-                }
-                for phrase in split_phrases(&choice.text) {
-                    y.send(Ok(phrase)).await;
-                }
-                return;
-            };
-            let ignored: Vec<String> = calls.map(|call| call.name).collect();
-            if !ignored.is_empty() {
-                session.note(
-                    "toolCallsIgnored",
-                    &format!("one command per request: {} not run", ignored.join(", ")),
-                    None,
-                );
-            }
-            let found = match session.deps.skills.intent_of(&call) {
-                Ok(found) => found,
-                Err(error) => {
-                    let result = ToolResult { id: call.id.clone(), content: format!("error: {error}"), is_error: true };
-                    let mut phrases = choice.continue_with(vec![result], answer.token());
-                    while let Some(phrase) = phrases.next().await {
-                        y.send(phrase).await;
-                    }
-                    return;
-                }
-            };
+        })
+    }
+
+    /// A command by the model as Thinking's work: the station's tools for it, and the station's ways to go on — a
+    /// connected server's or an app's call goes on as a conversation with its lookups, an intent is resolved by the
+    /// station's router (Yandex's own goes there at once).
+    #[allow(clippy::too_many_arguments)]
+    fn command_work(
+        self: &Arc<Self>,
+        inner: &Inner,
+        answer: &Arc<SpokenAnswer>,
+        r#ref: &str,
+        request: &AliceRequest,
+        text: &str,
+        profile: ModelProfile,
+        resolved: Arc<Mutex<CapabilityName>>,
+    ) -> crate::talk::thinking::StationWork {
+        let principal = self.speaker(text);
+        let mcp = self.mcp_offer(&principal);
+        let mut tools = tools_for(ToolsKind::Command, Some(&principal));
+        if let Some(mcp) = &mcp {
+            tools.extend(mcp.tools().iter().cloned());
+        }
+        let contributed = self.contributed_offer(&principal, &tools);
+        if let Some(contributed) = &contributed {
+            tools.extend(contributed.tools.iter().cloned());
+        }
+        without_doubles(&mut tools);
+        let instructions = mcp.as_ref().map(|mcp| mcp.instructions().to_string());
+        let (aside_mcp, aside_contributed) = (mcp.clone(), contributed.clone());
+        let aside = Box::new(move |name: &str| {
+            aside_mcp.as_ref().is_some_and(|mcp| mcp.owns(name))
+                || aside_contributed.as_ref().is_some_and(|contributed| contributed.owns(name))
+        });
+        let activation = inner.activation(r#ref);
+        let (session, lookup_answer) = (self.clone(), answer.clone());
+        let (lookup_ref, lookup_request, lookup_text) = (r#ref.to_string(), request.clone(), text.to_string());
+        let lookups = Box::new(move || {
+            session.lookup_toolbox(
+                &lookup_ref,
+                &lookup_request,
+                &lookup_text,
+                &lookup_answer,
+                profile,
+                Some(mcp.clone()),
+                activation.as_ref(),
+            )
+        });
+        let (session, resolve_answer) = (self.clone(), answer.clone());
+        let (resolve_ref, resolve_request, resolve_text) = (r#ref.to_string(), request.clone(), text.to_string());
+        let resolve = Box::new(move |found: &Intent, tool: &str| {
+            use crate::talk::thinking::Resolved;
             let (resolution, intent, context) = {
                 let mut inner = session.lock();
                 let router = session.deps.skills.router.clone();
-                let intent = router.rewrite(&found, &session.route_input(&inner, &r#ref, &text, &request));
+                let intent =
+                    router.rewrite(found, &session.route_input(&inner, &resolve_ref, &resolve_text, &resolve_request));
                 let resolution = router.resolve(&intent, session.yandex_available(&inner), Some(&principal));
-                session.record_route(&text, intent.capability, &resolution, "model", Some(&call.name));
-                if let Some(trip) = inner.trip(&r#ref) {
+                session.record_route(&resolve_text, intent.capability, &resolution, "model", Some(tool));
+                if let Some(trip) = inner.trip(&resolve_ref) {
                     trip.routed(Some(intent.capability.as_str()), resolution.kind());
                     if matches!(resolution, Resolution::Own(_)) {
                         trip.step(RequestPhase::Tool, Some(Place::Own), Some(intent.capability.info().title));
@@ -3071,43 +3149,327 @@ impl StationSession {
                 }
                 if resolution == Resolution::Yandex {
                     // Nothing was sent for this answer yet: it ends silently and Yandex answers the request.
-                    answer.cancel("handed to Yandex");
-                    session.ask_yandex(&mut inner, &r#ref, &request, &text, intent.capability, false);
-                    return;
+                    resolve_answer.cancel("handed to Yandex");
+                    session.ask_yandex(
+                        &mut inner,
+                        &resolve_ref,
+                        &resolve_request,
+                        &resolve_text,
+                        intent.capability,
+                        false,
+                    );
+                    return Resolved::HandedOff;
                 }
-                let context = session.execution_context(&inner, &text, &request, answer.token());
+                let context =
+                    session.execution_context(&inner, &resolve_text, &resolve_request, resolve_answer.token());
                 (resolution, intent, context)
             };
-            let skill = match resolution {
-                Resolution::Own(skill) => skill,
-                Resolution::Unsupported { reason } => {
-                    session.note_unsupported(&text, intent.capability, &reason);
-                    return y.send(Ok(session.unsupported_phrase(&reason))).await;
+            match resolution {
+                Resolution::Own(skill) => {
+                    *resolved.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = intent.capability;
+                    Resolved::Own { skill, intent, context: Box::new(context) }
                 }
-                Resolution::Yandex => return,
-            };
-            let outcome = match skill.execute(&intent, &context).await {
-                Ok(outcome) => outcome,
-                Err(error) => return y.send(Err(error)).await,
-            };
-            if outcome.to_yandex && session.hand_to_yandex(&answer, &r#ref, &request, &text, intent.capability) {
-                return;
+                Resolution::Unsupported { reason } => {
+                    session.note_unsupported(&resolve_text, intent.capability, &reason);
+                    Resolved::Unsupported { phrase: session.unsupported_phrase(&reason) }
+                }
+                Resolution::Yandex => Resolved::HandedOff,
             }
-            let choice = Arc::new(choice);
-            let continued = choice.clone();
-            let token = answer.token();
-            let id = call.id.clone();
-            let on_data: Box<dyn FnOnce(String) -> PhraseStream + Send> = Box::new(move |data| {
-                continued.continue_with(vec![ToolResult { id, content: data, is_error: false }], token)
+        });
+        let session = self.clone();
+        let ignored = Box::new(move |names: &[String]| {
+            session.note("toolCallsIgnored", &format!("one command per request: {} not run", names.join(", ")), None);
+        });
+        crate::talk::thinking::StationWork::Command(Box::new(crate::talk::thinking::Command {
+            tools,
+            instructions,
+            aside,
+            lookups,
+            resolve,
+            ignored,
+        }))
+    }
+
+    /// The turn of the door for a request of this station.
+    fn door_turn(&self, r#ref: &str) -> String {
+        format!("{}:{}", self.device_tag, r#ref)
+    }
+
+    /// Thinking's answer, as the door brings it, put into the station's answer: `say` its phrases, `hands` its
+    /// commands (and the answer's recording), `ask` «listen after» or the command's question, `follow` the skill
+    /// going on, `wait` the jingle, `handoff` Alice, a failed `end` the error the station's own words of failure read.
+    /// The end of the speech is told back (`said`): a skill's «after the speech» starts then.
+    #[allow(clippy::too_many_arguments)]
+    fn door_answer(
+        self: &Arc<Self>,
+        thinking: Option<Arc<dyn crate::door::Thinking>>,
+        answer: &Arc<SpokenAnswer>,
+        turn: String,
+        phrase: crate::door::Phrase,
+        handoff: Option<Handoff>,
+        early: Option<(bool, CancellationToken)>,
+    ) -> PhraseStream {
+        use crate::door::What;
+        // Thinking's own turn (it takes the station): what comes too late for the answer is let go, not the answer.
+        let lenient = thinking.is_some();
+        let door: Arc<dyn crate::door::Thinking> = thinking.unwrap_or_else(|| self.deps.door.clone());
+        {
+            let (door, turn) = (door.clone(), turn.clone());
+            answer.after_spoken(Box::new(move |at| {
+                door.tell(crate::door::News::new(crate::door::Told::Said { turn, at: Some(at) }))
+            }));
+        }
+        let mut events = door.phrase(phrase);
+        // Thinking's turn going on: the answer stopped before it ended (a new request, «стоп», the station gone) is
+        // told to it, as the contract's `stop`; the answer then reads no more of it.
+        let going = CancellationToken::new();
+        if lenient {
+            let (door, turn, answer, going) = (door.clone(), turn.clone(), answer.clone(), going.clone());
+            tokio::spawn(async move {
+                let stopped = answer.token();
+                tokio::select! {
+                    biased;
+                    _ = stopped.cancelled() => {
+                        let reason = answer.cancel_reason();
+                        // A handoff stops the answer itself: the turn handed the phrase on and ended.
+                        if reason.as_deref() != Some(HANDED_TO_YANDEX) {
+                            let why = stop_why(reason.as_deref());
+                            door.tell(crate::door::News::new(crate::door::Told::Stop { turn, why, heard: None }));
+                        }
+                    }
+                    _ = going.cancelled() => {}
+                }
             });
-            let mut phrases = session.apply_outcome(&answer, &request, &text, outcome, Some(on_data));
-            while let Some(phrase) = phrases.next().await {
-                y.send(phrase).await;
+        }
+        let read = going.drop_guard();
+        let (session, answer) = (self.clone(), answer.clone());
+        generate(move |y| async move {
+            let _read = read;
+            // After a handoff or a broken answer, the rest is not said: Thinking's turn still ends.
+            let mut done = false;
+            // A display's commands joined the response, which goes once they all have.
+            let mut respond = false;
+            while let Some(event) = events.next().await {
+                if done {
+                    continue;
+                }
+                if respond && !matches!(event.what, What::Hands { .. }) {
+                    respond = false;
+                    answer.respond_early();
+                }
+                match event.what {
+                    What::Say { text } => {
+                        if let Some((_, timer)) = &early {
+                            timer.cancel();
+                        }
+                        y.send(Ok(text)).await;
+                    }
+                    What::Hands { call, hand, args, .. } if hand == crate::talk::thinking::RECORD_AUDIO => {
+                        let recorded = match args.get("file").and_then(Value::as_str) {
+                            Some(file) => {
+                                answer.record(Arc::new(FileRecording::new(std::path::PathBuf::from(file))));
+                                Ok(())
+                            }
+                            None => Err("no file to record into".to_string()),
+                        };
+                        hands_done(&*door, call, recorded);
+                    }
+                    What::Hands { call, hand, args, .. } => {
+                        let Some(command) = crate::ear::hands::command_of(&args) else {
+                            let unknown = format!("a hand this station does not know: {hand}");
+                            session.note("handUnknown", &unknown, None);
+                            hands_done(&*door, call, Err(unknown));
+                            continue;
+                        };
+                        let directives = crate::gateway::commands::directives_of(&[command]);
+                        if directives.is_empty() {
+                            hands_done(&*door, call, Err(format!("the station has no command for {hand}")));
+                            continue;
+                        }
+                        match &early {
+                            // The display's command joins the response, which goes at once: the model still has to
+                            // word the result. A response already out (a slow forecast) goes without it.
+                            Some((true, timer)) => {
+                                let names: Vec<String> =
+                                    directives.iter().map(|directive| directive.name.clone()).collect();
+                                if answer.add_directives(directives).is_err() {
+                                    session.note(
+                                        "displayLate",
+                                        &format!("{hand}: answered early, {} not sent", names.join(", ")),
+                                        None,
+                                    );
+                                    hands_done(&*door, call, Err("answered early: not sent".to_string()));
+                                } else {
+                                    timer.cancel();
+                                    respond = true;
+                                    hands_done(&*door, call, Ok(()));
+                                }
+                            }
+                            _ => match answer.add_directives(directives) {
+                                Ok(()) => hands_done(&*door, call, Ok(())),
+                                // As a conversation's lookups are: the answer went out, the command is let go.
+                                Err(error) if lenient => {
+                                    session.note(
+                                        "commandLate",
+                                        &format!("{hand}: the answer went out, not sent"),
+                                        None,
+                                    );
+                                    hands_done(&*door, call, Err(error.to_string()));
+                                }
+                                Err(error) => {
+                                    hands_done(&*door, call, Err(error.to_string()));
+                                    y.send(Err(anyhow::anyhow!(error))).await;
+                                    done = true;
+                                }
+                            },
+                        }
+                    }
+                    What::Ask { question, .. } if question == crate::talk::thinking::COMMAND_QUESTION => {
+                        session.lock().command_question_until = now_ms() + COMMAND_QUESTION_MS;
+                    }
+                    What::Ask { question, .. } => {
+                        if lenient {
+                            // Its answer comes in the window: the phrase heard there gives the question back.
+                            session.lock().thinking_asked = Some((question, now_ms() + THINKING_ASKED_MS));
+                        }
+                        match answer.set_listen(ListenMode::Always) {
+                            Ok(()) => {}
+                            // The question was the answer's last words: the station listens after a question anyway.
+                            Err(_) if lenient => {}
+                            Err(error) => {
+                                y.send(Err(anyhow::anyhow!(error))).await;
+                                done = true;
+                            }
+                        }
+                    }
+                    What::Follow { capability, ttl_ms } => {
+                        let mut inner = session.lock();
+                        inner.continuation = is_capability(&capability).filter(|_| ttl_ms > 0).map(|capability| {
+                            Continuation { capability, executor: RouteStep::Own, until: now_ms() + ttl_ms }
+                        });
+                    }
+                    What::Wait { .. } => {
+                        if session.deps.dialog.config.early_response {
+                            answer.respond_early();
+                        }
+                    }
+                    What::Handoff { capability: named, text: words } => {
+                        if let Some(handoff) = &handoff {
+                            // Whose it is: as Thinking names it, else the skill's the session knows.
+                            let capability = named.as_deref().and_then(is_capability).unwrap_or_else(|| {
+                                *handoff.capability.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+                            });
+                            // A rule's rewrite goes as text: the voice says what Yandex misreads.
+                            let said = words.unwrap_or_else(|| handoff.text.clone());
+                            let text_only = said != handoff.text;
+                            if session.hand_to_yandex(
+                                &answer,
+                                &handoff.r#ref,
+                                &handoff.request,
+                                &said,
+                                capability,
+                                text_only,
+                            ) {
+                                done = true;
+                            }
+                        }
+                    }
+                    What::End { outcome: crate::door::Outcome::Failed, error, .. } => {
+                        y.send(Err(anyhow::anyhow!(error.unwrap_or_else(|| "Thinking failed".to_string())))).await;
+                        done = true;
+                    }
+                    _ => {}
+                }
+            }
+            if respond {
+                answer.respond_early();
             }
         })
     }
 
-    /// A conversation: the response and the jingle at once, the model's words as they come, lookups as its tools.
+    /// Thinking takes the station: the phrase goes to it plain, as the computer's does, with the station's hands (its
+    /// assistant while Yandex is on the line) and the question it answers; the session keeps the request (offered to
+    /// the brain, ended once the answer is spoken) and does what comes back (`door_answer`). A slow answer gets the
+    /// jingle, as our skills' do.
+    fn think(
+        self: &Arc<Self>,
+        inner: &mut Inner,
+        r#ref: &str,
+        request: &AliceRequest,
+        text: &str,
+        thinking: &StationThinking,
+        answering: Answering,
+    ) {
+        self.record(
+            EventDirection::Note,
+            "thinking",
+            Some(format!("Thinking answers \"{text}\"")),
+            Some(&json!({ "text": text })),
+            false,
+        );
+        let mut options = self.answer_options(inner, r#ref, request);
+        match answering {
+            // tts_play_placeholder makes no sound on our station: a skill's early response does not ask to listen.
+            Answering::Skill { .. } => options.listen = ListenMode::Never,
+            Answering::Conversation => options.early = self.deps.dialog.config.early_response,
+            Answering::Command => {}
+        }
+        let answer = self.start_answer(inner, options);
+        if let Some(trip) = inner.trip(r#ref) {
+            trip.claim(answer.owner);
+            thinking.offers.offer(&self.device_tag, trip);
+        }
+        let turn = self.door_turn(r#ref);
+        let activation = inner.activation(r#ref);
+        let mut phrase = self.door_phrase(&turn, request, text, activation.as_ref());
+        // Its own assistant only while Yandex is on the line: a handoff it could not take would leave silence.
+        if !self.yandex_available(inner) {
+            phrase.hands.retain(|group| group != crate::door::hands::ASSISTANT);
+        }
+        // The answer to Thinking's question, heard in its window.
+        let asked = inner.thinking_asked.take().filter(|(_, until)| *until > now_ms());
+        if let (Some((question, _)), crate::door::Opened::Window) = (asked, phrase.opened) {
+            phrase.context.answer_to = Some(question);
+            phrase.context.after = Some(crate::door::After::Ask);
+        }
+        let handoff = Handoff {
+            r#ref: r#ref.to_string(),
+            request: request.clone(),
+            text: text.to_string(),
+            capability: Arc::new(Mutex::new(CapabilityName::Chat)),
+        };
+        // As the station's own chain answers the same decision: a skill that sends the station no commands and is
+        // slow to speak answers early with the jingle, its display's command in it; a conversation answered at once
+        // (above); a command's commands join the response.
+        let early = CancellationToken::new();
+        let lead = match answering {
+            Answering::Skill { early: may, display } => {
+                if may {
+                    let (early, answer) = (early.clone(), answer.clone());
+                    let wait = if display { OWN_DISPLAY_EARLY_MS } else { OWN_EARLY_MS };
+                    tokio::spawn(async move {
+                        tokio::select! {
+                            _ = early.cancelled() => {}
+                            _ = tokio::time::sleep(Duration::from_millis(wait)) => answer.respond_early(),
+                        }
+                    });
+                }
+                Some((may, early.clone()))
+            }
+            Answering::Conversation | Answering::Command => None,
+        };
+        let phrases = self.door_answer(Some(thinking.door.clone()), &answer, turn, phrase, Some(handoff), lead);
+        let parts = self.with_errors(&answer, phrases);
+        let session = self.clone();
+        let question = text.to_string();
+        tokio::spawn(async move {
+            session.play_answer(answer, parts, question).await;
+            early.cancel();
+        });
+    }
+
+    /// A conversation: the response and the jingle at once, the model's words as they come, lookups as its tools —
+    /// behind the door (part Н).
     fn converse(
         self: &Arc<Self>,
         inner: &mut Inner,
@@ -3123,26 +3485,71 @@ impl StationSession {
         let mut options = self.answer_options(inner, r#ref, request);
         options.early = self.deps.dialog.config.early_response;
         let answer = self.start_answer(inner, options);
-        let context = DialogContext {
-            spoken: true,
-            timezone: self.timezone(inner, request),
-            profile: Some(profile),
-            facts: None,
-            system: None,
-            model: None,
-            // A spoken answer: a few sentences (docs/plans/audio-interface.md, decision 14).
-            max_tokens: Some(crate::dialog::SPEECH_MAX_TOKENS),
-            // Who answers in this station's room (docs/plans/home-and-devices.md, «Комнаты»).
-            device: Some(self.device_tag.clone()),
-            // Why the rule gave this model, for the deal (src/router).
-            reason: Some(crate::skills::quick_commands::profile_reason(text, profile)),
-            ..DialogContext::default()
-        };
+        let context = self.model_context(inner, request, text, profile);
         let activation = inner.activation(r#ref);
         let toolbox = self.lookup_toolbox(r#ref, request, text, &answer, profile, None, activation.as_ref());
-        let phrases = self.deps.dialog.answer(&self.device_tag, text, context, answer.token(), toolbox);
+        let turn = self.door_turn(r#ref);
+        self.deps.door.prepare(
+            &turn,
+            crate::talk::thinking::Prepared {
+                key: self.device_tag.clone(),
+                context,
+                cancel: answer.token(),
+                work: crate::talk::thinking::StationWork::Converse { toolbox, start: None },
+                wording: None,
+            },
+        );
+        let phrase = self.door_phrase(&turn, request, text, activation.as_ref());
+        let phrases = self.door_answer(None, &answer, turn, phrase, None, None);
         let parts = self.with_errors(&answer, phrases);
         self.spawn_answer(answer, parts, text.to_string());
+    }
+
+    /// The station's phrase in the door's words: who it is said to (the word, the window), the station's hands, its
+    /// voice budget.
+    fn door_phrase(
+        &self,
+        turn: &str,
+        request: &AliceRequest,
+        text: &str,
+        activation: Option<&Activation>,
+    ) -> crate::door::Phrase {
+        use crate::door::{Budget, By, Context, Kind, Opened, Phrase, Place, To, Who, V};
+        let origin = self.origin(activation, request);
+        let word = origin.activator == crate::talk::Activator::Word;
+        Phrase {
+            v: V,
+            turn: turn.to_string(),
+            text: text.to_string(),
+            lang: None,
+            alts: Vec::new(),
+            who: Who::default(),
+            to: To {
+                agent: origin.character.clone(),
+                by: if word { By::Word } else { By::Window },
+                name: origin.name.clone(),
+            },
+            place: Place {
+                device: self.device_tag.clone(),
+                room: None,
+                kind: Kind::Station,
+                screen: false,
+                speaker: true,
+            },
+            hands: {
+                // A station whose mode lets Yandex in has an assistant of its own: Thinking may hand a phrase to it.
+                let mut hands = crate::door::hands::groups(&crate::ear::hands::station());
+                if self.deps.modes.yandex_allowed_for(Some(&self.device_tag)) {
+                    hands.push(crate::door::hands::ASSISTANT.to_string());
+                }
+                hands
+            },
+            opened: if word { Opened::Word } else { Opened::Window },
+            context: Context::default(),
+            budget: Budget { voice: true, first_word_ms: Some(1_500), limit_ms: None },
+            heard: None,
+            at: Some(now_ms()),
+        }
     }
 
     /// The model's tools in a conversation: lookups (commands for the station are not among them) and the MCP
@@ -3179,7 +3586,7 @@ impl StationSession {
         without_doubles(&mut tools);
         // Where the phrase came from: this station, by its wake word (or an activator's) or as the answer to its
         // question.
-        let origin = self.origin(activation, request).by(Some(principal.name.clone()));
+        let origin = self.origin(activation, request).of(&principal);
         let session = self.clone();
         let (r#ref, request, text) = (r#ref.to_string(), request.clone(), text.to_string());
         let (tool_answer, tool_mcp, tool_contributed) = (answer.clone(), mcp.clone(), contributed.clone());

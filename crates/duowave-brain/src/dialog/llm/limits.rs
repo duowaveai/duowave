@@ -5,10 +5,12 @@
 //! backup the station says when the limit renews, or — in «Вместе», as the owner chose — Alice answers.
 //!
 //! DuoWave's gateway also tells what is spent (`x-quota-*`, `GET /v1/quota`): kept here for the card, and said once a
-//! day at 90 %.
+//! day at 90 %. And how long an answer its plan gives each model (`max_output_tokens` in `GET /v1/models`): a request
+//! asks no more than that.
 //!
 //! All in memory: a restart starts clean, the next request finds out again.
 
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 
 use chrono::{DateTime, Datelike, Duration, NaiveDateTime, Timelike, Utc};
@@ -30,6 +32,9 @@ const PROBE_STALE_SECONDS: i64 = 120;
 const LONG_WAIT_SECONDS: u64 = 10 * 60;
 /// The share of the day's limit spent at which the station says so, once a day.
 pub const NEAR_PERCENT: u8 = 90;
+/// How often DuoWave's models are asked for their output limits again: a plan changes (the trial week ends), and a
+/// list that failed once is asked again.
+const CAPS_EVERY_MINUTES: i64 = 60;
 
 /// What a refusal asks: wait a minute, wait until a time, or act.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -157,6 +162,10 @@ struct CellState {
     near_said: Option<DateTime<Utc>>,
     /// When `GET /v1/quota` was last asked.
     quota_asked: Option<DateTime<Utc>>,
+    /// The longest answer the service gives each model, its plan's ceiling within it (`GET /v1/models`).
+    output_caps: BTreeMap<String, u32>,
+    /// When the models were last asked for it.
+    caps_asked: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug)]
@@ -354,6 +363,35 @@ impl ProviderCell {
         true
     }
 
+    /// The longest answer the service gives `model`, as its list of models said; None while it said nothing.
+    pub fn output_cap(&self, model: &str) -> Option<u32> {
+        self.state().output_caps.get(model).copied()
+    }
+
+    /// What the list of models said (`output_caps_of`): it replaces the last list's, a model not in it has no limit
+    /// known. An empty one (a list without the field) keeps the last.
+    pub fn caps_read(&self, caps: BTreeMap<String, u32>, now: DateTime<Utc>) {
+        let mut state = self.state();
+        state.caps_asked = Some(now);
+        if !caps.is_empty() {
+            state.output_caps = caps;
+        }
+    }
+
+    /// Whether DuoWave's models may be asked for their output limits now: never asked since the start, or not for
+    /// `CAPS_EVERY_MINUTES`. Marks it asked. Another service's cell never asks.
+    pub fn take_caps_turn(&self, now: DateTime<Utc>) -> bool {
+        if self.words() != ErrorWords::DuoWave {
+            return false;
+        }
+        let mut state = self.state();
+        if state.caps_asked.is_some_and(|asked| now - asked < Duration::minutes(CAPS_EVERY_MINUTES)) {
+            return false;
+        }
+        state.caps_asked = Some(now);
+        true
+    }
+
     /// The 90 % line, once a day (by the day's reset): Some(words) the first time the day's share reaches it.
     pub fn take_near(&self) -> Option<String> {
         let mut state = self.state();
@@ -410,6 +448,23 @@ pub fn quota_of_body(body: &Value, now: DateTime<Utc>) -> Option<Quota> {
     };
     body.as_object()?;
     Some(Quota { day: part("day", "resets_at"), period: part("period", "ends_at"), at: now })
+}
+
+/// Each model's output limit in a list of models: OpenAI's form (`data`, `id`, `max_output_tokens`) or Anthropic's
+/// (`max_tokens`), as DuoWave's gateway gives both. A model without it, or a zero, is left out.
+pub fn output_caps_of(body: &Value) -> BTreeMap<String, u32> {
+    let Some(models) = body.get("data").or_else(|| body.get("models")).and_then(Value::as_array) else {
+        return BTreeMap::new();
+    };
+    models
+        .iter()
+        .filter_map(|model| {
+            let id = model.get("id").or_else(|| model.get("name")).and_then(Value::as_str)?;
+            let cap = model.get("max_output_tokens").or_else(|| model.get("max_tokens")).and_then(Value::as_u64)?;
+            let cap = u32::try_from(cap).ok().filter(|cap| *cap > 0)?;
+            Some((id.to_string(), cap))
+        })
+        .collect()
 }
 
 fn parse_time(text: &str) -> Option<DateTime<Utc>> {
@@ -503,6 +558,13 @@ pub fn set_timezone(timezone: Option<&str>) {
 
 fn timezone() -> Option<String> {
     TIMEZONE.read().unwrap_or_else(|poisoned| poisoned.into_inner()).clone()
+}
+
+/// The home's time zone for a phrase with none of its own (the computer's channel, the panel): the one the station
+/// last named. 27.11, the trial of main: on a station hub «Который час?» from its Турбо was answered by the station's
+/// own clock, UTC — «9» at 16:00 in the home. None — the computer's own clock is the home's (the computer is the hub).
+pub fn home_timezone() -> Option<String> {
+    timezone()
 }
 
 // The words.
@@ -982,5 +1044,40 @@ mod tests {
             now + Duration::seconds(200),
         );
         assert!(!cell.take_quota_turn(now + Duration::seconds(230)), "the answers told it");
+    }
+
+    /// DuoWave's `GET /v1/models` (27.11): each model's `max_output_tokens`, its plan's ceiling within it; Anthropic's
+    /// form names it `max_tokens`. A model without it, or a zero, has no limit known.
+    #[test]
+    fn reads_each_models_output_limit_from_the_list_in_either_form() {
+        let openai = serde_json::json!({"object": "list", "data": [
+            {"id": "duowave-smart", "max_output_tokens": 16384, "context_window": 200000},
+            {"id": "duowave-fast", "max_output_tokens": 0},
+            {"id": "plain"}
+        ]});
+        assert_eq!(output_caps_of(&openai), BTreeMap::from([("duowave-smart".to_string(), 16384)]));
+        let anthropic =
+            serde_json::json!({"data": [{"id": "duowave-smart", "max_tokens": 8192, "max_input_tokens": 1}]});
+        assert_eq!(output_caps_of(&anthropic), BTreeMap::from([("duowave-smart".to_string(), 8192)]));
+        assert!(output_caps_of(&serde_json::json!({"error": "x"})).is_empty());
+    }
+
+    #[test]
+    fn duowaves_models_are_asked_for_their_limits_once_an_hour_and_another_service_never() {
+        let now = evening();
+        let cell = ProviderCell::new("DuoWave", ErrorWords::DuoWave);
+        assert_eq!(cell.output_cap("duowave-smart"), None);
+        assert!(cell.take_caps_turn(now));
+        assert!(!cell.take_caps_turn(now + Duration::minutes(30)));
+        cell.caps_read(BTreeMap::from([("duowave-smart".to_string(), 8192)]), now + Duration::minutes(40));
+        assert_eq!(cell.output_cap("duowave-smart"), Some(8192));
+        assert!(!cell.take_caps_turn(now + Duration::minutes(90)), "read 50 minutes ago");
+        assert!(cell.take_caps_turn(now + Duration::minutes(101)), "the plan may have changed");
+        // A list without the field keeps what the last one said; a new one replaces it.
+        cell.caps_read(BTreeMap::new(), now + Duration::minutes(102));
+        assert_eq!(cell.output_cap("duowave-smart"), Some(8192));
+        cell.caps_read(BTreeMap::from([("duowave-smart".to_string(), 16384)]), now + Duration::minutes(103));
+        assert_eq!(cell.output_cap("duowave-smart"), Some(16384));
+        assert!(!ProviderCell::new("OpenRouter", ErrorWords::Plain).take_caps_turn(now));
     }
 }

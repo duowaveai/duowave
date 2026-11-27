@@ -175,6 +175,43 @@ pub(super) async fn request_headers(settings: &LlmSettings) -> anyhow::Result<He
     Ok(headers)
 }
 
+/// The request's output limit (or the client's), never above what the service gives this model (DuoWave's
+/// `max_output_tokens`, its plan's ceiling within it, `ProviderCell::output_cap`): a limit above it is cut by the
+/// service without a word, and the request should carry what the answer may really take.
+fn max_tokens_of(settings: &LlmSettings, request: &LlmRequest, model: &str) -> u32 {
+    let asked = request.max_tokens.unwrap_or(settings.max_tokens);
+    match settings.limits.as_ref().and_then(|cell| cell.output_cap(model)) {
+        Some(cap) if cap < asked => {
+            tracing::debug!(target: "dialog", "{model}: the output limit {asked} is above the service's {cap}: {cap} asked");
+            cap
+        }
+        _ => asked,
+    }
+}
+
+/// `GET /models` of DuoWave's gateway, with this request's headers: each model's `max_output_tokens`, kept on the
+/// provider's cell. Any failure leaves the last list as it was; the cell asks again later.
+async fn read_output_caps(settings: LlmSettings, headers: HeaderMap, cell: super::limits::ProviderCell) {
+    let base = settings.base_url.as_deref().unwrap_or(OPENAI_BASE_URL).trim_end_matches('/');
+    let url = format!("{base}/models");
+    let sent = client().get(&url).headers(headers).timeout(std::time::Duration::from_secs(10)).send().await;
+    let response = match sent {
+        Ok(response) if response.status().is_success() => response,
+        Ok(response) => {
+            tracing::debug!(target: "dialog", "models of {}: HTTP {}", cell.title(), response.status().as_u16());
+            return;
+        }
+        Err(error) => {
+            tracing::debug!(target: "dialog", "models of {}: {}", cell.title(), describe(&error));
+            return;
+        }
+    };
+    let Ok(body) = response.json::<Value>().await else { return };
+    let caps = super::limits::output_caps_of(&body);
+    tracing::debug!(target: "dialog", "models of {}: output limits {caps:?}", cell.title());
+    cell.caps_read(caps, chrono::Utc::now());
+}
+
 #[derive(Debug, Default)]
 struct PendingCall {
     id: String,
@@ -207,10 +244,11 @@ async fn run(
     let mut body = Map::new();
     body.insert("model".into(), json!(model));
     body.insert("stream".into(), json!(true));
-    body.insert(
-        tokens_field_name(settings.tokens_field).into(),
-        json!(request.max_tokens.unwrap_or(settings.max_tokens)),
-    );
+    body.insert(tokens_field_name(settings.tokens_field).into(), json!(max_tokens_of(settings, request, &model)));
+    // A turn before this one spent its whole answer on thinking: this one thinks less, where the service takes it.
+    if request.think_less && settings.reasoning_effort {
+        body.insert("reasoning_effort".into(), json!("low"));
+    }
     body.insert("messages".into(), Value::Array(messages));
     // OpenAI's own API tells what a streamed answer spent only when asked; the compatible servers that tell it do so
     // anyway, and a strict one might refuse the field.
@@ -227,6 +265,11 @@ async fn run(
     let headers = request_headers(settings).await?;
     if let Some(refused) = super::llm_client::egress_refusal(url) {
         return Err(refused);
+    }
+    // DuoWave's list of models says how long an answer each gives: asked beside this request, now and then
+    // (`ProviderCell::take_caps_turn`), for the next ones.
+    if let Some(cell) = settings.limits.as_ref().filter(|cell| cell.take_caps_turn(chrono::Utc::now())) {
+        tokio::spawn(read_output_caps(settings.clone(), headers.clone(), cell.clone()));
     }
     let send = client().post(url).headers(headers).body(Value::Object(body).to_string()).send();
     let response = tokio::select! {
@@ -396,6 +439,14 @@ pub mod tests {
         requests: Arc<Mutex<Vec<(Value, Headers)>>>,
         /// The chunks to stream for the next request, as `data:` lines.
         chunks: Arc<Mutex<Vec<Value>>>,
+        /// The answer of `GET /models`, and the headers it was asked with.
+        models: Arc<Mutex<Value>>,
+        listed: Arc<Mutex<Vec<Headers>>>,
+    }
+
+    async fn models(State(stub): State<Stub>, headers: Headers) -> axum::Json<Value> {
+        stub.listed.lock().unwrap().push(headers);
+        axum::Json(stub.models.lock().unwrap().clone())
     }
 
     async fn chat(State(stub): State<Stub>, headers: Headers, body: String) -> axum::response::Response {
@@ -410,7 +461,10 @@ pub mod tests {
 
     async fn stub() -> (Stub, String) {
         let stub = Stub::default();
-        let app = axum::Router::new().route("/v1/chat/completions", post(chat)).with_state(stub.clone());
+        let app = axum::Router::new()
+            .route("/v1/chat/completions", post(chat))
+            .route("/v1/models", axum::routing::get(models))
+            .with_state(stub.clone());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}/v1", listener.local_addr().unwrap());
         tokio::spawn(async move { axum::serve(listener, app).await });
@@ -429,6 +483,7 @@ pub mod tests {
             explicit: false,
             headers: BTreeMap::new(),
             tokens_field: TokensField::MaxTokens,
+            reasoning_effort: false,
             access: None,
             api: crate::dialog::llm::LlmApi::Chat,
             limits: None,
@@ -596,6 +651,89 @@ pub mod tests {
         assert_eq!(tokens_field_for("https://api.openai.com/v1"), TokensField::MaxCompletionTokens);
         assert_eq!(tokens_field_for("https://openrouter.ai/api/v1"), TokensField::MaxTokens);
         assert_eq!(tokens_field_for("not a url"), TokensField::MaxTokens);
+    }
+
+    /// DuoWave's advice (27.11): a turn whose whole answer went to thinking is asked again with
+    /// `reasoning_effort: "low"` and the same limit; a limit above what its list gives the model is asked as the list
+    /// says. Another service hears of neither.
+    #[tokio::test]
+    async fn thinks_less_where_the_service_takes_it_and_asks_no_more_than_the_model_gives() {
+        use crate::dialog::llm::{ErrorWords, ProviderCell};
+        let (server, url) = stub().await;
+        *server.chunks.lock().unwrap() = vec![delta(json!({"content": "Да."}))];
+        let cell = ProviderCell::new("DuoWave", ErrorWords::DuoWave);
+        cell.caps_read(BTreeMap::from([("duowave-smart".to_string(), 8192)]), chrono::Utc::now());
+        let duowave =
+            || OpenAiChatLlm::new(LlmSettings { reasoning_effort: true, limits: Some(cell.clone()), ..settings(&url) });
+        let ask = |model: &str, think_less: bool| LlmRequest {
+            messages: question(),
+            model: Some(model.into()),
+            max_tokens: Some(16_000),
+            think_less,
+            ..LlmRequest::default()
+        };
+        let last = || server.requests.lock().unwrap().last().cloned().unwrap().0;
+
+        events(&duowave(), ask("duowave-smart", true)).await;
+        let sent = last();
+        assert_eq!(sent["reasoning_effort"], json!("low"));
+        assert_eq!(sent["max_tokens"], json!(8192), "no more than the plan gives the model");
+
+        // Its first try: the service's own default; a model the list did not name: the limit as asked.
+        events(&duowave(), ask("duowave-fast", false)).await;
+        let sent = last();
+        assert!(sent.get("reasoning_effort").is_none());
+        assert_eq!(sent["max_tokens"], json!(16_000));
+
+        // Asked less than the ceiling: as asked.
+        events(&duowave(), LlmRequest { max_tokens: Some(4000), ..ask("duowave-smart", false) }).await;
+        assert_eq!(last()["max_tokens"], json!(4000));
+
+        // A service that does not take the field never gets it.
+        events(&OpenAiChatLlm::new(settings(&url)), ask("duowave-smart", true)).await;
+        let sent = last();
+        assert!(sent.get("reasoning_effort").is_none());
+        assert_eq!(sent["max_tokens"], json!(16_000));
+    }
+
+    /// The plan's ceilings come from DuoWave's list of models, asked beside a request with its key: the first request
+    /// goes as asked, the next ones no higher than the list says, and the list is not asked again within the hour.
+    /// Another service's list is never asked.
+    #[tokio::test]
+    async fn asks_duowaves_list_for_each_models_ceiling_beside_a_request() {
+        use crate::dialog::llm::{ErrorWords, ProviderCell};
+        let (server, url) = stub().await;
+        *server.chunks.lock().unwrap() = vec![delta(json!({"content": "Да."}))];
+        *server.models.lock().unwrap() = json!({"data": [{"id": "duowave-smart", "max_output_tokens": 8192}]});
+        let cell = ProviderCell::new("DuoWave", ErrorWords::DuoWave);
+        let duowave = LlmSettings { api_key: Some("dw-key".into()), limits: Some(cell.clone()), ..settings(&url) };
+        let llm = OpenAiChatLlm::new(duowave);
+        let ask = || LlmRequest {
+            messages: question(),
+            model: Some("duowave-smart".into()),
+            max_tokens: Some(16_000),
+            ..LlmRequest::default()
+        };
+        events(&llm, ask()).await;
+        for _ in 0..200 {
+            if cell.output_cap("duowave-smart").is_some() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert_eq!(cell.output_cap("duowave-smart"), Some(8192));
+        events(&llm, ask()).await;
+        let limits: Vec<Value> =
+            server.requests.lock().unwrap().iter().map(|(body, _)| body["max_tokens"].clone()).collect();
+        assert_eq!(limits, [json!(16_000), json!(8192)]);
+        let listed = server.listed.lock().unwrap().clone();
+        assert_eq!(listed.len(), 1, "once, not before every request");
+        assert_eq!(listed[0]["authorization"], "Bearer dw-key");
+
+        let plain = ProviderCell::new("OpenRouter", ErrorWords::Plain);
+        events(&OpenAiChatLlm::new(LlmSettings { limits: Some(plain), ..settings(&url) }), ask()).await;
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert_eq!(server.listed.lock().unwrap().len(), 1);
     }
 
     #[tokio::test]

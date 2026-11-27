@@ -12,9 +12,10 @@ use crate::core::settings::{as_one_of, as_string, as_string_record, SettingDefin
 /// A work folder (docs/plans/router-and-works.md, block A, 6; src/works): a folder on this computer the owner added in
 /// the panel for the helper to work in. `kind` — how it is kept: only `git` in the first version (decision 9).
 /// `agent` and `model` — its agent and the model for it; empty — the seat «Исполнитель» (Claude Code and its own
-/// choice). `maxUsd` — the ceiling of one run. `prepare` — commands for a fresh work copy; `checks` — the folder's own
-/// checks after a run; `allow` — what the agent may run without a question, as Claude Code writes its rules
-/// (`Bash(npm test *)`; `git push` too only when listed, decision 21).
+/// choice). `budget` — the folder's budget (router stage 2; stage 3's `maxUsd`, the ceiling of one run, is read as a
+/// budget in dollars). `prepare` — commands for a fresh work copy; `checks` — the folder's own checks after a run;
+/// `allow` — what the agent may run without a question, as Claude Code writes its rules (`Bash(npm test *)`; `git push`
+/// too only when listed, decision 21).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkFolder {
@@ -27,8 +28,16 @@ pub struct WorkFolder {
     pub agent: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// Stage 3's ceiling of one run. From stage 2 a folder without `budget` reads it as its budget in dollars
+    /// (works/folders.rs, `budget_of`), and it is kept equal to the budget's dollars for the panel that shows it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_usd: Option<f64>,
+    /// The folder's budget: it holds over the general one, a work's own over it (router/budgets.rs).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget: Option<crate::router::budgets::Budget>,
+    /// The folder's set of models (router/sets.rs): over the home's, under one chosen for a work.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub set: Option<String>,
     #[serde(default)]
     pub prepare: Vec<String>,
     #[serde(default)]
@@ -40,6 +49,18 @@ pub struct WorkFolder {
 fn git_kind() -> String {
     "git".into()
 }
+
+/// Whether this Mac app has asked the person about the home network yet (src/permissions, docs/plans/permissions.md):
+/// until then nothing goes to it, so macOS' «Локальная сеть» window comes after the step «Разрешения» explains it, not
+/// at the first start. Written at the first start (false on a fresh install), true once the step or a search asked.
+/// Local: each computer asks its own person.
+pub const LOCAL_NETWORK_ASKED: SettingDefinition<bool> = SettingDefinition {
+    key: "local_network_asked",
+    scope: SettingScope::Global,
+    description: "Компьютер спросил про локальную сеть",
+    sensitive: false,
+    parse: serde_json::Value::as_bool,
+};
 
 /// The work folders: each computer's own — its paths stay here (placement/transfer.rs, `LOCAL_SETTINGS`).
 pub const WORK_FOLDERS: SettingDefinition<Vec<WorkFolder>> = SettingDefinition {

@@ -227,6 +227,8 @@ impl RequestsService {
             parent: some(start.parent),
             tokens: None,
             origin: None,
+            thinking: None,
+            thought_in: None,
         };
         let handle = Arc::new(RequestHandle::new(view, self.hooks.clone(), monotonic_clock()));
         guard(&self.active).push(handle.clone());
@@ -297,7 +299,7 @@ impl RequestsService {
         let rows = self.db.with(|c| {
             let mut statement = c.prepare(
                 "SELECT id, device, session, kind, mode, status, started_at, ms, text, answer, capability, executor,
-                        steps, error, parent, tokens, origin
+                        steps, error, parent, tokens, origin, thinking
                  FROM requests WHERE (?1 IS NULL OR started_at < ?1) AND (?2 IS NULL OR device = ?2)
                  ORDER BY started_at DESC LIMIT ?3",
             )?;
@@ -440,8 +442,8 @@ impl RequestsService {
         let saved = self.db.with(|c| {
             c.execute(
                 "INSERT INTO requests (id, device, session, kind, mode, status, started_at, ms, text, answer, capability,
-                                       executor, steps, error, parent, tokens, origin)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
+                                       executor, steps, error, parent, tokens, origin, thinking)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
                  ON CONFLICT (id) DO NOTHING",
                 params![
                     view.id,
@@ -461,6 +463,7 @@ impl RequestsService {
                     view.parent,
                     view.tokens.as_ref().and_then(|tokens| serde_json::to_string(tokens).ok()),
                     view.origin.as_ref().and_then(|origin| serde_json::to_string(origin).ok()),
+                    view.thinking.as_ref().map(|line| line.to_string()),
                 ],
             )
         });
@@ -474,6 +477,55 @@ impl RequestStarter for RequestsService {
     fn begin(&self, start: RequestStart) -> Arc<RequestHandle> {
         let mode = self.modes.current();
         self.begin_in(start, mode.as_str())
+    }
+}
+
+/// Thinking's lines (docs/plans/thinking.md, «The turn's line»): on the journal's rows, and on the last ones kept here.
+impl crate::core::requests::RequestLines for RequestsService {
+    fn line(&self, request: &str, line: &Value) {
+        if let Some(view) = guard(&self.recent).iter_mut().find(|view| view.id == request) {
+            view.thinking = Some(line.clone());
+        }
+        if self.keep() == 0 {
+            return;
+        }
+        let written = self
+            .db
+            .with(|c| c.execute("UPDATE requests SET thinking = ?1 WHERE id = ?2", params![line.to_string(), request]));
+        if let Err(error) = written {
+            tracing::warn!("the line of request {} not written: {error}", request.chars().take(8).collect::<String>());
+        }
+    }
+
+    fn lines(&self, since_ms: u64, device: Option<&str>, limit: usize) -> Vec<crate::core::requests::LineRow> {
+        let since = chrono::DateTime::from_timestamp_millis(since_ms as i64).map(iso).unwrap_or_default();
+        let rows = self.db.with(|c| {
+            let mut statement = c.prepare(
+                "SELECT id, device, started_at, thinking FROM requests
+                 WHERE thinking IS NOT NULL AND started_at >= ?1 AND (?2 IS NULL OR device = ?2)
+                 ORDER BY started_at LIMIT ?3",
+            )?;
+            let rows = statement.query_map(params![since, device, limit as i64], |row| {
+                let (id, device, started, line): (String, String, String, String) =
+                    (row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?);
+                Ok((id, device, started, line))
+            })?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()
+        });
+        let rows = match rows {
+            Ok(rows) => rows,
+            Err(error) => {
+                tracing::warn!("the lines not read: {error}");
+                return Vec::new();
+            }
+        };
+        rows.into_iter()
+            .filter_map(|(id, device, started, line)| {
+                let at = chrono::DateTime::parse_from_rfc3339(&started).ok()?.timestamp_millis().max(0) as u64;
+                let line = serde_json::from_str(&line).ok()?;
+                Some(crate::core::requests::LineRow { id, device, at, line })
+            })
+            .collect()
     }
 }
 
@@ -547,6 +599,9 @@ fn view_of(row: &Row<'_>) -> rusqlite::Result<Option<RequestView>> {
         parent: text(14)?,
         tokens: text(15)?.and_then(|tokens| serde_json::from_str(&tokens).ok()),
         origin: text(16)?.and_then(|origin| serde_json::from_str(&origin).ok()),
+        thinking: text(17)?.and_then(|line| serde_json::from_str(&line).ok()),
+        // Live only: the panel folds the hub's half while the trip goes; the journal does not keep it.
+        thought_in: None,
     }))
 }
 
@@ -672,6 +727,57 @@ mod tests {
             )
         })
         .unwrap();
+    }
+
+    /// A journal of before Thinking's column (docs/plans/thinking.md, D2) is brought to the new schema on opening:
+    /// the column is added, the old rows stay and read as they did, and a line written onto one reads back.
+    #[test]
+    fn a_journal_from_before_the_line_takes_its_column_and_keeps_its_rows() {
+        use crate::core::requests::RequestLines;
+        let dir = tempfile::tempdir().unwrap();
+        {
+            // The schema of before 0019: no column, no record of the migration, the old rows in.
+            let db = Db::open(Some(dir.path())).unwrap();
+            db.with(|c| {
+                c.execute_batch(
+                    "ALTER TABLE requests DROP COLUMN thinking;
+                     DELETE FROM schema_migrations WHERE version = 19;",
+                )?;
+                c.execute(
+                    "INSERT INTO requests (id, device, kind, mode, status, started_at, steps, text, answer, tokens, origin)
+                     VALUES ('old-1', 'kitchen', 'voice', 'gateway', 'answered', '2026-11-26T10:00:00.000Z',
+                             '[{\"phase\":\"think\",\"at\":0,\"ms\":900}]', 'какая погода', 'Солнечно.',
+                             '{\"input\":3900,\"output\":42,\"cacheRead\":0,\"cacheWrite\":0,\"rounds\":1,\"model\":\"m\"}',
+                             NULL)",
+                    [],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        }
+        let db = Arc::new(Db::open(Some(dir.path())).unwrap());
+        assert_eq!(db.applied_migrations(), 1, "0019 is applied on opening");
+        let columns: Vec<String> = db
+            .with(|c| {
+                let mut statement = c.prepare("SELECT name FROM pragma_table_info('requests')")?;
+                let names = statement.query_map([], |row| row.get(0))?.collect::<rusqlite::Result<Vec<String>>>();
+                names
+            })
+            .unwrap();
+        assert!(columns.iter().any(|name| name == "thinking"), "{columns:?}");
+        let events = EventBus::new();
+        let settings = Arc::new(SettingsService::new(db.clone(), events.clone()));
+        let modes = Arc::new(StoredMode::new(settings.clone(), UniproxyMode::Gateway));
+        let service = RequestsService::new(db.clone(), events, settings, modes);
+        let old = service.history(&HistoryQuery::default()).unwrap();
+        assert_eq!(ids(&old), ["old-1"]);
+        assert_eq!(old[0].tokens.as_ref().map(|tokens| tokens.input), Some(3900), "the old row reads as it did");
+        assert_eq!(old[0].thinking, None);
+        service.line("old-1", &json!({"v": 1, "end": "answered"}));
+        let rows = service.lines(0, Some("kitchen"), 10);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].line["end"], "answered");
+        assert!(service.lines(0, Some("hall"), 10).is_empty());
     }
 
     fn ids(views: &[RequestView]) -> Vec<&str> {

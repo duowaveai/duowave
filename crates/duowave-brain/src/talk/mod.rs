@@ -9,10 +9,13 @@
 //! (layer.rs) keeps the records of works (works.rs) its executors report to (executor.rs; the workshop —
 //! workshop.rs) and tells the brain what goes on (now.rs).
 
+pub mod actions;
 pub mod asked;
 pub mod door;
 pub mod executor;
 pub mod folder;
+/// One's own words for the actions on works (docs/plans/work-systems.md, stage 7).
+pub mod own_words;
 /// The voice input — the station or the computer's microphone — is the ear contract's (src/ear/input.rs).
 pub use crate::ear::input;
 pub mod layer;
@@ -27,11 +30,15 @@ pub mod ready;
 pub mod routes;
 pub mod rules;
 pub mod store;
+pub mod system;
+pub mod systems;
 pub mod task_work;
-pub mod thought;
+/// The talk layer behind the door to the audio side (docs/plans/audio-thinking-contract.md).
+pub mod thinking;
+/// The thought's numbers and the words of the language pack are «Чутьё»'s (crates/duowave-sense, since 27.11.2026).
+pub use crate::sense::{thought, words};
 pub mod tools;
 pub mod window;
-pub mod words;
 pub mod work_tools;
 pub mod works;
 
@@ -93,6 +100,7 @@ crate::route_needs!(
     Arc<crate::settings::SettingsService>,
     OnStation,
     Arc<crate::ear::mode::ModeService>,
+    Arc<crate::thinking::OurThinking>,
 );
 
 /// A request's start → its handle in the journal, answered by our side.
@@ -122,6 +130,9 @@ pub struct Turn {
     pub voice: bool,
     /// Start the talk over.
     pub fresh: bool,
+    /// Which tools the brain is offered: what can be done where the phrase was said (the door's `hands`). A phrase
+    /// of the computer has no hands: the conversation's tools.
+    pub tools: crate::skills::tools::ToolsKind,
 }
 
 /// One event of a talk's answer.
@@ -172,7 +183,7 @@ pub fn ends_with_question(text: &str) -> bool {
 
 /// The end of a spoken answer on a device: whether it asks, and the reminder of a work's question nobody answered — once,
 /// and never on top of a new question. `brain` — the brain answered: its question is the device's now.
-fn closing(parts: &Parts, device: &str, said: &str, voice: bool, brain: bool) -> (bool, Option<String>) {
+pub(crate) fn closing(parts: &Parts, device: &str, said: &str, voice: bool, brain: bool) -> (bool, Option<String>) {
     let asks = ends_with_question(said);
     if !voice {
         return (asks, None);
@@ -190,14 +201,14 @@ fn closing(parts: &Parts, device: &str, said: &str, voice: bool, brain: bool) ->
 
 /// The brain of a talk: where its question goes and which model answers.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Brain {
+pub struct Brain {
     pub by: Place,
     pub what: String,
 }
 
 impl Brain {
     /// The fast profile's, as the station's conversation names it.
-    fn of(parts: &Parts) -> Brain {
+    pub(crate) fn of(parts: &Parts) -> Brain {
         let brain = parts.dialog.brain();
         let slot = brain.profiles.fast.as_ref();
         let cloud = slot.map_or(brain.cloud, |slot| slot.cloud);
@@ -205,7 +216,7 @@ impl Brain {
         Brain { by: if cloud { Place::Cloud } else { Place::Own }, what }
     }
 
-    fn place(&self) -> &'static str {
+    pub(crate) fn place(&self) -> &'static str {
         if self.by == Place::Cloud {
             "cloud"
         } else {
@@ -257,7 +268,7 @@ pub fn begin(parts: &Parts, principal: &Principal, turn: Turn) -> Result<Talk, A
     if let Some(heard) = &turn.heard {
         trip.heard_before(heard.by, heard.what.as_deref(), heard.ms.unwrap_or(0));
     }
-    trip.set_origin(turn.origin.clone().by(Some(principal.name.clone())));
+    trip.set_origin(turn.origin.clone().of(principal));
     trip.routed(Some("chat"), "model");
     trip.step(RequestPhase::Think, Some(brain.by), Some(&brain.what));
     let started = Instant::now();
@@ -269,14 +280,16 @@ pub fn begin(parts: &Parts, principal: &Principal, turn: Turn) -> Result<Talk, A
         parts: parts.clone(),
         principal: principal.clone(),
         text: turn.text.clone(),
-        origin: turn.origin.clone().by(Some(principal.name.clone())),
+        origin: turn.origin.clone().of(principal),
         trip: trip.clone(),
         events: events.clone(),
         brain: brain.clone(),
+        kind: turn.tools,
     });
-    // The computer's clock: no station says its time zone.
+    // The home's clock: the time zone a station named last; none — the computer's own clock (it is the hub).
     let context = DialogContext {
         spoken: true,
+        timezone: crate::dialog::llm::limits::home_timezone(),
         profile: Some(ModelProfile::Fast),
         channel: crate::dialog::Channel::Computer,
         // A spoken answer: a few sentences (docs/plans/audio-interface.md, decision 14).
@@ -285,13 +298,13 @@ pub fn begin(parts: &Parts, principal: &Principal, turn: Turn) -> Result<Talk, A
     };
     // A phrase about the works is read first: the layer does and says it (reader.rs).
     let reader = parts.talk.reader().filter(|reader| reader.wants(&turn.origin.device, &turn.text));
-    let origin = turn.origin.clone().by(Some(principal.name.clone()));
+    let origin = turn.origin.clone().of(principal);
     let (parts, answering) = (parts.clone(), cancel.clone());
     tokio::spawn(async move {
         if let Some(reader) = reader {
             let read = tokio::select! {
                 _ = answering.cancelled() => {
-                    trip.finish(RequestStatus::Cancelled, None, None);
+                    trip.finish_unclaimed(RequestStatus::Cancelled, None);
                     return;
                 }
                 read = reader.read(&key, origin, &turn.text, context.clone(), answering.clone()) => read,
@@ -303,7 +316,7 @@ pub fn begin(parts: &Parts, principal: &Principal, turn: Turn) -> Result<Talk, A
                     trip.step(RequestPhase::Speak, Some(Place::Own), voice.as_deref());
                 }
                 trip.answered(&read.said);
-                trip.finish(RequestStatus::Answered, None, None);
+                trip.finish_unclaimed(RequestStatus::Answered, None);
                 let _ = events.send(TalkEvent::Phrase { text: read.said.clone() });
                 let ms = started.elapsed().as_millis() as u64;
                 let work = parts.talk.touched_since(&turn.origin.device, since);
@@ -325,7 +338,7 @@ pub fn begin(parts: &Parts, principal: &Principal, turn: Turn) -> Result<Talk, A
         loop {
             let next = tokio::select! {
                 _ = answering.cancelled() => {
-                    trip.finish(RequestStatus::Cancelled, None, None);
+                    trip.finish_unclaimed(RequestStatus::Cancelled, None);
                     return;
                 }
                 next = phrases.next() => next,
@@ -342,17 +355,17 @@ pub fn begin(parts: &Parts, principal: &Principal, turn: Turn) -> Result<Talk, A
                 }
                 Some(Err(error)) => {
                     if answering.is_cancelled() {
-                        trip.finish(RequestStatus::Cancelled, None, None);
+                        trip.finish_unclaimed(RequestStatus::Cancelled, None);
                         return;
                     }
                     let message: String = parts.secrets.redact(&format!("{error:#}")).chars().take(300).collect();
-                    trip.finish(RequestStatus::Failed, Some(&message), None);
+                    trip.finish_unclaimed(RequestStatus::Failed, Some(&message));
                     let _ = events.send(TalkEvent::Error { message });
                     return;
                 }
                 None => {
                     let status = if said.is_empty() { RequestStatus::Silent } else { RequestStatus::Answered };
-                    trip.finish(status, None, None);
+                    trip.finish_unclaimed(status, None);
                     let ms = started.elapsed().as_millis() as u64;
                     let work = parts.talk.touched_since(&turn.origin.device, since);
                     let said = said.join(" ");
@@ -387,6 +400,35 @@ fn by_rules(parts: &Parts, principal: &Principal, turn: &Turn) -> Option<Talk> {
     Some(by_heard(parts, principal, turn, rules, heard))
 }
 
+/// The part of a phrase as it was said that the normalized words `captured` stand for; the captured words when they
+/// are not found in it.
+pub(crate) fn as_said(original: &str, captured: &str) -> String {
+    let target: Vec<&str> = captured.split_whitespace().collect();
+    if target.is_empty() {
+        return captured.to_string();
+    }
+    let words: Vec<&str> = original.split_whitespace().collect();
+    let flat: Vec<(String, usize)> = words
+        .iter()
+        .enumerate()
+        .flat_map(|(at, word)| {
+            crate::skills::text::normalize(word)
+                .split_whitespace()
+                .map(|part| (part.to_string(), at))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    let found = (0..flat.len().saturating_sub(target.len() - 1))
+        .find(|&from| flat[from..from + target.len()].iter().zip(&target).all(|((part, _), word)| part == word));
+    match found {
+        Some(from) => {
+            let (first, last) = (flat[from].1, flat[from + target.len() - 1].1);
+            words[first..=last].join(" ").trim_end_matches([',', ';']).to_string()
+        }
+        None => captured.to_string(),
+    }
+}
+
 /// What the layer's rules heard in a phrase, done and said: a request of the journal, the work's line in the history.
 pub(crate) fn by_heard(
     parts: &Parts,
@@ -396,17 +438,23 @@ pub(crate) fn by_heard(
     heard: rules::Heard,
 ) -> Talk {
     let device = turn.origin.device.clone();
-    let origin = turn.origin.clone().by(Some(principal.name.clone()));
+    let origin = turn.origin.clone().of(principal);
     let trip = journal(parts, turn, &origin, "plugins", "talk:works");
     let (events, receiver) = mpsc::unbounded_channel();
     let _ = events.send(TalkEvent::Start { request: trip.id(), by: "home" });
     let cancel = CancellationToken::new();
     let (parts, started, since, voice) = (parts.clone(), Instant::now(), crate::utils::time::now_ms(), turn.voice);
     let (key, text) = (format!("panel:{}", principal.id), turn.text.clone());
+    // Words given to a work go as said, with their dots and case (the hand check of 27.11: «numbers.txt» reached
+    // Claude Code as «numbers txt»); the rules read the normalized phrase.
+    let heard = match heard {
+        rules::Heard::Add { text: added, thing } => rules::Heard::Add { text: as_said(&text, &added), thing },
+        heard => heard,
+    };
     tokio::spawn(async move {
         let said = rules.act(heard, origin).await.unwrap_or_default();
         if said.is_empty() {
-            trip.finish(RequestStatus::Silent, None, None);
+            trip.finish_unclaimed(RequestStatus::Silent, None);
         } else {
             // The conversation goes on with the brain: it knows what the layer did — the work's line, not the phrase.
             let kept = parts.talk.fact_since(&device, since);
@@ -456,5 +504,16 @@ pub(crate) fn spoken(parts: &Parts, trip: &crate::core::requests::RequestHandle,
         trip.step(RequestPhase::Speak, Some(Place::Own), voice.as_deref());
     }
     trip.answered(said);
-    trip.finish(RequestStatus::Answered, None, None);
+    trip.finish_unclaimed(RequestStatus::Answered, None);
+}
+
+#[cfg(test)]
+mod as_said_tests {
+    #[test]
+    fn words_given_to_a_work_keep_their_dots_and_case() {
+        let said = super::as_said("И допиши в numbers.txt слово «конец»", "в numbers txt слово конец");
+        assert_eq!(said, "в numbers.txt слово «конец»");
+        assert_eq!(super::as_said("и ещё крупнее", "крупнее"), "крупнее");
+        assert_eq!(super::as_said("что-то другое", "не то"), "не то");
+    }
 }

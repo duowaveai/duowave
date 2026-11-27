@@ -1,0 +1,23 @@
+[package]
+name = "duowave-door"
+description = "DuoWave's door between the audio interface and Thinking («Мышление»): the messages both sides send, the Thinking trait and the spec of a device's hands. It depends on none of DuoWave's floors, so either side can move to a repository of its own and take the door by its version (docs/plans/audio-thinking-contract.md)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+# A scripted Thinking for the audio side's tests (src/door/script.rs; the contract's rule 9).
+testing = ["dep:tokio"]
+
+[dependencies]
+# The answer and the notices are streams: the door names no runtime.
+futures.workspace = true
+serde.workspace = true
+# A hand's arguments and a choice's options travel as JSON.
+serde_json.workspace = true
+# The scripted Thinking's pauses (feature `testing` only).
+tokio = { workspace = true, optional = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }

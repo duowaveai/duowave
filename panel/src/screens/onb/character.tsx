@@ -9,7 +9,7 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
 import type { InstallProgress } from '../../magicplace/wizard-state';
 
-import { CharacterView, CharactersView, api, can, hubCall, isTight, needsOf, problemOf } from '../../api';
+import { CatalogEntry, CharacterView, CharactersView, api, can, hubCall, installApi, isTight, needsOf, problemOf } from '../../api';
 import { VoiceWizard } from '../voice-lab';
 import { stopAudio, useAudio } from '../../audio';
 import { tr } from '../../i18n';
@@ -17,6 +17,8 @@ import { usePanel } from '../../shell/context';
 import { VoiceMark, markOf, useMediaUrl } from '../../ui/media';
 import { useNeedsFlow } from '../../ui/needs';
 import { installProgress, onInstallProgress, showInstallWizard } from '../../magicplace/wizard-state';
+import { goesHere, recommendedHere, shownAlone } from '../../magicplace/filters';
+import { canManage, isBlocked, isInstalled, useCatalog, usePackageActions } from '../catalog';
 import { linkActive, linkNow, moveNow, useSpeakerLink } from './speaker';
 import { useOnboarding } from './nav';
 import '../../ui/onb-character.css';
@@ -28,6 +30,8 @@ const FAKE_MS = 3200;
 
 type Face = 'face-divi' | 'face-violet' | 'face-warm' | 'face-cool';
 const CYCLE: Face[] = ['face-cool', 'face-violet', 'face-warm'];
+/** Сколько персонажей каталога показать рядом с поставленными: остальные — в MagicPlace. */
+const SHOW_OFFERS = 7;
 
 /** Оттенок (0–360) и насыщенность (0–1) цвета #RRGGBB; не цвет — null. */
 function hueOf(color?: string | null): { hue: number; sat: number } | null {
@@ -133,6 +137,66 @@ function InstallingCard({ progress }: { progress: InstallProgress }) {
     );
 }
 
+/** Персонаж каталога, которого здесь ещё нет: нажатие ставит его (мастер установки), «Послушать» — фраза из каталога. */
+function OfferCard(props: {
+    entry: CatalogEntry;
+    face: Face;
+    image: string | null;
+    busy: boolean;
+    disabled: boolean;
+    problem: string | null;
+    sounding: boolean;
+    onInstall: () => void;
+    onListen: (sample: string) => void;
+}) {
+    const t = tr.onbCharacter;
+    const { entry } = props;
+    const sample = entry.preview?.samples?.[0];
+    return (
+        <div class={`pcard onb-ch-offer${props.busy ? ' is-busy' : ''}`}>
+            <button type="button" class="pcard-pick" aria-label={t.offerAria(entry.title)} disabled={props.disabled} onClick={props.onInstall}>
+                <span class={`face ${props.face}${props.image ? ' onb-ch-has-img' : ''}`}>
+                    <FaceImage src={props.image} />
+                    <span class="face-line">{entry.description}</span>
+                </span>
+                <span class="pcard-name">
+                    {entry.title}
+                    <span class="onb-ch-get">{props.busy ? t.offerInstalling : t.offerInstall}</span>
+                </span>
+                <span class={`pcard-about${props.problem ? ' onb-ch-bad' : ''}`}>{props.problem ?? entry.description}</span>
+            </button>
+            {sample && (
+                <button
+                    type="button"
+                    class="listen"
+                    aria-pressed={props.sounding}
+                    aria-label={props.sounding ? t.stop : t.listenTo(entry.title)}
+                    onClick={() => props.onListen(sample)}
+                >
+                    {props.sounding ? (
+                        <>
+                            <span class="wave" aria-hidden="true">
+                                <i />
+                                <i />
+                                <i />
+                                <i />
+                            </span>
+                            {t.playing}
+                        </>
+                    ) : (
+                        <>
+                            <svg class="ico ico-sm" viewBox="0 0 24 24" aria-hidden="true">
+                                <path d="M8 5v14l11-7z" />
+                            </svg>
+                            {t.listen}
+                        </>
+                    )}
+                </button>
+            )}
+        </div>
+    );
+}
+
 export function CharacterStep() {
     const { wake, choice, goTo } = useOnboarding();
     const panel = usePanel();
@@ -229,6 +293,15 @@ export function CharacterStep() {
             return null;
         }
     };
+    // Персонажи каталога, которых здесь ещё нет (тест 26.11: на свежей установке шаг показывал одну Алису, а в
+    // MagicPlace их восемь): карточкой с «Поставить». Ставит тот же мастер, что в MagicPlace; персонаж встал — он в ряду
+    // поставленных, и шаг отмечает выбранного (свёрнутая установка, п. 45).
+    const catalog = useCatalog(stationKey);
+    const actions = usePackageActions(() => {
+        void catalog.reload();
+        void read();
+    }, stationKey);
+    const media = installApi(stationKey).mediaPath;
     const needs = useNeedsFlow((message) => {
         const left = missed.current;
         missed.current = null;
@@ -331,6 +404,21 @@ export function CharacterStep() {
     /** Свёрнутая установка персонажа: своей карточкой, пока его нет в списке, а встал — ходом на его карточке. */
     const going = installing && installing.kind === 'character' && installing.hidden && !installing.finished ? installing : null;
     let others = 0;
+    const here = new Set(list.map((character) => character.package?.id).filter(Boolean));
+    const offered = (catalog.view?.packages ?? []).filter(
+        (entry) =>
+            entry.kind === 'character' &&
+            canManage(entry.kind) &&
+            goesHere(entry) &&
+            shownAlone(entry) &&
+            !entry.unlisted &&
+            !isBlocked(entry) &&
+            !isInstalled(entry) &&
+            !here.has(entry.id) &&
+            going?.id !== entry.id,
+    );
+    const offers = [...offered.filter(recommendedHere), ...offered.filter((entry) => !recommendedHere(entry))].slice(0, SHOW_OFFERS);
+    const offersLoading = !catalog.view && !catalog.error && !catalog.absent;
     const footNote: Note = note ?? (mayEdit ? null : { text: tr.onbCharacter.onlyEditors });
 
     return (
@@ -460,8 +548,23 @@ export function CharacterStep() {
                             </div>
                         );
                     })}
+                    {offers.map((entry, at) => (
+                        <OfferCard
+                            key={entry.id}
+                            entry={entry}
+                            face={CYCLE[(others + at) % CYCLE.length]}
+                            image={entry.preview?.image ? media(entry.preview.image) : null}
+                            busy={!!actions.busy[entry.id]}
+                            disabled={moving || !!actions.busy[entry.id]}
+                            problem={actions.notes[entry.id]?.error ?? null}
+                            sounding={audio.playing === SOUND + entry.id}
+                            onInstall={() => void actions.install(entry)}
+                            onListen={(sample) => void audio.toggle(SOUND + entry.id, () => api.media(media(sample)))}
+                        />
+                    ))}
                 </div>
             )}
+            {view && offersLoading && <p class="small onb-ch-p" role="status">{tr.onbCharacter.offersReading}</p>}
 
             {standard && mayVoice && !awaitingCentre && (
                 <div class="onb-ch-own">

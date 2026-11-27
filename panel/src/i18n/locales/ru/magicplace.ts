@@ -29,6 +29,8 @@ export default {
     agentNoQuestions: 'В этом режиме агент делает всё без вопросов: разрешённые команды рабочей папки он не спрашивает и может, например, отправить ветку.',
     agentViaDuowave: 'Модель агента ходит через DuoWave: расход считается точно.',
     agentTerms: (title: string) => `Условия ${title}`,
+    // Карточка системы работ (docs/plans/work-systems.md, этап 4): что она умеет, до установки
+    systemCan: (list: string) => `Как система работ умеет: ${list}.`,
     kindGroup: 'Что показать',
     faceLabel: 'Вид',
     faceAny: 'Любой вид',
@@ -80,4 +82,6 @@ export default {
     installed: 'Установлено',
     charactersLink: 'Каталог в MagicPlace',
     emptyCatalog: 'В MagicPlace пока пусто.',
+    reading: 'Загружаю MagicPlace…',
+    readingNote: 'В первый раз это может занять до минуты.',
 };

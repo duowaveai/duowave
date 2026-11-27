@@ -19,6 +19,7 @@ import {
     IconPackage,
     IconSend,
     IconSparkle,
+    IconTerminal,
     IconUndo,
     IconVoice,
 } from './icons';
@@ -29,7 +30,7 @@ import { byMode } from './words';
 type Icon = FunctionComponent<{ size?: number }>;
 
 /** Every ability of contracts 1 and 3 (the computer's devices and folders), in the order people see them. */
-export const ABILITIES: Ability[] = ['hearing', 'voice', 'model', 'messages', 'apps', 'devices', 'files', 'history', 'catalog'];
+export const ABILITIES: Ability[] = ['hearing', 'voice', 'model', 'messages', 'apps', 'devices', 'files', 'works', 'history', 'catalog'];
 /**
  * «Где сейчас» on the page, the rows the gateway sends; the widget shows the first three. A catalog row only in the
  * developer layer, and only when the gateway sends one (block 1's gateway does not).
@@ -46,6 +47,7 @@ export const ABILITY_ICONS: Record<Ability, Icon> = {
     catalog: IconDownload,
     devices: IconLinks,
     files: IconFolder,
+    works: IconTerminal,
 };
 
 /**
@@ -67,6 +69,7 @@ export function abilityTitle(id: Ability, where = false): string {
         catalog: t.abilityCatalog,
         devices: t.abilityDevices,
         files: t.abilityFiles,
+        works: t.abilityWorks,
     }[id];
 }
 
@@ -82,6 +85,7 @@ export function abilityAbout(id: Ability): string {
         catalog: t.aboutCatalog,
         devices: t.aboutDevices,
         files: t.aboutFiles,
+        works: t.aboutWorks,
     }[id];
 }
 

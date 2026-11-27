@@ -88,6 +88,21 @@ fn last_clause_end(text: &[char]) -> Option<usize> {
         .find(|&at| matches!(text[at], ',' | ';' | ':' | '—' | '–') && is_js_space(text[at + 1]))
 }
 
+/// Below this a text is synthesized whole: one intonation, one request.
+const ONE_PHRASE_CHARS: usize = 140;
+
+/// A whole text as phrases, so long ones are synthesized in parallel.
+pub fn split_phrases(text: &str) -> Vec<String> {
+    if text.encode_utf16().count() <= ONE_PHRASE_CHARS {
+        let trimmed = text.trim_matches(is_js_space);
+        return if trimmed.is_empty() { Vec::new() } else { vec![trimmed.to_string()] };
+    }
+    let mut splitter = PhraseSplitter::new();
+    let mut phrases = splitter.push(text);
+    phrases.extend(splitter.flush());
+    phrases
+}
+
 /// Cuts the text an LLM streams into phrases for speech synthesis: the first goes out as soon as it is a
 /// sentence, so the answer starts sounding while the model is still writing; later ones are whole
 /// sentences merged while short.

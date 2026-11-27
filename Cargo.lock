@@ -1245,7 +1245,7 @@ checksum = "1aaf95b3e5c8f23aa320147307562d361db0ae0d51242340f558153b4eb2439b"
 
 [[package]]
 name = "duowave"
-version = "0.19.2"
+version = "0.20.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1294,7 +1294,7 @@ dependencies = [
 
 [[package]]
 name = "duowave-apps"
-version = "0.19.2"
+version = "0.20.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1353,7 +1353,7 @@ dependencies = [
 
 [[package]]
 name = "duowave-base"
-version = "0.19.2"
+version = "0.20.0"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -1394,15 +1394,18 @@ dependencies = [
 
 [[package]]
 name = "duowave-brain"
-version = "0.19.2"
+version = "0.20.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "axum",
  "base64 0.23.1",
  "bytes",
  "chrono",
  "chrono-tz",
  "duowave-base",
+ "duowave-door",
+ "duowave-sense",
  "duowave-voice",
  "futures",
  "http-body-util",
@@ -1426,8 +1429,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "duowave-door"
+version = "0.20.0"
+dependencies = [
+ "futures",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "duowave-ears"
-version = "0.19.2"
+version = "0.20.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -1436,7 +1449,9 @@ dependencies = [
  "chrono",
  "duowave-base",
  "duowave-brain",
+ "duowave-door",
  "duowave-rights",
+ "duowave-sense",
  "duowave-voice",
  "flate2",
  "futures",
@@ -1471,10 +1486,11 @@ dependencies = [
 
 [[package]]
 name = "duowave-home"
-version = "0.19.2"
+version = "0.20.0"
 dependencies = [
  "aes-gcm",
  "anyhow",
+ "async-trait",
  "axum",
  "base64 0.23.1",
  "chrono",
@@ -1517,7 +1533,7 @@ dependencies = [
 
 [[package]]
 name = "duowave-pc"
-version = "0.19.2"
+version = "0.20.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1572,7 +1588,7 @@ dependencies = [
 
 [[package]]
 name = "duowave-rights"
-version = "0.19.2"
+version = "0.20.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -1599,13 +1615,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "duowave-sense"
+version = "0.20.0"
+dependencies = [
+ "duowave-base",
+ "serde",
+ "serde_json",
+ "tracing",
+]
+
+[[package]]
 name = "duowave-voice"
-version = "0.19.2"
+version = "0.20.0"
 dependencies = [
  "anyhow",
  "axum",
  "bytes",
  "duowave-base",
+ "duowave-door",
  "futures",
  "hex",
  "ort",

@@ -16,6 +16,9 @@
 .onb .onb-ch .pcard.is-busy .radio { opacity: .5; }
 .onb .onb-ch-warn { color: var(--out-fg); }
 .onb .onb-ch-bad { color: var(--bad); }
+/* Персонаж каталога, ещё не поставленный: вместо кружка выбора — «Поставить». */
+.onb .onb-ch-get { flex: none; padding: 2px 10px; border-radius: 999px; background: var(--accent); color: var(--on-accent); font: 600 12px/20px var(--font-ui); }
+.onb .onb-ch-offer.is-busy .onb-ch-get { opacity: .6; }
 
 @media (max-width: 1100px) {
     .onb .onb-ch { padding: 24px 40px; }

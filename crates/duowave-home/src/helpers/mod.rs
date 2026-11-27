@@ -34,6 +34,8 @@ pub mod models;
 pub mod now;
 pub mod registry;
 pub mod remote;
+/// A Турбо's work systems on the hub (docs/plans/work-systems.md, stage 9).
+pub mod remote_systems;
 pub mod routes;
 pub mod wake;
 

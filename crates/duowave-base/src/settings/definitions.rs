@@ -1304,6 +1304,127 @@ pub const TURBO_SHARES: SettingDefinition<TurboShares> = SettingDefinition {
     parse: as_serde,
 };
 
+/// The computer's own ear (docs/plans/audio-interface-3.md, part К; src/channel in «Уши»): its switches in
+/// «Настройки» → «Микрофон», and what the echo check found. This computer's own (`LOCAL_SETTINGS`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TalkVoice {
+    /// The microphone's two tones, «слушаю» and «услышала».
+    #[serde(default = "yes")]
+    pub sounds: bool,
+    /// Speaking over the computer stops it — once the echo check has passed (К7).
+    #[serde(default = "yes")]
+    pub barge_in: bool,
+    /// The strip over all windows while a talk goes on (К8).
+    #[serde(default = "yes")]
+    pub strip: bool,
+    /// The word on the computer (К10): the microphone is open all the time, its sound only for the word's program.
+    #[serde(default)]
+    pub word: bool,
+    /// What the echo check found: whether the computer does not hear itself, and when.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub echo: Option<EchoCheck>,
+    /// How the key «Сказать» drives a thought.
+    #[serde(default)]
+    pub activation: KeyActivation,
+    /// A thought the key does not hold (a tap, «два нажатия», «Сказать») ends when the person is done, as «Чутьё»
+    /// judges it — and at the next press too. Off: only the key ends it, as in Handy (the owner, 27.11).
+    #[serde(default = "yes")]
+    pub auto_end: bool,
+}
+
+impl Default for TalkVoice {
+    fn default() -> TalkVoice {
+        TalkVoice {
+            sounds: true,
+            barge_in: true,
+            strip: true,
+            word: false,
+            echo: None,
+            activation: KeyActivation::default(),
+            auto_end: true,
+        }
+    }
+}
+
+/// How the key «Сказать» drives a thought — Handy's three modes (the owner, 27.11). A held key is ended by its release,
+/// never by a pause; a thought it does not hold ends by «Чутьё» too while `auto_end` is on (the default).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KeyActivation {
+    /// Held at least `HOLD_MS`: the thought ends when it is let go; a tap: it goes on until the next press.
+    #[default]
+    HoldOrToggle,
+    /// Held: the thought ends when it is let go, however short.
+    PushToTalk,
+    /// A press begins, the next press ends; letting go means nothing.
+    Toggle,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EchoCheck {
+    /// The computer did not hear its own words: speaking over it works.
+    pub ok: bool,
+    /// When, ms since the epoch.
+    pub at: u64,
+}
+
+pub const TALK_VOICE: SettingDefinition<TalkVoice> = SettingDefinition {
+    key: "talk_voice",
+    scope: SettingScope::Global,
+    description: "Голос компьютера",
+    sensitive: false,
+    parse: |value| serde_json::from_value(value.clone()).ok(),
+};
+
+/// The key «Сказать» from any program (К4), as the app registers it: `Alt+Space`, `Control+Alt+Space`.
+pub const TALK_KEY: SettingDefinition<String> = SettingDefinition {
+    key: "talk_key",
+    scope: SettingScope::Global,
+    description: "Клавиша «Сказать»",
+    sensitive: false,
+    parse: |value| value.as_str().map(str::trim).filter(|key| !key.is_empty()).map(str::to_string),
+};
+
+/// The key the app takes when none was chosen: ⌥Пробел, as in the panel.
+pub const DEFAULT_TALK_KEY: &str = "Alt+Space";
+
+/// The home's quiet hours (stage 3, «К6»; one setting for everything that speaks first, own-agent.md too): from and
+/// to, minutes after midnight by the device's clock. Then the computer does not speak first: a notification instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QuietHours {
+    pub from: u16,
+    pub to: u16,
+}
+
+impl Default for QuietHours {
+    fn default() -> QuietHours {
+        QuietHours { from: 23 * 60, to: 8 * 60 }
+    }
+}
+
+impl QuietHours {
+    /// Whether a minute of the day falls into them (they may cross midnight).
+    pub fn holds(&self, minute: u16) -> bool {
+        if self.from <= self.to {
+            (self.from..self.to).contains(&minute)
+        } else {
+            minute >= self.from || minute < self.to
+        }
+    }
+}
+
+pub const QUIET_HOURS: SettingDefinition<QuietHours> = SettingDefinition {
+    key: "quiet_hours",
+    scope: SettingScope::Global,
+    description: "Тихие часы",
+    sensitive: false,
+    parse: |value| {
+        let minute = |name: &str| value.get(name).and_then(Value::as_u64).filter(|m| *m < 24 * 60).map(|m| m as u16);
+        Some(QuietHours { from: minute("from")?, to: minute("to")? })
+    },
+};
+
 #[cfg(test)]
 mod tests {
     use super::*;

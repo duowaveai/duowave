@@ -175,6 +175,19 @@ events! {
     /// A work of the talk changed (src/talk/works.rs): the panel reads the device's works again, the computer says
     /// «Готово» when it is its own. The change: `started`, `working`, how a run ended — `ready`, `unfinished`,
     /// `failed`, `stopped`, `interrupted` — and `decided` (on the desk, in the drafts). Never what was asked.
+    /// The computer's own ear (docs/plans/audio-interface-3.md, part К; src/channel): its state for the panel's strip
+    /// — `quiet`, `listening`, `recognizing`, `thinking`, `speaking`, `window` —, the sound's level while it listens,
+    /// why the window is open, the seconds left, the journal's request of the turn, and the thought left hanging
+    /// (speech: the panel's live channel gives it only to those who may read the journal).
+    VoiceChannel = "voice.channel" {
+        device: String,
+        state: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")] level: Option<f32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")] why: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")] wait: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")] request: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")] parked: Option<String>,
+    }
     WorkChanged = "work.changed" {
         work: String,
         device: String,
