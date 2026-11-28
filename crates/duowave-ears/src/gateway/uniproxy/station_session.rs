@@ -75,8 +75,8 @@ use crate::gateway::observability::session_recorder::{
 use crate::gateway::protocol::aapi_codec::AapiCodec;
 use crate::gateway::protocol::ids::{new_message_id, new_session_id};
 use crate::gateway::protocol::proto_edit::{
-    cancel_request, continue_request, detach_voice_session, edit_frame, get_bytes, get_string, is_aapi, restream,
-    retext_text_input, voice_to_text_input, wait_for_approval, waits_for_approval, FrameEdit,
+    answer_without_approval, cancel_request, continue_request, detach_voice_session, edit_frame, get_bytes, get_string,
+    is_aapi, restream, retext_text_input, voice_to_text_input, wait_for_approval, waits_for_approval, FrameEdit,
 };
 use crate::gateway::protocol::proto_object::{bytes_value, is_js_space};
 use crate::gateway::protocol::protocol_types::{
@@ -4136,6 +4136,18 @@ impl StationSession {
             Self::forward_stream(inner, stream_id);
         }
         let (frame, gated) = self.ask_to_wait(&message_id, frame);
+        // Not held for our router: Yandex answers it, though the station asked it to wait (answer_without_approval).
+        let frame = if gated {
+            frame
+        } else {
+            match answer_without_approval(&frame) {
+                Ok(answered) => Bytes::from(answered),
+                Err(error) => {
+                    self.note("frameError", &format!("could not drop the approval wait: {error}"), None);
+                    frame
+                }
+            }
+        };
         if let Some(trip) = self.begin_trip(inner, &message_id, RequestKind::Voice, None) {
             if gated {
                 // Yandex only hears: who answers is decided on its recognition.
@@ -4425,8 +4437,19 @@ impl StationSession {
                 Err(error) => return self.note("frameError", &format!("{error:#}"), None),
             },
         };
+        // The station asked Yandex to wait for its approval, which never names our message id: Yandex answers this
+        // one itself (answer_without_approval).
+        for frame in &mut frames {
+            if !is_aapi(frame) {
+                continue;
+            }
+            match answer_without_approval(frame) {
+                Ok(answered) => *frame = Bytes::from(answered),
+                Err(error) => self.note("frameError", &format!("could not drop the approval wait: {error}"), None),
+            }
+        }
         // A follow-up of our own question («Что включить?») is auto_listening inside a voice
-        // session Yandex never opened. Left as it is, Yandex recognizes it and sends no answer.
+        // session Yandex never opened: it goes as a new request.
         // A follow-up of Yandex's own question keeps the session, and a fresh wake word is not this.
         let yandex_dialog = inner.continuation.is_some_and(|continuation| continuation.executor == RouteStep::Yandex);
         if request.activation_type.as_deref() == Some("auto_listening") && !yandex_dialog {
