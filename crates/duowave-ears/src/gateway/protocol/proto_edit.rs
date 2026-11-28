@@ -387,6 +387,28 @@ pub fn waits_for_approval(voice_input: &[u8]) -> bool {
     read().ok().flatten() == Some(1)
 }
 
+/// A request we give to Yandex to answer, without asking it to wait: the wait the station asked for goes.
+///
+/// The station asks Yandex to wait on its own requests (`WaitClientApproval`, live, 28.11: on every voiceInput, with
+/// a `continueRequest` naming it about two seconds in). A request sent on under our message id is one that
+/// continueRequest never names: Yandex recognizes it, holds its answer, and about three minutes later gives up with
+/// «error processing response chunk» (live, 26.11–28.11: «Включи музыку», «Гитербой», every voiceInput and the one
+/// textInput we sent). The station's other options stay. A request that asks nothing, and a frame that is not a voice
+/// or text input, stay as they are.
+pub fn answer_without_approval(input: &[u8]) -> Result<Vec<u8>, ProtoError> {
+    let message = edit_message(body(input)?, 1, |event| {
+        let event = edit_message(event, 3, without_approval_wait)?;
+        edit_message(&event, 2, without_approval_wait)
+    })?;
+    Ok(frame(&message))
+}
+
+fn without_approval_wait(request: &[u8]) -> Result<Vec<u8>, ProtoError> {
+    edit_message(request, 3, |request_body| {
+        edit_message(request_body, UNIPROXY_OPTIONS, |options| remove_field(options, WAIT_CLIENT_APPROVAL))
+    })
+}
+
 /// AliceRequest.request: voice_session, reset_session, activation_type.
 const VOICE_SESSION: u32 = 6;
 const RESET_SESSION: u32 = 7;
@@ -394,9 +416,9 @@ const ACTIVATION_TYPE: u32 = 14;
 
 /// A follow-up of a dialog Yandex does not own, sent to Yandex as a new request.
 ///
-/// The station marks that follow-up `voiceSession` and `auto_listening`, and sends `continueRequest` for *our*
-/// previous answer. Replaying the frame as it is makes Yandex recognize the audio and then send no `aliceResponse`:
-/// the session is not one it started (live, 26.11: «Любую музыку» and «какая погода?» both timed out after `ASR_OK`).
+/// The station marks that follow-up `voiceSession` and `auto_listening`: a session Yandex did not open. The timeouts
+/// once put down to it (live, 26.11: «Любую музыку» and «какая погода?» after `ASR_OK`) were the station's wait for
+/// its approval (`answer_without_approval`); its `continueRequest` names the follow-up itself, not our answer.
 /// `voice_session` goes off, `reset_session` goes on, and `auto_listening` is removed. A request with no body, and a
 /// frame that is not a voice or text input, stay as they are.
 pub fn detach_voice_session(input: &[u8]) -> Result<Vec<u8>, ProtoError> {
@@ -620,6 +642,57 @@ mod tests {
             .encode_client_object(&json!({ "streamControl": { "streamId": 3, "messageId": "close-1", "close": {} } }))
             .unwrap();
         assert_eq!(detach_voice_session(&close).unwrap(), close.to_vec());
+    }
+
+    #[test]
+    fn lets_yandex_answer_a_request_the_station_asked_it_to_hold() {
+        let codec = AapiCodec::new();
+        // The station asks Yandex to wait itself (live, 28.11: options 2, 4 = 1 and an empty 10 on every voiceInput).
+        let held = edit_message(&station_voice(&codec)[4..], 1, |event| {
+            edit_message(event, 3, |request| {
+                edit_message(request, 3, |request_body| {
+                    let mut options = length_delimited(2, b"station-option");
+                    options.extend(varint_field(WAIT_CLIENT_APPROVAL, 1));
+                    options.extend(length_delimited(10, b""));
+                    set_bytes(request_body, UNIPROXY_OPTIONS, options)
+                })
+            })
+        })
+        .unwrap();
+        let held = frame(&held);
+        assert!(waits_for_approval(&held));
+
+        let answered = answer_without_approval(&held).unwrap();
+        assert!(!waits_for_approval(&answered));
+        let decoded = codec.decode_client(&answered).unwrap().decoded;
+        assert_eq!(decoded["event"]["header"], json!({ "messageId": "voice-7", "streamId": 3 }));
+        assert_eq!(decoded["event"]["voiceInput"]["request"]["activationType"], "spotter");
+        // The station's other options stay.
+        let event = get_bytes(&answered[4..], 1).unwrap().unwrap();
+        let options =
+            get_bytes(get_bytes(get_bytes(event, 3).unwrap().unwrap(), 3).unwrap().unwrap(), 17).unwrap().unwrap();
+        assert_eq!(get_string(options, 2).unwrap().as_deref(), Some("station-option"));
+        assert_eq!(get_bytes(options, 10).unwrap(), Some(&b""[..]));
+
+        // Our text in the station's request keeps its options, the wait among them: it goes without the wait too.
+        let text_wait = |frame: &[u8]| {
+            let event = get_bytes(&frame[4..], 1).unwrap().unwrap();
+            let request_body = get_bytes(get_bytes(event, 2).unwrap().unwrap(), 3).unwrap().unwrap();
+            get_bytes(request_body, UNIPROXY_OPTIONS)
+                .unwrap()
+                .and_then(|options| get_varint(options, WAIT_CLIENT_APPROVAL).unwrap())
+        };
+        let text = voice_to_text_input(&held, "text-7", "включи музыку", None).unwrap();
+        assert_eq!(text_wait(&text), Some(1));
+        assert_eq!(text_wait(&answer_without_approval(&text).unwrap()), None);
+
+        // A request that asks nothing, and a frame that is not an input, stay as they are.
+        let plain = station_voice(&codec);
+        assert_eq!(answer_without_approval(&plain).unwrap(), plain.to_vec());
+        let close = codec
+            .encode_client_object(&json!({ "streamControl": { "streamId": 3, "messageId": "close-1", "close": {} } }))
+            .unwrap();
+        assert_eq!(answer_without_approval(&close).unwrap(), close.to_vec());
     }
 
     #[test]
